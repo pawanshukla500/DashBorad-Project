@@ -1,0 +1,9 @@
+{
+  "ignore": [
+    "scripts/",
+    "tests/",
+    "*.test.js",
+    "*.spec.js",
+    "node_modules/"
+  ]
+}

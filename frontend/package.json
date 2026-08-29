@@ -1,0 +1,32 @@
+{
+  "name": "dashboard-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@svg-maps/india": "^2.0.0",
+    "axios": "^1.18.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "firebase": "^12.15.0",
+    "lucide-react": "^1.28.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.4",
+    "recharts": "^2.12.7",
+    "tailwind-merge": "^3.6.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.44",
+    "tailwindcss": "^3.4.11",
+    "vite": "^5.4.3"
+  }
+}

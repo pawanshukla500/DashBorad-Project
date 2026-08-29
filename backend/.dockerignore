@@ -1,0 +1,15 @@
+node_modules
+npm-debug.log*
+.env
+.env.*
+!.env.cloudrun.example
+.git
+.gitignore
+coverage
+uploads
+tmp
+*.log
+.DS_Store
+test
+**/*.test.js
+vitest.config.*

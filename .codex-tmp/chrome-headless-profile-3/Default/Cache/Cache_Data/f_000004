@@ -1,0 +1,683 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/App.jsx");import __vite__cjsImport0_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=ef37c25f"; const jsxDEV = __vite__cjsImport0_react_jsxDevRuntime["jsxDEV"];
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
+let prevRefreshReg;
+let prevRefreshSig;
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+  prevRefreshReg = window.$RefreshReg$;
+  prevRefreshSig = window.$RefreshSig$;
+  window.$RefreshReg$ = RefreshRuntime.getRefreshReg("C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx");
+  window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;
+}
+var _s = $RefreshSig$();
+import __vite__cjsImport3_react from "/node_modules/.vite/deps/react.js?v=ef37c25f"; const lazy = __vite__cjsImport3_react["lazy"]; const Suspense = __vite__cjsImport3_react["Suspense"]; const useCallback = __vite__cjsImport3_react["useCallback"]; const useState = __vite__cjsImport3_react["useState"];
+import { Navigate, Route, Routes } from "/node_modules/.vite/deps/react-router-dom.js?v=ef37c25f";
+import Sidebar from "/src/components/Sidebar.jsx";
+import FilterBar from "/src/components/FilterBar.jsx";
+import WorkspaceNav from "/src/components/WorkspaceNav.jsx";
+import ErrorBoundary from "/src/components/ErrorBoundary.jsx";
+import FeeAlertBanner from "/src/components/FeeAlertBanner.jsx";
+import { FilterProvider } from "/src/context/FilterContext.jsx";
+import { AuthProvider, useAuth } from "/src/context/AuthContext.jsx";
+import { OPS_ROLES } from "/src/navigation.js";
+import { hasRole } from "/src/utils/roles.js";
+const Dashboard = lazy(_c = () => import("/src/pages/Dashboard.jsx"));
+_c2 = Dashboard;
+const SalesPage = lazy(_c3 = () => import("/src/pages/SalesPage.jsx"));
+_c4 = SalesPage;
+const ReturnsPage = lazy(_c5 = () => import("/src/pages/ReturnsPage.jsx"));
+_c6 = ReturnsPage;
+const ReturnTrackingPage = lazy(_c7 = () => import("/src/pages/ReturnTrackingPage.jsx"));
+_c8 = ReturnTrackingPage;
+const ProfitLossPage = lazy(_c9 = () => import("/src/pages/ProfitLossPage.jsx"));
+_c0 = ProfitLossPage;
+const ProfitAnalysisPage = lazy(_c1 = () => import("/src/pages/ProfitAnalysisPage.jsx"));
+_c10 = ProfitAnalysisPage;
+const CashFlowPage = lazy(_c11 = () => import("/src/pages/CashFlowPage.jsx"));
+_c12 = CashFlowPage;
+const CalculatorPage = lazy(_c13 = () => import("/src/pages/CalculatorPage.jsx"));
+_c14 = CalculatorPage;
+const StatementPage = lazy(_c15 = () => import("/src/pages/StatementPage.jsx"));
+_c16 = StatementPage;
+const RateAuditPage = lazy(_c17 = () => import("/src/pages/RateAuditPage.jsx"));
+_c18 = RateAuditPage;
+const UploadPage = lazy(_c19 = () => import("/src/pages/UploadPage.jsx"));
+_c20 = UploadPage;
+const RateCardConfigPage = lazy(_c21 = () => import("/src/pages/RateCardConfigPage.jsx"));
+_c22 = RateCardConfigPage;
+const AmazonFcSettingsPage = lazy(_c23 = () => import("/src/pages/AmazonFcSettings.jsx"));
+_c24 = AmazonFcSettingsPage;
+const InsightsPage = lazy(_c25 = () => import("/src/pages/InsightsPage.jsx"));
+_c26 = InsightsPage;
+const ExceptionInboxPage = lazy(_c27 = () => import("/src/pages/ExceptionInboxPage.jsx"));
+_c28 = ExceptionInboxPage;
+const ChargesConfigPage = lazy(_c29 = () => import("/src/pages/ChargesConfigPage.jsx"));
+_c30 = ChargesConfigPage;
+const AdminCenterPage = lazy(_c31 = () => import("/src/pages/AdminCenterPage.jsx"));
+_c32 = AdminCenterPage;
+const AuditLogPage = lazy(_c33 = () => import("/src/pages/AuditLogPage.jsx"));
+_c34 = AuditLogPage;
+const LoginPage = lazy(_c35 = () => import("/src/pages/LoginPage.jsx"));
+_c36 = LoginPage;
+function FullScreenLoader() {
+  return /* @__PURE__ */ jsxDEV("div", { className: "flex min-h-screen flex-col items-center justify-center gap-4 bg-background text-on-surface", children: [
+    /* @__PURE__ */ jsxDEV("div", { className: "h-10 w-10 animate-spin rounded-full border-4 border-primary/20 border-t-primary" }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 55,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { className: "text-center", children: [
+      /* @__PURE__ */ jsxDEV("p", { className: "text-sm font-semibold", children: "ReconCentral" }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 57,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("p", { className: "mt-1 text-xs text-outline", children: "Loading Workspace…" }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 58,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 56,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 54,
+    columnNumber: 5
+  }, this);
+}
+_c37 = FullScreenLoader;
+function PageLoader() {
+  return /* @__PURE__ */ jsxDEV("div", { className: "flex min-h-[45vh] items-center justify-center", children: /* @__PURE__ */ jsxDEV("div", { className: "flex items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-3 text-xs font-semibold text-secondary shadow-sm", children: [
+    /* @__PURE__ */ jsxDEV("span", { className: "h-4 w-4 animate-spin rounded-full border-2 border-outline-variant border-t-primary" }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 68,
+      columnNumber: 9
+    }, this),
+    "Loading workspace…"
+  ] }, void 0, true, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 67,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 66,
+    columnNumber: 5
+  }, this);
+}
+_c38 = PageLoader;
+function TopNavbar({ onOpenSidebar, user }) {
+  return /* @__PURE__ */ jsxDEV("header", { className: "sticky top-0 z-10 bg-surface dark:bg-inverse-surface border-b border-outline-variant dark:border-outline flex justify-between items-center h-16 px-6 lg:px-container-padding", children: [
+    /* @__PURE__ */ jsxDEV("div", { className: "flex items-center gap-4", children: [
+      /* @__PURE__ */ jsxDEV(
+        "button",
+        {
+          type: "button",
+          onClick: onOpenSidebar,
+          "aria-label": "Open navigation",
+          className: "lg:hidden rounded-lg p-2 text-on-surface-variant hover:bg-surface-container-high transition-colors",
+          children: /* @__PURE__ */ jsxDEV("span", { className: "material-symbols-outlined", children: "menu" }, void 0, false, {
+            fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+            lineNumber: 86,
+            columnNumber: 11
+          }, this)
+        },
+        void 0,
+        false,
+        {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 80,
+          columnNumber: 9
+        },
+        this
+      ),
+      /* @__PURE__ */ jsxDEV("h2", { className: "hidden sm:block font-headline-md text-headline-md font-semibold text-on-surface dark:text-inverse-on-surface", children: "Dashboard Overview" }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 89,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "relative hidden xl:block w-96 ml-8", children: [
+        /* @__PURE__ */ jsxDEV("span", { className: "material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-secondary pointer-events-none", children: "search" }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 95,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV(
+          "input",
+          {
+            className: "w-full h-11 pl-10 pr-4 bg-surface-container-lowest border border-outline-variant rounded-DEFAULT text-body-md focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all duration-200 placeholder-secondary",
+            placeholder: "Search transactions, accounts...",
+            type: "text"
+          },
+          void 0,
+          false,
+          {
+            fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+            lineNumber: 96,
+            columnNumber: 11
+          },
+          this
+        )
+      ] }, void 0, true, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 94,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 78,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { className: "flex items-center gap-2 sm:gap-4", children: [
+      /* @__PURE__ */ jsxDEV("button", { className: "w-10 h-10 flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high rounded-full transition-colors relative group", children: [
+        /* @__PURE__ */ jsxDEV("span", { className: "material-symbols-outlined", children: "notifications" }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 106,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("span", { className: "absolute top-2 right-2 w-2 h-2 bg-primary rounded-full" }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 107,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 105,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("button", { className: "hidden sm:flex w-10 h-10 items-center justify-center text-on-surface-variant hover:bg-surface-container-high rounded-full transition-colors", children: /* @__PURE__ */ jsxDEV("span", { className: "material-symbols-outlined", children: "help_outline" }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 110,
+        columnNumber: 11
+      }, this) }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 109,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "hidden sm:block h-8 w-px bg-outline-variant mx-2" }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 112,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "flex items-center gap-3", children: [
+        /* @__PURE__ */ jsxDEV("span", { className: "flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#902A4A] text-xs font-bold text-white", children: user?.username?.charAt(0).toUpperCase() || "U" }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 114,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "hidden md:block text-sm", children: /* @__PURE__ */ jsxDEV("p", { className: "font-medium text-on-surface", children: user?.username || "User" }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 118,
+          columnNumber: 13
+        }, this) }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 117,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 113,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 104,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 77,
+    columnNumber: 5
+  }, this);
+}
+_c39 = TopNavbar;
+function AppRoutes({ user }) {
+  return /* @__PURE__ */ jsxDEV(Routes, { children: [
+    /* @__PURE__ */ jsxDEV(Route, { path: "/", element: /* @__PURE__ */ jsxDEV(Dashboard, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 129,
+      columnNumber: 32
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 129,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/sales", element: /* @__PURE__ */ jsxDEV(SalesPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 130,
+      columnNumber: 37
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 130,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/returns", element: /* @__PURE__ */ jsxDEV(ReturnsPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 131,
+      columnNumber: 39
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 131,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(
+      Route,
+      {
+        path: "/return-tracking",
+        element: hasRole(user.role, OPS_ROLES) ? /* @__PURE__ */ jsxDEV(ReturnTrackingPage, {}, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 134,
+          columnNumber: 50
+        }, this) : /* @__PURE__ */ jsxDEV(Navigate, { to: "/returns", replace: true }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 134,
+          columnNumber: 75
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 132,
+        columnNumber: 7
+      },
+      this
+    ),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/profit-loss", element: /* @__PURE__ */ jsxDEV(ProfitLossPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 136,
+      columnNumber: 43
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 136,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/profit-analysis", element: /* @__PURE__ */ jsxDEV(ProfitAnalysisPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 137,
+      columnNumber: 47
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 137,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/cash-flow", element: /* @__PURE__ */ jsxDEV(CashFlowPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 138,
+      columnNumber: 41
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 138,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/calculator", element: /* @__PURE__ */ jsxDEV(CalculatorPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 139,
+      columnNumber: 42
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 139,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/statement", element: /* @__PURE__ */ jsxDEV(StatementPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 140,
+      columnNumber: 41
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 140,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/rate-audit", element: /* @__PURE__ */ jsxDEV(RateAuditPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 141,
+      columnNumber: 42
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 141,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(
+      Route,
+      {
+        path: "/upload",
+        element: hasRole(user.role, OPS_ROLES) ? /* @__PURE__ */ jsxDEV(UploadPage, {}, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 144,
+          columnNumber: 50
+        }, this) : /* @__PURE__ */ jsxDEV(Navigate, { to: "/", replace: true }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 144,
+          columnNumber: 67
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 142,
+        columnNumber: 7
+      },
+      this
+    ),
+    /* @__PURE__ */ jsxDEV(
+      Route,
+      {
+        path: "/rate-card-config",
+        element: user.role === "admin" ? /* @__PURE__ */ jsxDEV(RateCardConfigPage, {}, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 148,
+          columnNumber: 42
+        }, this) : /* @__PURE__ */ jsxDEV(Navigate, { to: "/upload", replace: true }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 148,
+          columnNumber: 67
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 146,
+        columnNumber: 7
+      },
+      this
+    ),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/insights", element: /* @__PURE__ */ jsxDEV(InsightsPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 150,
+      columnNumber: 40
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 150,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Route, { path: "/exceptions", element: /* @__PURE__ */ jsxDEV(ExceptionInboxPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 151,
+      columnNumber: 42
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 151,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(
+      Route,
+      {
+        path: "/charges",
+        element: user.role === "admin" ? /* @__PURE__ */ jsxDEV(ChargesConfigPage, {}, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 154,
+          columnNumber: 42
+        }, this) : /* @__PURE__ */ jsxDEV(Navigate, { to: "/", replace: true }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 154,
+          columnNumber: 66
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 152,
+        columnNumber: 7
+      },
+      this
+    ),
+    /* @__PURE__ */ jsxDEV(
+      Route,
+      {
+        path: "/settings/amazon-fc",
+        element: user.role === "admin" ? /* @__PURE__ */ jsxDEV(AmazonFcSettingsPage, {}, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 158,
+          columnNumber: 42
+        }, this) : /* @__PURE__ */ jsxDEV(Navigate, { to: "/", replace: true }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 158,
+          columnNumber: 69
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 156,
+        columnNumber: 7
+      },
+      this
+    ),
+    /* @__PURE__ */ jsxDEV(
+      Route,
+      {
+        path: "/admin-center",
+        element: user.role === "admin" ? /* @__PURE__ */ jsxDEV(AdminCenterPage, {}, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 162,
+          columnNumber: 42
+        }, this) : /* @__PURE__ */ jsxDEV(Navigate, { to: "/", replace: true }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 162,
+          columnNumber: 64
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 160,
+        columnNumber: 7
+      },
+      this
+    ),
+    /* @__PURE__ */ jsxDEV(
+      Route,
+      {
+        path: "/audit-log",
+        element: user.role === "admin" ? /* @__PURE__ */ jsxDEV(AuditLogPage, {}, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 166,
+          columnNumber: 42
+        }, this) : /* @__PURE__ */ jsxDEV(Navigate, { to: "/", replace: true }, void 0, false, {
+          fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+          lineNumber: 166,
+          columnNumber: 61
+        }, this)
+      },
+      void 0,
+      false,
+      {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 164,
+        columnNumber: 7
+      },
+      this
+    ),
+    /* @__PURE__ */ jsxDEV(Route, { path: "*", element: /* @__PURE__ */ jsxDEV(Navigate, { to: "/", replace: true }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 168,
+      columnNumber: 32
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 168,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 128,
+    columnNumber: 5
+  }, this);
+}
+_c40 = AppRoutes;
+function AppContent() {
+  _s();
+  const { user, loading } = useAuth();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+  if (loading) return /* @__PURE__ */ jsxDEV(FullScreenLoader, {}, void 0, false, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 178,
+    columnNumber: 23
+  }, this);
+  if (!user) {
+    return /* @__PURE__ */ jsxDEV(Suspense, { fallback: /* @__PURE__ */ jsxDEV(FullScreenLoader, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 182,
+      columnNumber: 27
+    }, this), children: /* @__PURE__ */ jsxDEV(LoginPage, {}, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 183,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 182,
+      columnNumber: 7
+    }, this);
+  }
+  return /* @__PURE__ */ jsxDEV("div", { className: "bg-surface text-on-surface h-screen flex overflow-hidden font-body-md text-body-md selection:bg-primary-fixed selection:text-on-primary-fixed", children: [
+    /* @__PURE__ */ jsxDEV(Sidebar, { open: sidebarOpen, onClose: closeSidebar }, void 0, false, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 190,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { className: "flex-1 flex flex-col min-h-screen relative w-full lg:w-[calc(100%-16rem)]", children: [
+      /* @__PURE__ */ jsxDEV(TopNavbar, { onOpenSidebar: () => setSidebarOpen(true), user }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 194,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(FeeAlertBanner, {}, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 196,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(FilterBar, {}, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 197,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(WorkspaceNav, {}, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 198,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("main", { className: "flex-1 pt-6 px-4 md:px-6 lg:px-container-padding pb-container-padding bg-background overflow-y-auto", children: /* @__PURE__ */ jsxDEV(ErrorBoundary, { children: /* @__PURE__ */ jsxDEV(Suspense, { fallback: /* @__PURE__ */ jsxDEV(PageLoader, {}, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 203,
+        columnNumber: 33
+      }, this), children: /* @__PURE__ */ jsxDEV(AppRoutes, { user }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 204,
+        columnNumber: 15
+      }, this) }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 203,
+        columnNumber: 13
+      }, this) }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 202,
+        columnNumber: 11
+      }, this) }, void 0, false, {
+        fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+        lineNumber: 201,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+      lineNumber: 193,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 189,
+    columnNumber: 5
+  }, this);
+}
+_s(AppContent, "YEuoIr3+teNE9Noi1C/68gLIrzQ=", false, function() {
+  return [useAuth];
+});
+_c41 = AppContent;
+export default function App() {
+  return /* @__PURE__ */ jsxDEV(AuthProvider, { children: /* @__PURE__ */ jsxDEV(FilterProvider, { children: /* @__PURE__ */ jsxDEV(AppContent, {}, void 0, false, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 217,
+    columnNumber: 9
+  }, this) }, void 0, false, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 216,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx",
+    lineNumber: 215,
+    columnNumber: 5
+  }, this);
+}
+_c42 = App;
+var _c, _c2, _c3, _c4, _c5, _c6, _c7, _c8, _c9, _c0, _c1, _c10, _c11, _c12, _c13, _c14, _c15, _c16, _c17, _c18, _c19, _c20, _c21, _c22, _c23, _c24, _c25, _c26, _c27, _c28, _c29, _c30, _c31, _c32, _c33, _c34, _c35, _c36, _c37, _c38, _c39, _c40, _c41, _c42;
+$RefreshReg$(_c, "Dashboard$lazy");
+$RefreshReg$(_c2, "Dashboard");
+$RefreshReg$(_c3, "SalesPage$lazy");
+$RefreshReg$(_c4, "SalesPage");
+$RefreshReg$(_c5, "ReturnsPage$lazy");
+$RefreshReg$(_c6, "ReturnsPage");
+$RefreshReg$(_c7, "ReturnTrackingPage$lazy");
+$RefreshReg$(_c8, "ReturnTrackingPage");
+$RefreshReg$(_c9, "ProfitLossPage$lazy");
+$RefreshReg$(_c0, "ProfitLossPage");
+$RefreshReg$(_c1, "ProfitAnalysisPage$lazy");
+$RefreshReg$(_c10, "ProfitAnalysisPage");
+$RefreshReg$(_c11, "CashFlowPage$lazy");
+$RefreshReg$(_c12, "CashFlowPage");
+$RefreshReg$(_c13, "CalculatorPage$lazy");
+$RefreshReg$(_c14, "CalculatorPage");
+$RefreshReg$(_c15, "StatementPage$lazy");
+$RefreshReg$(_c16, "StatementPage");
+$RefreshReg$(_c17, "RateAuditPage$lazy");
+$RefreshReg$(_c18, "RateAuditPage");
+$RefreshReg$(_c19, "UploadPage$lazy");
+$RefreshReg$(_c20, "UploadPage");
+$RefreshReg$(_c21, "RateCardConfigPage$lazy");
+$RefreshReg$(_c22, "RateCardConfigPage");
+$RefreshReg$(_c23, "AmazonFcSettingsPage$lazy");
+$RefreshReg$(_c24, "AmazonFcSettingsPage");
+$RefreshReg$(_c25, "InsightsPage$lazy");
+$RefreshReg$(_c26, "InsightsPage");
+$RefreshReg$(_c27, "ExceptionInboxPage$lazy");
+$RefreshReg$(_c28, "ExceptionInboxPage");
+$RefreshReg$(_c29, "ChargesConfigPage$lazy");
+$RefreshReg$(_c30, "ChargesConfigPage");
+$RefreshReg$(_c31, "AdminCenterPage$lazy");
+$RefreshReg$(_c32, "AdminCenterPage");
+$RefreshReg$(_c33, "AuditLogPage$lazy");
+$RefreshReg$(_c34, "AuditLogPage");
+$RefreshReg$(_c35, "LoginPage$lazy");
+$RefreshReg$(_c36, "LoginPage");
+$RefreshReg$(_c37, "FullScreenLoader");
+$RefreshReg$(_c38, "PageLoader");
+$RefreshReg$(_c39, "TopNavbar");
+$RefreshReg$(_c40, "AppRoutes");
+$RefreshReg$(_c41, "AppContent");
+$RefreshReg$(_c42, "App");
+if (import.meta.hot && !inWebWorker) {
+  window.$RefreshReg$ = prevRefreshReg;
+  window.$RefreshSig$ = prevRefreshSig;
+}
+if (import.meta.hot && !inWebWorker) {
+  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {
+    RefreshRuntime.registerExportsForReactRefresh("C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("C:/Users/shukl/Desktop/Impprtat File/DashBorad Project/frontend/src/App.jsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+
+//# sourceMappingURL=data:application/json;base64,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RSxNQUFBQyxNQUFBRSxNQUFBQyxNQUFBRSxNQUFBQyxNQUFBRSxNQUFBQyxNQUFBRSxNQUFBQyxNQUFBRSxNQUFBQyxNQUFBRSxNQUFBRSxNQUFBTyxNQUFBRyxNQUFBUyxNQUFBRDtBQUFBLGFBQUE3RSxJQUFBO0FBQUEsYUFBQUMsS0FBQTtBQUFBLGFBQUFFLEtBQUE7QUFBQSxhQUFBQyxLQUFBO0FBQUEsYUFBQUUsS0FBQTtBQUFBLGFBQUFDLEtBQUE7QUFBQSxhQUFBRSxLQUFBO0FBQUEsYUFBQUMsS0FBQTtBQUFBLGFBQUFFLEtBQUE7QUFBQSxhQUFBQyxLQUFBO0FBQUEsYUFBQUUsS0FBQTtBQUFBLGFBQUFDLE1BQUE7QUFBQSxhQUFBRSxNQUFBO0FBQUEsYUFBQUMsTUFBQTtBQUFBLGFBQUFFLE1BQUE7QUFBQSxhQUFBQyxNQUFBO0FBQUEsYUFBQUUsTUFBQTtBQUFBLGFBQUFDLE1BQUE7QUFBQSxhQUFBRSxNQUFBO0FBQUEsYUFBQUMsTUFBQTtBQUFBLGFBQUFFLE1BQUE7QUFBQSxhQUFBQyxNQUFBO0FBQUEsYUFBQUUsTUFBQTtBQUFBLGFBQUFDLE1BQUE7QUFBQSxhQUFBRSxNQUFBO0FBQUEsYUFBQUMsTUFBQTtBQUFBLGFBQUFFLE1BQUE7QUFBQSxhQUFBQyxNQUFBO0FBQUEsYUFBQUUsTUFBQTtBQUFBLGFBQUFDLE1BQUE7QUFBQSxhQUFBRSxNQUFBO0FBQUEsYUFBQUMsTUFBQTtBQUFBLGFBQUFFLE1BQUE7QUFBQSxhQUFBQyxNQUFBO0FBQUEsYUFBQUUsTUFBQTtBQUFBLGFBQUFDLE1BQUE7QUFBQSxhQUFBRSxNQUFBO0FBQUEsYUFBQUMsTUFBQTtBQUFBLGFBQUFFLE1BQUE7QUFBQSxhQUFBRSxNQUFBO0FBQUEsYUFBQU8sTUFBQTtBQUFBLGFBQUFHLE1BQUE7QUFBQSxhQUFBUyxNQUFBO0FBQUEsYUFBQUQsTUFBQSIsIm5hbWVzIjpbImxhenkiLCJTdXNwZW5zZSIsInVzZUNhbGxiYWNrIiwidXNlU3RhdGUiLCJOYXZpZ2F0ZSIsIlJvdXRlIiwiUm91dGVzIiwiU2lkZWJhciIsIkZpbHRlckJhciIsIldvcmtzcGFjZU5hdiIsIkVycm9yQm91bmRhcnkiLCJGZWVBbGVydEJhbm5lciIsIkZpbHRlclByb3ZpZGVyIiwiQXV0aFByb3ZpZGVyIiwidXNlQXV0aCIsIk9QU19ST0xFUyIsImhhc1JvbGUiLCJEYXNoYm9hcmQiLCJfYyIsIl9jMiIsIlNhbGVzUGFnZSIsIl9jMyIsIl9jNCIsIlJldHVybnNQYWdlIiwiX2M1IiwiX2M2IiwiUmV0dXJuVHJhY2tpbmdQYWdlIiwiX2M3IiwiX2M4IiwiUHJvZml0TG9zc1BhZ2UiLCJfYzkiLCJfYzAiLCJQcm9maXRBbmFseXNpc1BhZ2UiLCJfYzEiLCJfYzEwIiwiQ2FzaEZsb3dQYWdlIiwiX2MxMSIsIl9jMTIiLCJDYWxjdWxhdG9yUGFnZSIsIl9jMTMiLCJfYzE0IiwiU3RhdGVtZW50UGFnZSIsIl9jMTUiLCJfYzE2IiwiUmF0ZUF1ZGl0UGFnZSIsIl9jMTciLCJfYzE4IiwiVXBsb2FkUGFnZSIsIl9jMTkiLCJfYzIwIiwiUmF0ZUNhcmRDb25maWdQYWdlIiwiX2MyMSIsIl9jMjIiLCJBbWF6b25GY1NldHRpbmdzUGFnZSIsIl9jMjMiLCJfYzI0IiwiSW5zaWdodHNQYWdlIiwiX2MyNSIsIl9jMjYiLCJFeGNlcHRpb25JbmJveFBhZ2UiLCJfYzI3IiwiX2MyOCIsIkNoYXJnZXNDb25maWdQYWdlIiwiX2MyOSIsIl9jMzAiLCJBZG1pbkNlbnRlclBhZ2UiLCJfYzMxIiwiX2MzMiIsIkF1ZGl0TG9nUGFnZSIsIl9jMzMiLCJfYzM0IiwiTG9naW5QYWdlIiwiX2MzNSIsIl9jMzYiLCJGdWxsU2NyZWVuTG9hZGVyIiwiX2MzNyIsIlBhZ2VMb2FkZXIiLCJfYzM4IiwiVG9wTmF2YmFyIiwib25PcGVuU2lkZWJhciIsInVzZXIiLCJ1c2VybmFtZSIsImNoYXJBdCIsInRvVXBwZXJDYXNlIiwiX2MzOSIsIkFwcFJvdXRlcyIsInJvbGUiLCJfYzQwIiwiQXBwQ29udGVudCIsIl9zIiwibG9hZGluZyIsInNpZGViYXJPcGVuIiwic2V0U2lkZWJhck9wZW4iLCJjbG9zZVNpZGViYXIiLCJBcHAiLCJfYzQyIiwiX2M0MSJdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJBcHAuanN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IGxhenksIFN1c3BlbnNlLCB1c2VDYWxsYmFjaywgdXNlU3RhdGUgfSBmcm9tICdyZWFjdCc7XG5pbXBvcnQgeyBOYXZpZ2F0ZSwgUm91dGUsIFJvdXRlcyB9IGZyb20gJ3JlYWN0LXJvdXRlci1kb20nO1xuaW1wb3J0IFNpZGViYXIgZnJvbSAnLi9jb21wb25lbnRzL1NpZGViYXInO1xuaW1wb3J0IEZpbHRlckJhciBmcm9tICcuL2NvbXBvbmVudHMvRmlsdGVyQmFyJztcbmltcG9ydCBXb3Jrc3BhY2VOYXYgZnJvbSAnLi9jb21wb25lbnRzL1dvcmtzcGFjZU5hdic7XG5pbXBvcnQgRXJyb3JCb3VuZGFyeSBmcm9tICcuL2NvbXBvbmVudHMvRXJyb3JCb3VuZGFyeSc7XG5pbXBvcnQgRmVlQWxlcnRCYW5uZXIgZnJvbSAnLi9jb21wb25lbnRzL0ZlZUFsZXJ0QmFubmVyJztcbmltcG9ydCB7IEZpbHRlclByb3ZpZGVyIH0gZnJvbSAnLi9jb250ZXh0L0ZpbHRlckNvbnRleHQnO1xuaW1wb3J0IHsgQXV0aFByb3ZpZGVyLCB1c2VBdXRoIH0gZnJvbSAnLi9jb250ZXh0L0F1dGhDb250ZXh0JztcbmltcG9ydCB7IE9QU19ST0xFUyB9IGZyb20gJy4vbmF2aWdhdGlvbic7XG5pbXBvcnQgeyBoYXNSb2xlIH0gZnJvbSAnLi91dGlscy9yb2xlcyc7XG5cbmNvbnN0IERhc2hib2FyZCA9IGxhenkoKCkgPT4gaW1wb3J0KCcuL3BhZ2VzL0Rhc2hib2FyZCcpKTtcbmNvbnN0IFNhbGVzUGFnZSA9IGxhenkoKCkgPT4gaW1wb3J0KCcuL3BhZ2VzL1NhbGVzUGFnZScpKTtcbmNvbnN0IFJldHVybnNQYWdlID0gbGF6eSgoKSA9PiBpbXBvcnQoJy4vcGFnZXMvUmV0dXJuc1BhZ2UnKSk7XG5jb25zdCBSZXR1cm5UcmFja2luZ1BhZ2UgPSBsYXp5KCgpID0+IGltcG9ydCgnLi9wYWdlcy9SZXR1cm5UcmFja2luZ1BhZ2UnKSk7XG5jb25zdCBQcm9maXRMb3NzUGFnZSA9IGxhenkoKCkgPT4gaW1wb3J0KCcuL3BhZ2VzL1Byb2ZpdExvc3NQYWdlJykpO1xuY29uc3QgUHJvZml0QW5hbHlzaXNQYWdlID0gbGF6eSgoKSA9PiBpbXBvcnQoJy4vcGFnZXMvUHJvZml0QW5hbHlzaXNQYWdlJykpO1xuY29uc3QgQ2FzaEZsb3dQYWdlID0gbGF6eSgoKSA9PiBpbXBvcnQoJy4vcGFnZXMvQ2FzaEZsb3dQYWdlJykpO1xuY29uc3QgQ2FsY3VsYXRvclBhZ2UgPSBsYXp5KCgpID0+IGltcG9ydCgnLi9wYWdlcy9DYWxjdWxhdG9yUGFnZScpKTtcbmNvbnN0IFN0YXRlbWVudFBhZ2UgPSBsYXp5KCgpID0+IGltcG9ydCgnLi9wYWdlcy9TdGF0ZW1lbnRQYWdlJykpO1xuY29uc3QgUmF0ZUF1ZGl0UGFnZSA9IGxhenkoKCkgPT4gaW1wb3J0KCcuL3BhZ2VzL1JhdGVBdWRpdFBhZ2UnKSk7XG5jb25zdCBVcGxvYWRQYWdlID0gbGF6eSgoKSA9PiBpbXBvcnQoJy4vcGFnZXMvVXBsb2FkUGFnZScpKTtcbmNvbnN0IFJhdGVDYXJkQ29uZmlnUGFnZSA9IGxhenkoKCkgPT4gaW1wb3J0KCcuL3BhZ2VzL1JhdGVDYXJkQ29uZmlnUGFnZScpKTtcbmNvbnN0IEFtYXpvbkZjU2V0dGluZ3NQYWdlID0gbGF6eSgoKSA9PiBpbXBvcnQoJy4vcGFnZXMvQW1hem9uRmNTZXR0aW5ncycpKTtcbmNvbnN0IEluc2lnaHRzUGFnZSA9IGxhenkoKCkgPT4gaW1wb3J0KCcuL3BhZ2VzL0luc2lnaHRzUGFnZScpKTtcbmNvbnN0IEV4Y2VwdGlvbkluYm94UGFnZSA9IGxhenkoKCkgPT4gaW1wb3J0KCcuL3BhZ2VzL0V4Y2VwdGlvbkluYm94UGFnZScpKTtcbmNvbnN0IENoYXJnZXNDb25maWdQYWdlID0gbGF6eSgoKSA9PiBpbXBvcnQoJy4vcGFnZXMvQ2hhcmdlc0NvbmZpZ1BhZ2UnKSk7XG5jb25zdCBBZG1pbkNlbnRlclBhZ2UgPSBsYXp5KCgpID0+IGltcG9ydCgnLi9wYWdlcy9BZG1pbkNlbnRlclBhZ2UnKSk7XG5jb25zdCBBdWRpdExvZ1BhZ2UgPSBsYXp5KCgpID0+IGltcG9ydCgnLi9wYWdlcy9BdWRpdExvZ1BhZ2UnKSk7XG5jb25zdCBMb2dpblBhZ2UgPSBsYXp5KCgpID0+IGltcG9ydCgnLi9wYWdlcy9Mb2dpblBhZ2UnKSk7XG5cbmZ1bmN0aW9uIEZ1bGxTY3JlZW5Mb2FkZXIoKSB7XG4gIHJldHVybiAoXG4gICAgPGRpdiBjbGFzc05hbWU9XCJmbGV4IG1pbi1oLXNjcmVlbiBmbGV4LWNvbCBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXIgZ2FwLTQgYmctYmFja2dyb3VuZCB0ZXh0LW9uLXN1cmZhY2VcIj5cbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwiaC0xMCB3LTEwIGFuaW1hdGUtc3BpbiByb3VuZGVkLWZ1bGwgYm9yZGVyLTQgYm9yZGVyLXByaW1hcnkvMjAgYm9yZGVyLXQtcHJpbWFyeVwiIC8+XG4gICAgICA8ZGl2IGNsYXNzTmFtZT1cInRleHQtY2VudGVyXCI+XG4gICAgICAgIDxwIGNsYXNzTmFtZT1cInRleHQtc20gZm9udC1zZW1pYm9sZFwiPlJlY29uQ2VudHJhbDwvcD5cbiAgICAgICAgPHAgY2xhc3NOYW1lPVwibXQtMSB0ZXh0LXhzIHRleHQtb3V0bGluZVwiPkxvYWRpbmcgV29ya3NwYWNl4oCmPC9wPlxuICAgICAgPC9kaXY+XG4gICAgPC9kaXY+XG4gICk7XG59XG5cbmZ1bmN0aW9uIFBhZ2VMb2FkZXIoKSB7XG4gIHJldHVybiAoXG4gICAgPGRpdiBjbGFzc05hbWU9XCJmbGV4IG1pbi1oLVs0NXZoXSBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXJcIj5cbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwiZmxleCBpdGVtcy1jZW50ZXIgZ2FwLTMgcm91bmRlZC14bCBib3JkZXIgYm9yZGVyLW91dGxpbmUtdmFyaWFudCBiZy1zdXJmYWNlLWNvbnRhaW5lci1sb3dlc3QgcHgtNCBweS0zIHRleHQteHMgZm9udC1zZW1pYm9sZCB0ZXh0LXNlY29uZGFyeSBzaGFkb3ctc21cIj5cbiAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwiaC00IHctNCBhbmltYXRlLXNwaW4gcm91bmRlZC1mdWxsIGJvcmRlci0yIGJvcmRlci1vdXRsaW5lLXZhcmlhbnQgYm9yZGVyLXQtcHJpbWFyeVwiIC8+XG4gICAgICAgIExvYWRpbmcgd29ya3NwYWNl4oCmXG4gICAgICA8L2Rpdj5cbiAgICA8L2Rpdj5cbiAgKTtcbn1cblxuZnVuY3Rpb24gVG9wTmF2YmFyKHsgb25PcGVuU2lkZWJhciwgdXNlciB9KSB7XG4gIHJldHVybiAoXG4gICAgPGhlYWRlciBjbGFzc05hbWU9XCJzdGlja3kgdG9wLTAgei0xMCBiZy1zdXJmYWNlIGRhcms6YmctaW52ZXJzZS1zdXJmYWNlIGJvcmRlci1iIGJvcmRlci1vdXRsaW5lLXZhcmlhbnQgZGFyazpib3JkZXItb3V0bGluZSBmbGV4IGp1c3RpZnktYmV0d2VlbiBpdGVtcy1jZW50ZXIgaC0xNiBweC02IGxnOnB4LWNvbnRhaW5lci1wYWRkaW5nXCI+XG4gICAgICA8ZGl2IGNsYXNzTmFtZT1cImZsZXggaXRlbXMtY2VudGVyIGdhcC00XCI+XG4gICAgICAgIHsvKiBNb2JpbGUgbWVudSBidXR0b24gKi99XG4gICAgICAgIDxidXR0b25cbiAgICAgICAgICB0eXBlPVwiYnV0dG9uXCJcbiAgICAgICAgICBvbkNsaWNrPXtvbk9wZW5TaWRlYmFyfVxuICAgICAgICAgIGFyaWEtbGFiZWw9XCJPcGVuIG5hdmlnYXRpb25cIlxuICAgICAgICAgIGNsYXNzTmFtZT1cImxnOmhpZGRlbiByb3VuZGVkLWxnIHAtMiB0ZXh0LW9uLXN1cmZhY2UtdmFyaWFudCBob3ZlcjpiZy1zdXJmYWNlLWNvbnRhaW5lci1oaWdoIHRyYW5zaXRpb24tY29sb3JzXCJcbiAgICAgICAgPlxuICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cIm1hdGVyaWFsLXN5bWJvbHMtb3V0bGluZWRcIj5tZW51PC9zcGFuPlxuICAgICAgICA8L2J1dHRvbj5cblxuICAgICAgICA8aDIgY2xhc3NOYW1lPVwiaGlkZGVuIHNtOmJsb2NrIGZvbnQtaGVhZGxpbmUtbWQgdGV4dC1oZWFkbGluZS1tZCBmb250LXNlbWlib2xkIHRleHQtb24tc3VyZmFjZSBkYXJrOnRleHQtaW52ZXJzZS1vbi1zdXJmYWNlXCI+XG4gICAgICAgICAgRGFzaGJvYXJkIE92ZXJ2aWV3XG4gICAgICAgIDwvaDI+XG5cbiAgICAgICAgey8qIFNlYXJjaCBCYXIgKi99XG4gICAgICAgIDxkaXYgY2xhc3NOYW1lPVwicmVsYXRpdmUgaGlkZGVuIHhsOmJsb2NrIHctOTYgbWwtOFwiPlxuICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cIm1hdGVyaWFsLXN5bWJvbHMtb3V0bGluZWQgYWJzb2x1dGUgbGVmdC0zIHRvcC0xLzIgLXRyYW5zbGF0ZS15LTEvMiB0ZXh0LXNlY29uZGFyeSBwb2ludGVyLWV2ZW50cy1ub25lXCI+c2VhcmNoPC9zcGFuPlxuICAgICAgICAgIDxpbnB1dCBcbiAgICAgICAgICAgIGNsYXNzTmFtZT1cInctZnVsbCBoLTExIHBsLTEwIHByLTQgYmctc3VyZmFjZS1jb250YWluZXItbG93ZXN0IGJvcmRlciBib3JkZXItb3V0bGluZS12YXJpYW50IHJvdW5kZWQtREVGQVVMVCB0ZXh0LWJvZHktbWQgZm9jdXM6Ym9yZGVyLXByaW1hcnkgZm9jdXM6cmluZy0yIGZvY3VzOnJpbmctcHJpbWFyeS8yMCBvdXRsaW5lLW5vbmUgdHJhbnNpdGlvbi1hbGwgZHVyYXRpb24tMjAwIHBsYWNlaG9sZGVyLXNlY29uZGFyeVwiIFxuICAgICAgICAgICAgcGxhY2Vob2xkZXI9XCJTZWFyY2ggdHJhbnNhY3Rpb25zLCBhY2NvdW50cy4uLlwiIFxuICAgICAgICAgICAgdHlwZT1cInRleHRcIlxuICAgICAgICAgIC8+XG4gICAgICAgIDwvZGl2PlxuICAgICAgPC9kaXY+XG4gICAgICBcbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwiZmxleCBpdGVtcy1jZW50ZXIgZ2FwLTIgc206Z2FwLTRcIj5cbiAgICAgICAgPGJ1dHRvbiBjbGFzc05hbWU9XCJ3LTEwIGgtMTAgZmxleCBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXIgdGV4dC1vbi1zdXJmYWNlLXZhcmlhbnQgaG92ZXI6Ymctc3VyZmFjZS1jb250YWluZXItaGlnaCByb3VuZGVkLWZ1bGwgdHJhbnNpdGlvbi1jb2xvcnMgcmVsYXRpdmUgZ3JvdXBcIj5cbiAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJtYXRlcmlhbC1zeW1ib2xzLW91dGxpbmVkXCI+bm90aWZpY2F0aW9uczwvc3Bhbj5cbiAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJhYnNvbHV0ZSB0b3AtMiByaWdodC0yIHctMiBoLTIgYmctcHJpbWFyeSByb3VuZGVkLWZ1bGxcIj48L3NwYW4+XG4gICAgICAgIDwvYnV0dG9uPlxuICAgICAgICA8YnV0dG9uIGNsYXNzTmFtZT1cImhpZGRlbiBzbTpmbGV4IHctMTAgaC0xMCBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXIgdGV4dC1vbi1zdXJmYWNlLXZhcmlhbnQgaG92ZXI6Ymctc3VyZmFjZS1jb250YWluZXItaGlnaCByb3VuZGVkLWZ1bGwgdHJhbnNpdGlvbi1jb2xvcnNcIj5cbiAgICAgICAgICA8c3BhbiBjbGFzc05hbWU9XCJtYXRlcmlhbC1zeW1ib2xzLW91dGxpbmVkXCI+aGVscF9vdXRsaW5lPC9zcGFuPlxuICAgICAgICA8L2J1dHRvbj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJoaWRkZW4gc206YmxvY2sgaC04IHctcHggYmctb3V0bGluZS12YXJpYW50IG14LTJcIj48L2Rpdj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJmbGV4IGl0ZW1zLWNlbnRlciBnYXAtM1wiPlxuICAgICAgICAgIDxzcGFuIGNsYXNzTmFtZT1cImZsZXggaC05IHctOSBzaHJpbmstMCBpdGVtcy1jZW50ZXIganVzdGlmeS1jZW50ZXIgcm91bmRlZC1mdWxsIGJnLVsjOTAyQTRBXSB0ZXh0LXhzIGZvbnQtYm9sZCB0ZXh0LXdoaXRlXCI+XG4gICAgICAgICAgICB7dXNlcj8udXNlcm5hbWU/LmNoYXJBdCgwKS50b1VwcGVyQ2FzZSgpIHx8ICdVJ31cbiAgICAgICAgICA8L3NwYW4+XG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJoaWRkZW4gbWQ6YmxvY2sgdGV4dC1zbVwiPlxuICAgICAgICAgICAgPHAgY2xhc3NOYW1lPVwiZm9udC1tZWRpdW0gdGV4dC1vbi1zdXJmYWNlXCI+e3VzZXI/LnVzZXJuYW1lIHx8ICdVc2VyJ308L3A+XG4gICAgICAgICAgPC9kaXY+XG4gICAgICAgIDwvZGl2PlxuICAgICAgPC9kaXY+XG4gICAgPC9oZWFkZXI+XG4gICk7XG59XG5cbmZ1bmN0aW9uIEFwcFJvdXRlcyh7IHVzZXIgfSkge1xuICByZXR1cm4gKFxuICAgIDxSb3V0ZXM+XG4gICAgICA8Um91dGUgcGF0aD1cIi9cIiBlbGVtZW50PXs8RGFzaGJvYXJkIC8+fSAvPlxuICAgICAgPFJvdXRlIHBhdGg9XCIvc2FsZXNcIiBlbGVtZW50PXs8U2FsZXNQYWdlIC8+fSAvPlxuICAgICAgPFJvdXRlIHBhdGg9XCIvcmV0dXJuc1wiIGVsZW1lbnQ9ezxSZXR1cm5zUGFnZSAvPn0gLz5cbiAgICAgIDxSb3V0ZVxuICAgICAgICBwYXRoPVwiL3JldHVybi10cmFja2luZ1wiXG4gICAgICAgIGVsZW1lbnQ9e2hhc1JvbGUodXNlci5yb2xlLCBPUFNfUk9MRVMpID8gPFJldHVyblRyYWNraW5nUGFnZSAvPiA6IDxOYXZpZ2F0ZSB0bz1cIi9yZXR1cm5zXCIgcmVwbGFjZSAvPn1cbiAgICAgIC8+XG4gICAgICA8Um91dGUgcGF0aD1cIi9wcm9maXQtbG9zc1wiIGVsZW1lbnQ9ezxQcm9maXRMb3NzUGFnZSAvPn0gLz5cbiAgICAgIDxSb3V0ZSBwYXRoPVwiL3Byb2ZpdC1hbmFseXNpc1wiIGVsZW1lbnQ9ezxQcm9maXRBbmFseXNpc1BhZ2UgLz59IC8+XG4gICAgICA8Um91dGUgcGF0aD1cIi9jYXNoLWZsb3dcIiBlbGVtZW50PXs8Q2FzaEZsb3dQYWdlIC8+fSAvPlxuICAgICAgPFJvdXRlIHBhdGg9XCIvY2FsY3VsYXRvclwiIGVsZW1lbnQ9ezxDYWxjdWxhdG9yUGFnZSAvPn0gLz5cbiAgICAgIDxSb3V0ZSBwYXRoPVwiL3N0YXRlbWVudFwiIGVsZW1lbnQ9ezxTdGF0ZW1lbnRQYWdlIC8+fSAvPlxuICAgICAgPFJvdXRlIHBhdGg9XCIvcmF0ZS1hdWRpdFwiIGVsZW1lbnQ9ezxSYXRlQXVkaXRQYWdlIC8+fSAvPlxuICAgICAgPFJvdXRlXG4gICAgICAgIHBhdGg9XCIvdXBsb2FkXCJcbiAgICAgICAgZWxlbWVudD17aGFzUm9sZSh1c2VyLnJvbGUsIE9QU19ST0xFUykgPyA8VXBsb2FkUGFnZSAvPiA6IDxOYXZpZ2F0ZSB0bz1cIi9cIiByZXBsYWNlIC8+fVxuICAgICAgLz5cbiAgICAgIDxSb3V0ZVxuICAgICAgICBwYXRoPVwiL3JhdGUtY2FyZC1jb25maWdcIlxuICAgICAgICBlbGVtZW50PXt1c2VyLnJvbGUgPT09ICdhZG1pbicgPyA8UmF0ZUNhcmRDb25maWdQYWdlIC8+IDogPE5hdmlnYXRlIHRvPVwiL3VwbG9hZFwiIHJlcGxhY2UgLz59XG4gICAgICAvPlxuICAgICAgPFJvdXRlIHBhdGg9XCIvaW5zaWdodHNcIiBlbGVtZW50PXs8SW5zaWdodHNQYWdlIC8+fSAvPlxuICAgICAgPFJvdXRlIHBhdGg9XCIvZXhjZXB0aW9uc1wiIGVsZW1lbnQ9ezxFeGNlcHRpb25JbmJveFBhZ2UgLz59IC8+XG4gICAgICA8Um91dGVcbiAgICAgICAgcGF0aD1cIi9jaGFyZ2VzXCJcbiAgICAgICAgZWxlbWVudD17dXNlci5yb2xlID09PSAnYWRtaW4nID8gPENoYXJnZXNDb25maWdQYWdlIC8+IDogPE5hdmlnYXRlIHRvPVwiL1wiIHJlcGxhY2UgLz59XG4gICAgICAvPlxuICAgICAgPFJvdXRlXG4gICAgICAgIHBhdGg9XCIvc2V0dGluZ3MvYW1hem9uLWZjXCJcbiAgICAgICAgZWxlbWVudD17dXNlci5yb2xlID09PSAnYWRtaW4nID8gPEFtYXpvbkZjU2V0dGluZ3NQYWdlIC8+IDogPE5hdmlnYXRlIHRvPVwiL1wiIHJlcGxhY2UgLz59XG4gICAgICAvPlxuICAgICAgPFJvdXRlXG4gICAgICAgIHBhdGg9XCIvYWRtaW4tY2VudGVyXCJcbiAgICAgICAgZWxlbWVudD17dXNlci5yb2xlID09PSAnYWRtaW4nID8gPEFkbWluQ2VudGVyUGFnZSAvPiA6IDxOYXZpZ2F0ZSB0bz1cIi9cIiByZXBsYWNlIC8+fVxuICAgICAgLz5cbiAgICAgIDxSb3V0ZVxuICAgICAgICBwYXRoPVwiL2F1ZGl0LWxvZ1wiXG4gICAgICAgIGVsZW1lbnQ9e3VzZXIucm9sZSA9PT0gJ2FkbWluJyA/IDxBdWRpdExvZ1BhZ2UgLz4gOiA8TmF2aWdhdGUgdG89XCIvXCIgcmVwbGFjZSAvPn1cbiAgICAgIC8+XG4gICAgICA8Um91dGUgcGF0aD1cIipcIiBlbGVtZW50PXs8TmF2aWdhdGUgdG89XCIvXCIgcmVwbGFjZSAvPn0gLz5cbiAgICA8L1JvdXRlcz5cbiAgKTtcbn1cblxuZnVuY3Rpb24gQXBwQ29udGVudCgpIHtcbiAgY29uc3QgeyB1c2VyLCBsb2FkaW5nIH0gPSB1c2VBdXRoKCk7XG4gIGNvbnN0IFtzaWRlYmFyT3Blbiwgc2V0U2lkZWJhck9wZW5dID0gdXNlU3RhdGUoZmFsc2UpO1xuICBjb25zdCBjbG9zZVNpZGViYXIgPSB1c2VDYWxsYmFjaygoKSA9PiBzZXRTaWRlYmFyT3BlbihmYWxzZSksIFtdKTtcblxuICBpZiAobG9hZGluZykgcmV0dXJuIDxGdWxsU2NyZWVuTG9hZGVyIC8+O1xuXG4gIGlmICghdXNlcikge1xuICAgIHJldHVybiAoXG4gICAgICA8U3VzcGVuc2UgZmFsbGJhY2s9ezxGdWxsU2NyZWVuTG9hZGVyIC8+fT5cbiAgICAgICAgPExvZ2luUGFnZSAvPlxuICAgICAgPC9TdXNwZW5zZT5cbiAgICApO1xuICB9XG5cbiAgcmV0dXJuIChcbiAgICA8ZGl2IGNsYXNzTmFtZT1cImJnLXN1cmZhY2UgdGV4dC1vbi1zdXJmYWNlIGgtc2NyZWVuIGZsZXggb3ZlcmZsb3ctaGlkZGVuIGZvbnQtYm9keS1tZCB0ZXh0LWJvZHktbWQgc2VsZWN0aW9uOmJnLXByaW1hcnktZml4ZWQgc2VsZWN0aW9uOnRleHQtb24tcHJpbWFyeS1maXhlZFwiPlxuICAgICAgPFNpZGViYXIgb3Blbj17c2lkZWJhck9wZW59IG9uQ2xvc2U9e2Nsb3NlU2lkZWJhcn0gLz5cbiAgICAgIFxuICAgICAgey8qIE1haW4gQ29udGVudCBXcmFwcGVyICovfVxuICAgICAgPGRpdiBjbGFzc05hbWU9XCJmbGV4LTEgZmxleCBmbGV4LWNvbCBtaW4taC1zY3JlZW4gcmVsYXRpdmUgdy1mdWxsIGxnOnctW2NhbGMoMTAwJS0xNnJlbSldXCI+XG4gICAgICAgIDxUb3BOYXZiYXIgb25PcGVuU2lkZWJhcj17KCkgPT4gc2V0U2lkZWJhck9wZW4odHJ1ZSl9IHVzZXI9e3VzZXJ9IC8+XG4gICAgICAgIFxuICAgICAgICA8RmVlQWxlcnRCYW5uZXIgLz5cbiAgICAgICAgPEZpbHRlckJhciAvPlxuICAgICAgICA8V29ya3NwYWNlTmF2IC8+XG4gICAgICAgIFxuICAgICAgICB7LyogTWFpbiBDYW52YXMgKi99XG4gICAgICAgIDxtYWluIGNsYXNzTmFtZT1cImZsZXgtMSBwdC02IHB4LTQgbWQ6cHgtNiBsZzpweC1jb250YWluZXItcGFkZGluZyBwYi1jb250YWluZXItcGFkZGluZyBiZy1iYWNrZ3JvdW5kIG92ZXJmbG93LXktYXV0b1wiPlxuICAgICAgICAgIDxFcnJvckJvdW5kYXJ5PlxuICAgICAgICAgICAgPFN1c3BlbnNlIGZhbGxiYWNrPXs8UGFnZUxvYWRlciAvPn0+XG4gICAgICAgICAgICAgIDxBcHBSb3V0ZXMgdXNlcj17dXNlcn0gLz5cbiAgICAgICAgICAgIDwvU3VzcGVuc2U+XG4gICAgICAgICAgPC9FcnJvckJvdW5kYXJ5PlxuICAgICAgICA8L21haW4+XG4gICAgICA8L2Rpdj5cbiAgICA8L2Rpdj5cbiAgKTtcbn1cblxuZXhwb3J0IGRlZmF1bHQgZnVuY3Rpb24gQXBwKCkge1xuICByZXR1cm4gKFxuICAgIDxBdXRoUHJvdmlkZXI+XG4gICAgICA8RmlsdGVyUHJvdmlkZXI+XG4gICAgICAgIDxBcHBDb250ZW50IC8+XG4gICAgICA8L0ZpbHRlclByb3ZpZGVyPlxuICAgIDwvQXV0aFByb3ZpZGVyPlxuICApO1xufVxuIl0sImZpbGUiOiJDOi9Vc2Vycy9zaHVrbC9EZXNrdG9wL0ltcHBydGF0IEZpbGUvRGFzaEJvcmFkIFByb2plY3QvZnJvbnRlbmQvc3JjL0FwcC5qc3gifQ==

@@ -1,0 +1,3168 @@
+{
+  "sourceCounts": {
+    "saleOrderIds": 18,
+    "paymentOrderIds": 13,
+    "saleRows": 107,
+    "paymentLines": 1148,
+    "paymentItemGroups": 43
+  },
+  "orders": [
+    {
+      "orderId": "407-8365071-6002717",
+      "saleRows": 17,
+      "saleQuantity": 18,
+      "saleTotal": 8970,
+      "paymentItemGroups": 4,
+      "paymentLines": 296,
+      "paymentNet": 2643.68,
+      "paymentGrossProduct": 2988,
+      "paymentOrderProduct": 8970,
+      "paymentRefundProduct": -5982,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "AFN",
+        ""
+      ],
+      "transactionTypes": [
+        "Order",
+        "Refund",
+        "Fulfillment Fee Refund"
+      ],
+      "parameters": [
+        "closing",
+        "fulfillment_fee_refund",
+        "pick_pack",
+        "refund",
+        "tcs_igst",
+        "tds",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "",
+          "orderItemCode": "",
+          "saleSourceRows": [],
+          "orderQuantity": null,
+          "fulfillment": [
+            ""
+          ],
+          "transactionTypes": [
+            "Fulfillment Fee Refund"
+          ],
+          "saleTotal": null,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 0,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 351.12,
+          "tcs": 0,
+          "tds": 0,
+          "pickPack": 240.72,
+          "weightHandling": 110.4,
+          "technology": 0,
+          "closing": 0,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "refund",
+            "fulfillment_fee_refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ7105-Jannat-Red",
+          "orderItemCode": "62327046871002",
+          "saleSourceRows": [
+            7701,
+            7702,
+            7703,
+            7704,
+            7705,
+            7711
+          ],
+          "orderQuantity": 6,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 2994,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 2994,
+          "refundProductSaleFromPayment": -2994,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": -180.9,
+          "tcs": 0,
+          "tds": -2.88,
+          "pickPack": -120.36,
+          "weightHandling": -57.66,
+          "technology": 0,
+          "closing": 0,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ7116-Two Birds-Pink",
+          "orderItemCode": "62327062669642",
+          "saleSourceRows": [
+            7706,
+            7707,
+            7708,
+            7709,
+            7710,
+            7712
+          ],
+          "orderQuantity": 6,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 2988,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 2988,
+          "refundProductSaleFromPayment": -2988,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": -175.98,
+          "tcs": 0,
+          "tds": -2.88,
+          "pickPack": -120.36,
+          "weightHandling": -52.74,
+          "technology": 0,
+          "closing": 0,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ7095-Mrignaini-Red",
+          "orderItemCode": "62327062669722",
+          "saleSourceRows": [
+            7509,
+            7510,
+            7727,
+            7728,
+            7729
+          ],
+          "orderQuantity": 6,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 2988,
+          "productSaleFromPayment": 2988,
+          "orderProductSaleFromPayment": 2988,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 2649.44,
+          "tcs": -14.24,
+          "tds": -2.88,
+          "pickPack": -120.36,
+          "weightHandling": -101.96,
+          "technology": 0,
+          "closing": -99.12,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "403-8356490-9934766",
+      "saleRows": 15,
+      "saleQuantity": 40,
+      "saleTotal": 17170.06,
+      "paymentItemGroups": 2,
+      "paymentLines": 246,
+      "paymentNet": 15080.5,
+      "paymentGrossProduct": 17160,
+      "paymentOrderProduct": 17160,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0.08,
+      "paymentOrderCustomerShipping": 10.86,
+      "paymentOrderShippingDiscount": -10.78,
+      "salesToOrderCreditsDelta": -0.8,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "pick_pack",
+        "shipping_credit",
+        "shipping_discount",
+        "tcs_cgst_sgst",
+        "tds",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "EJ1201-16001_New",
+          "orderItemCode": "62206416104082",
+          "saleSourceRows": [
+            5617,
+            5618,
+            5619,
+            5620,
+            5621,
+            5622,
+            5648,
+            5649,
+            5652
+          ],
+          "orderQuantity": 20,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 8585.03,
+          "productSaleFromPayment": 8580,
+          "orderProductSaleFromPayment": 8580,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 5.43,
+          "orderShippingDiscount": -5.35,
+          "netShipping": 0.08,
+          "netSettlement": 7511.46,
+          "tcs": -40.8,
+          "tds": -8.2,
+          "pickPack": -401.2,
+          "weightHandling": -287.94,
+          "technology": 0,
+          "closing": -330.4,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "shipping_discount",
+            "shipping_credit",
+            "tds",
+            "tcs_cgst_sgst"
+          ],
+          "otherLines": [
+            {
+              "description": "Shipping Chargeback",
+              "amount": -0.06,
+              "transactionType": "Order"
+            },
+            {
+              "description": "Shipping Chargeback CGST",
+              "amount": -0.01,
+              "transactionType": "Order"
+            },
+            {
+              "description": "Shipping Chargeback SGST",
+              "amount": -0.01,
+              "transactionType": "Order"
+            }
+          ]
+        },
+        {
+          "sku": "EJ1201-Chitra-Maroon",
+          "orderItemCode": "62206416104122",
+          "saleSourceRows": [
+            5623,
+            5624,
+            5625,
+            5626,
+            5627,
+            5628
+          ],
+          "orderQuantity": 20,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 8585.03,
+          "productSaleFromPayment": 8580,
+          "orderProductSaleFromPayment": 8580,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 5.43,
+          "orderShippingDiscount": -5.43,
+          "netShipping": 0,
+          "netSettlement": 7569.04,
+          "tcs": -40.8,
+          "tds": -8.2,
+          "pickPack": -401.2,
+          "weightHandling": -230.36,
+          "technology": 0,
+          "closing": -330.4,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "shipping_discount",
+            "shipping_credit",
+            "tds",
+            "tcs_cgst_sgst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "saleRows": 13,
+      "saleQuantity": 20,
+      "saleTotal": 8583.87,
+      "paymentItemGroups": 0,
+      "paymentLines": 0,
+      "paymentNet": 0,
+      "paymentGrossProduct": 0,
+      "paymentOrderProduct": 0,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 8583.87,
+      "fulfillment": [],
+      "transactionTypes": [],
+      "parameters": [],
+      "items": []
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "saleRows": 11,
+      "saleQuantity": 14,
+      "saleTotal": 6891.4,
+      "paymentItemGroups": 0,
+      "paymentLines": 0,
+      "paymentNet": 0,
+      "paymentGrossProduct": 0,
+      "paymentOrderProduct": 0,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 6891.4,
+      "fulfillment": [],
+      "transactionTypes": [],
+      "parameters": [],
+      "items": []
+    },
+    {
+      "orderId": "402-6167748-6153950",
+      "saleRows": 7,
+      "saleQuantity": 7,
+      "saleTotal": 6132,
+      "paymentItemGroups": 7,
+      "paymentLines": 77,
+      "paymentNet": 5625.15,
+      "paymentGrossProduct": 6132,
+      "paymentOrderProduct": 6132,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "tcs_igst",
+        "tds",
+        "technology",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "BT165-Nishi-Peach_M",
+          "orderItemCode": "62415660968082",
+          "saleSourceRows": [
+            9515
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 849,
+          "productSaleFromPayment": 849,
+          "orderProductSaleFromPayment": 849,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 771.72,
+          "tcs": -4.04,
+          "tds": -0.82,
+          "pickPack": 0,
+          "weightHandling": -14.6,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "BT165-Nishi-Beige_M",
+          "orderItemCode": "62415888219322",
+          "saleSourceRows": [
+            9517
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 929,
+          "productSaleFromPayment": 929,
+          "orderProductSaleFromPayment": 929,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 858.3,
+          "tcs": -4.42,
+          "tds": -0.89,
+          "pickPack": 0,
+          "weightHandling": -7.57,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "BT165-Nishi-White_L_EJ",
+          "orderItemCode": "62415888219362",
+          "saleSourceRows": [
+            9514
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 929,
+          "productSaleFromPayment": 929,
+          "orderProductSaleFromPayment": 929,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 858.3,
+          "tcs": -4.42,
+          "tds": -0.89,
+          "pickPack": 0,
+          "weightHandling": -7.57,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "BT165-Nishi-Dusty-Blue_L_EJ",
+          "orderItemCode": "62415888219402",
+          "saleSourceRows": [
+            9513
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 929,
+          "productSaleFromPayment": 929,
+          "orderProductSaleFromPayment": 929,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 858.3,
+          "tcs": -4.42,
+          "tds": -0.89,
+          "pickPack": 0,
+          "weightHandling": -7.57,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "BT165-Nishi-Teal_M_EJ",
+          "orderItemCode": "62415888219442",
+          "saleSourceRows": [
+            9512
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 899,
+          "productSaleFromPayment": 899,
+          "orderProductSaleFromPayment": 899,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 828.47,
+          "tcs": -4.28,
+          "tds": -0.86,
+          "pickPack": 0,
+          "weightHandling": -7.57,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "BT165-Nishi-Green_L",
+          "orderItemCode": "62415888219482",
+          "saleSourceRows": [
+            9516
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 748,
+          "productSaleFromPayment": 748,
+          "orderProductSaleFromPayment": 748,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 671.3,
+          "tcs": -3.56,
+          "tds": -0.72,
+          "pickPack": 0,
+          "weightHandling": -14.6,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "BT165-Nishi-Blue_L",
+          "orderItemCode": "62415888219522",
+          "saleSourceRows": [
+            9518
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 849,
+          "productSaleFromPayment": 849,
+          "orderProductSaleFromPayment": 849,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 778.76,
+          "tcs": -4.04,
+          "tds": -0.82,
+          "pickPack": 0,
+          "weightHandling": -7.56,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "405-5053541-2926717",
+      "saleRows": 6,
+      "saleQuantity": 6,
+      "saleTotal": 2574,
+      "paymentItemGroups": 1,
+      "paymentLines": 68,
+      "paymentNet": 2269.02,
+      "paymentGrossProduct": 2574,
+      "paymentOrderProduct": 2574,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "pick_pack",
+        "tcs_cgst_sgst",
+        "tds",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "EJ1201-16001_New",
+          "orderItemCode": "62200921085602",
+          "saleSourceRows": [
+            5489,
+            5490,
+            5491,
+            5492,
+            5493,
+            5494
+          ],
+          "orderQuantity": 6,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 2574,
+          "productSaleFromPayment": 2574,
+          "orderProductSaleFromPayment": 2574,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 2269.02,
+          "tcs": -12.24,
+          "tds": -2.46,
+          "pickPack": -120.36,
+          "weightHandling": -70.8,
+          "technology": 0,
+          "closing": -99.12,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_cgst_sgst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "407-1054434-3364350",
+      "saleRows": 5,
+      "saleQuantity": 5,
+      "saleTotal": 2238,
+      "paymentItemGroups": 5,
+      "paymentLines": 55,
+      "paymentNet": 2004.75,
+      "paymentGrossProduct": 2238,
+      "paymentOrderProduct": 2238,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "tcs_igst",
+        "tds",
+        "technology",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "EJ4049-Mastani-Brown Yellow_Ethnic",
+          "orderItemCode": "61975728217322",
+          "saleSourceRows": [
+            2850
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 407,
+          "productSaleFromPayment": 407,
+          "orderProductSaleFromPayment": 407,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 358.6,
+          "tcs": -1.94,
+          "tds": -0.39,
+          "pickPack": 0,
+          "weightHandling": -15.39,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ4020-201-Banarasi Brocade-Yellow",
+          "orderItemCode": "61975728217402",
+          "saleSourceRows": [
+            2848
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 414,
+          "productSaleFromPayment": 414,
+          "orderProductSaleFromPayment": 414,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 363.42,
+          "tcs": -1.97,
+          "tds": -0.4,
+          "pickPack": 0,
+          "weightHandling": -17.53,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ4109-Dhaara-Rama",
+          "orderItemCode": "61975728217442",
+          "saleSourceRows": [
+            2846
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 499,
+          "productSaleFromPayment": 499,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 464.33,
+          "tcs": -2.38,
+          "tds": -0.48,
+          "pickPack": 0,
+          "weightHandling": -1.13,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ4108-Shiv-Maroon",
+          "orderItemCode": "61975783706642",
+          "saleSourceRows": [
+            2847
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 469,
+          "productSaleFromPayment": 469,
+          "orderProductSaleFromPayment": 469,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 421.51,
+          "tcs": -2.23,
+          "tds": -0.45,
+          "pickPack": 0,
+          "weightHandling": -14.13,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ41062-Madhuri-Red",
+          "orderItemCode": "61975783706722",
+          "saleSourceRows": [
+            2849
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 449,
+          "productSaleFromPayment": 449,
+          "orderProductSaleFromPayment": 449,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 396.89,
+          "tcs": -2.14,
+          "tds": -0.43,
+          "pickPack": 0,
+          "weightHandling": -18.86,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "407-2429081-2013132",
+      "saleRows": 5,
+      "saleQuantity": 5,
+      "saleTotal": 3019,
+      "paymentItemGroups": 5,
+      "paymentLines": 50,
+      "paymentNet": 2730.85,
+      "paymentGrossProduct": 3019,
+      "paymentOrderProduct": 3019,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "tcs_igst",
+        "technology",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "B156-Om-Bottle Green_L",
+          "orderItemCode": "61842386642922",
+          "saleSourceRows": [
+            242
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 494,
+          "productSaleFromPayment": 494,
+          "orderProductSaleFromPayment": 494,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 448.9,
+          "tcs": -2.35,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -12.07,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "B142-Shree-Bottle Green_L",
+          "orderItemCode": "61842386643002",
+          "saleSourceRows": [
+            246
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 494,
+          "productSaleFromPayment": 494,
+          "orderProductSaleFromPayment": 494,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 447.91,
+          "tcs": -2.35,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -13.06,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "SKD227-Mandira-Green_L_new",
+          "orderItemCode": "61842386643082",
+          "saleSourceRows": [
+            245
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 854,
+          "productSaleFromPayment": 854,
+          "orderProductSaleFromPayment": 854,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 781.36,
+          "tcs": -4.07,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -10.75,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "B24-White Lotus-Teal_L",
+          "orderItemCode": "61842386643122",
+          "saleSourceRows": [
+            244
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 494,
+          "productSaleFromPayment": 494,
+          "orderProductSaleFromPayment": 494,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 449.47,
+          "tcs": -2.35,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -11.5,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "BT173-Sawali-Black_L",
+          "orderItemCode": "61843450427042",
+          "saleSourceRows": [
+            243
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 683,
+          "productSaleFromPayment": 683,
+          "orderProductSaleFromPayment": 683,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 603.21,
+          "tcs": -3.25,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -18.72,
+          "technology": -16.52,
+          "closing": -41.3,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "403-8389911-4278738",
+      "saleRows": 4,
+      "saleQuantity": 4,
+      "saleTotal": 2088.4,
+      "paymentItemGroups": 4,
+      "paymentLines": 93,
+      "paymentNet": -369.82,
+      "paymentGrossProduct": 0,
+      "paymentOrderProduct": 1936,
+      "paymentRefundProduct": -1936,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 160,
+      "paymentOrderShippingDiscount": -160,
+      "salesToOrderCreditsDelta": -7.6,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order",
+        "Refund"
+      ],
+      "parameters": [
+        "closing",
+        "commission",
+        "pick_pack",
+        "refund",
+        "shipping_credit",
+        "shipping_discount",
+        "tcs_igst",
+        "technology",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "EJ4109-Dhaara-Red",
+          "orderItemCode": "61847975943162",
+          "saleSourceRows": [
+            631
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 517.1,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 479,
+          "refundProductSaleFromPayment": -479,
+          "orderCustomerShipping": 40,
+          "orderShippingDiscount": -40,
+          "netShipping": 0,
+          "netSettlement": -87.95,
+          "tcs": 0,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -7.71,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": -49.56,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "commission",
+            "shipping_discount",
+            "shipping_credit",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ4109-Dhaara-Navy",
+          "orderItemCode": "61847975943202",
+          "saleSourceRows": [
+            630
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 517.1,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 479,
+          "refundProductSaleFromPayment": -479,
+          "orderCustomerShipping": 40,
+          "orderShippingDiscount": -40,
+          "netShipping": 0,
+          "netSettlement": -87.96,
+          "tcs": 0,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -7.72,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": -49.56,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "commission",
+            "shipping_discount",
+            "shipping_credit",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ4109-Dhaara-Rani",
+          "orderItemCode": "61847975943242",
+          "saleSourceRows": [
+            816
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 517.1,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 479,
+          "refundProductSaleFromPayment": -479,
+          "orderCustomerShipping": 40,
+          "orderShippingDiscount": -40,
+          "netShipping": 0,
+          "netSettlement": -105.96,
+          "tcs": 0,
+          "tds": 0,
+          "pickPack": -20.06,
+          "weightHandling": -19.82,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": -49.56,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "commission",
+            "shipping_discount",
+            "shipping_credit",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ4109-Dhaara-Rama",
+          "orderItemCode": "61850826763362",
+          "saleSourceRows": [
+            632
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 537.1,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": -499,
+          "orderCustomerShipping": 40,
+          "orderShippingDiscount": -40,
+          "netShipping": 0,
+          "netSettlement": -87.95,
+          "tcs": 0,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -7.71,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": -49.56,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "commission",
+            "shipping_discount",
+            "shipping_credit",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "406-9548657-4077152",
+      "saleRows": 4,
+      "saleQuantity": 4,
+      "saleTotal": 1996,
+      "paymentItemGroups": 1,
+      "paymentLines": 43,
+      "paymentNet": 1780.64,
+      "paymentGrossProduct": 1996,
+      "paymentOrderProduct": 1996,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "pick_pack",
+        "tcs_igst",
+        "tds",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "EJ7095-Mrignaini-Green",
+          "orderItemCode": "62278792478122",
+          "saleSourceRows": [
+            6893,
+            6894,
+            6895,
+            6896
+          ],
+          "orderQuantity": 4,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 1996,
+          "productSaleFromPayment": 1996,
+          "orderProductSaleFromPayment": 1996,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 1780.64,
+          "tcs": -9.52,
+          "tds": -1.92,
+          "pickPack": -80.24,
+          "weightHandling": -57.6,
+          "technology": 0,
+          "closing": -66.08,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "406-3051678-2615531",
+      "saleRows": 4,
+      "saleQuantity": 4,
+      "saleTotal": 1444,
+      "paymentItemGroups": 4,
+      "paymentLines": 48,
+      "paymentNet": 1245.04,
+      "paymentGrossProduct": 1444,
+      "paymentOrderProduct": 1444,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "pick_pack",
+        "tcs_igst",
+        "tds",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "B47-Prism-Orange_L",
+          "orderItemCode": "62176083666242",
+          "saleSourceRows": [
+            5310
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 360,
+          "productSaleFromPayment": 360,
+          "orderProductSaleFromPayment": 360,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 309.93,
+          "tcs": -1.71,
+          "tds": -0.35,
+          "pickPack": -20.06,
+          "weightHandling": -11.43,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "B47-Prism-Pink_L",
+          "orderItemCode": "62176083666322",
+          "saleSourceRows": [
+            5308
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 364,
+          "productSaleFromPayment": 364,
+          "orderProductSaleFromPayment": 364,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 314.62,
+          "tcs": -1.73,
+          "tds": -0.35,
+          "pickPack": -20.06,
+          "weightHandling": -10.72,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "B47-Prism-Pink_M",
+          "orderItemCode": "62176083666402",
+          "saleSourceRows": [
+            5309
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 360,
+          "productSaleFromPayment": 360,
+          "orderProductSaleFromPayment": 360,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 310.64,
+          "tcs": -1.71,
+          "tds": -0.35,
+          "pickPack": -20.06,
+          "weightHandling": -10.72,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "B47-Prism-Orange_M",
+          "orderItemCode": "62176084908522",
+          "saleSourceRows": [
+            5311
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 360,
+          "productSaleFromPayment": 360,
+          "orderProductSaleFromPayment": 360,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 309.85,
+          "tcs": -1.71,
+          "tds": -0.35,
+          "pickPack": -20.06,
+          "weightHandling": -11.51,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "406-6613196-7311504",
+      "saleRows": 3,
+      "saleQuantity": 3,
+      "saleTotal": 1497,
+      "paymentItemGroups": 4,
+      "paymentLines": 75,
+      "paymentNet": -1.44,
+      "paymentGrossProduct": 0,
+      "paymentOrderProduct": 1497,
+      "paymentRefundProduct": -1497,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "",
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Fulfillment Fee Refund",
+        "Order",
+        "Refund"
+      ],
+      "parameters": [
+        "closing",
+        "fulfillment_fee_refund",
+        "pick_pack",
+        "refund",
+        "tcs_igst",
+        "tds",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "",
+          "orderItemCode": "",
+          "saleSourceRows": [],
+          "orderQuantity": null,
+          "fulfillment": [
+            ""
+          ],
+          "transactionTypes": [
+            "Fulfillment Fee Refund"
+          ],
+          "saleTotal": null,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 0,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 117.76,
+          "tcs": 0,
+          "tds": 0,
+          "pickPack": 60.18,
+          "weightHandling": 57.58,
+          "technology": 0,
+          "closing": 0,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "refund",
+            "fulfillment_fee_refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ7095-Mrignaini-Green",
+          "orderItemCode": "62270781565962",
+          "saleSourceRows": [
+            6659
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 499,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": -499,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": -39.86,
+          "tcs": 0,
+          "tds": -0.48,
+          "pickPack": -20.06,
+          "weightHandling": -19.32,
+          "technology": 0,
+          "closing": 0,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ7095-Mrignaini-Pink",
+          "orderItemCode": "62270781566002",
+          "saleSourceRows": [
+            6661
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 499,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": -499,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": -40.42,
+          "tcs": 0,
+          "tds": -0.48,
+          "pickPack": -20.06,
+          "weightHandling": -19.88,
+          "technology": 0,
+          "closing": 0,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ7095-Mrignaini-Purple",
+          "orderItemCode": "62270781566042",
+          "saleSourceRows": [
+            6660
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 499,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": -499,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": -38.92,
+          "tcs": 0,
+          "tds": -0.48,
+          "pickPack": -20.06,
+          "weightHandling": -18.38,
+          "technology": 0,
+          "closing": 0,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "171-9588059-7045139",
+      "saleRows": 3,
+      "saleQuantity": 3,
+      "saleTotal": 1133.3,
+      "paymentItemGroups": 0,
+      "paymentLines": 0,
+      "paymentNet": 0,
+      "paymentGrossProduct": 0,
+      "paymentOrderProduct": 0,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 1133.3,
+      "fulfillment": [],
+      "transactionTypes": [],
+      "parameters": [],
+      "items": []
+    },
+    {
+      "orderId": "406-5049807-2517134",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 1074.2,
+      "paymentItemGroups": 2,
+      "paymentLines": 33,
+      "paymentNet": 862.7,
+      "paymentGrossProduct": 998,
+      "paymentOrderProduct": 998,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 80,
+      "paymentOrderShippingDiscount": -80,
+      "salesToOrderCreditsDelta": -3.8,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "pick_pack",
+        "shipping_credit",
+        "shipping_discount",
+        "tcs_cgst_sgst",
+        "tds",
+        "technology",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "EJ7095-Mrignaini-Sky",
+          "orderItemCode": "62207197831482",
+          "saleSourceRows": [
+            5869
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 537.1,
+          "productSaleFromPayment": 499,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 40,
+          "orderShippingDiscount": -40,
+          "netShipping": 0,
+          "netSettlement": 431.94,
+          "tcs": -2.38,
+          "tds": -0.48,
+          "pickPack": 0,
+          "weightHandling": -33.52,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "shipping_discount",
+            "shipping_credit",
+            "tds",
+            "tcs_cgst_sgst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ7095-Mrignaini-Pink",
+          "orderItemCode": "62207197831522",
+          "saleSourceRows": [
+            6505
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 537.1,
+          "productSaleFromPayment": 499,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 40,
+          "orderShippingDiscount": -40,
+          "netShipping": 0,
+          "netSettlement": 430.76,
+          "tcs": -2.38,
+          "tds": -0.48,
+          "pickPack": -20.06,
+          "weightHandling": -28.8,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "shipping_discount",
+            "shipping_credit",
+            "tds",
+            "tcs_cgst_sgst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "402-6771191-3031565",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 998,
+      "paymentItemGroups": 2,
+      "paymentLines": 25,
+      "paymentNet": 861.52,
+      "paymentGrossProduct": 998,
+      "paymentOrderProduct": 998,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 0,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order"
+      ],
+      "parameters": [
+        "closing",
+        "pick_pack",
+        "tcs_igst",
+        "tds",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "EJ7095-Mrignaini-Green",
+          "orderItemCode": "62325925678602",
+          "saleSourceRows": [
+            7500
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 499,
+          "productSaleFromPayment": 499,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 430.76,
+          "tcs": -2.38,
+          "tds": -0.48,
+          "pickPack": -20.06,
+          "weightHandling": -28.8,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "EJ7095-Mrignaini-Pink",
+          "orderItemCode": "62325925678682",
+          "saleSourceRows": [
+            7672
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 499,
+          "productSaleFromPayment": 499,
+          "orderProductSaleFromPayment": 499,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 0,
+          "orderShippingDiscount": 0,
+          "netShipping": 0,
+          "netSettlement": 430.76,
+          "tcs": -2.38,
+          "tds": -0.48,
+          "pickPack": -20.06,
+          "weightHandling": -28.8,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": 0,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "tds",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "407-0503077-6129156",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 1028.2,
+      "paymentItemGroups": 2,
+      "paymentLines": 39,
+      "paymentNet": 313.03,
+      "paymentGrossProduct": 476,
+      "paymentOrderProduct": 952,
+      "paymentRefundProduct": -476,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 80,
+      "paymentOrderShippingDiscount": -80,
+      "salesToOrderCreditsDelta": -3.8,
+      "fulfillment": [
+        "AFN"
+      ],
+      "transactionTypes": [
+        "Order",
+        "Refund"
+      ],
+      "parameters": [
+        "closing",
+        "commission",
+        "pick_pack",
+        "refund",
+        "shipping_credit",
+        "shipping_discount",
+        "tcs_igst",
+        "tds",
+        "technology",
+        "weight_handling"
+      ],
+      "items": [
+        {
+          "sku": "T62-Peppa-Black_L",
+          "orderItemCode": "61857057606402",
+          "saleSourceRows": [
+            652
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order"
+          ],
+          "saleTotal": 514.1,
+          "productSaleFromPayment": 476,
+          "orderProductSaleFromPayment": 476,
+          "refundProductSaleFromPayment": 0,
+          "orderCustomerShipping": 40,
+          "orderShippingDiscount": -40,
+          "netShipping": 0,
+          "netSettlement": 419.93,
+          "tcs": -2.27,
+          "tds": 0,
+          "pickPack": 0,
+          "weightHandling": -23.12,
+          "technology": -16.52,
+          "closing": -14.16,
+          "commission": 0,
+          "parameters": [
+            "weight_handling",
+            "technology",
+            "closing",
+            "shipping_discount",
+            "shipping_credit",
+            "tcs_igst"
+          ],
+          "otherLines": []
+        },
+        {
+          "sku": "T62-Peppa-Peach_L",
+          "orderItemCode": "61857057606442",
+          "saleSourceRows": [
+            1775
+          ],
+          "orderQuantity": 1,
+          "fulfillment": [
+            "AFN"
+          ],
+          "transactionTypes": [
+            "Order",
+            "Refund"
+          ],
+          "saleTotal": 514.1,
+          "productSaleFromPayment": 0,
+          "orderProductSaleFromPayment": 476,
+          "refundProductSaleFromPayment": -476,
+          "orderCustomerShipping": 40,
+          "orderShippingDiscount": -40,
+          "netShipping": 0,
+          "netSettlement": -106.9,
+          "tcs": 0,
+          "tds": -0.46,
+          "pickPack": -20.06,
+          "weightHandling": -20.3,
+          "technology": 0,
+          "closing": -16.52,
+          "commission": -49.56,
+          "parameters": [
+            "pick_pack",
+            "weight_handling",
+            "closing",
+            "commission",
+            "shipping_discount",
+            "shipping_credit",
+            "tds",
+            "tcs_igst",
+            "refund"
+          ],
+          "otherLines": []
+        }
+      ]
+    },
+    {
+      "orderId": "405-3565258-4350740",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 997,
+      "paymentItemGroups": 0,
+      "paymentLines": 0,
+      "paymentNet": 0,
+      "paymentGrossProduct": 0,
+      "paymentOrderProduct": 0,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 997,
+      "fulfillment": [],
+      "transactionTypes": [],
+      "parameters": [],
+      "items": []
+    },
+    {
+      "orderId": "405-8641829-4174732",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 1028.2,
+      "paymentItemGroups": 0,
+      "paymentLines": 0,
+      "paymentNet": 0,
+      "paymentGrossProduct": 0,
+      "paymentOrderProduct": 0,
+      "paymentRefundProduct": 0,
+      "paymentNetShipping": 0,
+      "paymentOrderCustomerShipping": 0,
+      "paymentOrderShippingDiscount": 0,
+      "salesToOrderCreditsDelta": 1028.2,
+      "fulfillment": [],
+      "transactionTypes": [],
+      "parameters": [],
+      "items": []
+    }
+  ],
+  "paymentMissing": [
+    {
+      "orderId": "403-5227845-7389133",
+      "saleRows": 13,
+      "saleQuantity": 20,
+      "saleTotal": 8583.87
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "saleRows": 11,
+      "saleQuantity": 14,
+      "saleTotal": 6891.4
+    },
+    {
+      "orderId": "171-9588059-7045139",
+      "saleRows": 3,
+      "saleQuantity": 3,
+      "saleTotal": 1133.3
+    },
+    {
+      "orderId": "405-3565258-4350740",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 997
+    },
+    {
+      "orderId": "405-8641829-4174732",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 1028.2
+    }
+  ],
+  "multiItemOrders": [
+    {
+      "orderId": "407-8365071-6002717",
+      "saleRows": 17,
+      "saleQuantity": 18,
+      "saleTotal": 8970,
+      "paymentItemGroups": 4
+    },
+    {
+      "orderId": "403-8356490-9934766",
+      "saleRows": 15,
+      "saleQuantity": 40,
+      "saleTotal": 17170.06,
+      "paymentItemGroups": 2
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "saleRows": 13,
+      "saleQuantity": 20,
+      "saleTotal": 8583.87,
+      "paymentItemGroups": 0
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "saleRows": 11,
+      "saleQuantity": 14,
+      "saleTotal": 6891.4,
+      "paymentItemGroups": 0
+    },
+    {
+      "orderId": "402-6167748-6153950",
+      "saleRows": 7,
+      "saleQuantity": 7,
+      "saleTotal": 6132,
+      "paymentItemGroups": 7
+    },
+    {
+      "orderId": "405-5053541-2926717",
+      "saleRows": 6,
+      "saleQuantity": 6,
+      "saleTotal": 2574,
+      "paymentItemGroups": 1
+    },
+    {
+      "orderId": "407-1054434-3364350",
+      "saleRows": 5,
+      "saleQuantity": 5,
+      "saleTotal": 2238,
+      "paymentItemGroups": 5
+    },
+    {
+      "orderId": "407-2429081-2013132",
+      "saleRows": 5,
+      "saleQuantity": 5,
+      "saleTotal": 3019,
+      "paymentItemGroups": 5
+    },
+    {
+      "orderId": "403-8389911-4278738",
+      "saleRows": 4,
+      "saleQuantity": 4,
+      "saleTotal": 2088.4,
+      "paymentItemGroups": 4
+    },
+    {
+      "orderId": "406-9548657-4077152",
+      "saleRows": 4,
+      "saleQuantity": 4,
+      "saleTotal": 1996,
+      "paymentItemGroups": 1
+    },
+    {
+      "orderId": "406-3051678-2615531",
+      "saleRows": 4,
+      "saleQuantity": 4,
+      "saleTotal": 1444,
+      "paymentItemGroups": 4
+    },
+    {
+      "orderId": "406-6613196-7311504",
+      "saleRows": 3,
+      "saleQuantity": 3,
+      "saleTotal": 1497,
+      "paymentItemGroups": 4
+    },
+    {
+      "orderId": "171-9588059-7045139",
+      "saleRows": 3,
+      "saleQuantity": 3,
+      "saleTotal": 1133.3,
+      "paymentItemGroups": 0
+    },
+    {
+      "orderId": "406-5049807-2517134",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 1074.2,
+      "paymentItemGroups": 2
+    },
+    {
+      "orderId": "402-6771191-3031565",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 998,
+      "paymentItemGroups": 2
+    },
+    {
+      "orderId": "407-0503077-6129156",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 1028.2,
+      "paymentItemGroups": 2
+    },
+    {
+      "orderId": "405-3565258-4350740",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 997,
+      "paymentItemGroups": 0
+    },
+    {
+      "orderId": "405-8641829-4174732",
+      "saleRows": 2,
+      "saleQuantity": 2,
+      "saleTotal": 1028.2,
+      "paymentItemGroups": 0
+    }
+  ],
+  "multiQuantitySaleRows": [
+    {
+      "orderId": "407-8365071-6002717",
+      "sku": "EJ7105-Jannat-Red",
+      "quantity": 6,
+      "orderItemCode": "62327046871002"
+    },
+    {
+      "orderId": "407-8365071-6002717",
+      "sku": "EJ7116-Two Birds-Pink",
+      "quantity": 6,
+      "orderItemCode": "62327062669642"
+    },
+    {
+      "orderId": "407-8365071-6002717",
+      "sku": "EJ7095-Mrignaini-Red",
+      "quantity": 6,
+      "orderItemCode": "62327062669722"
+    },
+    {
+      "orderId": "403-8356490-9934766",
+      "sku": "EJ1201-16001_New",
+      "quantity": 20,
+      "orderItemCode": "62206416104082"
+    },
+    {
+      "orderId": "403-8356490-9934766",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 20,
+      "orderItemCode": "62206416104122"
+    },
+    {
+      "orderId": "405-5053541-2926717",
+      "sku": "EJ1201-16001_New",
+      "quantity": 6,
+      "orderItemCode": "62200921085602"
+    },
+    {
+      "orderId": "406-9548657-4077152",
+      "sku": "EJ7095-Mrignaini-Green",
+      "quantity": 4,
+      "orderItemCode": "62278792478122"
+    }
+  ],
+  "transactionTypeFrequency": [
+    {
+      "name": "Fulfillment Fee Refund",
+      "count": 2
+    },
+    {
+      "name": "Order",
+      "count": 41
+    },
+    {
+      "name": "Refund",
+      "count": 10
+    }
+  ],
+  "fulfillmentFrequency": [
+    {
+      "name": "",
+      "count": 2
+    },
+    {
+      "name": "AFN",
+      "count": 41
+    }
+  ],
+  "parameterFrequency": [
+    {
+      "name": "closing",
+      "count": 41
+    },
+    {
+      "name": "commission",
+      "count": 5
+    },
+    {
+      "name": "fulfillment_fee_refund",
+      "count": 2
+    },
+    {
+      "name": "pick_pack",
+      "count": 21
+    },
+    {
+      "name": "refund",
+      "count": 12
+    },
+    {
+      "name": "shipping_credit",
+      "count": 10
+    },
+    {
+      "name": "shipping_discount",
+      "count": 10
+    },
+    {
+      "name": "tcs_cgst_sgst",
+      "count": 5
+    },
+    {
+      "name": "tcs_igst",
+      "count": 36
+    },
+    {
+      "name": "tds",
+      "count": 31
+    },
+    {
+      "name": "technology",
+      "count": 22
+    },
+    {
+      "name": "weight_handling",
+      "count": 43
+    }
+  ],
+  "patternGroups": [
+    {
+      "pattern": [
+        "weight_handling",
+        "technology",
+        "closing",
+        "tds",
+        "tcs_igst"
+      ],
+      "count": 12,
+      "examples": [
+        {
+          "orderId": "402-6167748-6153950",
+          "orderItemCode": "62415660968082",
+          "sku": "BT165-Nishi-Peach_M",
+          "net": 771.72,
+          "sale": 849
+        },
+        {
+          "orderId": "402-6167748-6153950",
+          "orderItemCode": "62415888219322",
+          "sku": "BT165-Nishi-Beige_M",
+          "net": 858.3,
+          "sale": 929
+        },
+        {
+          "orderId": "402-6167748-6153950",
+          "orderItemCode": "62415888219362",
+          "sku": "BT165-Nishi-White_L_EJ",
+          "net": 858.3,
+          "sale": 929
+        },
+        {
+          "orderId": "402-6167748-6153950",
+          "orderItemCode": "62415888219402",
+          "sku": "BT165-Nishi-Dusty-Blue_L_EJ",
+          "net": 858.3,
+          "sale": 929
+        },
+        {
+          "orderId": "402-6167748-6153950",
+          "orderItemCode": "62415888219442",
+          "sku": "BT165-Nishi-Teal_M_EJ",
+          "net": 828.47,
+          "sale": 899
+        },
+        {
+          "orderId": "402-6167748-6153950",
+          "orderItemCode": "62415888219482",
+          "sku": "BT165-Nishi-Green_L",
+          "net": 671.3,
+          "sale": 748
+        },
+        {
+          "orderId": "402-6167748-6153950",
+          "orderItemCode": "62415888219522",
+          "sku": "BT165-Nishi-Blue_L",
+          "net": 778.76,
+          "sale": 849
+        },
+        {
+          "orderId": "407-1054434-3364350",
+          "orderItemCode": "61975728217322",
+          "sku": "EJ4049-Mastani-Brown Yellow_Ethnic",
+          "net": 358.6,
+          "sale": 407
+        },
+        {
+          "orderId": "407-1054434-3364350",
+          "orderItemCode": "61975728217402",
+          "sku": "EJ4020-201-Banarasi Brocade-Yellow",
+          "net": 363.42,
+          "sale": 414
+        },
+        {
+          "orderId": "407-1054434-3364350",
+          "orderItemCode": "61975728217442",
+          "sku": "EJ4109-Dhaara-Rama",
+          "net": 464.33,
+          "sale": 499
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "pick_pack",
+        "weight_handling",
+        "closing",
+        "tds",
+        "tcs_igst"
+      ],
+      "count": 8,
+      "examples": [
+        {
+          "orderId": "402-6771191-3031565",
+          "orderItemCode": "62325925678602",
+          "sku": "EJ7095-Mrignaini-Green",
+          "net": 430.76,
+          "sale": 499
+        },
+        {
+          "orderId": "402-6771191-3031565",
+          "orderItemCode": "62325925678682",
+          "sku": "EJ7095-Mrignaini-Pink",
+          "net": 430.76,
+          "sale": 499
+        },
+        {
+          "orderId": "406-3051678-2615531",
+          "orderItemCode": "62176083666242",
+          "sku": "B47-Prism-Orange_L",
+          "net": 309.93,
+          "sale": 360
+        },
+        {
+          "orderId": "406-3051678-2615531",
+          "orderItemCode": "62176083666322",
+          "sku": "B47-Prism-Pink_L",
+          "net": 314.62,
+          "sale": 364
+        },
+        {
+          "orderId": "406-3051678-2615531",
+          "orderItemCode": "62176083666402",
+          "sku": "B47-Prism-Pink_M",
+          "net": 310.64,
+          "sale": 360
+        },
+        {
+          "orderId": "406-3051678-2615531",
+          "orderItemCode": "62176084908522",
+          "sku": "B47-Prism-Orange_M",
+          "net": 309.85,
+          "sale": 360
+        },
+        {
+          "orderId": "406-9548657-4077152",
+          "orderItemCode": "62278792478122",
+          "sku": "EJ7095-Mrignaini-Green",
+          "net": 1780.64,
+          "sale": 1996
+        },
+        {
+          "orderId": "407-8365071-6002717",
+          "orderItemCode": "62327062669722",
+          "sku": "EJ7095-Mrignaini-Red",
+          "net": 2649.44,
+          "sale": 2988
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "pick_pack",
+        "weight_handling",
+        "closing",
+        "tds",
+        "tcs_igst",
+        "refund"
+      ],
+      "count": 5,
+      "examples": [
+        {
+          "orderId": "406-6613196-7311504",
+          "orderItemCode": "62270781565962",
+          "sku": "EJ7095-Mrignaini-Green",
+          "net": -39.86,
+          "sale": 499
+        },
+        {
+          "orderId": "406-6613196-7311504",
+          "orderItemCode": "62270781566002",
+          "sku": "EJ7095-Mrignaini-Pink",
+          "net": -40.42,
+          "sale": 499
+        },
+        {
+          "orderId": "406-6613196-7311504",
+          "orderItemCode": "62270781566042",
+          "sku": "EJ7095-Mrignaini-Purple",
+          "net": -38.92,
+          "sale": 499
+        },
+        {
+          "orderId": "407-8365071-6002717",
+          "orderItemCode": "62327046871002",
+          "sku": "EJ7105-Jannat-Red",
+          "net": -180.9,
+          "sale": 2994
+        },
+        {
+          "orderId": "407-8365071-6002717",
+          "orderItemCode": "62327062669642",
+          "sku": "EJ7116-Two Birds-Pink",
+          "net": -175.98,
+          "sale": 2988
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "weight_handling",
+        "technology",
+        "closing",
+        "tcs_igst"
+      ],
+      "count": 5,
+      "examples": [
+        {
+          "orderId": "407-2429081-2013132",
+          "orderItemCode": "61842386642922",
+          "sku": "B156-Om-Bottle Green_L",
+          "net": 448.9,
+          "sale": 494
+        },
+        {
+          "orderId": "407-2429081-2013132",
+          "orderItemCode": "61842386643002",
+          "sku": "B142-Shree-Bottle Green_L",
+          "net": 447.91,
+          "sale": 494
+        },
+        {
+          "orderId": "407-2429081-2013132",
+          "orderItemCode": "61842386643082",
+          "sku": "SKD227-Mandira-Green_L_new",
+          "net": 781.36,
+          "sale": 854
+        },
+        {
+          "orderId": "407-2429081-2013132",
+          "orderItemCode": "61842386643122",
+          "sku": "B24-White Lotus-Teal_L",
+          "net": 449.47,
+          "sale": 494
+        },
+        {
+          "orderId": "407-2429081-2013132",
+          "orderItemCode": "61843450427042",
+          "sku": "BT173-Sawali-Black_L",
+          "net": 603.21,
+          "sale": 683
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "pick_pack",
+        "weight_handling",
+        "closing",
+        "shipping_discount",
+        "shipping_credit",
+        "tds",
+        "tcs_cgst_sgst"
+      ],
+      "count": 3,
+      "examples": [
+        {
+          "orderId": "403-8356490-9934766",
+          "orderItemCode": "62206416104082",
+          "sku": "EJ1201-16001_New",
+          "net": 7511.46,
+          "sale": 8585.03
+        },
+        {
+          "orderId": "403-8356490-9934766",
+          "orderItemCode": "62206416104122",
+          "sku": "EJ1201-Chitra-Maroon",
+          "net": 7569.04,
+          "sale": 8585.03
+        },
+        {
+          "orderId": "406-5049807-2517134",
+          "orderItemCode": "62207197831522",
+          "sku": "EJ7095-Mrignaini-Pink",
+          "net": 430.76,
+          "sale": 537.1
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "weight_handling",
+        "technology",
+        "closing",
+        "commission",
+        "shipping_discount",
+        "shipping_credit",
+        "tcs_igst",
+        "refund"
+      ],
+      "count": 3,
+      "examples": [
+        {
+          "orderId": "403-8389911-4278738",
+          "orderItemCode": "61847975943162",
+          "sku": "EJ4109-Dhaara-Red",
+          "net": -87.95,
+          "sale": 517.1
+        },
+        {
+          "orderId": "403-8389911-4278738",
+          "orderItemCode": "61847975943202",
+          "sku": "EJ4109-Dhaara-Navy",
+          "net": -87.96,
+          "sale": 517.1
+        },
+        {
+          "orderId": "403-8389911-4278738",
+          "orderItemCode": "61850826763362",
+          "sku": "EJ4109-Dhaara-Rama",
+          "net": -87.95,
+          "sale": 537.1
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "pick_pack",
+        "weight_handling",
+        "refund",
+        "fulfillment_fee_refund"
+      ],
+      "count": 2,
+      "examples": [
+        {
+          "orderId": "406-6613196-7311504",
+          "orderItemCode": "",
+          "sku": "",
+          "net": 117.76,
+          "sale": null
+        },
+        {
+          "orderId": "407-8365071-6002717",
+          "orderItemCode": "",
+          "sku": "",
+          "net": 351.12,
+          "sale": null
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "pick_pack",
+        "weight_handling",
+        "closing",
+        "commission",
+        "shipping_discount",
+        "shipping_credit",
+        "tcs_igst",
+        "refund"
+      ],
+      "count": 1,
+      "examples": [
+        {
+          "orderId": "403-8389911-4278738",
+          "orderItemCode": "61847975943242",
+          "sku": "EJ4109-Dhaara-Rani",
+          "net": -105.96,
+          "sale": 517.1
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "pick_pack",
+        "weight_handling",
+        "closing",
+        "tds",
+        "tcs_cgst_sgst"
+      ],
+      "count": 1,
+      "examples": [
+        {
+          "orderId": "405-5053541-2926717",
+          "orderItemCode": "62200921085602",
+          "sku": "EJ1201-16001_New",
+          "net": 2269.02,
+          "sale": 2574
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "weight_handling",
+        "technology",
+        "closing",
+        "shipping_discount",
+        "shipping_credit",
+        "tds",
+        "tcs_cgst_sgst"
+      ],
+      "count": 1,
+      "examples": [
+        {
+          "orderId": "406-5049807-2517134",
+          "orderItemCode": "62207197831482",
+          "sku": "EJ7095-Mrignaini-Sky",
+          "net": 431.94,
+          "sale": 537.1
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "weight_handling",
+        "technology",
+        "closing",
+        "shipping_discount",
+        "shipping_credit",
+        "tcs_igst"
+      ],
+      "count": 1,
+      "examples": [
+        {
+          "orderId": "407-0503077-6129156",
+          "orderItemCode": "61857057606402",
+          "sku": "T62-Peppa-Black_L",
+          "net": 419.93,
+          "sale": 514.1
+        }
+      ]
+    },
+    {
+      "pattern": [
+        "pick_pack",
+        "weight_handling",
+        "closing",
+        "commission",
+        "shipping_discount",
+        "shipping_credit",
+        "tds",
+        "tcs_igst",
+        "refund"
+      ],
+      "count": 1,
+      "examples": [
+        {
+          "orderId": "407-0503077-6129156",
+          "orderItemCode": "61857057606442",
+          "sku": "T62-Peppa-Peach_L",
+          "net": -106.9,
+          "sale": 514.1
+        }
+      ]
+    }
+  ],
+  "paymentItemWithoutSaleRow": [
+    {
+      "orderId": "406-6613196-7311504",
+      "sku": "",
+      "orderItemCode": "",
+      "netSettlement": 117.76
+    },
+    {
+      "orderId": "407-8365071-6002717",
+      "sku": "",
+      "orderItemCode": "",
+      "netSettlement": 351.12
+    }
+  ],
+  "saleRowWithoutPayment": [
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Rust_M Y",
+      "quantity": 1,
+      "total": 556.1,
+      "row": 11287
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Mehendi_S",
+      "quantity": 1,
+      "total": 478.1,
+      "row": 12154
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Light Green_S",
+      "quantity": 1,
+      "total": 479.1,
+      "row": 12155
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Dusty Pink_XL",
+      "quantity": 1,
+      "total": 484.1,
+      "row": 12156
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Black_S",
+      "quantity": 1,
+      "total": 487.1,
+      "row": 12157
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Rust_S",
+      "quantity": 1,
+      "total": 479.1,
+      "row": 12158
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Rust_S Y",
+      "quantity": 1,
+      "total": 527.1,
+      "row": 12159
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Mustard_M",
+      "quantity": 2,
+      "total": 958.2,
+      "row": 12160
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Mustard_S",
+      "quantity": 2,
+      "total": 968.2,
+      "row": 12161
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Bottle Green_M",
+      "quantity": 2,
+      "total": 958.2,
+      "row": 12162
+    },
+    {
+      "orderId": "406-8857803-1548328",
+      "sku": "B19-Apsara-Black_M_Y",
+      "quantity": 1,
+      "total": 516.1,
+      "row": 12163
+    },
+    {
+      "orderId": "405-3565258-4350740",
+      "sku": "EJ7116-Two Birds-Pink",
+      "quantity": 1,
+      "total": 498,
+      "row": 12332
+    },
+    {
+      "orderId": "405-8641829-4174732",
+      "sku": "T62-Peppa-Purple_M",
+      "quantity": 1,
+      "total": 514.1,
+      "row": 12361
+    },
+    {
+      "orderId": "171-9588059-7045139",
+      "sku": "B47-Prism-Pink_2XL",
+      "quantity": 1,
+      "total": 398.1,
+      "row": 12626
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.2,
+      "row": 12627
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.19,
+      "row": 12628
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.19,
+      "row": 12629
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.19,
+      "row": 12630
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.19,
+      "row": 12631
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.2,
+      "row": 12643
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 2,
+      "total": 858.39,
+      "row": 12644
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.19,
+      "row": 12645
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.19,
+      "row": 12646
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 2,
+      "total": 858.39,
+      "row": 12647
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 3,
+      "total": 1287.58,
+      "row": 12648
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 4,
+      "total": 1716.78,
+      "row": 12649
+    },
+    {
+      "orderId": "403-5227845-7389133",
+      "sku": "EJ1201-Chitra-Maroon",
+      "quantity": 1,
+      "total": 429.19,
+      "row": 12650
+    },
+    {
+      "orderId": "171-9588059-7045139",
+      "sku": "B47-Prism-Orange_M",
+      "quantity": 1,
+      "total": 398.1,
+      "row": 12982
+    },
+    {
+      "orderId": "171-9588059-7045139",
+      "sku": "B47-Prism-Parrot Green_L",
+      "quantity": 1,
+      "total": 337.1,
+      "row": 12983
+    },
+    {
+      "orderId": "405-8641829-4174732",
+      "sku": "T62-Peppa-Black_M",
+      "quantity": 1,
+      "total": 514.1,
+      "row": 13108
+    },
+    {
+      "orderId": "405-3565258-4350740",
+      "sku": "EJ7116-Two Birds-Navy",
+      "quantity": 1,
+      "total": 499,
+      "row": 13308
+    }
+  ]
+}
