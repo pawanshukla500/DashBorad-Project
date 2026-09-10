@@ -1,6 +1,9 @@
+name: reconcentral
+
 services:
   reconcentral:
     container_name: ReconCentral
+    image: reconcentral:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -17,7 +20,7 @@ services:
       - shared_infra
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.reconcentral.rule=Host(`reconcentral.srv1845788.hstgr.cloud`) || Host(`recon.srv1845788.hstgr.cloud`)"
+      - "traefik.http.routers.reconcentral.rule=Host(`payments.youthnic.shop`) || Host(`reconcentral.srv1845788.hstgr.cloud`) || Host(`recon.srv1845788.hstgr.cloud`)"
       - "traefik.http.routers.reconcentral.entrypoints=websecure"
       - "traefik.http.routers.reconcentral.tls=true"
       - "traefik.http.routers.reconcentral.tls.certresolver=letsencrypt"

@@ -57,7 +57,7 @@ jobs:
 
       - name: Prepare bundle and environment
         env:
-          APP_DOMAIN: ${{ vars.APP_DOMAIN || 'reconcentral.srv1845788.hstgr.cloud' }}
+          APP_DOMAIN: ${{ vars.APP_DOMAIN || 'payments.youthnic.shop' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
@@ -74,6 +74,7 @@ jobs:
           NODE_ENV=production
           PORT=3001
           APP_DOMAIN=${APP_DOMAIN}
+          CORS_ORIGINS=https://payments.youthnic.shop,https://reconcentral.srv1845788.hstgr.cloud,https://recon.srv1845788.hstgr.cloud,http://200.141.1.119:3001
           DATABASE_URL=${DATABASE_URL}
           PG_SSL=false
           JWT_SECRET=${JWT_SECRET}
@@ -109,15 +110,26 @@ jobs:
           set -euo pipefail
 
           cd /opt/reconcentral
-          rm -rf app
-          mkdir app
-          tar -xzf reconcentral-source.tar.gz -C app
-          cd app
+          rm -rf ReconCentral
+          mkdir -p ReconCentral
+          tar -xzf reconcentral-source.tar.gz -C ReconCentral
+          cd ReconCentral
           mv /opt/reconcentral/hostinger.env .env
           chmod 600 .env
+          ln -sf docker-compose.production.yml docker-compose.yml
 
-          echo "Deploying ReconCentral container via docker compose..."
-          docker compose -f docker-compose.production.yml --env-file .env up -d --build --remove-orphans
+          # Ensure firewall allows container port 3001 for direct hostinger panel access
+          ufw allow 3001/tcp || true
+
+          # Remove old legacy collision folder if present
+          rm -rf /opt/reconcentral/app
+
+          echo "Deploying ReconCentral container via docker compose with project name reconcentral..."
+          docker compose -p reconcentral -f docker-compose.production.yml --env-file .env up -d --build --remove-orphans
+
+          # Symlink to /docker/reconcentral for native Hostinger Docker Manager hPanel detection
+          mkdir -p /docker
+          ln -sfn /opt/reconcentral/ReconCentral /docker/reconcentral
 
           echo "Verifying ReconCentral container health..."
           sleep 10
