@@ -70,7 +70,7 @@ jobs:
           HOSTINGER_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
         run: |
           # Create production .env file
-          cat <<EOF > hostinger.env
+          cat <<EOF > /tmp/hostinger.env
           NODE_ENV=production
           PORT=3001
           APP_DOMAIN=${APP_DOMAIN}
@@ -85,18 +85,19 @@ jobs:
 
           # Append single-line JSON secret
           if [ -n "$FIREBASE_SERVICE_ACCOUNT_JSON" ]; then
-            printf 'FIREBASE_SERVICE_ACCOUNT_JSON=%s\n' "$(printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | tr -d '\r\n')" >> hostinger.env
+            printf 'FIREBASE_SERVICE_ACCOUNT_JSON=%s\n' "$(printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" | tr -d '\r\n')" >> /tmp/hostinger.env
           fi
 
-          # Archive repo excluding node_modules and .git
-          tar --exclude='./backend/node_modules' \
+          # Archive repo excluding node_modules and .git into /tmp
+          tar --warning=no-file-changed \
+              --exclude='./backend/node_modules' \
               --exclude='./frontend/node_modules' \
               --exclude='./.git' \
               --exclude='./.codex-tmp' \
-              -czf reconcentral-source.tar.gz .
+              -czf /tmp/reconcentral-source.tar.gz .
 
-          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 hostinger.env "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/reconcentral/hostinger.env"
-          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 reconcentral-source.tar.gz "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/reconcentral/reconcentral-source.tar.gz"
+          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 /tmp/hostinger.env "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/reconcentral/hostinger.env"
+          scp -P "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 /tmp/reconcentral-source.tar.gz "${HOSTINGER_USER}@${HOSTINGER_HOST}:/opt/reconcentral/reconcentral-source.tar.gz"
 
       - name: Deploy ReconCentral Container
         env:
