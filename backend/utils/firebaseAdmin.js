@@ -16,10 +16,32 @@ try {
 
 let app;
 if (serviceAccount && getApps().length === 0) {
-  app = initializeApp({
-    credential: cert(serviceAccount)
-  });
-  console.log('[Firebase Admin] Initialized successfully.');
+  try {
+    app = initializeApp({
+      credential: cert(serviceAccount)
+    });
+    console.log('[Firebase Admin] Initialized successfully.');
+  } catch (initErr) {
+    console.error('[Firebase Admin] Initialization error:', initErr.message);
+  }
+} else if (getApps().length > 0) {
+  app = getApps()[0];
 }
 
-export const auth = getAuth(app);
+export const auth = app
+  ? getAuth(app)
+  : {
+      verifyIdToken: async () => {
+        throw new Error('Firebase Admin is not configured (missing FIREBASE_SERVICE_ACCOUNT_JSON)');
+      },
+      createCustomToken: async () => {
+        throw new Error('Firebase Admin is not configured (missing FIREBASE_SERVICE_ACCOUNT_JSON)');
+      },
+      getUser: async () => {
+        throw new Error('Firebase Admin is not configured (missing FIREBASE_SERVICE_ACCOUNT_JSON)');
+      },
+      setCustomUserClaims: async () => {
+        throw new Error('Firebase Admin is not configured (missing FIREBASE_SERVICE_ACCOUNT_JSON)');
+      },
+    };
+

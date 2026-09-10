@@ -26,8 +26,8 @@ function WorkspaceIcon({ name, filled }) {
 
 function Brand() {
   return (
-    <div className="flex items-center px-6 mb-6 gap-2">
-      <span className="material-symbols-outlined text-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>dashboard_customize</span>
+    <div className="flex items-center px-6 mb-6 gap-2.5">
+      <img src="/logo.png" alt="ReconCentral Logo" className="h-8 w-8 object-contain" />
       <span className="font-display text-headline-md font-semibold text-ink tracking-tight">ReconCentral</span>
     </div>
   );

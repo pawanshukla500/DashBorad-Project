@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { mountApiRoutes } from './routes/index.js';
@@ -132,6 +133,19 @@ app.get('/health', async (_, res) => {
       : `${databaseEngine} is unavailable; automatic reconnection is active. No empty-data fallback is used.`,
   });
 });
+
+const clientDist = process.env.CLIENT_DIST_PATH
+  ? path.resolve(process.env.CLIENT_DIST_PATH)
+  : path.resolve(process.cwd(), '../frontend/dist');
+
+if (fs.existsSync(clientDist)) {
+  console.log(`[server] Serving static frontend from ${clientDist}`);
+  app.use(express.static(clientDist));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path === '/health') return next();
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
 
 // Multer and Express's JSON parser can fail before a route handler gets the
 // request. Keep those failures structured and safe for the React client; do

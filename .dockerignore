@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.git
+.github
+*.log
+.env
+backend/.env
+frontend/.env
+dist
+**/dist
+.codex-tmp

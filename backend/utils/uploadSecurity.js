@@ -9,7 +9,7 @@ export const ALLOWED_SPREADSHEET_EXTENSIONS = new Set([
 ]);
 
 export function sanitizeUploadFileName(filename = '') {
-  return path.basename(String(filename).replace(/\0/g, ''));
+  return path.posix.basename(String(filename).replace(/\0/g, '').replace(/\\/g, '/'));
 }
 
 export function spreadsheetFileFilter(_req, file, cb) {
