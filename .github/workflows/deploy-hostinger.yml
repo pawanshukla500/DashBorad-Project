@@ -116,6 +116,7 @@ jobs:
           cd ReconCentral
           mv /opt/reconcentral/hostinger.env .env
           chmod 600 .env
+          ln -sf docker-compose.production.yml docker-compose.yml
 
           # Ensure firewall allows container port 3001 for direct hostinger panel access
           ufw allow 3001/tcp || true
