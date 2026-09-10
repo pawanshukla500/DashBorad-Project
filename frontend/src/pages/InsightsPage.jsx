@@ -24,15 +24,16 @@ import {
 
 // ── Marketplace config ────────────────────────────────────────────────────────
 const MPs = [
-  { id: 'all',      label: 'All',      dot: '#6366f1', pill: 'bg-primary text-white',       soft: 'bg-primary-container text-primary border-primary' },
-  { id: 'flipkart', label: 'Flipkart', dot: '#f59e0b', pill: 'bg-amber-500 text-white',        soft: 'bg-amber-50 text-amber-700 border-amber-200' },
-  { id: 'amazon',   label: 'Amazon',   dot: '#f97316', pill: 'bg-orange-500 text-white',       soft: 'bg-orange-50 text-orange-700 border-orange-200' },
-  { id: 'myntra',   label: 'Myntra',   dot: '#ec4899', pill: 'bg-pink-500 text-white',         soft: 'bg-pink-50 text-pink-700 border-pink-200' },
-  { id: 'meesho',   label: 'Meesho',   dot: '#a855f7', pill: 'bg-purple-500 text-white',       soft: 'bg-purple-50 text-purple-700 border-purple-200' },
+  { id: 'all',       label: 'All',         dot: '#6366f1', pill: 'bg-primary text-white',       soft: 'bg-primary-container text-primary border-primary' },
+  { id: 'flipkart',  label: 'Flipkart',    dot: '#f59e0b', pill: 'bg-amber-500 text-white',        soft: 'bg-amber-50 text-amber-700 border-amber-200' },
+  { id: 'amazon',    label: 'Amazon',      dot: '#f97316', pill: 'bg-orange-500 text-white',       soft: 'bg-orange-50 text-orange-700 border-orange-200' },
+  { id: 'myntra_vb', label: 'Myntra (VB)', dot: '#ec4899', pill: 'bg-pink-500 text-white',         soft: 'bg-pink-50 text-pink-700 border-pink-200' },
+  { id: 'myntra_ej', label: 'Myntra (EJ)', dot: '#be185d', pill: 'bg-rose-500 text-white',         soft: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { id: 'meesho',    label: 'Meesho',      dot: '#a855f7', pill: 'bg-purple-500 text-white',       soft: 'bg-purple-50 text-purple-700 border-purple-200' },
 ];
 const mpById = Object.fromEntries(MPs.map(m => [m.id, m]));
 
-const MP_COLORS = { flipkart: '#f59e0b', amazon: '#f97316', myntra: '#ec4899', meesho: '#a855f7', all: '#6366f1' };
+const MP_COLORS = { flipkart: '#f59e0b', amazon: '#f97316', myntra: '#ec4899', myntra_vb: '#ec4899', myntra_ej: '#be185d', meesho: '#a855f7', all: '#6366f1' };
 
 // ── Risk heat color ───────────────────────────────────────────────────────────
 function heatBg(rate) {
@@ -567,7 +568,7 @@ function MarketplaceOverview({ filters }) {
   const rows = data?.marketplaces || [];
   if (rows.length === 0) return null;
 
-  const MP_PALETTE = { flipkart: '#f59e0b', amazon: '#f97316', myntra: '#ec4899', meesho: '#a855f7' };
+  const MP_PALETTE = { flipkart: '#f59e0b', amazon: '#f97316', myntra: '#ec4899', myntra_vb: '#ec4899', myntra_ej: '#be185d', meesho: '#a855f7' };
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">

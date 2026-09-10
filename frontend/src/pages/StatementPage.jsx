@@ -196,7 +196,7 @@ function SaleStatementView({ data }) {
           <span className="text-xs text-outline">Click a row to expand fee detail (MP Deducted vs RC Calculated from Rate Card)</span>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="finance-table">
             <thead>
               <tr className="bg-surface-container-low border-b border-border">
                 {['Sale Month','Orders','Gross Sale','Returns','MP Fees','Bank Received','Carry Forward','Settled %'].map(h => (
@@ -285,7 +285,7 @@ function SaleStatementView({ data }) {
         </button>
         {showCash && cashFlow.length > 0 && (
           <div className="border-t border-border overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="finance-table">
               <thead>
                 <tr className="bg-surface-container-low border-b border-border">
                   {['Payment Month','Orders Settled','Cash In','Clawbacks','SPF','Storage','Ads','Total Received'].map(h => (
@@ -535,7 +535,7 @@ function RecoView({ data }) {
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="finance-table">
             <thead>
               <tr className="bg-surface-container-low border-b border-border">
                 <th className="text-left px-4 py-3 text-secondary font-medium w-48">Line Item</th>
@@ -789,7 +789,7 @@ function SummaryView({ data }) {
               <p className="text-xs text-outline mt-0.5">Grouped by MP payment date</p>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="finance-table">
                 <thead>
                   <tr className="bg-surface-container-low border-b border-border">
                     {['Description','Category','Credits','Debits','Net','% of Sale'].map(h => (

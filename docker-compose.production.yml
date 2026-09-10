@@ -1,0 +1,52 @@
+services:
+  api:
+    build:
+      context: ./backend
+    env_file:
+      - ./.env
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+    restart: unless-stopped
+    expose:
+      - "8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 45s
+    networks:
+      - internal
+      - shared_infra
+
+  web:
+    build:
+      context: ./frontend
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+  shared_infra:
+    external: true
+
+volumes:
+  caddy_data:
+  caddy_config:

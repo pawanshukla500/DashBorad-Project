@@ -18,15 +18,16 @@ import {
 } from '../api/client';
 import { AmazonReconciliationPanel } from './AmazonReconciliationPage';
 import { FlipkartFeeAudit } from './RateAuditPage';
+import { MyntraReconciliationPanel } from './MyntraReconciliationPanel';
+import { MeeshoReconciliationPanel } from './MeeshoReconciliationPanel';
 
 const MONEY = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 });
 const money = value => MONEY.format(Number(value || 0));
 const PRESET_MARKETS = [
   { marketplace: 'flipkart', display_name: 'Flipkart', reco_type: 'order', color: 'indigo' },
   { marketplace: 'amazon', display_name: 'Amazon', reco_type: 'order', color: 'amber' },
-  // Meesho does not yet have a source-payment format in this project. Show the
-  // tab now, but do not invent an expected fee or call an unsupported parser.
-  { marketplace: 'meesho', display_name: 'Meesho', reco_type: 'setup', color: 'emerald' },
+  { marketplace: 'myntra', display_name: 'Myntra', reco_type: 'order', color: 'rose' },
+  { marketplace: 'meesho', display_name: 'Meesho', reco_type: 'order', color: 'emerald' },
 ];
 const BENCHMARK_MARKETS = [
   { key: 'flipkart', label: 'Flipkart' },
@@ -582,6 +583,6 @@ export default function PaymentReconciliationPage() {
       <button type="button" onClick={() => setActiveKey('sku-benchmark')} role="tab" aria-selected={activeKey === 'sku-benchmark'} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-bold transition ${activeKey === 'sku-benchmark' ? 'bg-primary text-white shadow-sm' : 'text-secondary hover:bg-surface-container-low'}`}>SKU Benchmark</button>
       {markets.map(market => <button key={market.marketplace} type="button" onClick={() => setActiveKey(market.marketplace)} role="tab" aria-selected={activeKey === market.marketplace} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-bold transition ${activeKey === market.marketplace ? 'bg-primary text-white shadow-sm' : 'text-secondary hover:bg-surface-container-low'}`}>{market.display_name}{market.reco_type === 'setup' && <span className="ml-1.5 text-[10px] font-medium opacity-70">Setup</span>}</button>)}
     </div>
-    {configLoading && !config ? <LoadingPanel label="marketplace configuration" /> : activeKey === 'sku-benchmark' ? <SettlementBenchmarkPanel /> : active?.marketplace === 'flipkart' ? <FlipkartFeeAudit embedded /> : active?.marketplace === 'amazon' ? <AmazonReconciliationPanel embedded /> : active?.reco_type === 'invoice' ? <InvoicePaymentPanel market={active} /> : active?.reco_type === 'ledger' ? <LedgerPaymentPanel market={active} /> : <SetupPanel market={active || PRESET_MARKETS[0]} />}
+    {configLoading && !config ? <LoadingPanel label="marketplace configuration" /> : activeKey === 'sku-benchmark' ? <SettlementBenchmarkPanel /> : active?.marketplace === 'flipkart' ? <FlipkartFeeAudit embedded /> : active?.marketplace === 'amazon' ? <AmazonReconciliationPanel embedded /> : active?.marketplace === 'myntra' ? <MyntraReconciliationPanel market={active} embedded /> : active?.marketplace === 'meesho' ? <MeeshoReconciliationPanel market={active} embedded /> : active?.reco_type === 'invoice' ? <InvoicePaymentPanel market={active} /> : active?.reco_type === 'ledger' ? <LedgerPaymentPanel market={active} /> : <SetupPanel market={active || PRESET_MARKETS[0]} />}
   </div>;
 }

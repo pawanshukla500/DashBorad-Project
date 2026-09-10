@@ -1,9 +1,19 @@
 {
+  "watch": [
+    "server.js",
+    "routes/",
+    "services/",
+    "utils/",
+    "db/"
+  ],
+  "ext": "js",
   "ignore": [
     "scripts/",
     "tests/",
     "*.test.js",
     "*.spec.js",
+    "*.cjs",
+    "*.mjs",
     "node_modules/"
   ]
 }

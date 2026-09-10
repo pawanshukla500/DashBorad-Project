@@ -20,7 +20,7 @@ export const ORDER_SETTLEMENT_TOTALS_SELECT = `
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(collection_fee,0))   ELSE 0 END) AS collection_fee,
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(pick_pack_fee,0))    ELSE 0 END) AS pick_pack_fee,
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(shipping_fee,0))     ELSE 0 END) AS shipping_fee,
-    SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(reverse_shipping,0)) ELSE 0 END) AS reverse_shipping,
+    SUM(ABS(COALESCE(reverse_shipping,0)))                                               AS reverse_shipping,
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(franchise_fee,0))    ELSE 0 END) AS franchise_fee,
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(tcs,0))              ELSE 0 END) AS tcs,
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(tds,0))              ELSE 0 END) AS tds,

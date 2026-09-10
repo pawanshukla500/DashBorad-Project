@@ -5,6 +5,7 @@ import { SETT_CTE as SHARED_SETT_CTE } from '../services/settlementSql.js';
 import { ORDER_SETTLEMENT_TOTALS_TABLE } from '../services/orderSettlementTotals.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { optionalQueryText, pagination, positiveInt } from '../utils/requestParams.js';
+import { classifyMyntraNod } from '../services/myntraNodClassification.js';
 
 const router = express.Router();
 
@@ -169,12 +170,31 @@ router.use(async (req, res, next) => {
 function buildWhere(q, alias = 'o') {
   const conds = [];
   const values = [];
+  const isRetJoin = alias.includes('ret');
+  const mpCol = isRetJoin ? 'COALESCE(o.marketplace, ret.marketplace)' : `${alias}.marketplace`;
+  const saCol = isRetJoin ? 'COALESCE(o.seller_account, ret.seller_account)' : `${alias}.seller_account`;
+
   if (q.startDate)   { conds.push(`${alias}.order_date >= $${values.push(q.startDate)}`); }
   if (q.endDate)     { conds.push(`${alias}.order_date <= $${values.push(q.endDate)}`); }
   if (q.category)    { conds.push(`${alias}.category = $${values.push(q.category)}`); }
   if (q.region)      { conds.push(`${alias}.delivery_state = $${values.push(q.region)}`); }
   if (q.status)      { conds.push(`${alias}.orders_status = $${values.push(q.status)}`); }
-  if (q.marketplace) { conds.push(`${alias}.marketplace = $${values.push(q.marketplace)}`); }
+  if (q.marketplace && q.marketplace !== 'all') {
+    const mp = String(q.marketplace).trim().toLowerCase();
+    if (mp === 'myntra_vb') {
+      conds.push(`${mpCol} = 'myntra'`);
+      conds.push(`COALESCE(${saCol}, 'myntra_vb') = 'myntra_vb'`);
+    } else if (mp === 'myntra_ej') {
+      conds.push(`${mpCol} = 'myntra'`);
+      conds.push(`${saCol} = 'myntra_ej'`);
+    } else {
+      conds.push(`${mpCol} = $${values.push(mp)}`);
+    }
+  }
+  const sellerAccount = q.sellerAccount || q.seller_account;
+  if (sellerAccount && sellerAccount !== 'all' && sellerAccount !== 'default' && sellerAccount !== 'myntra_vb' && sellerAccount !== 'myntra_ej') {
+    conds.push(`${saCol} = $${values.push(sellerAccount)}`);
+  }
   if (q.brand)       { conds.push(`${alias}.brand_name  = $${values.push(q.brand)}`); }
   return { where: conds.length ? 'AND ' + conds.join(' AND ') : '', values };
 }
@@ -283,8 +303,8 @@ router.get('/summary', async (req, res) => {
         COUNT(*) FILTER (WHERE s.order_item_id IS NULL)                           AS "unsettledCount",
         COALESCE(SUM(o.final_invoice_amount) FILTER (WHERE s.order_item_id IS NULL), 0) AS "unsettledAmount",
         COUNT(ret.order_item_id)                                                   AS "returnCount",
-        SUM(CASE WHEN ret.return_type ILIKE '%customer%' THEN 1 ELSE 0 END)       AS "customerReturns",
-        SUM(CASE WHEN ret.return_type ILIKE '%courier%'  THEN 1 ELSE 0 END)       AS "courierReturns",
+        SUM(CASE WHEN ret.return_type ILIKE '%customer%' OR ret.return_type = 'Return' THEN 1 ELSE 0 END) AS "customerReturns",
+        SUM(CASE WHEN ret.return_type ILIKE '%courier%' OR ret.return_type ILIKE '%rto%' THEN 1 ELSE 0 END) AS "courierReturns",
         -- QC outcome from final_condition, fallback primary_pv_output (not return_reason)
         SUM(CASE WHEN ret.order_item_id IS NOT NULL AND LOWER(COALESCE(NULLIF(TRIM(ret.final_condition),''), NULLIF(TRIM(ret.primary_pv_output),''), ''))
               ~ '(damag|reject|fail|bad|defect|scrap|unsell)' THEN 1 ELSE 0 END) AS "badReturns",
@@ -330,7 +350,10 @@ router.get('/marketplace-summary', async (req, res) => {
     const { rows } = await pool.query(`
       ${SETT_CTE}
       SELECT
-        COALESCE(o.marketplace, 'Unknown')                                        AS marketplace,
+        CASE
+          WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+          ELSE COALESCE(o.marketplace, 'Unknown')
+        END                                                                       AS marketplace,
         COUNT(*)                                                                   AS orders,
         COALESCE(SUM(o.final_invoice_amount), 0)                                  AS revenue,
         COALESCE(SUM(COALESCE(s.net_bank,0)), 0)                                  AS "myShare",
@@ -345,7 +368,10 @@ router.get('/marketplace-summary', async (req, res) => {
       LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
       LEFT JOIN sett s ON s.order_item_id = o.order_item_id
       WHERE 1=1 ${where}
-      GROUP BY COALESCE(o.marketplace, 'Unknown')
+      GROUP BY CASE
+        WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+        ELSE COALESCE(o.marketplace, 'Unknown')
+      END
       ORDER BY revenue DESC
     `, values);
     res.json(rows.map(row => ({
@@ -401,8 +427,8 @@ router.get('/return-trend', async (req, res) => {
         ${period}                                                                AS period,
         COUNT(*)                                                                 AS orders,
         COUNT(ret.order_item_id)                                                AS returns,
-        SUM(CASE WHEN ret.return_type ILIKE '%customer%' THEN 1 ELSE 0 END)     AS "customerReturns",
-        SUM(CASE WHEN ret.return_type ILIKE '%courier%'  THEN 1 ELSE 0 END)     AS "courierReturns",
+        SUM(CASE WHEN ret.return_type ILIKE '%customer%' OR ret.return_type = 'Return' THEN 1 ELSE 0 END) AS "customerReturns",
+        SUM(CASE WHEN ret.return_type ILIKE '%courier%' OR ret.return_type ILIKE '%rto%' THEN 1 ELSE 0 END) AS "courierReturns",
         CASE WHEN COUNT(*) > 0
           THEN ROUND((COUNT(ret.order_item_id)::numeric / COUNT(*) * 100), 1)
           ELSE 0 END                                                            AS "returnRate"
@@ -1272,40 +1298,34 @@ router.get('/profit-analysis', async (req, res) => {
   }
 });
 
-// ── GET /api/sku-return-summary ───────────────────────────────────────────────
-// skuView: 'listing' (default) | 'master' | 'both'
-router.get('/sku-return-summary', async (req, res) => {
-  try {
-    const pool = getPool();
-    const skuView = (req.query.skuView || 'listing').toLowerCase();
-    const { where, values } = buildWhere(req.query);
+export function buildSkuReturnSummaryQuery(skuView = 'listing', where = '') {
+  const normalizedSkuView = (skuView || 'listing').toLowerCase();
+  let selectSku, groupBySku;
+  if (normalizedSkuView === 'master') {
+    selectSku   = `COALESCE(sm.master_sku, o.sku, 'Unknown') AS sku, NULL::text AS listing_sku`;
+    groupBySku  = `COALESCE(sm.master_sku, o.sku, 'Unknown')`;
+  } else if (normalizedSkuView === 'both') {
+    selectSku   = `COALESCE(sm.master_sku, o.sku, 'Unknown') AS master_sku, COALESCE(o.sku, 'Unknown') AS sku`;
+    groupBySku  = `COALESCE(sm.master_sku, o.sku, 'Unknown'), COALESCE(o.sku, 'Unknown')`;
+  } else {
+    // listing (default)
+    selectSku   = `COALESCE(o.sku, 'Unknown') AS sku, NULL::text AS listing_sku`;
+    groupBySku  = `COALESCE(o.sku, 'Unknown')`;
+  }
 
-    let selectSku, groupBySku;
-    if (skuView === 'master') {
-      selectSku   = `COALESCE(sm.master_sku, o.sku, 'Unknown') AS sku, NULL::text AS listing_sku`;
-      groupBySku  = `COALESCE(sm.master_sku, o.sku)`;
-    } else if (skuView === 'both') {
-      selectSku   = `COALESCE(sm.master_sku, o.sku, 'Unknown') AS master_sku, COALESCE(o.sku, 'Unknown') AS sku`;
-      groupBySku  = `o.sku, COALESCE(sm.master_sku, o.sku)`;
-    } else {
-      // listing (default)
-      selectSku   = `COALESCE(o.sku, 'Unknown') AS sku, NULL::text AS listing_sku`;
-      groupBySku  = `o.sku`;
-    }
+  const skuJoin = normalizedSkuView !== 'listing'
+    ? `LEFT JOIN sku_master sm ON sm.listing_sku = o.sku AND (sm.marketplace = o.marketplace OR sm.marketplace = 'all')`
+    : '';
 
-    const skuJoin = skuView !== 'listing'
-      ? `LEFT JOIN sku_master sm ON sm.listing_sku = o.sku AND (sm.marketplace = o.marketplace OR sm.marketplace = 'all')`
-      : '';
-
-    const { rows } = await pool.query(`
+  const sql = `
       SELECT
         ${selectSku},
         TO_CHAR(DATE_TRUNC('month', o.order_date), 'Mon-YYYY')                AS month,
         DATE_TRUNC('month', o.order_date)                                     AS month_sort,
         SUM(COALESCE(o.qty, 1))                                               AS gross,
-        COALESCE(SUM(CASE WHEN r.return_type ILIKE '%customer%'
+        COALESCE(SUM(CASE WHEN r.return_type ILIKE '%customer%' OR r.return_type = 'Return'
                           THEN COALESCE(r.quantity,1) END), 0)                AS returns,
-        COALESCE(SUM(CASE WHEN r.return_type ILIKE '%courier%'
+        COALESCE(SUM(CASE WHEN r.return_type ILIKE '%courier%' OR r.return_type ILIKE '%rto%'
                           THEN COALESCE(r.quantity,1) END), 0)                AS rto
       FROM orders o
       ${skuJoin}
@@ -1315,7 +1335,19 @@ router.get('/sku-return-summary', async (req, res) => {
       WHERE 1=1 ${where}
       GROUP BY ${groupBySku}, DATE_TRUNC('month', o.order_date)
       ORDER BY DATE_TRUNC('month', o.order_date), SUM(COALESCE(o.qty,1)) DESC
-    `, values);
+  `;
+
+  return { skuView: normalizedSkuView, selectSku, groupBySku, skuJoin, sql };
+}
+
+// ── GET /api/sku-return-summary ───────────────────────────────────────────────
+// skuView: 'listing' (default) | 'master' | 'both'
+router.get('/sku-return-summary', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { where, values } = buildWhere(req.query);
+    const { sql, skuView } = buildSkuReturnSummaryQuery(req.query.skuView, where);
+    const { rows } = await pool.query(sql, values);
 
     const data = rows.map(r => {
       const gross   = +r.gross;
@@ -1484,8 +1516,8 @@ router.get('/sku-orders', async (req, res) => {
           COALESCE(SUM(o.final_invoice_amount), 0)                                  AS "totalInvoice",
           COALESCE(SUM(o.my_share), 0)                                              AS "totalMyShare",
           COUNT(ret.order_item_id)                                                   AS "returnCount",
-          COUNT(CASE WHEN ret.return_type ILIKE '%customer%' THEN 1 END)            AS "customerReturns",
-          COUNT(CASE WHEN ret.return_type ILIKE '%courier%'  THEN 1 END)            AS "courierReturns"
+          COUNT(CASE WHEN ret.return_type ILIKE '%customer%' OR ret.return_type = 'Return' THEN 1 END) AS "customerReturns",
+          COUNT(CASE WHEN ret.return_type ILIKE '%courier%' OR ret.return_type ILIKE '%rto%' THEN 1 END) AS "courierReturns"
         FROM orders o
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
         WHERE o.sku = $1
@@ -1918,9 +1950,29 @@ router.get('/settlement/month-pl', async (req, res) => {
     const pool = getPool();
     const mpFilter = parseMarketplaceFilter(req.query.marketplace);
 
-    const mpVals = mpFilter ? [mpFilter] : [];
-    const mpWhereO  = mpFilter ? "AND COALESCE(o.marketplace, 'flipkart') = $1"  : '';
-    const mpWhereFk = mpFilter ? "AND COALESCE(fk.marketplace, 'flipkart') = $1" : '';
+    let mpWhereO = '';
+    let mpWhereFk = '';
+    let mpWhereNO = '';
+    const mpVals = [];
+
+    if (mpFilter === 'myntra_vb') {
+      mpWhereO = "AND o.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
+      mpWhereFk = "AND COALESCE(fk.marketplace, o.marketplace) = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
+      mpWhereNO = "AND marketplace = 'myntra'";
+    } else if (mpFilter === 'myntra_ej') {
+      mpWhereO = "AND o.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
+      mpWhereFk = "AND COALESCE(fk.marketplace, o.marketplace) = 'myntra' AND o.seller_account = 'myntra_ej'";
+      mpWhereNO = "AND marketplace = 'myntra'";
+    } else if (mpFilter === 'myntra') {
+      mpWhereO = "AND o.marketplace = 'myntra'";
+      mpWhereFk = "AND COALESCE(fk.marketplace, o.marketplace) = 'myntra'";
+      mpWhereNO = "AND marketplace = 'myntra'";
+    } else if (mpFilter) {
+      mpVals.push(mpFilter);
+      mpWhereO = `AND COALESCE(o.marketplace, 'flipkart') = $${mpVals.length}`;
+      mpWhereFk = `AND COALESCE(fk.marketplace, 'flipkart') = $${mpVals.length}`;
+      mpWhereNO = `AND COALESCE(marketplace, 'flipkart') = $${mpVals.length}`;
+    }
 
     // ── 1. Main: per order_month (order placed in that month) ──
     const mainRes = await pool.query(`
@@ -1944,7 +1996,10 @@ router.get('/settlement/month-pl', async (req, res) => {
       )
       SELECT
         TO_CHAR(o.order_date, 'YYYY-MM')          AS month,
-        COALESCE(o.marketplace, 'Unknown')         AS marketplace,
+        CASE
+          WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+          ELSE COALESCE(o.marketplace, 'Unknown')
+        END                                        AS marketplace,
         COUNT(DISTINCT o.order_item_id)            AS order_count,
         COALESCE(SUM(o.final_invoice_amount), 0)   AS sale_amount,
         COUNT(DISTINCT r.order_item_id)            AS return_count,
@@ -1971,7 +2026,11 @@ router.get('/settlement/month-pl', async (req, res) => {
       LEFT JOIN order_returns r      ON r.order_item_id = o.order_item_id
       LEFT JOIN order_fees f   ON f.order_item_id = o.order_item_id
       WHERE o.order_date IS NOT NULL ${mpWhereO}
-      GROUP BY TO_CHAR(o.order_date, 'YYYY-MM'), COALESCE(o.marketplace, 'Unknown')
+      GROUP BY TO_CHAR(o.order_date, 'YYYY-MM'),
+        CASE
+          WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+          ELSE COALESCE(o.marketplace, 'Unknown')
+        END
       ORDER BY month, marketplace
     `, mpVals);
 
@@ -1979,7 +2038,10 @@ router.get('/settlement/month-pl', async (req, res) => {
     const crossRes = await pool.query(`
       SELECT
         TO_CHAR(fk.payment_date, 'YYYY-MM')            AS payment_month,
-        COALESCE(fk.marketplace, o.marketplace, 'Unknown') AS marketplace,
+        CASE
+          WHEN COALESCE(fk.marketplace, o.marketplace) = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+          ELSE COALESCE(fk.marketplace, o.marketplace, 'Unknown')
+        END AS marketplace,
         COUNT(DISTINCT fk.order_item_id)               AS order_count,
         SUM(CASE WHEN fk.bank_settlement > 0 THEN fk.bank_settlement ELSE 0 END) AS received
       FROM unified_settlements fk
@@ -1988,12 +2050,15 @@ router.get('/settlement/month-pl', async (req, res) => {
         AND fk.bank_settlement > 0
         AND o.order_date IS NOT NULL
         AND TO_CHAR(fk.payment_date, 'YYYY-MM') != TO_CHAR(o.order_date, 'YYYY-MM') ${mpWhereFk}
-      GROUP BY TO_CHAR(fk.payment_date, 'YYYY-MM'), COALESCE(fk.marketplace, o.marketplace, 'Unknown')
+      GROUP BY TO_CHAR(fk.payment_date, 'YYYY-MM'),
+        CASE
+          WHEN COALESCE(fk.marketplace, o.marketplace) = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+          ELSE COALESCE(fk.marketplace, o.marketplace, 'Unknown')
+        END
       ORDER BY payment_month, marketplace
     `, mpVals);
 
     // ── 3. Non-order NEFT charges: storage, ads, google ads, SPF claims — grouped by payment month ──
-    const mpWhereNO = mpFilter ? "AND COALESCE(marketplace, 'flipkart') = $1" : '';
     const noOrderSql = (table) => `
       SELECT TO_CHAR(payment_date,'YYYY-MM')    AS month,
              COALESCE(marketplace,'flipkart')   AS marketplace,
@@ -2025,7 +2090,10 @@ router.get('/settlement/month-pl', async (req, res) => {
         SELECT
           fk.order_item_id,
           TO_CHAR(o.order_date, 'YYYY-MM')   AS month,
-          COALESCE(o.marketplace, 'Unknown') AS marketplace,
+          CASE
+            WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+            ELSE COALESCE(o.marketplace, 'Unknown')
+          END AS marketplace,
           COALESCE(NULLIF(fk.sale_amount, 0), o.final_invoice_amount, 0) AS inv_amt,
           GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)                   AS qty,
           COALESCE((
@@ -2033,6 +2101,7 @@ router.get('/settlement/month-pl', async (req, res) => {
             FROM rc_commission rc
             WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
               AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
               AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
               AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
               AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
@@ -2045,6 +2114,7 @@ router.get('/settlement/month-pl', async (req, res) => {
             FROM rc_fixed_fee rc
             WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
               AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
               AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
               AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
               AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
@@ -2056,6 +2126,7 @@ router.get('/settlement/month-pl', async (req, res) => {
             FROM rc_collection_fee rc
             WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
               AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
               AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
               AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
               AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
@@ -2067,6 +2138,7 @@ router.get('/settlement/month-pl', async (req, res) => {
             FROM rc_pick_pack rc
             WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
               AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
               AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
               AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
               AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
@@ -2085,13 +2157,29 @@ router.get('/settlement/month-pl', async (req, res) => {
       FROM rc_calc GROUP BY month, marketplace
     `;
 
-    const [storRes, adsRes, gadsRes, spfClaimsRes, spfLossRes, rcRes] = await Promise.all([
+    const isMyntraFilter = mpFilter && mpFilter.startsWith('myntra');
+    const myntraNodSql = `
+      SELECT
+        TO_CHAR(payment_date, 'YYYY-MM') AS month,
+        COALESCE(seller_account, 'myntra_vb') AS marketplace,
+        invoice_number,
+        notes,
+        amount_received
+      FROM mp_invoices
+      WHERE marketplace = 'myntra'
+        AND payment_date IS NOT NULL
+        AND (order_type = 'nod' OR notes ILIKE '%nod%' OR invoice_number ILIKE '%nod%')
+        ${mpFilter === 'myntra_vb' ? "AND COALESCE(seller_account, 'myntra_vb') = 'myntra_vb'" : mpFilter === 'myntra_ej' ? "AND seller_account = 'myntra_ej'" : ''}
+    `;
+
+    const [storRes, adsRes, gadsRes, spfClaimsRes, spfLossRes, rcRes, myntraNodRes] = await Promise.all([
       pool.query(noOrderSql('fk_storage_recall'), mpVals).catch(() => ({ rows: [] })),
       pool.query(noOrderSql('fk_ads'),            mpVals).catch(() => ({ rows: [] })),
       pool.query(noOrderSql('fk_google_ads'),     mpVals).catch(() => ({ rows: [] })),
       pool.query(spfClaimsSql,                    mpVals).catch(() => ({ rows: [] })),
       pool.query(spfLossSql,                      mpVals).catch(() => ({ rows: [] })),
       pool.query(rcSql,                           mpVals).catch(() => ({ rows: [] })),
+      (!mpFilter || isMyntraFilter) ? pool.query(myntraNodSql).catch(() => ({ rows: [] })) : Promise.resolve({ rows: [] }),
     ]);
 
     // Build lookup helper: key = "month|marketplace" → numeric total
@@ -2105,6 +2193,22 @@ router.get('/settlement/month-pl', async (req, res) => {
     const gadsMap      = makeMap(gadsRes.rows);
     const spfClaimsMap = makeMap(spfClaimsRes.rows);
     const spfLossMap   = makeMap(spfLossRes.rows);
+
+    // Merge Myntra Non-Order Deductions and Credits
+    if (myntraNodRes && myntraNodRes.rows) {
+      for (const nr of myntraNodRes.rows) {
+        const key = `${nr.month}|${nr.marketplace}`;
+        const val = Number(nr.amount_received || 0);
+        const c = classifyMyntraNod(nr.invoice_number, nr.notes, val);
+        if (val < 0) {
+          // Negative amounts (marketing, MFB, split NOD, service invoices) are non-order deductions
+          adsMap[key] = (adsMap[key] || 0) + Math.abs(val);
+        } else if (val > 0) {
+          // Positive amounts (SPF reimbursements, credit notes, logistics reimbursements) are credits
+          spfClaimsMap[key] = (spfClaimsMap[key] || 0) + val;
+        }
+      }
+    }
 
     const rcMap = {};
     for (const r of rcRes.rows) {
@@ -2342,8 +2446,18 @@ router.get('/settlement/order-fee-compare', async (req, res) => {
     const ps   = all === 'true' ? 5000 : positiveInt(pageSize, 50, { max: 200 });
     const offs = (pg - 1) * ps;
 
-    const mpCond = marketplace ? "AND COALESCE(o.marketplace, 'flipkart') = $2" : '';
-    const baseParams = marketplace ? [month, marketplace] : [month];
+    let mpCond = '';
+    const baseParams = [month];
+    if (marketplace === 'myntra_vb') {
+      mpCond = "AND o.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
+    } else if (marketplace === 'myntra_ej') {
+      mpCond = "AND o.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
+    } else if (marketplace === 'myntra') {
+      mpCond = "AND o.marketplace = 'myntra'";
+    } else if (marketplace) {
+      baseParams.push(marketplace);
+      mpCond = `AND COALESCE(o.marketplace, 'flipkart') = $${baseParams.length}`;
+    }
     const detailParams = [...baseParams, ps, offs];
 
     // Variance filter condition (applied on computed columns in outer query)
@@ -2359,6 +2473,7 @@ router.get('/settlement/order-fee-compare', async (req, res) => {
       FROM rc_commission rc
       WHERE LOWER(rc.category)=LOWER(o.category)
         AND rc.marketplace=COALESCE(o.marketplace,'flipkart')
+        AND rc.seller_account = COALESCE(o.seller_account, 'default')
         AND (rc.brand_name IS NULL OR rc.brand_name='' OR rc.brand_name=o.brand_name)
         AND (rc.price_min IS NULL OR rc.price_min<=COALESCE(o.final_invoice_amount,0))
         AND (rc.price_max IS NULL OR rc.price_max>=COALESCE(o.final_invoice_amount,0))
@@ -2372,6 +2487,7 @@ router.get('/settlement/order-fee-compare', async (req, res) => {
       SELECT rc.rate FROM rc_fixed_fee rc
       WHERE LOWER(rc.category)=LOWER(o.category)
         AND rc.marketplace=COALESCE(o.marketplace,'flipkart')
+        AND rc.seller_account = COALESCE(o.seller_account, 'default')
         AND (rc.price_min IS NULL OR rc.price_min<=COALESCE(o.final_invoice_amount,0))
         AND (rc.price_max IS NULL OR rc.price_max>=COALESCE(o.final_invoice_amount,0))
         AND (rc.start_date IS NULL OR rc.start_date<=COALESCE(fs.payment_date,o.order_date))
@@ -2385,6 +2501,7 @@ router.get('/settlement/order-fee-compare', async (req, res) => {
       FROM rc_collection_fee rc
       WHERE LOWER(rc.category)=LOWER(o.category)
         AND rc.marketplace=COALESCE(o.marketplace,'flipkart')
+        AND rc.seller_account = COALESCE(o.seller_account, 'default')
         AND (rc.price_min IS NULL OR rc.price_min<=COALESCE(o.final_invoice_amount,0))
         AND (rc.price_max IS NULL OR rc.price_max>=COALESCE(o.final_invoice_amount,0))
         AND (rc.start_date IS NULL OR rc.start_date<=COALESCE(fs.payment_date,o.order_date))
@@ -2396,6 +2513,7 @@ router.get('/settlement/order-fee-compare', async (req, res) => {
       SELECT rc.rate FROM rc_pick_pack rc
       WHERE LOWER(rc.category)=LOWER(o.category)
         AND rc.marketplace=COALESCE(o.marketplace,'flipkart')
+        AND rc.seller_account = COALESCE(o.seller_account, 'default')
         AND (rc.price_min IS NULL OR rc.price_min<=COALESCE(o.final_invoice_amount,0))
         AND (rc.price_max IS NULL OR rc.price_max>=COALESCE(o.final_invoice_amount,0))
         AND (rc.start_date IS NULL OR rc.start_date<=COALESCE(fs.payment_date,o.order_date))
@@ -2653,8 +2771,18 @@ router.get('/settlement/reco-statement', async (req, res) => {
   try {
     const pool = getPool();
     const marketplace = parseMarketplaceFilter(req.query.marketplace);
-    const mpCond = marketplace ? "AND COALESCE(o.marketplace, 'flipkart') = $1" : '';
-    const mpParams = marketplace ? [marketplace] : [];
+    let mpCond = '';
+    const mpParams = [];
+    if (marketplace === 'myntra_vb') {
+      mpCond = "AND o.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
+    } else if (marketplace === 'myntra_ej') {
+      mpCond = "AND o.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
+    } else if (marketplace === 'myntra') {
+      mpCond = "AND o.marketplace = 'myntra'";
+    } else if (marketplace) {
+      mpParams.push(marketplace);
+      mpCond = `AND COALESCE(o.marketplace, 'flipkart') = $${mpParams.length}`;
+    }
     const includeFlipkartOnlyCharges = !marketplace || marketplace === 'flipkart';
     const M  = `TO_CHAR(payment_date, 'YYYY-MM')`;
     const OM = `TO_CHAR(order_date, 'YYYY-MM')`;
@@ -2751,7 +2879,8 @@ router.get('/settlement/reco-statement', async (req, res) => {
               FROM rc_commission rc
               WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
                 AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-                AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
+              AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
                 AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
                                      / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
                 AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
@@ -2768,7 +2897,8 @@ router.get('/settlement/reco-statement', async (req, res) => {
               FROM rc_fixed_fee rc
               WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
                 AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-                AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
+              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
                                      / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
                 AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
                                      / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
@@ -2788,7 +2918,8 @@ router.get('/settlement/reco-statement', async (req, res) => {
               FROM rc_collection_fee rc
               WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
                 AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-                AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
+              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
                                      / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
                 AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
                                      / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
@@ -2802,7 +2933,8 @@ router.get('/settlement/reco-statement', async (req, res) => {
               FROM rc_pick_pack rc
               WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
                 AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-                AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
+              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
                                      / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
                 AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
                                      / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
@@ -2994,9 +3126,23 @@ router.get('/settlement/sale-statement', async (req, res) => {
   try {
     const pool = getPool();
     const marketplace = parseMarketplaceFilter(req.query.marketplace);
-    const mpCond = marketplace ? "AND COALESCE(o.marketplace, 'flipkart') = $1" : '';
-    const settlementMpCond = marketplace ? "AND COALESCE(marketplace, 'flipkart') = $1" : '';
-    const mpParams = marketplace ? [marketplace] : [];
+    let mpCond = '';
+    let settlementMpCond = '';
+    const mpParams = [];
+    if (marketplace === 'myntra_vb') {
+      mpCond = "AND o.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
+      settlementMpCond = "AND marketplace = 'myntra'";
+    } else if (marketplace === 'myntra_ej') {
+      mpCond = "AND o.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
+      settlementMpCond = "AND marketplace = 'myntra'";
+    } else if (marketplace === 'myntra') {
+      mpCond = "AND o.marketplace = 'myntra'";
+      settlementMpCond = "AND marketplace = 'myntra'";
+    } else if (marketplace) {
+      mpParams.push(marketplace);
+      mpCond = `AND COALESCE(o.marketplace, 'flipkart') = $${mpParams.length}`;
+      settlementMpCond = `AND COALESCE(marketplace, 'flipkart') = $${mpParams.length}`;
+    }
 
     // Per-sale-month aggregation joining settled orders to their FK settlement rows
     const { rows: saleRows } = await pool.query(`
@@ -3078,6 +3224,7 @@ router.get('/settlement/sale-statement', async (req, res) => {
             FROM rc_commission rc
             WHERE LOWER(rc.category) = LOWER(o.category)
               AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
               AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
               AND (rc.price_min IS NULL OR rc.price_min <= COALESCE(o.final_invoice_amount,0))
               AND (rc.price_max IS NULL OR rc.price_max >= COALESCE(o.final_invoice_amount,0))
@@ -3154,6 +3301,7 @@ router.get('/settlement/sale-statement', async (req, res) => {
             FROM rc_franchise_fee rc
             WHERE (rc.category = 'ALL' OR LOWER(rc.category) = LOWER(o.category))
               AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
               AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
               AND (rc.price_min IS NULL OR rc.price_min <= COALESCE(o.final_invoice_amount,0))
               AND (rc.price_max IS NULL OR rc.price_max >= COALESCE(o.final_invoice_amount,0))
@@ -3523,6 +3671,7 @@ router.get('/settlement/fee-leaks', async (req, res) => {
       FROM rc_commission rc
       WHERE LOWER(rc.category)=LOWER(o.category)
         AND rc.marketplace=COALESCE(o.marketplace,'flipkart')
+        AND rc.seller_account = COALESCE(o.seller_account, 'default')
         AND (rc.brand_name IS NULL OR rc.brand_name='' OR rc.brand_name=o.brand_name)
         AND (rc.price_min IS NULL OR rc.price_min<=COALESCE(o.final_invoice_amount,0))
         AND (rc.price_max IS NULL OR rc.price_max>=COALESCE(o.final_invoice_amount,0))
@@ -3536,6 +3685,7 @@ router.get('/settlement/fee-leaks', async (req, res) => {
       SELECT rc.rate FROM rc_fixed_fee rc
       WHERE LOWER(rc.category)=LOWER(o.category)
         AND rc.marketplace=COALESCE(o.marketplace,'flipkart')
+        AND rc.seller_account = COALESCE(o.seller_account, 'default')
         AND (rc.price_min IS NULL OR rc.price_min<=COALESCE(o.final_invoice_amount,0))
         AND (rc.price_max IS NULL OR rc.price_max>=COALESCE(o.final_invoice_amount,0))
         AND (rc.start_date IS NULL OR rc.start_date<=COALESCE(fs.payment_date,o.order_date))
@@ -3549,6 +3699,7 @@ router.get('/settlement/fee-leaks', async (req, res) => {
       FROM rc_collection_fee rc
       WHERE LOWER(rc.category)=LOWER(o.category)
         AND rc.marketplace=COALESCE(o.marketplace,'flipkart')
+        AND rc.seller_account = COALESCE(o.seller_account, 'default')
         AND (rc.price_min IS NULL OR rc.price_min<=COALESCE(o.final_invoice_amount,0))
         AND (rc.price_max IS NULL OR rc.price_max>=COALESCE(o.final_invoice_amount,0))
         AND (rc.start_date IS NULL OR rc.start_date<=COALESCE(fs.payment_date,o.order_date))
@@ -3560,6 +3711,7 @@ router.get('/settlement/fee-leaks', async (req, res) => {
       SELECT rc.rate FROM rc_pick_pack rc
       WHERE LOWER(rc.category)=LOWER(o.category)
         AND rc.marketplace=COALESCE(o.marketplace,'flipkart')
+        AND rc.seller_account = COALESCE(o.seller_account, 'default')
         AND (rc.price_min IS NULL OR rc.price_min<=COALESCE(o.final_invoice_amount,0))
         AND (rc.price_max IS NULL OR rc.price_max>=COALESCE(o.final_invoice_amount,0))
         AND (rc.start_date IS NULL OR rc.start_date<=COALESCE(fs.payment_date,o.order_date))
@@ -3731,7 +3883,8 @@ router.get('/settlement/order-fee-detail', async (req, res) => {
         FROM rc_collection_fee rc
         WHERE LOWER(rc.category) = ${NORM_CAT}
           AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-          AND rc.price_min <= ${UNIT_PRICE}
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
+              AND rc.price_min <= ${UNIT_PRICE}
           AND rc.price_max >= ${UNIT_PRICE}
           AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
           AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
@@ -3742,7 +3895,8 @@ router.get('/settlement/order-fee-detail', async (req, res) => {
         FROM rc_commission rc
         WHERE LOWER(rc.category) = ${NORM_CAT}
           AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-          AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
+              AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
           AND rc.price_min <= ${UNIT_PRICE}
           AND rc.price_max >= ${UNIT_PRICE}
           AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
@@ -3755,7 +3909,8 @@ router.get('/settlement/order-fee-detail', async (req, res) => {
         FROM rc_fixed_fee rc
         WHERE LOWER(rc.category) = ${NORM_CAT}
           AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-          AND rc.price_min <= ${UNIT_PRICE}
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
+              AND rc.price_min <= ${UNIT_PRICE}
           AND rc.price_max >= ${UNIT_PRICE}
           AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
           AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
@@ -3766,7 +3921,8 @@ router.get('/settlement/order-fee-detail', async (req, res) => {
         FROM rc_pick_pack rc
         WHERE LOWER(rc.category) = ${NORM_CAT}
           AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-          AND rc.price_min <= ${UNIT_PRICE}
+              AND rc.seller_account = COALESCE(o.seller_account, 'default')
+              AND rc.price_min <= ${UNIT_PRICE}
           AND rc.price_max >= ${UNIT_PRICE}
           AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
           AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)

@@ -20,14 +20,15 @@ import {
 
 // ── Marketplace config ────────────────────────────────────────────────────────
 const MPs = [
-  { id: 'all',      label: 'All',      pill: 'bg-primary text-white',    dot: '#6366f1' },
-  { id: 'flipkart', label: 'Flipkart', pill: 'bg-amber-500 text-white',     dot: '#f59e0b' },
-  { id: 'amazon',   label: 'Amazon',   pill: 'bg-orange-500 text-white',    dot: '#f97316' },
-  { id: 'myntra',   label: 'Myntra',   pill: 'bg-pink-500 text-white',      dot: '#ec4899' },
-  { id: 'meesho',   label: 'Meesho',   pill: 'bg-purple-500 text-white',    dot: '#a855f7' },
+  { id: 'all',       label: 'All',         pill: 'bg-primary text-white',    dot: '#6366f1' },
+  { id: 'flipkart',  label: 'Flipkart',    pill: 'bg-amber-500 text-white',     dot: '#f59e0b' },
+  { id: 'amazon',    label: 'Amazon',      pill: 'bg-orange-500 text-white',    dot: '#f97316' },
+  { id: 'myntra_vb', label: 'Myntra (VB)', pill: 'bg-pink-500 text-white',      dot: '#ec4899' },
+  { id: 'myntra_ej', label: 'Myntra (EJ)', pill: 'bg-rose-500 text-white',      dot: '#be185d' },
+  { id: 'meesho',    label: 'Meesho',      pill: 'bg-purple-500 text-white',    dot: '#a855f7' },
 ];
-const MP_DOT = { flipkart: '#f59e0b', amazon: '#f97316', myntra: '#ec4899', meesho: '#a855f7', all: '#6366f1' };
-const MP_CYCLE = { flipkart: 7, amazon: 14, myntra: 21, meesho: 7, all: 10 };
+const MP_DOT = { flipkart: '#f59e0b', amazon: '#f97316', myntra: '#ec4899', myntra_vb: '#ec4899', myntra_ej: '#be185d', meesho: '#a855f7', all: '#6366f1' };
+const MP_CYCLE = { flipkart: 7, amazon: 14, myntra: 21, myntra_vb: 21, myntra_ej: 21, meesho: 7, all: 10 };
 
 // ── Shared components ─────────────────────────────────────────────────────────
 function KpiCard({ label, value, sub, color = 'slate', icon, alert }) {
@@ -248,7 +249,7 @@ function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, m
             <Empty msg="No order-level SPF found" sub="Appears when fk_settlement_orders.protection_fund > 0" />
           ) : (
             <div className="overflow-auto max-h-64">
-              <table className="w-full text-xs">
+              <table className="finance-table">
                 <thead className="sticky top-0 bg-surface">
                   <tr className="text-outline border-b border-border">
                     <th className="text-left py-2 font-medium">Order Item ID</th>
@@ -463,7 +464,7 @@ function RecentNefts({ nefts, mp }) {
     <SectionCard title="Recent Settlement Cycles (NEFTs)" sub="Last 30 days — each row = one bank transfer">
       {rows.length === 0 ? <Empty msg="No settlement data" /> : (
         <div className="overflow-auto max-h-72">
-          <table className="w-full text-xs">
+          <table className="finance-table">
             <thead className="sticky top-0 bg-surface">
               <tr className="text-outline border-b border-border">
                 <th className="text-left py-2 font-medium">NEFT ID</th>

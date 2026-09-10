@@ -1,87 +1,100 @@
 # Production deployment guide
 
-ReconCentral long-term hosting: **managed Postgres + always-on API + static frontend**.
+ReconCentral's final production target is **Hostinger VPS + Docker + PostgreSQL
+in Docker**.
 
 ## Target architecture
 
+```text
+[Browser]
+    |
+    | HTTPS
+    v
+[Caddy web container]
+    |
+    | Docker network: app
+    v
+[Node API container]
+    |
+    | Docker/private network: data
+    v
+[PostgreSQL Docker container on the Hostinger VPS]
 ```
-[Browser] → [Static host: Cloudflare Pages / Firebase Hosting]
-                ↓ HTTPS
-           [API: Cloud Run / VPS]
-                ↓ private / SSL
-           [Managed Postgres: Neon / Cloud SQL / AlloyDB]
+
+The browser must never connect to PostgreSQL directly. PostgreSQL should be
+reachable only from the API container through a private Docker network, local
+host-gateway binding, VPN, or another private channel.
+
+## Production environment
+
+Create `/opt/reconcentral/.env` on the VPS and keep it out of Git. The app uses
+`DATABASE_URL` as the canonical database setting.
+
+```dotenv
+APP_DOMAIN=app.example.com
+ACME_EMAIL=ops@example.com
+NODE_ENV=production
+CORS_ORIGINS=https://app.example.com
+
+DATABASE_URL=postgresql://USER:PASSWORD@postgres:5432/paymentapp
+DATABASE_ENGINE=postgresql
+PG_SSL=false
+PG_POOL_MAX=20
+PG_POOL_MIN=0
+PG_HEALTHCHECK_INTERVAL_MS=30000
+PG_APPLICATION_NAME=reconcentral-api
+
+# Add Firebase Admin credentials and optional notification variables here.
 ```
 
-Do **not** expose Postgres port 5432 to the public internet.
+Use `PG_SSL=false` only when the API reaches PostgreSQL on the same VPS through
+a private Docker/local network. If the database host is a public IP or public
+DNS name, configure PostgreSQL TLS and set `PG_SSL=true` instead.
 
-## 1. Managed Postgres
+If your existing PostgreSQL container is already attached to the app Docker
+network, use its container or network alias, for example `postgres:5432`. If it
+is bound only on the VPS host, use `host.docker.internal:PORT`; the production
+compose file maps that name to Docker's host gateway for the API container.
 
-1. Create a Postgres 15+ instance (Neon free tier works for early production).
-2. Set `DATABASE_URL` with SSL (`?sslmode=require`) and retain the provider's
-   trusted CA. The API rejects an unencrypted non-local database whenever
-   `NODE_ENV=production`.
-3. Run the app once so `initDb` creates tables + `unified_settlements` view.
-4. Enable automated backups / point-in-time recovery.
-
-## 2. API (Cloud Run)
-
-Use existing [`backend/Dockerfile`](../backend/Dockerfile).
-
-Connect directly to the managed database through `DATABASE_URL`.
-
-Env (Secret Manager):
-
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_URL` | Postgres connection |
-| `PORT` | `8080` |
-| `NODE_ENV` | `production` |
-| `CORS_ORIGINS` | Comma-separated static frontend origin(s), e.g. `https://app.example.com` |
-| `PG_SSL` | `true` when the connection string does not already carry `sslmode=require` |
-| `PG_SSL_REJECT_UNAUTHORIZED` | `true` (the default); do not disable certificate verification for production |
-| `PG_SSL_CA` | Provider CA PEM when the host is not signed by a system-trusted CA |
-| Firebase Admin credentials | Auth verification |
-| `ADMIN_SEED_*` | Optional first admin only |
+## Start or update production
 
 ```bash
-gcloud run deploy reconcentral-api \
-  --source backend \
-  --region asia-south1 \
-  --allow-unauthenticated=false \
-  --set-secrets=DATABASE_URL=DATABASE_URL:latest
+cd /opt/reconcentral
+docker compose --env-file .env -f docker-compose.production.yml up -d --build --remove-orphans
+docker compose -f docker-compose.production.yml ps
+curl -fsS https://app.example.com/health
 ```
 
-## 3. Frontend (static)
+`/health` returns HTTP 200 only after the API can connect to PostgreSQL and
+finish schema checks. During a database outage the API stays up, reports a clear
+503, and retries automatically.
+
+## Database checks
+
+From `backend/`, run:
 
 ```bash
-cd frontend
-# Set production API URL
-echo "VITE_API_BASE_URL=https://YOUR-API.run.app" > .env.production
-npm run build
-# Deploy frontend/dist to Cloudflare Pages or Firebase Hosting
+npm run db:verify
 ```
 
-Ensure Axios / `api` client uses `import.meta.env.VITE_API_BASE_URL`.
+The command confirms the active PostgreSQL runtime, database identity, TLS
+policy, upload counts, reconciliation migrations, and duplicate-fingerprint
+counts.
 
-## 4. Auth & CORS
+For the Hostinger Docker setup, the recommended result is:
 
-- Keep Firebase Auth.
-- Set `CORS_ORIGINS` to your exact frontend origin(s). In production the API
-  rejects browser origins that are not on this allow-list.
-- HTTPS only.
+- `activeDatabase: "postgresql"`
+- expected database name, currently `paymentapp`
+- `sslEnabled: false` only when the API uses a private Docker/local path
+- non-zero upload/history counts matching production data
 
-## 5. Observability
+## Security checklist
 
-- Cloud Run request logs + `/health`
-- Alert on upload job failures and 5xx spikes
-- Weekly DB backup restore drill
-
-## Cutover checklist
-
-- [ ] Managed DB migrated (orders/returns/settlements counts match)
-- [ ] `npm run db:verify` reports `sslEnabled: true` and `sslRejectUnauthorized: true`
-- [ ] `unified_settlements` present after boot
-- [ ] Firebase login works against production API
-- [ ] Flipkart + Amazon upload smoke test
-- [ ] DNS / custom domain for app + API
-- [ ] Revoke any secrets that were ever committed or pasted in chat
+- Keep `.env`, Firebase service-account JSON, and database passwords out of Git.
+- Do not expose ports `3001`, `5173`, or PostgreSQL to the public internet.
+- Open only `80` and `443` for the web container unless a separate private
+  administration channel is required.
+- Use a low-privilege PostgreSQL user for the API.
+- Back up the PostgreSQL Docker volume and test restore before major imports.
+- Rotate any secret that was ever committed, pasted into chat, or shared in a
+  screenshot.

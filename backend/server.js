@@ -9,12 +9,29 @@ import {
   getDatabaseStatus,
   getPool,
   isDbConfigured,
+  isDbOffline,
   recoverDatabaseConnection,
   startDatabaseHealthMonitor,
   waitForDatabase,
 } from './db/index.js';
 import { syncFirebaseRoleClaims } from './services/firebaseRoleClaims.js';
 import { publicApiError } from './utils/apiError.js';
+
+// ── Crash safety net ───────────────────────────────────────────────────────
+// If an unhandled rejection or exception escapes all try/catch blocks the
+// process is about to crash. Close the DB pool so PostgreSQL can reclaim the
+// connections immediately instead of waiting for TCP keepalive to expire.
+process.on('unhandledRejection', (reason) => {
+  console.error('[server] Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[server] Uncaught exception — closing DB pool before exit:', error);
+  try {
+    const pool = getPool();
+    pool.end().catch(() => {});
+  } catch { /* pool may not exist yet */ }
+  process.exit(1);
+});
 
 dotenv.config({ override: true });
 
@@ -63,7 +80,7 @@ app.use(cors({
   allowedHeaders: ['Authorization', 'Content-Type'],
   maxAge: 86_400,
 }));
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // Do not let a newly started server run dashboard reads while initDb is
 // acquiring schema locks. Previously that race blocked report queries and
@@ -87,16 +104,14 @@ app.get('/health', async (_, res) => {
       getPool();
       dbConnected = await Promise.race([
         recoverDatabaseConnection(),
-        new Promise(resolve => setTimeout(() => resolve(false), 3_000)),
+        new Promise(resolve => setTimeout(() => resolve(false), 6_000)),
       ]);
     } catch {
       dbConnected = false;
     }
   }
   const database = getDatabaseStatus();
-  const databaseEngine = process.env.DATABASE_ENGINE === 'postgresql' || process.env.POSTGRES_DATABASE_URL
-    ? 'PostgreSQL'
-    : 'CockroachDB';
+  const databaseEngine = 'PostgreSQL';
   res.status(configured && dbConnected ? 200 : 503).json({
     status: configured && dbConnected ? 'ok' : 'degraded',
     dataSource: 'sql',
@@ -143,15 +158,66 @@ async function initialiseDatabaseWhenReachable() {
   }
 }
 
+let activeServer = null;
+let shuttingDown = false;
+const SHUTDOWN_TIMEOUT_MS = 5_000;
+
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[server] Received ${signal} — shutting down gracefully…`);
+
+  // Force-exit safety net: if drain + pool.end() take longer than
+  // SHUTDOWN_TIMEOUT_MS (e.g. a stuck transaction), exit anyway so
+  // nodemon can restart without waiting forever.
+  const forceExitTimer = setTimeout(() => {
+    console.warn(`[server] Graceful shutdown timed out after ${SHUTDOWN_TIMEOUT_MS}ms — forcing exit.`);
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  forceExitTimer.unref?.();
+
+  // Block new API requests immediately so the load balancer / browser
+  // retries hit the new server instead of draining ones.
+  databaseSchemaReady = false;
+
+  // 1. Stop accepting new HTTP requests.
+  if (activeServer) {
+    await new Promise(resolve => activeServer.close(resolve));
+    console.log('[server] HTTP server closed.');
+  }
+
+  // 2. Drain the database pool so every in-flight query finishes, then
+  //    close every idle and active connection. Without this, nodemon
+  //    restarts leave orphaned connections on the PostgreSQL server.
+  try {
+    const pool = getPool();
+    const status = getDatabaseStatus();
+    if (status.pool) {
+      console.log(`[server] Pool state before close: total=${status.pool.total} idle=${status.pool.idle} waiting=${status.pool.waiting}`);
+    }
+    await pool.end();
+    console.log('[server] Database pool closed.');
+  } catch (error) {
+    console.warn('[server] Database pool close failed:', error?.message || error);
+  }
+
+  clearTimeout(forceExitTimer);
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
+
 export function startServer(port = PORT) {
   // Start serving health/API traffic immediately, then keep retrying until the
   // database is connected and schema initialisation has completed.
   void initialiseDatabaseWhenReachable();
-  // Bind 0.0.0.0 so Cloud Run / containers can receive traffic (not just localhost).
+  // Bind 0.0.0.0 so containers and LAN/dev clients can receive traffic.
   const server = app.listen(port, '0.0.0.0', () => {
     console.log(`Backend running at http://0.0.0.0:${port} [data source: sql]`);
   });
   server.timeout = 900000;
+  activeServer = server;
   return server;
 }
 

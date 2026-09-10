@@ -8,7 +8,7 @@ const { Pool } = pg;
 const CONNECT_TIMEOUT_MS = 12_000;
 const RECOVERY_INTERVAL_MS = 5_000;
 const READ_RETRY_DELAYS_MS = [0, 400, 1_200];
-const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 30_000;
+const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 25_000;
 const MIN_HEALTH_CHECK_INTERVAL_MS = 5_000;
 const DEFAULT_READ_STATEMENT_TIMEOUT_MS = 90_000;
 
@@ -49,6 +49,7 @@ export class DatabaseUnavailableError extends Error {
     super('Database connection is temporarily unavailable. The service is retrying automatically; please try again shortly.');
     this.name = 'DatabaseUnavailableError';
     this.code = 'DB_UNAVAILABLE';
+    this.status = 503;
     this.cause = cause;
   }
 }
@@ -92,12 +93,15 @@ function isLoopbackHost(host) {
   return normalized === 'localhost' || normalized === '::1' || normalized === '127.0.0.1';
 }
 
-function configuredSsl(targetUrl, connectionString) {
-  const sslSetting = targetUrl ? process.env.POSTGRES_PG_SSL : process.env.PG_SSL;
-  const rejectUnauthorizedSetting = targetUrl
-    ? process.env.POSTGRES_PG_SSL_REJECT_UNAUTHORIZED
-    : process.env.PG_SSL_REJECT_UNAUTHORIZED;
-  const caSetting = targetUrl ? process.env.POSTGRES_PG_SSL_CA : process.env.PG_SSL_CA;
+function activeDatabaseUrl() {
+  const databaseUrl = cleanDatabaseUrl(process.env.DATABASE_URL);
+  return { connectionString: databaseUrl, source: databaseUrl ? 'DATABASE_URL' : '' };
+}
+
+function configuredSsl(connectionString) {
+  const sslSetting = process.env.PG_SSL;
+  const rejectUnauthorizedSetting = process.env.PG_SSL_REJECT_UNAUTHORIZED;
+  const caSetting = process.env.PG_SSL_CA;
   const explicitSsl = optionalBoolean(sslSetting);
   const enabled = explicitSsl == null ? urlRequiresSsl(connectionString) : explicitSsl;
   if (!enabled) return false;
@@ -114,11 +118,10 @@ function configuredSsl(targetUrl, connectionString) {
 }
 
 function databaseTransportStatus() {
-  const targetUrl = cleanDatabaseUrl(process.env.POSTGRES_DATABASE_URL);
-  const connectionString = targetUrl || cleanDatabaseUrl(process.env.DATABASE_URL);
-  const ssl = configuredSsl(targetUrl, connectionString);
-  const remote = Boolean(databaseHost(connectionString)) && !isLoopbackHost(databaseHost(connectionString));
-  const productionRequiresTls = process.env.NODE_ENV === 'production' && remote;
+  const { connectionString } = activeDatabaseUrl();
+  const ssl = configuredSsl(connectionString);
+  const host = databaseHost(connectionString);
+  const productionRequiresTls = process.env.NODE_ENV === 'production' && !isPrivateDatabaseHost(host);
   return {
     tlsEnabled: Boolean(ssl),
     certificateVerified: ssl ? ssl.rejectUnauthorized !== false : null,
@@ -130,13 +133,22 @@ function databaseTransportStatus() {
 // database connection, so deployment checks can validate the exact TLS policy
 // that the API will use.
 export function resolvePgConfig() {
-  const targetUrl = cleanDatabaseUrl(process.env.POSTGRES_DATABASE_URL);
-  const connectionString = targetUrl || cleanDatabaseUrl(process.env.DATABASE_URL);
-  const ssl = configuredSsl(targetUrl, connectionString);
+  const { connectionString } = activeDatabaseUrl();
+  const ssl = configuredSsl(connectionString);
   const host = databaseHost(connectionString);
-  if (process.env.NODE_ENV === 'production' && !isLoopbackHost(host) && !ssl) {
+  const discreteConfig = {
+    host,
+    port: Number.parseInt(process.env.PG_PORT || process.env.PGPORT || '5432', 10),
+    database: process.env.PG_DATABASE || process.env.PGDATABASE,
+    user: process.env.PG_USER || process.env.PGUSER,
+    password: process.env.PG_PASSWORD || process.env.PGPASSWORD,
+  };
+  if (!connectionString && !(discreteConfig.host && discreteConfig.database && discreteConfig.user && discreteConfig.password)) {
+    throw new DatabaseUnavailableError(new Error('DATABASE_URL or PG connection settings are missing'));
+  }
+  if (process.env.NODE_ENV === 'production' && !isPrivateDatabaseHost(host) && !ssl) {
     throw new DatabaseUnavailableError(new Error(
-      'Production PostgreSQL connections to non-local hosts require TLS. Set PG_SSL=true (or POSTGRES_PG_SSL=true) and configure a trusted certificate.',
+      'Production PostgreSQL connections over public networks require TLS. For Hostinger Docker PostgreSQL, connect over a private Docker/local network with PG_SSL=false, or enable TLS for public database hosts.',
     ));
   }
   const poolOptions = {
@@ -144,8 +156,9 @@ export function resolvePgConfig() {
     // load. Keep the pool bounded, but leave enough headroom that a report
     // query cannot make Firebase-authenticated requests wait in the pool.
     max: positiveInteger(process.env.PG_POOL_MAX, 20, { min: 1, max: 100 }),
-    min: positiveInteger(process.env.PG_POOL_MIN, 0, { min: 0, max: 100 }),
-    idleTimeoutMillis: 30_000,
+    min: positiveInteger(process.env.PG_POOL_MIN, 2, { min: 0, max: 100 }),
+    idleTimeoutMillis: 60_000,
+    maxLifetimeSeconds: 1800,
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
     // Interactive API reads must fail clearly rather than pinning a pool
     // connection forever. Import/rebuild transactions explicitly clear this
@@ -153,7 +166,6 @@ export function resolvePgConfig() {
     statement_timeout: readStatementTimeoutMs(),
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
-    maxLifetimeSeconds: positiveInteger(process.env.PG_POOL_MAX_LIFETIME_SECONDS, 600, { min: 30, max: 86_400 }),
     application_name: process.env.PG_APPLICATION_NAME || 'reconcentral-api',
   };
 
@@ -164,14 +176,29 @@ export function resolvePgConfig() {
   if (connectionString.startsWith('postgres')) return { connectionString, ssl, ...poolOptions };
 
   return {
-    host,
-    port: Number.parseInt(process.env.PG_PORT || process.env.PGPORT || '5432', 10),
-    database: process.env.PG_DATABASE || process.env.PGDATABASE,
-    user: process.env.PG_USER || process.env.PGUSER,
-    password: process.env.PG_PASSWORD || process.env.PGPASSWORD,
+    ...discreteConfig,
     ssl,
     ...poolOptions,
   };
+}
+
+function isPrivateIpv4(host) {
+  return /^10\./.test(host)
+    || /^192\.168\./.test(host)
+    || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+}
+
+function isDockerServiceHost(host) {
+  return /^[a-z0-9][a-z0-9-]*$/.test(host);
+}
+
+function isPrivateDatabaseHost(host) {
+  const normalized = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!normalized) return false;
+  if (isLoopbackHost(normalized)) return true;
+  if (isPrivateIpv4(normalized)) return true;
+  if (normalized === 'host.docker.internal' || normalized.endsWith('.docker.internal')) return true;
+  return isDockerServiceHost(normalized);
 }
 
 function isRetryableConnectionError(error) {
@@ -183,6 +210,16 @@ function isRetryableConnectionError(error) {
 
 function isPoolAcquireTimeout(error) {
   return /timeout exceeded when trying to connect/i.test(String(error?.message || ''));
+}
+
+function isConnectionCheckoutError(error) {
+  const code = String(error?.code || '');
+  const msg = String(error?.message || '').toLowerCase();
+  return (
+    code === 'ECONNRESET' ||
+    code === 'EPIPE' ||
+    /connection terminated|socket.*hang up|server closed the connection|connection.*closed/i.test(msg)
+  );
 }
 
 // Retrying an INSERT after a network break can duplicate a completed write.
@@ -216,7 +253,7 @@ function markDatabaseOffline(error) {
   scheduleRecovery();
 }
 
-async function pingDatabase(timeoutMs = 2_500) {
+async function pingDatabase(timeoutMs = 5_000) {
   getPool();
   try {
     await _realPool.query({ text: 'SELECT 1', query_timeout: timeoutMs });
@@ -244,7 +281,33 @@ function scheduleRecovery() {
 export async function recoverDatabaseConnection() {
   if (!_realPool) return false;
   if (recoveryInFlight) return recoveryInFlight;
-  recoveryInFlight = pingDatabase(CONNECT_TIMEOUT_MS).finally(() => {
+  recoveryInFlight = (async () => {
+    // If consecutive connection attempts failed, flush stale sockets and recreate pool
+    if (consecutiveDbFailures >= 2) {
+      console.log('[db] Multiple connection failures detected. Re-establishing connection pool...');
+      const oldPool = _realPool;
+      try {
+        _realPool = createRealPool();
+        if (oldPool) {
+          void oldPool.end().catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[db] Pool recreation error:', err.message);
+      }
+    }
+
+    const { connectionString } = activeDatabaseUrl();
+    const host = databaseHost(connectionString);
+    if (isLoopbackHost(host)) {
+      try {
+        const { ensureTunnel } = await import('../../scripts/db-tunnel.js');
+        await ensureTunnel().catch(() => {});
+      } catch {
+        // scripts/db-tunnel.js may not be present in standalone Docker containers
+      }
+    }
+    return pingDatabase(CONNECT_TIMEOUT_MS);
+  })().finally(() => {
     recoveryInFlight = null;
   });
   const restored = await recoveryInFlight;
@@ -252,17 +315,30 @@ export async function recoverDatabaseConnection() {
   return restored;
 }
 
+async function keepPoolWarmAndHealthy() {
+  if (!_realPool) return;
+  try {
+    // Active heartbeat: keeps remote NAT state tables alive and purges stale sockets
+    await _realPool.query({ text: 'SELECT 1', query_timeout: 5_000 });
+    markDatabaseOnline();
+  } catch (error) {
+    if (isPoolAcquireTimeout(error)) return;
+    console.warn('[db] Pool keepalive check failed:', error?.message || error);
+    void recoverDatabaseConnection();
+  }
+}
+
 export function startDatabaseHealthMonitor() {
   if (healthCheckTimer || !_realPool) return;
   const intervalMs = healthCheckIntervalMs();
   healthCheckTimer = setInterval(() => {
     lastHealthCheckAt = new Date().toISOString();
-    void recoverDatabaseConnection();
+    void keepPoolWarmAndHealthy();
   }, intervalMs);
   // The monitor must not hold a CLI/test process open after its HTTP server
   // has stopped.
   healthCheckTimer.unref?.();
-  console.log(`[db] Health monitor enabled (every ${Math.round(intervalMs / 1000)}s).`);
+  console.log(`[db] Health monitor & NAT keepalive enabled (every ${Math.round(intervalMs / 1000)}s).`);
 }
 
 export function stopDatabaseHealthMonitor() {
@@ -286,20 +362,43 @@ function createRealPool() {
     throw new DatabaseUnavailableError(new Error('DATABASE_URL or PG connection settings are missing'));
   }
   if (config.connectionString) {
-    const safeUrl = config.connectionString.replace(/:([^:@/]+)@/, ':***@');
-    console.log('[db] Using configured database →', safeUrl);
+    console.log('[db] Using configured database ->', describeConnection(config.connectionString));
   } else {
-    console.log(`[db] Using discrete configuration → ${config.user}@${config.host}:${config.port}/${config.database}`);
+    console.log(`[db] Using discrete configuration -> ${describeHost(config.host)}:${config.port}/${config.database}`);
   }
 
   const realPool = new Pool(config);
   realPool.on('error', error => {
-    // Idle client errors are a normal symptom of a server/network restart.
-    // Do not replace results with blanks; schedule recovery instead.
-    console.warn('[db] Pool connection error:', error.message);
-    if (isRetryableConnectionError(error)) markDatabaseOffline(error);
+    // Idle client errors are a normal symptom of remote NAT state timeouts or server socket drops.
+    // pg-pool automatically discards this closed client from the pool.
+    // Do NOT flip dbOffline = true immediately; schedule a background check to confirm status.
+    console.warn('[db] Idle pool client disconnected and discarded by pool:', error.message);
+    if (!dbOffline && isRetryableConnectionError(error)) {
+      scheduleRecovery();
+    }
   });
   return realPool;
+}
+
+function describeHost(host) {
+  const normalized = String(host || '').trim().toLowerCase();
+  if (!normalized) return '<unset-host>';
+  if (isLoopbackHost(normalized)) return 'local';
+  if (isPrivateIpv4(normalized)) return 'private-network';
+  if (isDockerServiceHost(normalized) || normalized.endsWith('.docker.internal')) return normalized;
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(normalized)) return 'public-ip';
+  return 'remote-host';
+}
+
+function describeConnection(connectionString) {
+  try {
+    const url = new URL(connectionString);
+    const database = url.pathname.replace(/^\//, '') || '<database>';
+    const port = url.port || '5432';
+    return `${describeHost(url.hostname)}:${port}/${database}`;
+  } catch {
+    return '<unparseable-database-url>';
+  }
 }
 
 function instrumentClient(client) {
@@ -353,8 +452,17 @@ export function getPool() {
             if (!retryableRead || attempt === READ_RETRY_DELAYS_MS.length - 1) break;
             continue;
           }
+          // If we hit a severed/stale connection from the pool before exhausted attempts:
+          if (attempt < READ_RETRY_DELAYS_MS.length - 1) {
+            if (retryableRead) continue;
+            // For non-read statements, if the failure was a stale checkout connection error on attempt 0:
+            if (attempt === 0 && isConnectionCheckoutError(error)) {
+              console.warn('[db] Stale pooled connection dropped on write checkout, retrying on fresh connection...');
+              continue;
+            }
+          }
           markDatabaseOffline(error);
-          if (!retryableRead || attempt === READ_RETRY_DELAYS_MS.length - 1) break;
+          break;
         }
       }
       throw new DatabaseUnavailableError(lastError);
@@ -379,11 +487,17 @@ export function getPool() {
     async end() {
       if (recoveryTimer) clearTimeout(recoveryTimer);
       recoveryTimer = null;
+      recoveryInFlight = null;
       stopDatabaseHealthMonitor();
       const endingPool = _realPool;
       _pool = null;
       _realPool = null;
       dbOffline = false;
+      lastDbError = null;
+      lastDbSuccessAt = null;
+      lastDbFailureAt = null;
+      lastDbRecoveryAt = null;
+      consecutiveDbFailures = 0;
       return endingPool?.end();
     },
   };
@@ -391,7 +505,7 @@ export function getPool() {
 }
 
 export async function isDbConfigured() {
-  const url = cleanDatabaseUrl(process.env.POSTGRES_DATABASE_URL) || cleanDatabaseUrl(process.env.DATABASE_URL);
+  const url = cleanDatabaseUrl(process.env.DATABASE_URL);
   if (url.startsWith('postgres')) return true;
   const host = process.env.PG_HOST || process.env.PGHOST;
   const database = process.env.PG_DATABASE || process.env.PGDATABASE;
@@ -406,7 +520,7 @@ export function isDbOffline() {
 
 export function getDatabaseStatus() {
   return {
-    configured: Boolean(_realPool) || Boolean(cleanDatabaseUrl(process.env.POSTGRES_DATABASE_URL)) || Boolean(cleanDatabaseUrl(process.env.DATABASE_URL)) || Boolean(process.env.PG_HOST || process.env.PGHOST),
+    configured: Boolean(_realPool) || Boolean(cleanDatabaseUrl(process.env.DATABASE_URL)) || Boolean(process.env.PG_HOST || process.env.PGHOST),
     connected: Boolean(_realPool) && !dbOffline,
     lastSuccessAt: lastDbSuccessAt,
     lastError: lastDbError,

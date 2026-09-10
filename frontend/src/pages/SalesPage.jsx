@@ -73,7 +73,7 @@ export default function SalesPage() {
         </div>
         <div className="overflow-x-auto">
           {lo ? <TableSkeleton /> : (
-            <table className="w-full text-xs">
+            <table className="finance-table">
               <thead>
                 <tr className="bg-surface-container-low border-b border-border">
                   {['Order Date','Order Item ID','Category','Fulfilment','State','Zone','QTY','Invoice Amt','Offer Amt','Sale Amt','My Share','Commission','Settlement','Status','Return Type'].map(h => (
@@ -211,7 +211,7 @@ function BrandSalesSection({ data }) {
       </div>
       <div className="overflow-x-auto">
         {view === 'combined' ? (
-          <table className="w-full text-xs">
+          <table className="finance-table">
             <thead>
               <tr className="bg-surface-container-low border-b border-border">
                 {['Brand','Orders','Revenue','My Share','Returns','Return Rate','Revenue Share'].map(h => (
@@ -254,7 +254,7 @@ function BrandSalesSection({ data }) {
             </tbody>
           </table>
         ) : (
-          <table className="w-full text-xs">
+          <table className="finance-table">
             <thead>
               <tr className="bg-surface-container-low border-b border-border">
                 {['Marketplace','Brand','Orders','Revenue','My Share','Returns','Return Rate'].map(h => (
@@ -346,7 +346,7 @@ function BrandTopSkusSection({ data }) {
         <div className="p-8 text-center text-sm text-outline">No SKU data for {activeBrand}</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="finance-table">
             <thead>
               <tr className="bg-surface-container-low border-b border-border">
                 {['#','SKU','Product Title','Orders','Revenue','My Share','Returns','Ret%','Bar'].map(h => (

@@ -13,7 +13,6 @@ npm-debug.log*
 .env
 .env.*
 !.env.example
-!.env.cloudrun.example
 backend/.env
 frontend/.env
 frontend/.env.local
@@ -38,3 +37,17 @@ tools/cloudflared/*.msi
 # Coverage / test
 coverage/
 .vitest/
+
+# Scratch & temporary migration scripts
+*.cjs
+backend/*.cjs
+backend/*.html
+backend/*.png
+backend/probe_*.mjs
+backend/test_*.mjs
+backend/test-fbf-*.js
+backend/test_xlsx.js
+fix_*.js
+script.js
+.freebuff/
+frontend/*.cjs

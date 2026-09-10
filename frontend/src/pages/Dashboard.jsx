@@ -90,7 +90,7 @@ function OrderSearch() {
                     <div key={i} className="px-4 py-3 hover:bg-surface-container-low transition-colors">
                       <div className="flex items-start justify-between gap-2 mb-1">
                         <div className="min-w-0">
-                          <span className="font-mono text-[11px] text-primary font-semibold">{o.order_item_id}</span>
+                          <span className="font-mono text-[12px] text-primary font-medium">{o.order_item_id}</span>
                           {o.order_id && o.order_id !== o.order_item_id && (
                             <span className="text-[10px] text-outline ml-1.5">order: {o.order_id}</span>
                           )}
@@ -122,7 +122,7 @@ function OrderSearch() {
                 <div>
                   <p className="text-[10px] font-semibold text-outline uppercase tracking-wider px-4 pt-3 pb-1.5">Settlement Rows ({results.settlements.length})</p>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
+                    <table className="finance-table">
                       <thead>
                         <tr className="text-outline border-b border-border">
                           <th className="text-left px-4 py-2 font-medium">Order Item ID</th>
@@ -135,11 +135,11 @@ function OrderSearch() {
                       <tbody className="divide-y divide-slate-50">
                         {results.settlements.map((s, i) => (
                           <tr key={i} className="hover:bg-surface-container-low">
-                            <td className="px-4 py-2 font-mono text-[10px] text-secondary">{s.order_item_id}</td>
-                            <td className="px-4 py-2 text-secondary whitespace-nowrap">{s.payment_date || '—'}</td>
-                            <td className="px-4 py-2 text-outline font-mono text-[10px] truncate max-w-[80px]">{s.neft_id || '—'}</td>
-                            <td className={`px-4 py-2 text-right font-bold ${+s.bank_settlement >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{fmtK(s.bank_settlement)}</td>
-                            <td className="px-4 py-2 text-right text-primary font-medium">{+s.protection_fund > 0 ? fmtK(s.protection_fund) : '—'}</td>
+                            <td className="cell-id">{s.order_item_id}</td>
+                            <td className="text-secondary whitespace-nowrap">{s.payment_date || '—'}</td>
+                            <td className="cell-id truncate max-w-[80px]">{s.neft_id || '—'}</td>
+                            <td className={`cell-amount font-semibold ${+s.bank_settlement >= 0 ? 'text-success' : 'text-danger'}`}>{fmtK(s.bank_settlement)}</td>
+                            <td className="cell-amount text-primary">{+s.protection_fund > 0 ? fmtK(s.protection_fund) : '—'}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -156,7 +156,7 @@ function OrderSearch() {
                     <div key={i} className="px-4 py-2.5 hover:bg-surface-container-low flex items-center gap-3">
                       <span className="h-2 w-2 rounded-full bg-rose-400 shrink-0" />
                       <div className="flex-1 min-w-0 text-xs">
-                        <span className="font-mono text-[11px] text-secondary">{r.order_item_id}</span>
+                        <span className="font-mono text-[12px] font-medium text-secondary">{r.order_item_id}</span>
                         <span className="text-outline ml-2">{r.return_type}</span>
                         {r.return_reason && <span className="text-outline ml-2">· {r.return_reason}</span>}
                       </div>
@@ -179,11 +179,13 @@ function OrderSearch() {
 
 // Marketplace display config — add new marketplaces here
 const MP_CONFIG = {
-  flipkart: { label: 'Flipkart', bg: 'bg-primary-container', border: 'border-primary', badge: 'bg-primary', text: 'text-primary' },
-  amazon:   { label: 'Amazon',   bg: 'bg-amber-50',  border: 'border-amber-200',  badge: 'bg-amber-500',  text: 'text-amber-700'  },
-  myntra:   { label: 'Myntra',   bg: 'bg-pink-50',   border: 'border-pink-200',   badge: 'bg-pink-600',   text: 'text-pink-700'   },
-  meesho:   { label: 'Meesho',   bg: 'bg-purple-50', border: 'border-purple-200', badge: 'bg-purple-600', text: 'text-purple-700' },
-  ajio:     { label: 'Ajio',     bg: 'bg-orange-50', border: 'border-orange-200', badge: 'bg-orange-500', text: 'text-orange-700' },
+  flipkart:  { label: 'Flipkart',    bg: 'bg-primary-container', border: 'border-primary', badge: 'bg-primary', text: 'text-primary' },
+  amazon:    { label: 'Amazon',      bg: 'bg-amber-50',  border: 'border-amber-200',  badge: 'bg-amber-500',  text: 'text-amber-700'  },
+  myntra:    { label: 'Myntra',      bg: 'bg-pink-50',   border: 'border-pink-200',   badge: 'bg-pink-600',   text: 'text-pink-700'   },
+  myntra_vb: { label: 'Myntra (VB)', bg: 'bg-pink-50',   border: 'border-pink-200',   badge: 'bg-pink-600',   text: 'text-pink-700'   },
+  myntra_ej: { label: 'Myntra (EJ)', bg: 'bg-rose-50',   border: 'border-rose-200',   badge: 'bg-rose-600',   text: 'text-rose-700'   },
+  meesho:    { label: 'Meesho',      bg: 'bg-purple-50', border: 'border-purple-200', badge: 'bg-purple-600', text: 'text-purple-700' },
+  ajio:      { label: 'Ajio',        bg: 'bg-orange-50', border: 'border-orange-200', badge: 'bg-orange-500', text: 'text-orange-700' },
 };
 function mpCfg(id) {
   return MP_CONFIG[(id || '').toLowerCase()] || { label: id, bg: 'bg-surface-container-low', border: 'border-border', badge: 'bg-secondary', text: 'text-ink' };
@@ -208,10 +210,9 @@ export default function Dashboard() {
   return (
     <div className="space-y-6 max-w-[1600px]">
       <PageHeader
-        title="Dashboard Overview"
         subtitle={
           selectedMP
-            ? <>Showing data for <span className="font-semibold text-secondary">{mpLabel}</span></>
+            ? <>Showing data for <span className="font-medium text-secondary">{mpLabel}</span></>
             : 'Combined view across all marketplaces'
         }
       >
@@ -221,10 +222,10 @@ export default function Dashboard() {
       <section className="rounded-2xl border border-border bg-surface-container-low p-4 sm:p-5">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between mb-4">
           <div>
-            <h3 className="font-headline-sm text-headline-sm font-bold text-ink">Daily reconciliation flow</h3>
-            <p className="mt-1 font-body-sm text-body-sm text-secondary">Use these three steps in order. Everything else in the sidebar is analysis and detail.</p>
+            <h3 className="font-display text-headline-md font-semibold text-ink">Daily reconciliation flow</h3>
+            <p className="mt-1 font-sans text-body-sm text-secondary max-w-[68ch]">Use these three steps in order. Everything else in the sidebar is analysis and detail.</p>
           </div>
-          <span className="font-label-sm text-label-sm font-bold uppercase tracking-wider text-primary">Start here</span>
+          <span className="font-sans text-label-sm font-semibold uppercase text-primary">Start here</span>
         </div>
         <div className="grid gap-3 md:grid-cols-3">
           <DashboardAction step="1" title="Upload marketplace files" detail="Sales, returns, and settlement files" to="/upload" tone="indigo" />
@@ -237,7 +238,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 xl:grid-cols-5 gap-4">
         {ls ? (
           Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="bg-surface rounded-2xl border border-border p-6 h-[120px] skeleton-pulse" />
+            <div key={i} className="bg-surface rounded-xl border border-border p-4 h-[112px] skeleton-pulse" />
           ))
         ) : (
           <>
@@ -323,7 +324,7 @@ function ErrorBox({ msg }) {
     <div className="rounded-xl border border-rose-200 bg-rose-50 p-6">
       <p className="text-rose-700 font-semibold mb-1">Failed to load data</p>
       <p className="text-rose-600 text-sm font-mono">{msg}</p>
-      <p className="text-rose-500 text-xs mt-2">Make sure the backend is running and the GCP PostgreSQL database is reachable.</p>
+      <p className="text-rose-500 text-xs mt-2">Make sure the backend is running and the Hostinger PostgreSQL database is reachable.</p>
     </div>
   );
 }

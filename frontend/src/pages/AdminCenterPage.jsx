@@ -18,7 +18,7 @@ function DbBanner({ configured, dbConnected, counts, lastUploads, fkSettlementPe
       <span className="text-xl">⚠️</span>
       <div>
         <p className="text-sm font-semibold text-amber-800">Database not configured</p>
-        <p className="text-xs text-amber-600 mt-0.5">Add PG_HOST, PG_DATABASE, PG_USER, PG_PASSWORD to backend/.env and restart.</p>
+        <p className="text-xs text-amber-600 mt-0.5">Add the Hostinger PostgreSQL DATABASE_URL to backend/.env and restart.</p>
       </div>
     </div>
   );
@@ -227,7 +227,7 @@ export default function AdminCenterPage() {
     return (
       <button
         onClick={() => setActiveTab(id)}
-        className={`pb-3 border-b-2 font-body-md font-medium shrink-0 transition-colors ${
+        className={`pb-3 border-b-2 font-sans font-medium shrink-0 transition-colors ${
           active ? 'border-primary text-primary font-bold' : 'border-transparent text-secondary hover:text-ink'
         }`}
       >
@@ -240,8 +240,8 @@ export default function AdminCenterPage() {
     <div className="max-w-6xl mx-auto space-y-6 animate-fade-in p-4 sm:p-6 lg:p-8 relative">
       {/* Page Header */}
       <div>
-        <h1 className="font-headline-lg text-headline-lg font-bold text-ink mb-1">Admin Settings</h1>
-        <p className="font-body-md text-body-md text-secondary">Manage users, organization profiles, and marketplace connections.</p>
+        <h1 className="font-display text-headline-lg font-bold text-ink mb-1">Admin Settings</h1>
+        <p className="font-sans text-body-md text-secondary">Manage users, organization profiles, and marketplace connections.</p>
       </div>
 
       {/* Tabs */}
@@ -278,12 +278,12 @@ export default function AdminCenterPage() {
         <section className="bg-surface border border-border rounded-xl shadow-sm overflow-hidden mb-8">
           <div className="p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h2 className="font-headline-md text-headline-md font-bold text-ink">Team Members</h2>
-              <p className="font-body-sm text-body-sm text-secondary mt-1">Manage who has access to your organization.</p>
+              <h2 className="font-display text-headline-md font-bold text-ink">Team Members</h2>
+              <p className="font-sans text-body-sm text-secondary mt-1">Manage who has access to your organization.</p>
             </div>
             <button 
               onClick={() => setShowInviteModal(true)}
-              className="bg-primary hover:bg-primary-dark text-on-primary font-label-md text-label-md py-2.5 px-4 rounded-DEFAULT transition-colors shadow-sm flex items-center gap-2 shrink-0"
+              className="bg-primary hover:bg-primary-dark text-on-primary font-sans text-label-md py-2.5 px-4 rounded-DEFAULT transition-colors shadow-sm flex items-center gap-2 shrink-0"
             >
               <span className="material-symbols-outlined text-sm">add</span>
               Invite User
@@ -354,7 +354,7 @@ export default function AdminCenterPage() {
       {/* TAB: MARKETPLACE CONNECTIONS */}
       {activeTab === 'marketplace' && (
         <section className="mb-8">
-          <h2 className="font-headline-md text-headline-md font-bold text-ink mb-4">Marketplace Connections</h2>
+          <h2 className="font-display text-headline-md font-bold text-ink mb-4">Marketplace Connections</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             
             {/* Amazon */}
@@ -415,7 +415,7 @@ export default function AdminCenterPage() {
       {activeTab === 'org' && (
         <section className="mb-8 max-w-2xl">
           <div className="bg-surface rounded-2xl border border-border shadow-sm p-6">
-            <h2 className="font-headline-sm text-headline-sm font-bold text-ink mb-4">Your Account Details</h2>
+            <h2 className="font-display text-headline-sm font-bold text-ink mb-4">Your Account Details</h2>
             <div className="flex items-center gap-4 mb-5">
               <div className="w-16 h-16 rounded-full bg-primary-container flex items-center justify-center text-on-primary text-xl font-bold">
                 {currentUser?.username?.charAt(0) || 'U'}
@@ -436,7 +436,7 @@ export default function AdminCenterPage() {
       {activeTab === 'security' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           <section>
-            <h2 className="font-headline-md text-headline-md font-bold text-ink mb-4">System Settings</h2>
+            <h2 className="font-display text-headline-md font-bold text-ink mb-4">System Settings</h2>
             <div className="bg-surface border border-border rounded-xl shadow-sm divide-y divide-border">
               <div className="p-6 flex items-center justify-between">
                 <div>
@@ -479,7 +479,7 @@ export default function AdminCenterPage() {
 
           <section>
             <div className="bg-surface rounded-2xl border border-border shadow-sm p-6 mb-8">
-              <h2 className="font-headline-sm text-headline-sm font-bold text-ink mb-2">Change Password</h2>
+              <h2 className="font-display text-headline-sm font-bold text-ink mb-2">Change Password</h2>
               <p className="text-xs text-secondary mb-4">Update your login security credentials. Changes sync in local database and Firebase Auth.</p>
               
               <form onSubmit={handleSelfPasswordChange} className="space-y-4">
@@ -504,7 +504,7 @@ export default function AdminCenterPage() {
               </form>
             </div>
             
-            <h2 className="font-headline-md text-headline-md font-bold text-ink mb-4">Database Health</h2>
+            <h2 className="font-display text-headline-md font-bold text-ink mb-4">Database Health</h2>
             <DbBanner 
               configured={dbStatus?.configured} 
               dbConnected={dbStatus?.dbConnected}
@@ -522,8 +522,8 @@ export default function AdminCenterPage() {
           <div className="bg-surface rounded-2xl border border-border shadow-lg w-full max-w-lg overflow-hidden animate-fade-in">
             <div className="p-6 border-b border-border flex items-center justify-between">
               <div>
-                <h2 className="font-headline-sm text-headline-sm font-bold text-ink mb-1">Add Team Member</h2>
-                <p className="font-body-sm text-body-sm text-secondary">Register a new team member.</p>
+                <h2 className="font-display text-headline-sm font-bold text-ink mb-1">Add Team Member</h2>
+                <p className="font-sans text-body-sm text-secondary">Register a new team member.</p>
               </div>
               <button onClick={() => setShowInviteModal(false)} className="text-outline hover:text-ink">
                 <span className="material-symbols-outlined">close</span>

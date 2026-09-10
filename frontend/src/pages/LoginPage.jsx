@@ -34,7 +34,7 @@ function SubmitButton({ loading, children, loadingLabel }) {
     <button
       type="submit"
       disabled={loading}
-      className="w-full flex justify-center items-center gap-2 bg-primary hover:bg-indigo-dark text-on-primary font-label-md text-label-md py-3 px-4 rounded-DEFAULT transition-colors shadow-sm active:shadow-inner disabled:cursor-wait disabled:opacity-70"
+      className="w-full flex justify-center items-center gap-2 bg-primary hover:bg-indigo-dark text-on-primary font-sans text-body-md font-semibold py-3 px-4 rounded-lg disabled:cursor-wait disabled:opacity-70"
     >
       {loading ? (
         <>
@@ -115,7 +115,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="bg-canvas text-on-surface min-h-screen flex font-body-md selection:bg-primary-container selection:text-on-primary">
+    <div className="bg-canvas text-on-surface min-h-screen flex font-sans selection:bg-primary-container selection:text-on-primary">
       <div className="flex w-full min-h-screen">
         
         {/* Left Side: Graphic Area */}
@@ -123,12 +123,12 @@ export default function LoginPage() {
           <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: "radial-gradient(circle at 100% 0%, white 0%, transparent 50%)" }}></div>
           <div className="z-10 flex items-center gap-2">
             <span className="material-symbols-outlined text-on-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>dashboard_customize</span>
-            <span className="font-headline-md text-headline-md font-bold text-on-primary tracking-tight">ReconCentral</span>
+            <span className="font-display text-headline-md font-semibold text-on-primary tracking-tight">ReconCentral</span>
           </div>
           <div className="z-10 mt-auto pb-12">
             <img alt="Abstract representation of financial data" className="w-full max-w-md h-auto mb-10 rounded-xl shadow-2xl border border-white/10 opacity-90 object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAmz4KnhVlMA66MOmTzuXXN_EKKQ_MPXH_j9C2cjhNq4pJwU55y9bzZ-gus75wfY2HrOzfprz6_od6nTvyi9QV_kBOwWba3v8ed3fkFL-SinPAt3o943MLV1V2m53uUsyH5ubpF7HYYvpstfpwrfet6vxC7yk4STmB_f6pQMT6zO1TXJJnY4g28VbD8r7eK72H8GOEsgGIU2eKxBXRPD_WaHHpKdp5ktdT01uC19bxlB1_7fVsG2CUz"/>
-            <h1 className="font-display-lg text-display-lg text-on-primary mb-4 max-w-md">Every payout, clearly accounted for.</h1>
-            <p className="font-body-lg text-body-lg text-on-primary-container mb-10 max-w-md opacity-90">
+            <h1 className="font-display text-display-lg text-on-primary mb-4 max-w-md">Every payout, clearly accounted for.</h1>
+            <p className="font-sans text-body-lg text-on-primary-container mb-10 max-w-md opacity-90">
                 The financial control room designed specifically for Indian marketplace sellers. Take command of your cash flow with absolute precision.
             </p>
             <ul className="space-y-4">
@@ -136,19 +136,19 @@ export default function LoginPage() {
                 <div className="bg-white/10 rounded-full p-1 mt-0.5">
                   <span className="material-symbols-outlined text-on-primary text-sm">check</span>
                 </div>
-                <span className="font-body-md text-body-md text-on-primary opacity-90">Multi-marketplace visibility</span>
+                <span className="font-sans text-body-md text-on-primary opacity-90">Multi-marketplace visibility</span>
               </li>
               <li className="flex items-start gap-3">
                 <div className="bg-white/10 rounded-full p-1 mt-0.5">
                   <span className="material-symbols-outlined text-on-primary text-sm">check</span>
                 </div>
-                <span className="font-body-md text-body-md text-on-primary opacity-90">Faster reconciliation</span>
+                <span className="font-sans text-body-md text-on-primary opacity-90">Faster reconciliation</span>
               </li>
               <li className="flex items-start gap-3">
                 <div className="bg-white/10 rounded-full p-1 mt-0.5">
                   <span className="material-symbols-outlined text-on-primary text-sm">check</span>
                 </div>
-                <span className="font-body-md text-body-md text-on-primary opacity-90">Profit clarity</span>
+                <span className="font-sans text-body-md text-on-primary opacity-90">Profit clarity</span>
               </li>
             </ul>
           </div>
@@ -158,24 +158,24 @@ export default function LoginPage() {
         <div className="w-full lg:w-[55%] flex flex-col justify-center items-center p-6 sm:p-12 bg-surface">
           <div className="lg:hidden flex items-center gap-2 mb-12 self-start w-full max-w-[440px] mx-auto">
             <span className="material-symbols-outlined text-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>dashboard_customize</span>
-            <span className="font-headline-md text-headline-md font-bold text-ink tracking-tight">ReconCentral</span>
+            <span className="font-display text-headline-md font-semibold text-ink tracking-tight">ReconCentral</span>
           </div>
 
           <div className="w-full max-w-[440px]">
             {!isForgotPassword ? (
               <>
                 <div className="mb-10">
-                  <h2 className="font-headline-lg text-headline-lg text-ink mb-2">Welcome back</h2>
-                  <p className="font-body-md text-body-md text-secondary">Sign in to continue to your dashboard.</p>
+                  <h2 className="font-display text-headline-lg text-ink mb-2">Welcome back</h2>
+                  <p className="font-sans text-body-md text-secondary">Sign in to continue to your dashboard.</p>
                 </div>
 
                 {error && <Alert>{error}</Alert>}
 
                 <form onSubmit={handleSubmit} className="space-y-6">
                   <div className="space-y-2">
-                    <label className="block font-body-sm text-body-sm font-bold text-ink" htmlFor="email">Work email</label>
+                    <label className="block font-sans text-body-sm font-medium text-ink" htmlFor="email">Work email</label>
                     <input
-                      className="w-full px-4 py-3 rounded-DEFAULT border border-border bg-surface text-ink focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow outline-none placeholder-outline-variant font-body-md"
+                      className="w-full px-4 py-3 rounded-DEFAULT border border-border bg-surface text-ink focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow outline-none placeholder-outline-variant font-sans"
                       id="email"
                       name="email"
                       type="email"
@@ -189,14 +189,14 @@ export default function LoginPage() {
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <label className="block font-body-sm text-body-sm font-bold text-ink" htmlFor="password">Password</label>
-                      <button type="button" onClick={openPasswordReset} className="font-body-sm text-body-sm text-primary hover:text-indigo-dark font-medium transition-colors focus:outline-none">
+                      <label className="block font-sans text-body-sm font-medium text-ink" htmlFor="password">Password</label>
+                      <button type="button" onClick={openPasswordReset} className="font-sans text-body-sm text-primary hover:text-indigo-dark font-medium transition-colors focus:outline-none">
                         Forgot password?
                       </button>
                     </div>
                     <div className="relative">
                       <input
-                        className="w-full px-4 py-3 pr-10 rounded-DEFAULT border border-border bg-surface text-ink focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow outline-none placeholder-outline-variant font-body-md"
+                        className="w-full px-4 py-3 pr-10 rounded-DEFAULT border border-border bg-surface text-ink focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow outline-none placeholder-outline-variant font-sans"
                         id="password"
                         name="password"
                         type={showPassword ? 'text' : 'password'}
@@ -224,7 +224,7 @@ export default function LoginPage() {
                       checked={rememberMe}
                       onChange={event => setRememberMe(event.target.checked)}
                     />
-                    <label className="font-body-sm text-body-sm text-secondary cursor-pointer select-none" htmlFor="remember">Remember me</label>
+                    <label className="font-sans text-body-sm text-secondary cursor-pointer select-none" htmlFor="remember">Remember me</label>
                   </div>
 
                   <div className="pt-2">
@@ -234,14 +234,14 @@ export default function LoginPage() {
               </>
             ) : (
               <>
-                <button type="button" onClick={returnToSignIn} className="mb-6 inline-flex items-center gap-2 font-body-sm font-bold text-secondary hover:text-ink">
+                <button type="button" onClick={returnToSignIn} className="mb-6 inline-flex items-center gap-2 font-sans text-body-sm font-medium text-secondary hover:text-ink">
                   <span className="material-symbols-outlined text-[18px]">arrow_back</span>
                   Back to sign in
                 </button>
 
                 <div className="mb-10">
-                  <h2 className="font-headline-lg text-headline-lg text-ink mb-2">Reset password</h2>
-                  <p className="font-body-md text-body-md text-secondary">We’ll send recovery instructions to your work email.</p>
+                  <h2 className="font-display text-headline-lg text-ink mb-2">Reset password</h2>
+                  <p className="font-sans text-body-md text-secondary">We’ll send recovery instructions to your work email.</p>
                 </div>
 
                 {error && <Alert>{error}</Alert>}
@@ -249,9 +249,9 @@ export default function LoginPage() {
 
                 <form onSubmit={handleForgotPasswordSubmit} className="space-y-6">
                   <div className="space-y-2">
-                    <label className="block font-body-sm text-body-sm font-bold text-ink" htmlFor="reset-email">Work email</label>
+                    <label className="block font-sans text-body-sm font-medium text-ink" htmlFor="reset-email">Work email</label>
                     <input
-                      className="w-full px-4 py-3 rounded-DEFAULT border border-border bg-surface text-ink focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow outline-none placeholder-outline-variant font-body-md"
+                      className="w-full px-4 py-3 rounded-DEFAULT border border-border bg-surface text-ink focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow outline-none placeholder-outline-variant font-sans"
                       id="reset-email"
                       name="reset-email"
                       type="email"
@@ -269,7 +269,7 @@ export default function LoginPage() {
               </>
             )}
 
-            <div className="mt-12 text-center flex flex-col sm:flex-row items-center justify-center gap-2 font-body-sm text-body-sm text-outline">
+            <div className="mt-12 text-center flex flex-col sm:flex-row items-center justify-center gap-2 font-sans text-body-sm text-outline">
               <div className="flex items-center gap-1">
                 <span className="material-symbols-outlined text-sm">lock</span>
                 <span>Your financial data is encrypted and protected.</span>

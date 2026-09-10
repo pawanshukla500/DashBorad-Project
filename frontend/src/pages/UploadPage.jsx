@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData } from '../api/client';
+import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, uploadMeeshoSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData } from '../api/client';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const MARKETPLACES = [
@@ -71,6 +71,8 @@ const DATA_TYPES = [
   { key: 'amazon-settlement',    label: 'Settlement (Payment)', icon: '📊', uniqueKey: 'settlement-id',
     blurb: 'Flat-File V2 — long-format. Fulfillment-Fee-Refund rows link via order_id (no sku/item-id needed).',
     checklistStep: 4 },
+  { key: 'meesho-settlement', label: 'Settlement (Payment)', icon: '💰', uniqueKey: 'Transaction ID',
+    blurb: 'Meesho Payments Excel file containing Order Payments, Ads Cost, Referral Payments, and Compensation.' },
   { key: 'myntra-orders', label: 'Sales / Orders', icon: '📦', uniqueKey: 'Order Line ID',
     blurb: 'Myntra Order Layout only. Order Release ID is stored as the order ID and Order Line ID as the order item ID. PPMP is treated as Non-FBM; other PO types are FBM.' },
   { key: 'myntra-returns', label: 'Returns', icon: '↩️', uniqueKey: 'Order Line ID',
@@ -90,7 +92,7 @@ const MYNTRA_DATA_TYPES = new Set(['myntra-orders', 'myntra-returns', 'myntra-in
 const DATA_TYPE_KEYS_BY_MARKETPLACE = Object.freeze({
   flipkart: ['orders', 'returns', 'fk-settlement'],
   amazon: ['amazon-sale-orders', 'amazon-fba-returns', 'amazon-flex-returns', 'amazon-settlement'],
-  meesho: ['orders', 'returns', 'settlements'],
+  meesho: ['orders', 'returns', 'meesho-settlement'],
   // Myntra follows the same three-stage order → return → payment flow as
   // Flipkart, but payment is its account-scoped invoice/payment importer.
   myntra: ['myntra-orders', 'myntra-returns', 'myntra-invoices'],
@@ -175,7 +177,7 @@ export default function UploadPage() {
       // we still need the map step if they need user selection, but fk-settlement
       // handles its own flow. Actually fk-settlement needs to select sheets!
       // Let's just set step to 'map' for fk-settlement, otherwise auto upload.
-      if (dataType === 'fk-settlement' || dataType === 'amazon-settlement') {
+      if (dataType === 'fk-settlement' || dataType === 'amazon-settlement' || dataType === 'meesho-settlement') {
         setStep('map');
       } else {
         // We will pass the file directly to avoid state race conditions
@@ -226,6 +228,8 @@ export default function UploadPage() {
         uploadFd.append('marketplace', uploadContext.marketplace);
         if (uploadContext.dataType === 'amazon-settlement') {
           res = await uploadAmazonSettlement(uploadFd);
+        } else if (uploadContext.dataType === 'meesho-settlement') {
+          res = await uploadMeeshoSettlement(uploadFd);
         } else if (uploadContext.dataType === 'myntra-invoices') {
           // The endpoint validates this selected account against the active
           // Myntra directory before importing. EJ and VB therefore stay
@@ -433,7 +437,7 @@ export default function UploadPage() {
         {step === 'drop' && marketplace === 'amazon' && dataType === 'amazon-sale-orders' && (
           <AmazonOrdersGuide />
         )}
-        {step === 'uploading' && dataType !== 'fk-settlement' && dataType !== 'amazon-settlement' && (
+        {step === 'uploading' && dataType !== 'fk-settlement' && dataType !== 'amazon-settlement' && dataType !== 'meesho-settlement' && (
           <ColumnMapper
             file={file} uploading={uploading} progress={progress} error={error}
             onUpload={handleUpload} onReset={resetFlow}
@@ -620,6 +624,33 @@ function AmazonOrdersGuide() {
           Upload the <strong>Amazon Sale Order</strong> file with the 14 columns from the renewed template.
           Order Reports are no longer required; settlement and return linkage uses Amazon Order Id + Merchant SKU.
         </p>
+      </div>
+    </div>
+  );
+}
+
+
+function MeeshoSettlementReady({ file, uploading, progress, error, onUpload, onReset }) {
+  if (uploading) return <UploadProgress label="Importing Meesho Settlement" progress={progress} error={error} onReset={onReset} />;
+  return (
+    <div className="px-6 py-5">
+      <div className="flex items-center justify-between mb-4">
+        <SectionLabel n={3} label="Uploading & AI Mapping" />
+        <div className="flex items-center gap-3 text-xs text-outline">
+          <span className="font-medium text-secondary">{file?.name}</span>
+        </div>
+      </div>
+      <div className="mt-6 mb-8 text-center bg-gray-50 rounded-xl p-8 border border-gray-100">
+        <h3 className="text-sm font-bold text-ink">Meesho Payments File</h3>
+        <p className="text-xs text-secondary max-w-md mx-auto mt-1">
+          This file will be parsed and loaded directly. The backend automatically extracts Order Payments, Ads Cost, and Referrals. No manual column mapping required.
+        </p>
+      </div>
+      <div className="flex items-center justify-between mt-6 pt-5 border-t border-gray-100">
+        <button onClick={onReset} className="px-4 py-2 text-sm font-medium text-secondary hover:text-ink transition-colors">Back</button>
+        <button onClick={() => onUpload('')} className="px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm">
+          Process Payment File
+        </button>
       </div>
     </div>
   );
@@ -1153,7 +1184,7 @@ function DbBanner({ configured, counts, lastUploads, fkSettlementPeriod }) {
       <span className="text-xl">⚠️</span>
       <div>
         <p className="text-sm font-semibold text-amber-800">Database not connected</p>
-        <p className="text-xs text-amber-600 mt-0.5">Add PG_HOST, PG_DATABASE, PG_USER, PG_PASSWORD to backend/.env and restart.</p>
+        <p className="text-xs text-amber-600 mt-0.5">Add the Hostinger PostgreSQL DATABASE_URL to backend/.env and restart.</p>
       </div>
     </div>
   );
@@ -1223,19 +1254,17 @@ function SetupGuide() {
       </button>
       {open && (
         <div className="px-5 pb-5 pt-4 border-t border-border space-y-4">
-          <GuideStep n={1} title="Create GCP Cloud SQL (PostgreSQL)">
-            Go to <strong>console.cloud.google.com</strong> → Cloud SQL → Create Instance → PostgreSQL. Note the public IP, database name, user and password.
+          <GuideStep n={1} title="Use the Hostinger PostgreSQL database">
+            Keep PostgreSQL running in Docker on the Hostinger VPS. Use one permanent application database and do not switch back to previous databases.
           </GuideStep>
-          <GuideStep n={2} title="Allow firewall access">
-            In Cloud SQL → Connections → Networking → add your public IP to authorized networks. Enable <strong>"Public IP"</strong> connectivity.
+          <GuideStep n={2} title="Keep the database private">
+            On the VPS, let the API reach PostgreSQL through the Docker network. Do not open PostgreSQL to the public internet for production traffic.
           </GuideStep>
           <GuideStep n={3} title="Add credentials to backend/.env">
             <div className="mt-1.5 bg-primary rounded-lg p-3 font-mono text-[11px] text-green-400 space-y-0.5">
-              <p>PG_HOST=<span className="text-yellow-300">your-instance-ip</span></p>
-              <p>PG_PORT=<span className="text-yellow-300">5432</span></p>
-              <p>PG_DATABASE=<span className="text-yellow-300">your-database-name</span></p>
-              <p>PG_USER=<span className="text-yellow-300">your-username</span></p>
-              <p>PG_PASSWORD=<span className="text-yellow-300">your-password</span></p>
+              <p>DATABASE_URL=<span className="text-yellow-300">postgresql://user:password@postgres:5432/paymentapp</span></p>
+              <p>DATABASE_ENGINE=<span className="text-yellow-300">postgresql</span></p>
+              <p>PG_SSL=<span className="text-yellow-300">false</span></p>
             </div>
           </GuideStep>
           <GuideStep n={4} title="Restart backend server">

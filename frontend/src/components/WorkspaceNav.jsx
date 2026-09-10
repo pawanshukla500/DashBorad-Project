@@ -11,35 +11,30 @@ export default function WorkspaceNav() {
   if (!workspace || tabs.length <= 1) return null;
 
   return (
-    <div className="shrink-0 border-b border-border bg-surface px-4 md:px-6">
-      <div className="flex items-center gap-1 overflow-x-auto py-2" aria-label={`${workspace.label} sections`}>
-        <span className="mr-2 hidden shrink-0 font-label-md text-label-md text-outline lg:inline">
-          {workspace.label}
-        </span>
-        {tabs.map(tab => {
-          const active = isTabActive(location.pathname, tab);
-          return (
-            <Link
-              key={tab.path}
-              to={tab.path}
-              aria-current={active ? 'page' : undefined}
-              className={`relative shrink-0 rounded-lg px-3.5 py-2 font-body-sm text-body-sm font-bold transition-all ${
-                active
-                  ? 'bg-surface-container-low text-primary shadow-sm'
-                  : 'text-secondary hover:bg-surface-container hover:text-ink'
-              }`}
-            >
-              {tab.label}
-              {active && (
-                <span
-                  aria-hidden="true"
-                  className="absolute inset-x-3 -bottom-[9px] h-0.5 rounded-full bg-primary"
-                />
-              )}
-            </Link>
-          );
-        })}
-      </div>
-    </div>
+    <nav className="flex min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto" aria-label={`${workspace.label} sections`}>
+      {tabs.map(tab => {
+        const active = isTabActive(location.pathname, tab);
+        return (
+          <Link
+            key={tab.path}
+            to={tab.path}
+            aria-current={active ? 'page' : undefined}
+            className={`relative flex shrink-0 items-center px-3 font-sans text-body-sm transition-colors ${
+              active
+                ? 'font-semibold text-primary'
+                : 'font-medium text-secondary hover:text-ink'
+            }`}
+          >
+            {tab.label}
+            {active && (
+              <span
+                aria-hidden="true"
+                className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-primary"
+              />
+            )}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }

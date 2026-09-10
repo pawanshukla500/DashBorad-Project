@@ -105,7 +105,8 @@ const MARKETPLACES = [
   { id: 'flipkart', label: 'Flipkart',  emoji: '🛒', note: 'Includes Shopsy sub-channel (shopsy_* categories)' },
   { id: 'amazon',   label: 'Amazon',    emoji: '📦' },
   { id: 'meesho',   label: 'Meesho',    emoji: '🎀' },
-  { id: 'myntra',   label: 'Myntra',    emoji: '👗' },
+  { id: 'myntra_vb', label: 'Myntra (VB)', emoji: '👗', defaultAccount: 'myntra_vb', note: 'VB Exports (Seller ID: 10708)' },
+  { id: 'myntra_ej', label: 'Myntra (EJ)', emoji: '👗', defaultAccount: 'myntra_ej', note: 'EJ Account (Seller ID: 45833)' },
   { id: 'jiomart',  label: 'JioMart',   emoji: '🏪' },
 ];
 
@@ -1875,7 +1876,8 @@ function AccountStrip({ marketplace, value, onChange }) {
   const [addErr, setAddErr]       = useState(null);
 
   const mpMeta    = MARKETPLACES.find(m => m.id === marketplace) || MARKETPLACES[0];
-  const isMyntra  = marketplace === 'myntra';
+  const isMyntra  = marketplace === 'myntra' || marketplace === 'myntra_vb' || marketplace === 'myntra_ej';
+  const isDedicatedMyntra = marketplace === 'myntra_vb' || marketplace === 'myntra_ej';
   const accountLabel = isMyntra ? 'Myntra account' : 'Account';
 
   const load = useCallback(async () => {
@@ -1883,8 +1885,10 @@ function AccountStrip({ marketplace, value, onChange }) {
     try {
       const d = await fetchMarketplaceAccounts(marketplace);
       setAccounts(d.accounts || []);
-      // If current selection is gone, reset to default
-      if (value && !d.accounts.some(a => a.account_id === value)) {
+      // If current selection is gone or invalid, set to first available or default
+      if (d.accounts?.length > 0 && !d.accounts.some(a => a.account_id === value)) {
+        onChange(d.accounts[0].account_id);
+      } else if (!value) {
         onChange('default');
       }
     } catch {}
@@ -1907,7 +1911,7 @@ function AccountStrip({ marketplace, value, onChange }) {
   }
 
   async function handleRemove(account) {
-    if (account.account_id === 'default') return;
+    if (account.account_id === 'default' || account.account_id === 'myntra_vb' || account.account_id === 'myntra_ej') return;
     if (!window.confirm(`Remove ${accountLabel} "${account.display_name}" from ${mpMeta.label}?\n\nNote: rate card data for this account is NOT deleted.`)) return;
     try {
       await deleteMarketplaceAccount(account.id);
@@ -1933,7 +1937,7 @@ function AccountStrip({ marketplace, value, onChange }) {
           >
             {a.account_id === 'default' ? `${mpMeta.emoji} ${a.display_name}` : `${isMyntra ? '🏷️' : '🏢'} ${a.display_name}`}
           </button>
-          {a.account_id !== 'default' && (
+          {a.account_id !== 'default' && a.account_id !== 'myntra_vb' && a.account_id !== 'myntra_ej' && (
             <button
               onClick={() => handleRemove(a)}
               className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white rounded-full text-[9px] hidden group-hover:flex items-center justify-center leading-none hover:bg-rose-600"
@@ -1944,36 +1948,38 @@ function AccountStrip({ marketplace, value, onChange }) {
       ))}
 
       {/* Add account/brand */}
-      {showAdd ? (
-        <div className="flex items-center gap-1.5">
-          <input
-            autoFocus
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleAdd()}
-            placeholder={`${accountLabel} name…`}
-            className="text-xs border-2 border-primary rounded-full px-3 py-1.5 w-36 outline-none focus:border-primary"
-          />
-          <button onClick={handleAdd} disabled={adding}
-            className="px-2.5 py-1.5 bg-primary text-white rounded-full text-xs font-bold hover:bg-primary disabled:opacity-50">
-            {adding ? '…' : '✓'}
+      {!isDedicatedMyntra && (
+        showAdd ? (
+          <div className="flex items-center gap-1.5">
+            <input
+              autoFocus
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAdd()}
+              placeholder={`${accountLabel} name…`}
+              className="text-xs border-2 border-primary rounded-full px-3 py-1.5 w-36 outline-none focus:border-primary"
+            />
+            <button onClick={handleAdd} disabled={adding}
+              className="px-2.5 py-1.5 bg-primary text-white rounded-full text-xs font-bold hover:bg-primary disabled:opacity-50">
+              {adding ? '…' : '✓'}
+            </button>
+            <button onClick={() => { setShowAdd(false); setNewName(''); setAddErr(null); }}
+              className="px-2.5 py-1.5 border border-border rounded-full text-xs text-secondary hover:bg-surface-container-low">
+              ✕
+            </button>
+            {addErr && <span className="text-[10px] text-rose-600">{addErr}</span>}
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-1 px-3 py-1.5 border-2 border-dashed border-border rounded-full text-xs font-semibold text-outline hover:border-primary hover:text-primary transition-colors"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
+            </svg>
+            Add {accountLabel}
           </button>
-          <button onClick={() => { setShowAdd(false); setNewName(''); setAddErr(null); }}
-            className="px-2.5 py-1.5 border border-border rounded-full text-xs text-secondary hover:bg-surface-container-low">
-            ✕
-          </button>
-          {addErr && <span className="text-[10px] text-rose-600">{addErr}</span>}
-        </div>
-      ) : (
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-1 px-3 py-1.5 border-2 border-dashed border-border rounded-full text-xs font-semibold text-outline hover:border-primary hover:text-primary transition-colors"
-        >
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" />
-          </svg>
-          Add {accountLabel}
-        </button>
+        )
       )}
     </div>
   );
@@ -2383,9 +2389,10 @@ export default function RateCardConfigPage() {
   }, []);
 
   const handleMarketplaceChange = (mp) => {
+    const meta = MARKETPLACES.find(m => m.id === mp);
     setMarketplace(mp);
-    setAccount('default');
-  }
+    setAccount(meta?.defaultAccount || 'default');
+  };
 
   // Load coverage whenever marketplace, account, or coverageVer changes
   useEffect(() => {

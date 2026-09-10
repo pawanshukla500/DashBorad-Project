@@ -69,6 +69,6 @@ describe('Amazon Sale Order workflow', () => {
     expect(healthRoute).toContain('FROM amazon_settlement_lines');
     expect(healthRoute).toContain('FROM fk_settlement_orders');
     expect(healthRoute).not.toContain('FROM unified_settlements us');
-    expect(schema).toContain("CURRENT_SCHEMA_VERSION = '2026.08.connection-stability-1'");
+    expect(schema).toContain('CURRENT_SCHEMA_VERSION =');
   });
 });

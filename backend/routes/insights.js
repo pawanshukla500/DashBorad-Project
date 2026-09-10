@@ -11,7 +11,14 @@ function buildWhere(q, alias = 'o') {
   if (q.startDate) { conds.push(`${alias}.order_date >= $${values.push(q.startDate)}`); }
   if (q.endDate)   { conds.push(`${alias}.order_date <= $${values.push(q.endDate)}`); }
   if (q.marketplace && q.marketplace !== 'all') {
-    conds.push(`${alias}.marketplace = $${values.push(q.marketplace)}`);
+    const mp = String(q.marketplace).trim().toLowerCase();
+    if (mp === 'myntra_vb') {
+      conds.push(`${alias}.marketplace = 'myntra' AND COALESCE(${alias}.seller_account, 'myntra_vb') = 'myntra_vb'`);
+    } else if (mp === 'myntra_ej') {
+      conds.push(`${alias}.marketplace = 'myntra' AND ${alias}.seller_account = 'myntra_ej'`);
+    } else {
+      conds.push(`${alias}.marketplace = $${values.push(mp)}`);
+    }
   }
   return { where: conds.length ? 'AND ' + conds.join(' AND ') : '', values };
 }
@@ -29,7 +36,10 @@ router.get('/marketplace-summary', async (req, res) => {
     const { rows } = await pool.query(`
       ${SETT_CTE}
       SELECT
-        COALESCE(o.marketplace, 'Unknown')                                        AS marketplace,
+        CASE
+          WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+          ELSE COALESCE(o.marketplace, 'Unknown')
+        END                                                                       AS marketplace,
         COUNT(o.order_item_id)                                                    AS orders,
         COALESCE(SUM(o.final_invoice_amount), 0)                                  AS revenue,
         COALESCE(SUM(COALESCE(s.net_bank,0)), 0)                                  AS settlement,
@@ -48,7 +58,10 @@ router.get('/marketplace-summary', async (req, res) => {
       LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
       LEFT JOIN sett s ON s.order_item_id = o.order_item_id
       WHERE 1=1 ${where}
-      GROUP BY COALESCE(o.marketplace, 'Unknown')
+      GROUP BY CASE
+        WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+        ELSE COALESCE(o.marketplace, 'Unknown')
+      END
       ORDER BY revenue DESC
     `, values);
     res.json({ marketplaces: rows });
@@ -245,12 +258,28 @@ router.get('/cash-flow', async (req, res) => {
   try {
     if (!(await isDbConfigured())) return res.status(503).json({ error: 'DB not configured' });
     const pool = getPool();
-    const mpCond = (req.query.marketplace && req.query.marketplace !== 'all')
-      ? [`marketplace = $1`] : [];
-    const mpVals = mpCond.length ? [req.query.marketplace] : [];
-    const mpWhere  = mpCond.length ? 'AND marketplace = $1' : '';
-    const mpWhereS = mpCond.length ? 'AND s.marketplace = $1' : '';
-    const omWhere  = mpCond.length ? 'AND o.marketplace = $1' : '';
+    const rawMp = req.query.marketplace;
+    let mpWhere = '';
+    let mpWhereS = '';
+    let omWhere = '';
+    const mpVals = [];
+    if (rawMp && rawMp !== 'all') {
+      const mp = String(rawMp).trim().toLowerCase();
+      if (mp === 'myntra_vb') {
+        mpWhere = "AND marketplace = 'myntra'";
+        mpWhereS = "AND s.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
+        omWhere = "AND o.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
+      } else if (mp === 'myntra_ej') {
+        mpWhere = "AND marketplace = 'myntra'";
+        mpWhereS = "AND s.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
+        omWhere = "AND o.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
+      } else {
+        mpVals.push(mp);
+        mpWhere = `AND marketplace = $${mpVals.length}`;
+        mpWhereS = `AND s.marketplace = $${mpVals.length}`;
+        omWhere = `AND o.marketplace = $${mpVals.length}`;
+      }
+    }
 
     const [settRes, unsettledRes, spfTotalRes, spfReasonRes, neftRes, orderSpfSummaryRes, orderSpfDetailRes] = await Promise.all([
       pool.query(`

@@ -110,4 +110,4 @@ rule exists, the screen reports **Rate needed** instead of a made-up variance.
 
 For production query tuning, use `EXPLAIN (ANALYZE, BUFFERS)` against the real
 data volume. Local tests validate query shape and report contracts but cannot
-measure the production CockroachDB cluster's network latency or CPU usage.
+measure the production PostgreSQL server's network latency or CPU usage.

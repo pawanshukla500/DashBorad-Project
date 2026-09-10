@@ -4,13 +4,12 @@ import { resolvePgConfig } from '../db/index.js';
 
 dotenv.config();
 
-const connectionString = process.env.POSTGRES_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
-if (!connectionString || process.env.DATABASE_ENGINE !== 'postgresql') {
-  throw new Error('DATABASE_URL is not marked as the active PostgreSQL connection.');
+const config = resolvePgConfig();
+if (!config.connectionString && !(config.host && config.database && config.user && config.password)) {
+  throw new Error('DATABASE_URL or PG_* settings are required for PostgreSQL verification.');
 }
 
-const { ssl } = resolvePgConfig();
-const pool = new pg.Pool({ connectionString, ssl, connectionTimeoutMillis: 10_000, max: 1 });
+const pool = new pg.Pool({ ...config, connectionTimeoutMillis: 10_000, max: 1, min: 0 });
 
 try {
   const [identity, uploadStats, history, dataCenterCounts, reconciliationIntegrity] = await Promise.all([
@@ -63,8 +62,8 @@ try {
   console.log(JSON.stringify({
     ok: true,
     activeDatabase: 'postgresql',
-    sslEnabled: Boolean(ssl),
-    sslRejectUnauthorized: ssl ? ssl.rejectUnauthorized !== false : null,
+    sslEnabled: Boolean(config.ssl),
+    sslRejectUnauthorized: config.ssl ? config.ssl.rejectUnauthorized !== false : null,
     database: identity.rows[0]?.database,
     server: String(identity.rows[0]?.version || '').split(',')[0],
     uploadHistory: uploadStats.rows[0],

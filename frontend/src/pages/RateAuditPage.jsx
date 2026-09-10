@@ -881,8 +881,10 @@ const FEE_TYPE_META = {
 };
 
 const MP_OPTIONS = [
-  { value: 'flipkart', label: 'Flipkart' },
-  { value: 'amazon',   label: 'Amazon'   },
+  { value: 'flipkart',  label: 'Flipkart' },
+  { value: 'amazon',    label: 'Amazon'   },
+  { value: 'myntra_vb', label: 'Myntra (VB)', defaultAccount: 'myntra_vb' },
+  { value: 'myntra_ej', label: 'Myntra (EJ)', defaultAccount: 'myntra_ej' },
 ];
 
 function RcEntryRecoView({ data, loading, error, marketplace, sellerAccount, onMpChange, onSaChange, onDrill }) {
@@ -908,7 +910,7 @@ function RcEntryRecoView({ data, loading, error, marketplace, sellerAccount, onM
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex gap-1 bg-surface-container rounded-lg p-1">
           {MP_OPTIONS.map(o => (
-            <button key={o.value} onClick={() => onMpChange(o.value)}
+            <button key={o.value} onClick={() => { onMpChange(o.value); if (o.defaultAccount) onSaChange(o.defaultAccount); }}
               className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
                 marketplace === o.value ? 'bg-surface text-ink shadow-sm' : 'text-secondary hover:text-ink'
               }`}>{o.label}</button>

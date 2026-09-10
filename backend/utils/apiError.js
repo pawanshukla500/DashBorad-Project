@@ -9,6 +9,15 @@ const MULTIPART_LIMIT_CODES = new Set([
  * messages; this function only handles errors that bypass a route handler.
  */
 export function publicApiError(error) {
+  if (error?.code === 'DB_UNAVAILABLE') {
+    return {
+      status: 503,
+      body: {
+        error: 'Database connection is temporarily unavailable. Please retry shortly.',
+        code: 'DB_UNAVAILABLE',
+      },
+    };
+  }
   if (error?.type === 'entity.too.large' || MULTIPART_LIMIT_CODES.has(error?.code)) {
     return {
       status: 413,

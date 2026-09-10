@@ -1,10 +1,11 @@
-import { lazy, Suspense, useCallback, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import FilterBar from './components/FilterBar';
 import WorkspaceNav from './components/WorkspaceNav';
 import ErrorBoundary from './components/ErrorBoundary';
 import FeeAlertBanner from './components/FeeAlertBanner';
+import ServiceStatusBanner from './components/ServiceStatusBanner';
 import { FilterProvider } from './context/FilterContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { OPS_ROLES, workspaceForPath } from './navigation';
@@ -56,48 +57,82 @@ function PageLoader() {
   );
 }
 
-function TopNavbar({ onOpenSidebar, user }) {
+function UserMenu({ user, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (event) => {
+      if (ref.current && !ref.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className="flex items-center gap-2 rounded-lg py-1 pl-1 pr-2 hover:bg-surface-container-low"
+      >
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-container text-on-primary font-sans text-body-sm font-semibold">
+          {user?.username?.charAt(0).toUpperCase() || 'U'}
+        </div>
+        <div className="hidden md:block text-left">
+          <p className="font-sans text-body-sm font-medium text-ink leading-4">{user?.username || 'User'}</p>
+          <p className="font-sans text-[11px] capitalize text-outline leading-4">{user?.role || 'viewer'}</p>
+        </div>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-border bg-surface py-1"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { setOpen(false); onLogout(); }}
+            className="w-full px-3 py-2 text-left font-sans text-body-sm font-medium text-secondary hover:bg-surface-container-low hover:text-ink"
+          >
+            Log out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AppChrome({ onOpenSidebar, user, onLogout }) {
   const { pathname } = useLocation();
   const workspace = workspaceForPath(pathname, user?.role === 'admin');
 
   return (
-    <header className="sticky top-0 z-10 bg-surface/90 backdrop-blur-md border-b border-border flex justify-between items-center h-16 px-6 lg:px-container-padding">
-      <div className="flex items-center gap-4">
-        {/* Mobile menu button */}
+    <header className="sticky top-0 z-30 bg-surface/95 backdrop-blur-md border-b border-border">
+      <div className="flex h-[52px] items-center gap-3 px-4 md:px-6">
         <button
           type="button"
           onClick={onOpenSidebar}
           aria-label="Open navigation"
-          className="lg:hidden rounded-lg p-2 text-secondary hover:bg-surface-container-high transition-colors"
+          className="lg:hidden rounded-lg p-2 text-secondary hover:bg-surface-container-low"
         >
           <span className="material-symbols-outlined">menu</span>
         </button>
 
-        <div className="hidden sm:block">
-          <h2 className="font-headline-md text-headline-md font-bold text-ink">
-            {workspace.label}
-          </h2>
-          <p className="mt-0.5 font-body-sm text-body-sm text-outline">{workspace.job}</p>
+        <h2 className="hidden sm:block shrink-0 font-display text-headline-md font-semibold text-ink">
+          {workspace.label}
+        </h2>
+
+        <WorkspaceNav />
+
+        <div className="ml-auto shrink-0">
+          <UserMenu user={user} onLogout={onLogout} />
         </div>
       </div>
-      
-      <div className="flex items-center gap-2 sm:gap-4">
-        <div className="flex items-center gap-sm">
-          <button className="text-secondary p-1 relative hidden sm:block">
-            <span className="material-symbols-outlined">notifications</span>
-            <span className="absolute top-1 right-1 w-2 h-2 bg-danger rounded-full border border-surface"></span>
-          </button>
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary-container text-on-primary font-body-sm font-bold border border-border">
-              {user?.username?.charAt(0).toUpperCase() || 'U'}
-            </div>
-            <div className="hidden md:block text-sm">
-              <p className="font-body-md text-body-md font-medium text-ink">{user?.username || 'User'}</p>
-              <p className="font-body-sm text-body-sm capitalize text-outline">{user?.role || 'viewer'}</p>
-            </div>
-          </div>
-        </div>
-      </div>
+      <FilterBar />
     </header>
   );
 }
@@ -153,7 +188,7 @@ function AppRoutes({ user }) {
 }
 
 function AppContent() {
-  const { user, loading } = useAuth();
+  const { user, loading, logout } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
@@ -168,19 +203,19 @@ function AppContent() {
   }
 
   return (
-    <div className="bg-canvas text-ink h-screen flex overflow-hidden font-body-md selection:bg-primary-container selection:text-on-primary">
+    <div className="bg-canvas text-ink h-screen flex overflow-hidden font-sans selection:bg-primary-container selection:text-on-primary">
       <Sidebar open={sidebarOpen} onClose={closeSidebar} />
-      
-      {/* Main Content Wrapper */}
-      <div className="flex-1 flex flex-col min-h-screen relative w-full lg:w-[calc(100%-16rem)]">
-        <TopNavbar onOpenSidebar={() => setSidebarOpen(true)} user={user} />
-        
+
+      <div className="flex-1 flex flex-col min-h-0 relative w-full lg:w-[calc(100%-16rem)]">
+        <AppChrome
+          onOpenSidebar={() => setSidebarOpen(true)}
+          user={user}
+          onLogout={logout}
+        />
+        <ServiceStatusBanner />
         <FeeAlertBanner />
-        <FilterBar />
-        <WorkspaceNav />
-        
-        {/* Main Canvas */}
-        <main className="flex-1 pt-6 px-4 md:px-6 lg:px-container-padding pb-container-padding bg-transparent overflow-y-auto">
+
+        <main className="flex-1 pt-5 px-4 md:px-6 lg:px-container-padding pb-container-padding bg-transparent overflow-y-auto">
           <ErrorBoundary>
             <Suspense fallback={<PageLoader />}>
               <AppRoutes user={user} />

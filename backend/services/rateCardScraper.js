@@ -3,17 +3,10 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import pkg from 'pg';
-const { Pool } = pkg;
-import dotenv from 'dotenv';
+import { getPool } from '../db/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.join(__dirname, '../../.env') });
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
-});
 
 puppeteer.use(StealthPlugin());
 
@@ -135,6 +128,8 @@ export async function scrapeRateCard(options = {}) {
 
     console.log('Extraction complete. Updating database...');
     
+    const pool = getPool();
+
     // Update Commission Fees
     for (const c of extractedData.commissions) {
       await pool.query(`

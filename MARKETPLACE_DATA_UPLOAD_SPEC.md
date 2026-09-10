@@ -1,0 +1,382 @@
+# Marketplace Data Upload Specification & System Architecture
+
+This document is the **single source of truth** for all data upload pipelines, validations, parameter logic, database schemas, and edge cases across every supported marketplace in the **DashBorad Project**.
+
+All autonomous agents, engineers, and data pipelines must conform to the logic, table mappings, and validation contracts documented here.
+
+---
+
+## 1. System-Wide Ingestion Architecture
+
+The ingestion architecture standardizes file parsing, validation, batch processing, logging, and downstream rollups across all marketplaces.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                             Client Upload (UI / API)                             │
+│                  Multipart Form: file, columnMap, parameters                     │
+└────────────────────────────────────────┬─────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                      Validation & Pre-Flight Checks                              │
+│   • Auth & Mutation Guard (Firebase / Session)                                   │
+│   • Database Readiness Guard (isDbConfigured / databaseSchemaReady)              │
+│   • File Structure & Header Validation (Layout & Required Columns)               │
+│   • Account Matching Guard (e.g. Myntra EJ 45833 vs VB 10708)                    │
+└────────────────────────────────────────┬─────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                      Parsing & Field Normalization                               │
+│   • Date Normalizer (MDY vs DMY inference, epoch 1970 fallbacks)                 │
+│   • Currency / Money Parsers (symbol stripping, negative credit handling)        │
+│   • Identity Cleaners (leading apostrophe removal, case normalization)            │
+│   • Column Mapping (user-mapped or auto-detected headers)                        │
+└────────────────────────────────────────┬─────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                      Batched Database Ingestion                                  │
+│   • Database batching via forEachDbBatch (prevents PG 65,535 param limit)        │
+│   • Atomic transactions & conflict handling (ON CONFLICT DO UPDATE / REPLACE)    │
+│   • Detailed raw table + normalized summary table dual-write                     │
+└────────────────────────────────────────┬─────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                      Post-Ingest Rollups & Notifications                         │
+│   • Refresh order_settlement_totals                                              │
+│   • Refresh marketplace reporting rollups (Amazon / Myntra)                      │
+│   • Invalidate dashboard aggregate cache & SKU benchmark cache                   │
+│   • Record to upload_log and save malformed rows to upload_skipped_rows          │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.1 Standard API Response Schema
+Every upload endpoint returns a structured JSON payload:
+```json
+{
+  "ok": true,
+  "marketplace": "flipkart | myntra | amazon | meesho",
+  "seller_account": "myntra_ej | myntra_vb | default",
+  "inserted": 1250,
+  "updated": 45,
+  "skipped": 2,
+  "total": 1297,
+  "logId": 482,
+  "batch": "2026-09-10T19-30-00-000Z"
+}
+```
+
+### 1.2 Centralized Audit & Error Logging
+- **`upload_log` Table**: Every upload attempt (successful or errored) writes a record containing `id`, `upload_type`, `filename`, `marketplace`, `records_inserted`, `records_updated`, `records_skipped`, `status` (`'ok'` or `'error'`), `error_message`, and `uploaded_at`.
+- **`upload_skipped_rows` Table**: Any row failing validation is skipped without crashing the entire batch (unless an account or layout guard fails). Skipped rows record `upload_log_id`, `row_num`, `skip_reason`, and full original row data in `raw_json`.
+- **Skipped Rows API**: `GET /api/upload/log/:id/skipped?page=1&pageSize=100` allows operators to inspect and export rejected rows directly in the Data Hub UI.
+
+---
+
+## 2. Flipkart Data Ingestion Pipeline
+
+Flipkart ingestion handles three primary datasets: Orders, Returns, and the comprehensive multi-sheet Settlement Report.
+
+### 2.1 Flipkart Orders
+- **Route**: `POST /api/upload/orders`
+- **Parameters**: `marketplace = "flipkart"`, `file` (multipart), `columnMap` (JSON string).
+- **Target Table**: `orders` (upsert on `(marketplace, seller_account, order_item_id)`).
+- **Required Columns / Alternatives**:
+  - `Order Item ID`
+  - `Order ID`
+  - `Order Date`
+  - `QTY` (or `Qty`)
+  - `Amount` (or `Final Invoice Amount`)
+- **Full Standard Template Headers**:
+  `Order ID`, `Order Item ID`, `FSN`, `SKU`, `Selling Channel`, `Category`, `Brand`, `HSN Code`, `Order Type`, `Fulfilment Type`, `Order Date`, `QTY`, `Amount`, `Customer's Delivery State`, `Customer's Delivery Pincode`, `Warehouse ID`, `Warehouse City`.
+- **Validation Rules**:
+  - `order_id` and `order_item_id` must not be blank.
+  - `order_date` must parse to a valid SQL date (`YYYY-MM-DD`).
+  - `QTY` must be a positive integer `>= 1`.
+  - `Amount` must be a valid numeric value.
+
+### 2.2 Flipkart Returns
+- **Route**: `POST /api/upload/returns`
+- **Parameters**: `marketplace = "flipkart"`, `file` (multipart), `columnMap` (JSON string).
+- **Target Table**: `returns` (upsert on `(marketplace, seller_account, order_item_id)`).
+- **Required Columns / Alternatives**: `return_id` OR `order_item_id`.
+- **Synthetic Key Fallback**: If `order_item_id` is missing but `return_id` is present, the system synthesizes `order_item_id = 'RET_' + return_id`.
+- **Upsert Guard**: Only updates an existing return record if `EXCLUDED.return_requested_date > returns.return_requested_date` or if existing return was marked `cancelled` and incoming is not cancelled.
+- **Physical Verification Headers**:
+  `primary_pv_output`, `detailed_pv_output`, `final_condition_of_returned_product`, `tech_visit_sla`, `return_completion_type`.
+
+### 2.3 Flipkart Multi-Sheet Settlement Report
+- **Route**: `POST /api/upload/flipkart-settlement`
+- **Architecture**: Asynchronous background worker. Responds immediately with `{ jobId, status: "started" }`. Client polls progress via `GET /api/upload/flipkart-settlement/progress/:jobId`.
+- **Atomic Replacement by NEFT**: To guarantee data integrity and allow clean re-uploads, all rows in the destination tables belonging to any `neft_id` found in the file are deleted before inserting the new batch (`deleteByNeftIds`).
+- **Processed Sheets**:
+  1. **`Orders` Sheet**:
+     - Target: `fk_settlement_orders` (60+ itemized deduction columns).
+     - Extracts: `neft_id`, `payment_date`, `bank_settlement`, `sale_amount`, `marketplace_fee`, `taxes`, `commission`, `fixed_fee`, `collection_fee`, `pick_pack_fee`, `shipping_fee`, `reverse_shipping`, `tcs`, `tds`, `gst_on_mp_fees`, `dead_weight`, `chargeable_weight_slab`, etc.
+     - **Unknown Column Detection**: Scans headers against `ORDERS_KNOWN_PREFIXES`. If Flipkart adds a new unexpected deduction column, it is captured in `newColumnsFound` and logged.
+     - Downstream: Triggers `refreshOrderSettlementTotals(client)`.
+  2. **`Non_Order_SPF` Sheet**:
+     - Target: `fk_spf_claims`.
+     - Unique constraint: composite `UNIQUE(claim_id, neft_id)` (Flipkart frequently reuses claim IDs across deduction and credit cycles).
+  3. **`Storage_Recall` Sheet**:
+     - Target: `fk_storage_recall`.
+     - Captures warehouse storage units, regular storage fees, removal fees, and GST.
+  4. **`Ads` Sheet**:
+     - Target: `fk_ads`.
+     - Tracks campaign IDs, wallet redemptions, top-ups, refunds, and GST on ads.
+  5. **`Google Ads Services` Sheet**:
+     - Target: `fk_google_ads`.
+     - Tracks external Google Ads billing, service order IDs, service amounts, and GST.
+- **Ignored / Informational Sheets**: `MP Fee Rebate`, `Value Added Services`, `TCS_Recovery`, `TDS`, `GST_Details`, `Report Help`, `Summary of report`.
+- **Post-Upload Triggers**: Clears SKU benchmark cache and triggers `notifySkuSettlementBenchmarkAfterImport(pool, 'flipkart')`.
+
+---
+
+## 3. Myntra Data Ingestion Pipeline (EJ vs VB)
+
+Myntra processes orders and returns via dedicated layouts and payments via the SOR invoice/settlement importer.
+
+### 3.1 Strict Account Separation Contract
+The business operates two distinct Myntra seller accounts:
+- **Myntra VB (`myntra_vb`)**: Seller ID `10708`
+- **Myntra EJ (`myntra_ej`)**: Seller ID `45833`
+
+#### Enforcement Rules:
+1. **Selection Requirement**: Every Myntra upload request must explicitly supply `seller_account = 'myntra_ej'` or `'myntra_vb'`.
+2. **Account Guard Validation (`validateSellerIds` & `validateMyntraInvoiceSellerIds`)**:
+   - Inspects the `seller id` / `seller_id` column of every row in the uploaded file.
+   - If a file uploaded under `myntra_ej` contains Seller ID `10708` (or vice versa), the upload is **immediately rejected with HTTP 400**.
+   - Zero rows are saved to the database.
+   - The error message specifically informs the user: *"Wrong Myntra account selected. Myntra (EJ) accepts seller ID 45833, but rows contain 10708. This appears to be the Myntra (VB) file. No data was saved."*
+
+### 3.2 Myntra Orders
+- **Route**: `POST /api/upload/myntra/orders?seller_account=myntra_ej|myntra_vb`
+- **Layout Validation**: Headers must contain `order release id`, `order line id`, `po_type`, `created on`.
+- **Primary & Natural Keys**:
+  - `Order Release ID` is the customer order ID (`orders.order_id`).
+  - `Order Line ID` is the unique order item code (`orders.order_item_id`).
+- **Fulfillment Mapping**:
+  - `po_type = 'PPMP'` is classified as **`Non-FBM`**.
+  - All other PO types are classified as **`FBM`**.
+- **Blank Tracking Number & Synthesized Return Rule**:
+  - When `order tracking number` is empty or blank:
+    1. Order in `orders` is marked with `orders_status = 'Delivered'` and `return_type = 'RTO'`.
+    2. A synthesized return row is automatically generated and inserted into `returns` with:
+       - `return_id = 'RTO-' + order_line_id`
+       - `order_item_id = order_line_id`
+       - `return_reason = 'Cancel before ship'`
+       - `return_type = 'RTO'`
+       - `return_status = 'Delivered'`
+       - `return_requested_date = cancelled_on || created_on`
+- **Dual Table Ingestion**:
+  1. `myntra_order_details`: Full 46-column audit record (`seller_account`, `order_line_id`, `order_release_id`, `store_order_id`, `style_id`, `vendor_article_number`, `brand`, `final_amount`, `seller_price`, raw `source_data` JSONB).
+  2. `orders`: Normalized ledger record with unified column naming.
+- **Post-Upload Hooks**:
+  - `backfillOrdersFromMyntraPayment(pool, sellerAccount)`
+  - `refreshOrderSettlementTotals(pool)`
+
+### 3.3 Myntra Returns
+- **Route**: `POST /api/upload/myntra/returns?seller_account=myntra_ej|myntra_vb`
+- **Layout Validation**: Headers must contain `order_id`, `order_line_id`, `type`, `return_created_date`.
+- **Date Fallback Logic (`resolveReturnCreatedDate`)**:
+  - If `return_created_date` is empty OR contains the 1970 epoch placeholder (`<= 1970-01-05`), or if `type` is `RTO`:
+  - The system inspects `order_rto_date`. If valid, `order_rto_date` is used as the official return created date.
+- **Dual Table Ingestion**:
+  1. `myntra_return_details`: Stores comprehensive operational logistics data including `partner_warehouse_code`, `warehouse_id`, `store_packet_id`, `forward_tracking_number`, `return_tracking_number`, `gatepass_id`, `gatepass_status`, `lmdo_status`.
+  2. `returns`: Normalized return ledger record.
+- **Order State Synchronization**:
+  - Executes immediate cross-table update on `orders`:
+    - Updates `return_type`.
+    - Updates `orders_status`: `'Delivered'` if return reason is 'Cancel before ship', `'RTO'` if return type is RTO, `'Return Orders'` if customer return.
+
+### 3.4 Myntra Payments / Invoices (SOR Settlement) & NOD
+- **Route**: `POST /api/mp-settlement/invoices/upload?marketplace=myntra&seller_account=myntra_ej|myntra_vb`
+- **Layout Nuances**:
+  - **Date Format**: Myntra payment exports output dates in `M/D/YY` format (e.g., `4/2/26` for April 2, 2026). Parser tests MDY first to avoid swapping day and month.
+  - **Apostrophe Stripping**: Excel prepends leading apostrophes to large IDs (`'132509375680735653501`). `stripIdApostrophe` sanitizes all IDs.
+  - **Unique Deduplication Hash (`source_fingerprint`)**: MD5 hash generated from `[marketplace, sellerAccount, invoiceNumber, invoiceDate, sku, paymentReference, orderType, orderLineId, returnId]`. Prevents constraint collisions when forward orders, reverse returns, and multiple NEFT cycles share identical store order IDs.
+- **Fee Extraction & GST-Exclusive Separation**:
+  - Myntra reports fees GST-inclusive. The backend decomposes:
+    - `Commission (ex-GST) = commission_incl / 1.18`
+    - `Commission GST = commission_incl - commission_ex`
+    - `TCS = igst_tcs + cgst_tcs + sgst_tcs`
+    - Itemized operational fees: `fixed_fee`, `shipping_fee`, `pick_and_pack_fee`, `payment_gateway_fee`.
+    - `Logistics Commission` reconciled against itemized sum.
+- **Non-Order Deductions (NOD) Classification (`classifyMyntraNod`)**:
+  - Rows with `order_type = 'nod'` or populated `NOD_Comment` are classified into dedicated financial categories:
+    1. **Brand Deductions**: Myntra Fashion Brands (MFB), Brand Association Fee, Cataloging, Creative Shoots.
+    2. **Marketing Deductions**: Product Listing Ads (PLA), Performance Marketing, Campaign participation fees.
+    3. **Logistics & Operations**: Storage fees, lost shipment compensation, return penalties.
+    4. **Administrative / Other**: Penalty adjustments, trade discounts.
+- **Destination Table**: `mp_invoices`.
+
+---
+
+## 4. Amazon Multi-Source Ingestion Pipeline
+
+Amazon uses a multi-source pipeline with **Zero Synthetic Keys**. Natural keys are preserved end-to-end.
+
+```
+   ┌───────────────────────┐           ┌───────────────────────┐
+   │   Sale Orders Export  │           │   Settlement Report   │
+   │  (Amazon Order ID +   │           │    (Flat File V2)     │
+   │      Merchant SKU)    │           │ (amazon_settlements + │
+   └───────────┬───────────┘           │ amazon_settlement_    │
+               │                       │        lines)         │
+               ▼                       └───────────┬───────────┘
+   ┌───────────────────────┐                       │
+   │     orders Table      │                       │
+   │  Natural Key Joins    │◄──────────────────────┘
+   └───────────▲───────────┘          Query-Time Join:
+               │                      • By order_item_code
+               │                      • By order_id (Fee Refunds)
+   ┌───────────┴───────────┐          • Non-order lines
+   │     returns Table     │
+   │  FBA: LPN             │
+   │  Flex: RMA ID         │
+   └───────────────────────┘
+```
+
+### 4.1 Zero Synthetic Keys Policy
+Previous migrations attempted to synthesize composite keys like `AMZ-{order_id}-{sku}`. **This is deprecated and strictly forbidden.**
+- Natural keys from Amazon Seller Central exports are stored directly.
+- Cross-table linkages happen at query time using indexed natural columns.
+
+### 4.2 Key Vocabulary Across Amazon Exports
+| Export Type | File Column for Seller SKU | File Column for FNSKU | File Column for ASIN |
+| :--- | :--- | :--- | :--- |
+| **Sale Orders** | `Merchant SKU` | `FNSKU` | `ASIN` |
+| **FBA Returns** | `sku` | `fnsku` | `asin` |
+| **Flex Returns** | **`mSKU`** ⚠️ | **`SKU`** ⚠️ | `ASIN` |
+| **Settlement V2** | `sku` | *(N/A)* | *(N/A)* |
+
+### 4.3 Amazon Sale Orders (Current Sale Source)
+- **Route**: `POST /api/upload/amazon-sale-orders`
+- **Format**: 14-column template from Amazon Seller Central.
+- **Headers**:
+  `Customer Shipment Date`, `Merchant SKU`, `FNSKU`, `ASIN`, `FC`, `Quantity`, `Amazon Order Id`, `Currency`, `Product Amount`, `Shipping Amount`, `Gift Amount`, `Shipment To City`, `Shipment To State`, `Shipment To Postal Code`.
+- **Target Table**: `orders` (upsert on natural key `(order_id, sku)`).
+- **Warehouse Master**: Upserts fulfillment center codes into `amazon_fc_master` (`fc_code`, `state`, `city`).
+
+### 4.4 Amazon FBA Returns (Amazon Fulfilled)
+- **Route**: `POST /api/upload/amazon-fba-returns`
+- **Natural Key**: **License Plate Number (LPN)** (`license-plate-number`). Stored directly in `returns.order_item_id`.
+- **Headers**: `return-date`, `order-id`, `sku`, `asin`, `fnsku`, `product-name`, `quantity`, `fulfillment-center-id`, `detailed-disposition`, `reason`, `license-plate-number`, `customer-comments`.
+- **Query Join**: Links to `orders` on `(order_id, sku)`.
+
+### 4.5 Amazon Flex Returns (Seller Fulfilled)
+- **Route**: `POST /api/upload/amazon-flex-returns`
+- **Natural Key**: **RMA ID** (`RMA ID`). Stored directly in `returns.order_item_id`.
+- **CRITICAL COLUMN SWAP**:
+  - In Amazon Flex exports, the column header `SKU` contains the Amazon FNSKU barcode.
+  - The column header `mSKU` contains the actual merchant seller SKU.
+  - Ingestion mapping: `mSKU -> sku` and `SKU -> fnsku`.
+- **Headers**: `Return Type`, `Customer Order ID`, `Shipment ID`, `SKU` (FNSKU), `mSKU` (Seller SKU), `ASIN`, `Units`, `Forward Leg Tracking ID`, `Reverse Leg Tracking ID`, `RMA ID`, `Return Status`, `Carrier`, `Pick -up date`, `Last Updated On`, `Return Reason`.
+
+### 4.6 Amazon Settlement (Flat-File V2 Long Format)
+- **Route**: `POST /api/upload/amazon-settlement`
+- **Tables**:
+  - `amazon_settlements`: Settlement envelope summary (`settlement_id`, `settlement_start_date`, `settlement_end_date`, `deposit_date`, `total_amount`, `currency`).
+  - `amazon_settlement_lines`: Granular transaction line items (15,000 to 40,000+ rows per report).
+- **Query-Time Linkage Rules**:
+  1. If `order_item_code` is present -> `JOIN orders ON orders.order_item_id = lines.order_item_code` (exact item match).
+  2. If only `order_id` is present (e.g. Fulfillment Fee Refunds) -> `JOIN orders ON orders.order_id = lines.order_id`.
+  3. If neither `order_item_code` nor `order_id` is present -> categorized as **Non-Order Deductions** (storage fees, subscription fees, coupon redemption fees, Amazon Advertising).
+- **Post-Upload Hooks**:
+  - `refreshAmazonSettlementReportingRollups(pool)`
+  - `refreshOrderSettlementTotals(pool)`
+  - `invalidateAmazonReconciliationCache()`
+
+---
+
+## 5. Meesho Ingestion Pipeline
+
+Meesho processing handles Orders, Returns, and the consolidated Payments Excel export.
+
+### 5.1 Meesho Orders & Returns
+- **Routes**:
+  - Orders: `POST /api/upload/orders` with `marketplace = 'meesho'`.
+  - Returns: `POST /api/upload/returns` with `marketplace = 'meesho'`.
+- **Validation**: Same base validation as Flipkart generic routes.
+
+### 5.2 Meesho Settlement / Payments
+- **Route**: `POST /api/upload/meesho-settlement`
+- **Target Table**: `meesho_settlement_items`
+- **Auto-Sheet Discovery**:
+  - Automatically searches for sheet name containing `'Order Payments'`.
+  - If file has a `Disclaimer` sheet, defaults to the second sheet (index 1).
+- **Header Row Offset**: Uses `range: 1` when parsing the sheet to bypass the top-level group header row and read field names from row 2.
+- **Field Mappings**:
+  - `Sub Order No` -> `order_item_id`
+  - `Supplier SKU` -> `sku`
+  - `Payment Date` / `Order Date` -> `payment_date`
+  - `Final Settlement Amount` -> `bank_settlement`
+  - `Total Sale Amount (Incl. Shipping & GST)` -> `sale_amount`
+  - `Meesho Commission (Incl. GST)` -> `commission_fee`
+  - `Fixed Fee (Incl. GST)` -> `fixed_fee`
+  - `Shipping Charge (Incl. GST)` -> `shipping_fee`
+  - `Return Shipping Charge (Incl. GST)` -> `reverse_shipping`
+  - `TCS` / `TDS` -> `tcs` / `tds`
+  - `Compensation` / `Recovery` / `Claims` -> `claims`
+  - `Live Order Status` -> `transaction_type`
+  - `Transaction ID` -> `settlement_id`
+- **Automated SKU Backfill**: After inserting settlement items, the backend updates `orders.sku` for any matching Meesho order item where SKU was previously null or blank.
+- **Downstream Rollups**: Executes `refreshOrderSettlementTotals(pool)`.
+
+---
+
+## 6. Catalog, COGS & Return Physical Verification
+
+### 6.1 SKU Master
+- **Route**: `POST /api/upload/sku-master`
+- **Target Table**: `sku_master` (upsert on `(marketplace, listing_sku)`).
+- **Fields**: `master_sku`, `listing_sku`, `marketplace`, `cogs`, `launch_date`, `product_name`, `weight_slab`, `brand_name`.
+- **Validation**:
+  - `weight_slab` must be a positive number or valid range (e.g. `"0-0.5 kg"` -> stored as `0.5`).
+  - `cogs` must be non-negative.
+
+### 6.2 Catalog COGS
+- **Route**: `POST /api/upload/catalog-cogs`
+- **Target Table**: `catalog_cogs` (upsert on `(marketplace, catalog_id)`).
+- **Fields**: `marketplace`, `catalog_id` (FSN / ASIN / Style ID), `category`, `cogs`, `product_name`, `brand_name`.
+
+### 6.3 Physical Returns Verification (Warehouse Receipt)
+- **Route**: `POST /api/upload/returns-received`
+- **Target Table**: Directly updates `returns` table columns:
+  - `return_received` (BOOLEAN)
+  - `is_bad_return` (BOOLEAN: Good = false, Bad/Damaged = true)
+  - `received_date` (DATE)
+  - `receipt_notes` (TEXT)
+- **Validation**: If `Return Received? = 'Yes'`, both `Condition` and `Received Date` are strictly required. If `No`, condition and received date must be blank.
+
+---
+
+## 7. Database Entity Relationship Matrix
+
+| Dataset | Primary / Natural Key | Table Name | Join Key to Orders | Join Key to Settlements |
+| :--- | :--- | :--- | :--- | :--- |
+| **Flipkart Orders** | `order_item_id` | `orders` | `order_item_id` | `order_item_id` |
+| **Flipkart Returns** | `order_item_id` | `returns` | `order_item_id` | `order_item_id` |
+| **Flipkart Settlement** | `neft_id` + line | `fk_settlement_orders` | `order_item_id` | `neft_id` |
+| **Flipkart SPF** | `claim_id` + `neft_id` | `fk_spf_claims` | `order_item_id` | `neft_id` |
+| **Myntra Orders** | `marketplace, seller_account, order_line_id` | `myntra_order_details` & `orders` | `order_item_id = order_line_id` | `order_line_id` |
+| **Myntra Returns** | `marketplace, seller_account, order_line_id` | `myntra_return_details` & `returns` | `order_item_id = order_line_id` | `order_line_id` |
+| **Myntra Invoices / NOD**| `source_fingerprint` | `mp_invoices` | `order_line_id` or `order_release_id` | `payment_reference` (NEFT) |
+| **Amazon Sale Orders** | `order_id, sku` | `orders` | `order_id, sku` | `order_item_code` or `order_id` |
+| **Amazon FBA Returns** | `license-plate-number` | `returns` | `order_id, sku` | `order_id` |
+| **Amazon Flex Returns**| `RMA ID` | `returns` | `order_id, sku = mSKU` | `order_id` |
+| **Amazon Settlement** | `settlement_id` + line | `amazon_settlements` & `_lines` | `order_item_code` or `order_id` | `settlement_id` |
+| **Meesho Settlement** | `settlement_id, order_item_id` | `meesho_settlement_items` | `order_item_id` | `settlement_id` |
+
+---
+
+## 8. Summary for Autonomous Agents & Engineers
+
+When adding new marketplace features or maintaining existing upload routines:
+1. **Never bypass account guards**: Myntra VB (`10708`) and EJ (`45833`) must remain completely separate across orders, returns, and invoices.
+2. **Never generate synthetic keys for Amazon**: Preserve natural keys (`Amazon Order Id`, `Merchant SKU`, `LPN`, `RMA ID`).
+3. **Always use `forEachDbBatch`**: Any multi-row database write must be batched to respect PostgreSQL's 65,535 positional parameter boundary.
+4. **Always trigger downstream rollups**: After ingesting orders or settlement rows, call `refreshOrderSettlementTotals(pool)` and marketplace-specific rollups.
+5. **Always log uploads and skipped rows**: Use `logUpload` and `saveSkippedRows` so data health is auditable in the Data Hub UI.

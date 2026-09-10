@@ -1,17 +1,15 @@
 import dotenv from 'dotenv';
 import pg from 'pg';
+import { resolvePgConfig } from '../db/index.js';
 
 dotenv.config();
 
-const connectionString = process.env.POSTGRES_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
-if (!connectionString || process.env.DATABASE_ENGINE !== 'postgresql') {
-  throw new Error('DATABASE_URL is not marked as the active PostgreSQL connection.');
+const config = resolvePgConfig();
+if (!config.connectionString && !(config.host && config.database && config.user && config.password)) {
+  throw new Error('DATABASE_URL or PG_* settings are required for PostgreSQL maintenance.');
 }
 
-const ssl = String(process.env.POSTGRES_PG_SSL ?? process.env.PG_SSL ?? '').toLowerCase() === 'true'
-  ? { rejectUnauthorized: false }
-  : false;
-const pool = new pg.Pool({ connectionString, ssl, connectionTimeoutMillis: 10_000, max: 1 });
+const pool = new pg.Pool({ ...config, connectionTimeoutMillis: 10_000, max: 1, min: 0 });
 
 function quoteIdentifier(value) {
   return `"${String(value).replace(/"/g, '""')}"`;

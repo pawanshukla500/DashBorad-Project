@@ -90,7 +90,7 @@ export function buildMonthlyDetailedSql({ marketplace, startDate, endDate }) {
 
 // Compact, marketplace-wise SKU settlement benchmark.  The query only reads
 // the selected settlement month and its immediate predecessor, so it avoids a
-// full historical scan on CockroachDB every time the payment page is opened.
+// full historical scan on PostgreSQL every time the payment page is opened.
 router.get('/sku-settlement/months', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'DB not configured' });
   const marketplace = String(req.query.marketplace || 'flipkart').toLowerCase();

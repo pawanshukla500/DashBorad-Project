@@ -10,7 +10,7 @@ Multi-marketplace seller finance & reconciliation dashboard (Flipkart-first, Ama
 
 ## Quick start (local)
 
-1. Ensure Postgres is reachable directly through `DATABASE_URL` or `PG_*`.
+1. Ensure the Hostinger PostgreSQL database is reachable through `DATABASE_URL` or `PG_*`.
 2. Copy `backend/.env.example` → `backend/.env` (or use existing `.env`) with `DATABASE_URL` / `PG_*`.
 3. From repo root:
 
@@ -92,7 +92,9 @@ remain in [docs/MYNTRA_HANDOFF.md](docs/MYNTRA_HANDOFF.md).
 
 ## Production
 
-See [docs/DEPLOY.md](docs/DEPLOY.md) for managed Postgres + Cloud Run + static frontend.
+See [docs/DEPLOY.md](docs/DEPLOY.md) for the Hostinger VPS Docker production
+setup. The final database target is PostgreSQL running in Docker on the VPS and
+reached by the API through `DATABASE_URL`.
 
 ## Architecture and development
 
@@ -102,6 +104,14 @@ implementations.
 
 For the production data-quality, freshness, security, and maintenance baseline,
 see [docs/SAAS_OPERATING_BASELINE.md](docs/SAAS_OPERATING_BASELINE.md).
+
+## Task & Work Tracking (TaskFlow Pro)
+
+All development tasks, audits, bug fixes, and feature progress are tracked in real-time on **TaskFlow Pro**:
+- **TaskFlow App**: [https://task.youthnic.shop/](https://task.youthnic.shop/)
+- **Integration Guide**: [docs/TASKFLOW_INTEGRATION.md](docs/TASKFLOW_INTEGRATION.md)
+- **Agent Rules**: Configured in [GEMINI.md](GEMINI.md) and [AGENTS.md](AGENTS.md) to automatically synchronize all coding sessions.
+
 
 ## Security
 

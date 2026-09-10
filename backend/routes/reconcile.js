@@ -3,6 +3,7 @@ import { getPool, isDbConfigured } from '../db/index.js';
 import { getRateCard, calculateFees, normalizeCategory } from '../services/rateCard.js';
 import { ORDER_SETTLEMENT_TOTALS_TABLE } from '../services/orderSettlementTotals.js';
 import { pagination } from '../utils/requestParams.js';
+import { classifyMyntraNod, summarizeMyntraNod } from '../services/myntraNodClassification.js';
 
 const router = express.Router();
 
@@ -13,10 +14,15 @@ router.get('/unified-linkup', async (req, res) => {
     const pool = getPool();
     const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 200 });
 
-    const { where, values } = buildFilters(req.query);
+    const { where, values } = buildFilters(req.query, {
+      alias: 'o',
+      dateColumn: 'order_date',
+      categoryColumn: 'category',
+      neftAlias: 's',
+    });
     const dataValues = [...values, pageSize, offset];
-    const pageSizeParam = `${values.length + 1}`;
-    const offsetParam   = `${values.length + 2}`;
+    const pageSizeParam = `$${values.length + 1}`;
+    const offsetParam   = `$${values.length + 2}`;
 
     const [data, cnt] = await Promise.all([
       pool.query(`
@@ -53,17 +59,22 @@ router.get('/unified-linkup', async (req, res) => {
 
 
 // ── Filter builder ────────────────────────────────────────────────────────────
-function buildFilters(q) {
+export function buildFilters(q, {
+  alias = 'fko',
+  dateColumn = 'payment_date',
+  categoryColumn = 'product_sub_category',
+  neftAlias = alias,
+} = {}) {
   const conds  = [];
   const values = [];
-  if (q.marketplace && q.marketplace !== 'all') { conds.push(`fko.marketplace = $${values.push(q.marketplace)}`); }
-  if (q.startDate)      { conds.push(`fko.payment_date >= $${values.push(q.startDate)}`); }
-  if (q.endDate)        { conds.push(`fko.payment_date <= $${values.push(q.endDate)}`); }
-  if (q.category)       { conds.push(`fko.product_sub_category = $${values.push(q.category)}`); }
-  if (q.neftId)         { conds.push(`fko.neft_id = $${values.push(q.neftId)}`); }
-  if (q.orderId)        { conds.push(`(fko.order_id = $${values.push(q.orderId)} OR fko.order_item_id = $${values.push(q.orderId)})`); }
+  if (q.marketplace && q.marketplace !== 'all') { conds.push(`${alias}.marketplace = $${values.push(q.marketplace)}`); }
+  if (q.startDate)      { conds.push(`${alias}.${dateColumn} >= $${values.push(q.startDate)}`); }
+  if (q.endDate)        { conds.push(`${alias}.${dateColumn} <= $${values.push(q.endDate)}`); }
+  if (q.category)       { conds.push(`${alias}.${categoryColumn} = $${values.push(q.category)}`); }
+  if (q.neftId)         { conds.push(`${neftAlias}.neft_id = $${values.push(q.neftId)}`); }
+  if (q.orderId)        { conds.push(`(${alias}.order_id = $${values.push(q.orderId)} OR ${alias}.order_item_id = $${values.push(q.orderId)})`); }
   if (q.suspiciousOnly === '1') {
-    conds.push(`(fko.bank_settlement < 0 AND NOT EXISTS (SELECT 1 FROM returns rx WHERE rx.order_item_id = fko.order_item_id))`);
+    conds.push(`(${neftAlias}.bank_settlement < 0 AND NOT EXISTS (SELECT 1 FROM returns rx WHERE rx.order_item_id = ${alias}.order_item_id))`);
   }
   return { where: conds.length ? ' AND ' + conds.join(' AND ') : '', values };
 }
@@ -86,6 +97,75 @@ router.get('/summary', async (req, res) => {
   try {
     const pool = getPool();
     const { where, values } = buildFilters(req.query);
+
+    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
+    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+
+    let unsettleWhere = '';
+    const unsettleVals = [];
+    if (mkt) {
+      unsettleWhere += ` AND o.marketplace = $${unsettleVals.push(mkt)}`;
+    }
+    if (sellerAcc && sellerAcc !== 'all') {
+      unsettleWhere += ` AND o.seller_account = $${unsettleVals.push(sellerAcc)}`;
+    }
+
+    let nonOrdQuery;
+    if (mkt === 'flipkart') {
+      nonOrdQuery = pool.query(`
+        SELECT
+          COALESCE((SELECT SUM(settlement_value) FROM fk_spf_claims),     0) AS spf_total,
+          COALESCE((SELECT SUM(settlement_value) FROM fk_storage_recall), 0) AS storage_total,
+          COALESCE((SELECT SUM(settlement_value) FROM fk_ads),            0) AS ads_total,
+          COALESCE((SELECT SUM(settlement_value) FROM fk_google_ads),     0) AS google_ads_total,
+          0 AS myntra_nod_total,
+          0 AS meesho_claims_total
+      `);
+    } else if (mkt === 'amazon') {
+      nonOrdQuery = pool.query(`
+        SELECT
+          COALESCE((SELECT SUM(amount) FROM amazon_settlement_lines WHERE amount_type = 'FBA Inventory Reimbursement' OR amount_description IN ('SAFE-T Reimbursement', 'Reimbursement for Lost packages')), 0) AS spf_total,
+          COALESCE((SELECT SUM(amount) FROM amazon_settlement_lines WHERE (amount_type ILIKE '%Storage%' OR amount_type ILIKE '%Removal%')), 0) AS storage_total,
+          COALESCE((SELECT SUM(amount) FROM amazon_settlement_lines WHERE amount_type = 'Cost of Advertising'), 0) AS ads_total,
+          0 AS google_ads_total,
+          0 AS myntra_nod_total,
+          0 AS meesho_claims_total
+      `);
+    } else if (mkt === 'myntra') {
+      const myntraAccFilter = (sellerAcc && sellerAcc !== 'all') ? `AND seller_account = '${sellerAcc}'` : '';
+      nonOrdQuery = pool.query(`
+        SELECT
+          0 AS spf_total,
+          0 AS storage_total,
+          0 AS ads_total,
+          0 AS google_ads_total,
+          COALESCE((SELECT SUM(amount_received) FROM mp_invoices WHERE marketplace = 'myntra' ${myntraAccFilter} AND (order_type = 'nod' OR notes ILIKE '%nod%' OR invoice_number ILIKE '%nod%')), 0) AS myntra_nod_total,
+          0 AS meesho_claims_total
+      `);
+    } else if (mkt === 'meesho') {
+      nonOrdQuery = pool.query(`
+        SELECT
+          0 AS spf_total,
+          0 AS storage_total,
+          0 AS ads_total,
+          0 AS google_ads_total,
+          0 AS myntra_nod_total,
+          COALESCE((SELECT SUM(claims) FROM meesho_settlement_items WHERE COALESCE(claims, 0) <> 0), 0) AS meesho_claims_total
+      `);
+    } else {
+      nonOrdQuery = pool.query(`
+        SELECT
+          COALESCE((SELECT SUM(settlement_value) FROM fk_spf_claims),     0) +
+          COALESCE((SELECT SUM(amount) FROM amazon_settlement_lines WHERE amount_type = 'FBA Inventory Reimbursement' OR amount_description IN ('SAFE-T Reimbursement', 'Reimbursement for Lost packages')), 0) AS spf_total,
+          COALESCE((SELECT SUM(settlement_value) FROM fk_storage_recall), 0) +
+          COALESCE((SELECT SUM(amount) FROM amazon_settlement_lines WHERE (amount_type ILIKE '%Storage%' OR amount_type ILIKE '%Removal%')), 0) AS storage_total,
+          COALESCE((SELECT SUM(settlement_value) FROM fk_ads),            0) +
+          COALESCE((SELECT SUM(amount) FROM amazon_settlement_lines WHERE amount_type = 'Cost of Advertising'), 0) AS ads_total,
+          COALESCE((SELECT SUM(settlement_value) FROM fk_google_ads),     0) AS google_ads_total,
+          COALESCE((SELECT SUM(amount_received) FROM mp_invoices WHERE marketplace = 'myntra' AND (order_type = 'nod' OR notes ILIKE '%nod%' OR invoice_number ILIKE '%nod%')), 0) AS myntra_nod_total,
+          COALESCE((SELECT SUM(claims) FROM meesho_settlement_items WHERE COALESCE(claims, 0) <> 0), 0) AS meesho_claims_total
+      `);
+    }
 
     const [sett, unsett, nonOrd] = await Promise.all([
       pool.query(`
@@ -121,15 +201,9 @@ router.get('/summary', async (req, res) => {
         FROM orders o
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
-        )
-      `),
-      pool.query(`
-        SELECT
-          COALESCE((SELECT SUM(settlement_value) FROM fk_spf_claims),     0) AS spf_total,
-          COALESCE((SELECT SUM(settlement_value) FROM fk_storage_recall), 0) AS storage_total,
-          COALESCE((SELECT SUM(settlement_value) FROM fk_ads),            0) AS ads_total,
-          COALESCE((SELECT SUM(settlement_value) FROM fk_google_ads),     0) AS google_ads_total
-      `),
+        ) ${unsettleWhere}
+      `, unsettleVals),
+      nonOrdQuery,
     ]);
 
     res.json({
@@ -205,29 +279,43 @@ router.get('/unsettled', async (req, res) => {
     const pool = getPool();
     const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 200 });
 
+    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
+    const sellerAcc = req.query.sellerAccount || null;
+
+    let filterSql = '';
+    const vals = [];
+    if (mkt) {
+      filterSql += ` AND o.marketplace = $${vals.push(mkt)}`;
+    }
+    if (sellerAcc) {
+      filterSql += ` AND o.seller_account = $${vals.push(sellerAcc)}`;
+    }
+
+    const dataVals = [...vals, pageSize, offset];
+
     const [data, cnt] = await Promise.all([
       pool.query(`
         SELECT
           o.order_item_id, o.order_id, o.order_date,
           o.sku, o.category, o.fulfilment_type,
           o.orders_status, o.final_invoice_amount,
-          o.weight_slab, o.shipping_zone,
+          o.weight_slab, o.shipping_zone, o.marketplace, o.seller_account,
           rt.return_status, rt.return_type AS ret_type, rt.return_reason
         FROM orders o
         LEFT JOIN order_returns rt ON rt.order_item_id = o.order_item_id
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
-        )
+        ) ${filterSql}
         ORDER BY o.order_date DESC
-        LIMIT $1 OFFSET $2
-      `, [pageSize, offset]),
+        LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}
+      `, dataVals),
       pool.query(`
         SELECT COUNT(*) AS total
         FROM orders o
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
-        )
-      `),
+        ) ${filterSql}
+      `, vals),
     ]);
 
     res.json({ data: data.rows, total: +cnt.rows[0].total, page, pageSize });
@@ -306,7 +394,10 @@ router.get('/non-order', async (req, res) => {
   if (!(await isDbConfigured())) return res.json({ configured: false });
   try {
     const pool = getPool();
-    const [spf, storage, ads, gads, amazon] = await Promise.all([
+    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+    const myntraAccFilter = (sellerAcc && sellerAcc !== 'all') ? `AND seller_account = '${sellerAcc}'` : '';
+
+    const [spf, storage, ads, gads, amazon, myntraNod, meeshoClaims] = await Promise.all([
       pool.query(`
         SELECT neft_id, payment_date, claim_id, settlement_value, protection_reason, seller_sku, fsn FROM fk_spf_claims 
         UNION ALL 
@@ -333,9 +424,57 @@ router.get('/non-order', async (req, res) => {
           AND NOT (amount_type ILIKE '%Removal%' OR amount_type ILIKE '%Storage%') 
           AND NOT (amount_type = 'Cost of Advertising') 
         ORDER BY posted_date DESC
-      `)
+      `),
+      pool.query(`
+        SELECT
+          payment_reference AS neft_id,
+          payment_date,
+          order_release_id,
+          order_line_id,
+          invoice_number,
+          seller_account,
+          amount_received AS settlement_value,
+          COALESCE(notes, 'Non-Order Deduction') AS description
+        FROM mp_invoices
+        WHERE marketplace = 'myntra' ${myntraAccFilter}
+          AND (order_type = 'nod' OR notes ILIKE '%nod%' OR invoice_number ILIKE '%nod%')
+        ORDER BY payment_date DESC
+      `),
+      pool.query(`
+        SELECT
+          settlement_id AS neft_id,
+          payment_date,
+          order_item_id,
+          sku,
+          claims AS settlement_value,
+          COALESCE(transaction_type, 'Claims/Compensation') AS description
+        FROM meesho_settlement_items
+        WHERE COALESCE(claims, 0) <> 0
+        ORDER BY payment_date DESC
+      `),
     ]);
-    res.json({ spf: spf.rows, storage: storage.rows, ads: ads.rows, googleAds: gads.rows, amazonNonOrder: amazon.rows });
+
+    const enrichedMyntraNod = myntraNod.rows.map(row => {
+      const c = classifyMyntraNod(row.invoice_number, row.description, row.settlement_value);
+      return {
+        ...row,
+        category: c.category,
+        category_label: c.categoryLabel,
+        is_credit: c.isCredit,
+      };
+    });
+    const myntraNodSummary = summarizeMyntraNod(enrichedMyntraNod);
+
+    res.json({
+      spf: spf.rows,
+      storage: storage.rows,
+      ads: ads.rows,
+      googleAds: gads.rows,
+      amazonNonOrder: amazon.rows,
+      myntraNod: enrichedMyntraNod,
+      myntraNodSummary,
+      meeshoClaims: meeshoClaims.rows,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

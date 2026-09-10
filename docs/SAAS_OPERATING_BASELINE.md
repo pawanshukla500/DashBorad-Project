@@ -141,10 +141,10 @@ dashboard presentation.
 
 ## Production controls before onboarding users
 
-1. Use managed PostgreSQL with SSL, automated backups, and a tested restore
-   procedure. Never expose port 5432 publicly. The API now fails closed in
-   production if a non-local database lacks TLS; keep certificate verification
-   enabled and supply `PG_SSL_CA` when the provider requires its own CA.
+1. Use PostgreSQL in Docker on the Hostinger VPS with automated backups and a
+   tested restore procedure. Keep PostgreSQL on a private Docker/local network;
+   do not expose the database port publicly. `PG_SSL=false` is acceptable only
+   for that private same-VPS path. A public database host must use TLS.
 2. Set `NODE_ENV=production` and `CORS_ORIGINS` to the exact static frontend
    origins. Browser origins outside that allow-list are rejected.
 3. Keep Firebase as the only authentication authority. Roles are enforced both
@@ -158,9 +158,10 @@ dashboard presentation.
    database row count → settlement amount → bank credit.
 6. Run `npm run db:verify` after a deployment or migration. It confirms the
    active PostgreSQL runtime, TLS state, upload evidence, reconciliation
-   fingerprint migrations, and duplicate-fingerprint counts. Production is
-   ready only when it reports `sslEnabled: true` and
-   `sslRejectUnauthorized: true`.
+   fingerprint migrations, and duplicate-fingerprint counts. For Hostinger
+   Docker production, `sslEnabled: false` is acceptable only when the API uses
+   the private Docker/local database route; otherwise it must report TLS enabled
+   with certificate verification.
 
 ## Scale checkpoints
 

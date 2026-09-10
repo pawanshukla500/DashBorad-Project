@@ -152,9 +152,18 @@ export async function getReturnsTracker(pool, {
   offset,
 }) {
   const values = [];
-  const marketplaceWhere = marketplace
-    ? `AND r.marketplace = $${values.push(marketplace)}`
-    : '';
+  const mpRaw = marketplace ? String(marketplace).trim() : null;
+  const mpKey = mpRaw ? mpRaw.toLowerCase() : null;
+  let marketplaceWhere = '';
+  if (mpKey === 'myntra_vb') {
+    marketplaceWhere = "AND r.marketplace = 'myntra' AND COALESCE(r.seller_account, 'myntra_vb') = 'myntra_vb'";
+  } else if (mpKey === 'myntra_ej') {
+    marketplaceWhere = "AND r.marketplace = 'myntra' AND r.seller_account = 'myntra_ej'";
+  } else if (mpKey === 'myntra') {
+    marketplaceWhere = "AND r.marketplace = 'myntra'";
+  } else if (mpRaw) {
+    marketplaceWhere = `AND r.marketplace = $${values.push(mpRaw)}`;
+  }
   const filterWhere = TRACKER_FILTERS[filter] || '';
 
   // First reduce to the requested page of returns. Amazon return rows use an
@@ -197,7 +206,11 @@ export async function getReturnsTracker(pool, {
       COALESCE(o_exact.fsn, o_amazon.fsn, r.fsn, r.asin) AS fsn,
       COALESCE(o_exact.sku, o_amazon.sku, r.sku) AS sku,
       COALESCE(o_exact.category, o_amazon.category) AS category,
-      COALESCE(o_exact.marketplace, o_amazon.marketplace, r.marketplace) AS marketplace,
+      CASE
+        WHEN COALESCE(o_exact.marketplace, o_amazon.marketplace, r.marketplace) = 'myntra'
+          THEN COALESCE(r.seller_account, o_exact.seller_account, 'myntra_vb')
+        ELSE COALESCE(o_exact.marketplace, o_amazon.marketplace, r.marketplace)
+      END AS marketplace,
       r.return_type,
       r.return_reason,
       r.return_status,

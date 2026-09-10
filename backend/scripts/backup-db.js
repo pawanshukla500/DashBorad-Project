@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { resolvePgConfig } from '../db/index.js';
 
 dotenv.config();
 
@@ -12,20 +13,54 @@ fs.mkdirSync(backupDir, { recursive: true });
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const output = path.join(backupDir, `dashboard-${stamp}.dump`);
+
+function connectionFields(config) {
+  if (config.connectionString) {
+    const url = new URL(config.connectionString);
+    return {
+      host: url.hostname,
+      port: url.port || '5432',
+      database: url.pathname.replace(/^\//, ''),
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      sslmode: url.searchParams.get('sslmode') || (config.ssl ? 'require' : null),
+    };
+  }
+
+  return {
+    host: config.host,
+    port: String(config.port || '5432'),
+    database: config.database,
+    user: config.user,
+    password: config.password,
+    sslmode: config.ssl ? 'require' : null,
+  };
+}
+
+const config = resolvePgConfig();
+const connection = connectionFields(config);
+if (!(connection.host && connection.database && connection.user)) {
+  throw new Error('DATABASE_URL or PG_HOST/PG_DATABASE/PG_USER must be configured before backup.');
+}
+
 const args = [
   '--format=custom',
   '--no-owner',
   '--no-privileges',
   '--file', output,
-  '--host', process.env.PG_HOST,
-  '--port', process.env.PG_PORT || '5432',
-  '--username', process.env.PG_USER,
-  process.env.PG_DATABASE,
+  '--host', connection.host,
+  '--port', connection.port,
+  '--username', connection.user,
+  connection.database,
 ];
 
 const result = spawnSync('pg_dump', args, {
   stdio: 'inherit',
-  env: { ...process.env, PGPASSWORD: process.env.PG_PASSWORD || '' },
+  env: {
+    ...process.env,
+    ...(connection.password ? { PGPASSWORD: connection.password } : {}),
+    ...(connection.sslmode ? { PGSSLMODE: connection.sslmode } : {}),
+  },
 });
 
 if (result.error) {

@@ -122,13 +122,26 @@ api.interceptors.response.use(
     return response;
   },
   async error => {
-    // Automatically retry if the backend is temporarily down (e.g. nodemon restart)
-    const isNetworkError = error.message === 'Network Error' || error.code === 'ECONNREFUSED';
-    if (isNetworkError && !error.config._retry) {
-      error.config._retry = true;
-      // Wait 1.5 seconds for nodemon/server to restart, then try exactly once more
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      return api.request(error.config);
+    // A development restart or a short VPS/database network interruption
+    // should not turn a dashboard page into an error state. Retry only safe
+    // reads: replaying a write after a broken connection could duplicate an
+    // upload or configuration update.
+    const method = String(error.config?.method || 'get').toLowerCase();
+    const isRead = ['get', 'head', 'options'].includes(method);
+    const isNetworkError = error.message === 'Network Error'
+      || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ERR_NETWORK'].includes(error.code);
+    const databaseErrorMessage = String(error.response?.data?.error || '');
+    const isDatabaseUnavailable = [500, 503].includes(error.response?.status)
+      && (
+        error.response?.data?.code === 'DB_UNAVAILABLE'
+        || /database connection is temporarily unavailable/i.test(databaseErrorMessage)
+      );
+    const retryCount = Number(error.config?.__transientRetries || 0);
+    if (isRead && (isNetworkError || isDatabaseUnavailable) && retryCount < 3) {
+      // 0.75s, 1.5s, then 3s. This covers nodemon's process hand-off without
+      // repeatedly reissuing a failing request forever.
+      await new Promise(resolve => setTimeout(resolve, 750 * (2 ** retryCount)));
+      return api.request({ ...error.config, __transientRetries: retryCount + 1 });
     }
 
     if (
@@ -152,14 +165,14 @@ api.interceptors.response.use(
     // schema checks finish, preventing lock queues and pool exhaustion. This
     // response is emitted before any mutation handler runs, so retrying it is
     // safe even for upload/save requests.
-    const retryCount = Number(error.config?.__databaseStartupRetries || 0);
+    const startupRetryCount = Number(error.config?.__databaseStartupRetries || 0);
     if (
       error.response?.status === 503
       && error.response?.data?.code === 'DATABASE_STARTING'
-      && retryCount < 8
+      && startupRetryCount < 8
     ) {
       await new Promise(resolve => setTimeout(resolve, 750));
-      return api.request({ ...error.config, __databaseStartupRetries: retryCount + 1 });
+      return api.request({ ...error.config, __databaseStartupRetries: startupRetryCount + 1 });
     }
     return Promise.reject(error);
   }
@@ -175,6 +188,9 @@ function p(filters = {}) {
   if (filters.groupBy)     params.groupBy     = filters.groupBy;
   if (filters.marketplace) params.marketplace = filters.marketplace;
   if (filters.brand)       params.brand       = filters.brand;
+  if (filters.sellerAccount || filters.seller_account) {
+    params.seller_account = filters.sellerAccount || filters.seller_account;
+  }
   // Used only by read-only report endpoints to bypass their short-lived cache
   // after an explicit user refresh. It is not a business filter.
   if (filters._refresh)    params._refresh    = filters._refresh;
@@ -364,15 +380,22 @@ export const fetchAmazonSettlementPivot = (filters = {}) => {
   }).then(r => r.data);
 };
 
-// Reconciliation (FK Settlement line-by-line analysis)
+// Reconciliation (Marketplace Settlement line-by-line analysis)
 export const fetchReconcileSummary  = (f)           => api.get('/reconcile/summary',   { params: p(f) }).then(r => r.data);
 export const fetchReconcileItems    = (f, page=1, pageSize=50) =>
   api.get('/reconcile/items', { params: { ...p(f), page, pageSize } }).then(r => r.data);
-export const fetchUnsettledItems    = (page=1, pageSize=50) =>
-  api.get('/reconcile/unsettled', { params: { page, pageSize } }).then(r => r.data);
-export const fetchNonOrderDeductions = () => api.get('/reconcile/non-order').then(r => r.data);
+export const fetchUnsettledItems    = (f, page=1, pageSize=50) => {
+  const params = typeof f === 'object' && f !== null ? { ...p(f), page, pageSize } : { page: f || 1, pageSize: page || 50 };
+  return api.get('/reconcile/unsettled', { params }).then(r => r.data);
+};
+export const fetchNonOrderDeductions = (f) => api.get('/reconcile/non-order', { params: p(f) }).then(r => r.data);
 export const fetchRateAudit          = (f) => api.get('/reconcile/rate-audit', { params: p(f) }).then(r => r.data);
 export const fetchOrderById          = (orderId) => api.get('/reconcile/by-order', { params: { orderId } }).then(r => r.data);
+export const fetchMyntraMonthlySummary = (f) => api.get('/mp-settlement/monthly-summary', { params: p(f) }).then(r => r.data);
+
+// Aliases
+export const fetchReconciliationSummary = fetchReconcileSummary;
+export const fetchReconciliationItems   = fetchReconcileItems;
 
 // Charges Config
 export const fetchCharges       = ()              => api.get('/charges').then(r => r.data);
@@ -415,7 +438,7 @@ export const fetchCashFlow        = (mp, refreshToken) => api.get('/insights/cas
 export const searchOrder = (q) => api.get('/search-order', { params: { q } }).then(r => r.data);
 
 // Returns received upload
-export const uploadReturnsReceived    = (formData) => api.post('/upload/returns-received', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 }).then(r => r.data);
+export const uploadReturnsReceived    = (formData) => api.post('/upload/returns-received', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 900000 }).then(r => r.data);
 export const fetchReturnsReceivedSummary = ()       => api.get('/upload/returns-received/summary').then(r => r.data);
 export const fetchReturnsMismatch       = (page=1)   => api.get('/upload/returns-received/mismatches', { params: { page } }).then(r => r.data);
 
@@ -436,10 +459,10 @@ export const addMpInvoice           = (body)          => api.post('/mp-settlemen
 export const updateMpInvoice        = (id, body)      => api.put(`/mp-settlement/invoices/${id}`, body).then(r => r.data);
 export const deleteMpInvoice        = (id)            => api.delete(`/mp-settlement/invoices/${id}`).then(r => r.data);
 export const clearMpInvoices        = (mp, sellerAccount = '') => api.delete('/mp-settlement/invoices', { params: { marketplace: mp, ...(sellerAccount ? { seller_account: sellerAccount } : {}) } }).then(r => r.data);
-export const uploadMpInvoices       = (mp, formData, sellerAccount = '')  => api.post('/mp-settlement/invoices/upload', formData, { params: { marketplace: mp, ...(sellerAccount ? { seller_account: sellerAccount } : {}) }, headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data);
+export const uploadMpInvoices       = (mp, formData, sellerAccount = '')  => api.post('/mp-settlement/invoices/upload', formData, { params: { marketplace: mp, ...(sellerAccount ? { seller_account: sellerAccount } : {}) }, headers: { 'Content-Type': 'multipart/form-data' }, timeout: 900000 }).then(r => r.data);
 export const downloadMpInvoiceTemplate = (mp)        => api.get(`/mp-settlement/invoices/template`, { params: { marketplace: mp }, responseType: 'blob' }).then(r => r.data);
 export const uploadMyntraData       = (type, formData, sellerAccount) =>
-  api.post(`/upload/myntra/${type}`, formData, { params: { seller_account: sellerAccount }, headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 }).then(r => r.data);
+  api.post(`/upload/myntra/${type}`, formData, { params: { seller_account: sellerAccount }, headers: { 'Content-Type': 'multipart/form-data' }, timeout: 900000 }).then(r => r.data);
 export const downloadMyntraTemplate = (type) =>
   api.get(`/upload/myntra/template/${type}`, { responseType: 'blob' }).then(r => r.data);
 
@@ -558,6 +581,13 @@ export const pollFkProgress = (jobId) =>
   api.get(`/upload/flipkart-settlement/progress/${jobId}`).then(r => r.data);
 
 // Amazon Settlement
+
+export const uploadMeeshoSettlement = (formData) =>
+  api.post('/upload/meesho-settlement', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 300000,
+  }).then(r => r.data);
+
 export const uploadAmazonSettlement    = (formData) =>
   api.post('/upload/amazon-settlement', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },

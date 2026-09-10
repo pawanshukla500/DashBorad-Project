@@ -3,6 +3,7 @@ import statementRoutes from './statement.js';
 import rateCardRoutes from './rateCard.js';
 import returnTrackingRoutes from './returnTracking.js';
 import amazonUploadRoutes from './amazonUpload.js';
+import meeshoUploadRoutes from './meeshoUpload.js';
 import amazonFcRoutes from './amazonFc.js';
 import uploadRoutes from './upload.js';
 import myntraUploadRoutes from './myntraUpload.js';
@@ -83,6 +84,7 @@ export function mountApiRoutes(app) {
   app.use('/api/upload/myntra', myntraUploadRoutes);
   app.use('/api/upload', uploadHealthRoutes);
   app.use('/api/upload', amazonUploadRoutes);
+  app.use('/api/upload/meesho-settlement', meeshoUploadRoutes);
   app.use('/api/upload', uploadRoutes);
   app.use('/api/upload/flipkart-settlement', flipkartSettlementRoutes);
 

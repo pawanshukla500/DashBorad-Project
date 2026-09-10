@@ -12,6 +12,8 @@ import { getPool, isDbConfigured } from '../db/index.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
+import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
+import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 
 const router = express.Router();
 const upload = multer({
@@ -38,13 +40,13 @@ const ORDER_HEADERS = [
 ];
 
 const RETURN_HEADERS = [
-  'seller_id', 'warehouse_id', 'model', 'myntra_sku_code', 'seller_sku_code', 'style_id', 'sku_id',
+  'seller_id', 'warehouse_id', 'partner_warehouse_code', 'model', 'myntra_sku_code', 'seller_sku_code', 'style_id', 'sku_id',
   'brand', 'order_created_date', 'inscanned_on', 'fmpu_date', 'order_delivered_date',
   'return_created_date', 'refunded_date', 'order_rto_date', 'is_refunded', 'exchange_id', 'order_id',
   'order_group_id', 'order_line_id', 'seller_order_id', 'type', 'status', 'store_packet_id',
   'seller_packet_id_fk', 'quantity', 'return_id', 'return_mode', 'return_reason', 'return_status',
   'forward_tracking_number', 'return_tracking_number', 'master_bag_id', 'lmdo_status',
-  'lmdo_last_modified_on',
+  'lmdo_last_modified_on', 'gatepass_id', 'gatepass_status', 'gatepass_type', 'gatepass_lastmodified',
 ];
 
 function clean(value) {
@@ -97,7 +99,12 @@ function bool(value) {
 }
 
 function date(value) {
-  return normalizeSqlDate(value);
+  if (!value) return null;
+  const s = String(value).trim();
+  // Attempt strictly as MDY first, fallback to standard parsing if it contains text or fails
+  let d = normalizeSqlDate(s, { format: 'MDY' });
+  if (d) return d;
+  return normalizeSqlDate(s);
 }
 
 function fulfillment(model) {
@@ -107,15 +114,16 @@ function fulfillment(model) {
 }
 
 function orderLifecycle(row) {
+  if (!value(row, 'order tracking number')) return 'Delivered';
   if (value(row, 'cancelled on')) return 'Cancelled';
-  if (value(row, 'rto creation date') || !value(row, 'order tracking number')) return 'RTO';
+  if (value(row, 'rto creation date')) return 'RTO';
   if (value(row, 'return creation date')) return 'Return Initiated';
   if (value(row, 'delivered on')) return 'Delivered';
   return value(row, 'order status');
 }
 
 function orderReturnType(row) {
-  if (value(row, 'rto creation date') || !value(row, 'order tracking number')) return 'RTO';
+  if (!value(row, 'order tracking number') || value(row, 'rto creation date')) return 'RTO';
   return value(row, 'return creation date') ? 'Customer Return' : null;
 }
 
@@ -126,7 +134,15 @@ function parseSheet(buffer) {
   const headers = (matrix[0] || []).map(clean);
   const rows = matrix.slice(1)
     .filter(row => row.some(cell => clean(cell)))
-    .map(row => Object.fromEntries(headers.map((header, index) => [header, clean(row[index])])));
+    .map(row => {
+      const obj = {};
+      headers.forEach((header, index) => {
+        if (header) {
+          obj[header] = clean(row[index]);
+        }
+      });
+      return obj;
+    });
   return { headers, rows };
 }
 
@@ -182,8 +198,32 @@ function validateSellerIds(rows, type, sellerAccount) {
 }
 
 const ORDER_DATE_COLUMNS = ['created on', 'packed on', 'fmpu date', 'inscanned on', 'shipped on', 'delivered on', 'cancelled on', 'rto creation date', 'lost date', 'return creation date'];
-const RETURN_DATE_COLUMNS = ['order_created_date', 'inscanned_on', 'fmpu_date', 'order_delivered_date', 'return_created_date', 'refunded_date', 'order_rto_date', 'lmdo_last_modified_on'];
+const RETURN_DATE_COLUMNS = ['order_created_date', 'inscanned_on', 'fmpu_date', 'order_delivered_date', 'return_created_date', 'refunded_date', 'order_rto_date', 'lmdo_last_modified_on', 'gatepass_lastmodified'];
 const ORDER_MONEY_COLUMNS = ['final amount', 'total mrp', 'discount', 'coupon discount', 'shipping charge', 'gift charge', 'tax recovery', 'seller price'];
+
+function resolveReturnCreatedDate(row) {
+  const rawType = clean(value(row, 'type', 'return_type')).toUpperCase();
+  const rawRetDate = value(row, 'return_created_date');
+  const rawRtoDate = value(row, 'order_rto_date');
+  const parsedRetDate = date(rawRetDate);
+  const parsedRtoDate = date(rawRtoDate);
+
+  // If parsed return date is placeholder 1-Jan-1970 / epoch 0 or missing
+  const isInvalidOrEpochRetDate = !parsedRetDate || parsedRetDate <= '1970-01-05';
+  const isRto = rawType === 'RTO' || rawType.includes('RTO');
+
+  // If RTO order or return_created_date is 1970 / empty, consider order_rto_date as return created date
+  if ((isRto || isInvalidOrEpochRetDate) && parsedRtoDate && parsedRtoDate > '1970-01-05') {
+    return parsedRtoDate;
+  }
+  if (parsedRetDate && !isInvalidOrEpochRetDate) {
+    return parsedRetDate;
+  }
+  if (parsedRtoDate && parsedRtoDate > '1970-01-05') {
+    return parsedRtoDate;
+  }
+  return parsedRetDate;
+}
 
 // Reject malformed values instead of silently turning them into zero/defaults.
 // A zero amount is valid (for example, a cancelled order); a value such as
@@ -203,7 +243,7 @@ export function validateMyntraRow(row, type) {
       if (raw && parseMoney(raw) == null) return `invalid ${column} amount: ${raw}`;
     }
   } else {
-    if (!value(row, 'return_created_date')) return 'return_created_date is empty';
+    if (!resolveReturnCreatedDate(row)) return 'return_created_date / order_rto_date is empty';
     const rawQuantity = value(row, 'quantity');
     if (rawQuantity && positiveInteger(rawQuantity) == null) return `invalid quantity: ${rawQuantity}`;
     const rawRefunded = value(row, 'is_refunded');
@@ -244,28 +284,69 @@ function normalizedOrder(row, sellerAccount) {
 }
 
 function returnDetail(row, sellerAccount, batch) {
+  const returnCreatedDate = resolveReturnCreatedDate(row);
   return [
     'myntra', sellerAccount, value(row, 'seller_id'), value(row, 'order_line_id'), value(row, 'order_id'), value(row, 'order_group_id'),
     value(row, 'return_id'), value(row, 'model'), value(row, 'seller_sku_code'), value(row, 'myntra_sku_code'),
     value(row, 'style_id'), value(row, 'sku_id'), value(row, 'brand'), date(value(row, 'order_created_date')),
-    date(value(row, 'order_delivered_date')), date(value(row, 'return_created_date')), date(value(row, 'refunded_date')),
+    date(value(row, 'order_delivered_date')), returnCreatedDate, date(value(row, 'refunded_date')),
     date(value(row, 'order_rto_date')), bool(value(row, 'is_refunded')), value(row, 'exchange_id'), value(row, 'seller_order_id'),
     value(row, 'type'), value(row, 'status'), value(row, 'return_status'), value(row, 'store_packet_id'),
     value(row, 'seller_packet_id_fk'), integer(value(row, 'quantity')), value(row, 'return_mode'), value(row, 'return_reason'),
     value(row, 'forward_tracking_number'), value(row, 'return_tracking_number'), value(row, 'master_bag_id'), value(row, 'lmdo_status'),
-    date(value(row, 'lmdo_last_modified_on')), JSON.stringify(row), batch,
+    date(value(row, 'lmdo_last_modified_on')),
+    value(row, 'gatepass_id'), value(row, 'gatepass_status'), value(row, 'gatepass_type'),
+    date(value(row, 'gatepass_lastmodified')),
+    value(row, 'warehouse_id', 'seller_warehouse_id') || null,
+    value(row, 'partner_warehouse_code') || null,
+    JSON.stringify(row), batch,
   ];
 }
 
 function normalizedReturn(row, sellerAccount) {
+  const returnDate = resolveReturnCreatedDate(row);
+  const returnType = clean(value(row, 'type')).toUpperCase() === 'RTO' ? 'RTO' : (value(row, 'type') || 'Customer Return');
   return [
-    'myntra', value(row, 'return_id'), value(row, 'order_line_id'), fulfillment(value(row, 'model')), date(value(row, 'return_created_date')),
+    'myntra', value(row, 'return_id'), value(row, 'order_line_id'), fulfillment(value(row, 'model')), returnDate,
     date(value(row, 'refunded_date')), value(row, 'status'), value(row, 'return_reason'), value(row, 'return_status'),
-    value(row, 'type'), value(row, 'return_status'), bool(value(row, 'is_refunded')) ? 'Refunded' : '',
+    returnType, value(row, 'return_status'), bool(value(row, 'is_refunded')) ? 'Refunded' : '',
     value(row, 'return_tracking_number'), value(row, 'seller_sku_code'), value(row, 'myntra_sku_code'), null,
     integer(value(row, 'quantity')), value(row, 'return_mode'), null, null, value(row, 'return_status'), null,
-    null, null, null, null, null, null, date(value(row, 'refunded_date')), null, null, date(value(row, 'return_created_date')),
+    null, null, null, null, null, null, date(value(row, 'refunded_date')), null, null, returnDate,
     value(row, 'order_id'), sellerAccount,
+  ];
+}
+
+function synthesizedBlankTrackingReturn(row, sellerAccount) {
+  const lineId = value(row, 'order line id');
+  const parentId = value(row, 'order release id');
+  const returnDate = date(value(row, 'cancelled on')) || date(value(row, 'created on'));
+  return [
+    'myntra',
+    `RTO-${lineId}`,
+    lineId,
+    fulfillment(value(row, 'po_type')),
+    returnDate,
+    returnDate,
+    'Delivered',
+    'Cancel before ship',
+    value(row, 'cancellation reason') || null,
+    'RTO',
+    'Delivered',
+    null,
+    null,
+    value(row, 'seller sku code'),
+    value(row, 'myntra sku code'),
+    value(row, 'style name') || null,
+    1,
+    null, null, null, null,
+    value(row, 'cancellation reason') || null,
+    null, null, null, null, null, null,
+    returnDate,
+    null, null,
+    returnDate,
+    parentId,
+    sellerAccount,
   ];
 }
 
@@ -287,7 +368,10 @@ const RETURN_DETAIL_COLUMNS = [
   'myntra_sku_code', 'style_id', 'sku_id', 'brand', 'order_created_date', 'order_delivered_date', 'return_created_date',
   'refunded_date', 'order_rto_date', 'is_refunded', 'exchange_id', 'seller_order_id', 'return_type', 'return_status', 'return_state',
   'store_packet_id', 'seller_packet_id', 'quantity', 'return_mode', 'return_reason', 'forward_tracking_number',
-  'return_tracking_number', 'master_bag_id', 'lmdo_status', 'lmdo_last_modified_on', 'source_data', 'upload_batch',
+  'return_tracking_number', 'master_bag_id', 'lmdo_status', 'lmdo_last_modified_on',
+  'gatepass_id', 'gatepass_status', 'gatepass_type', 'gatepass_lastmodified',
+  'warehouse_id', 'partner_warehouse_code',
+  'source_data', 'upload_batch',
 ];
 const NORMALIZED_RETURN_COLUMNS = [
   'marketplace', 'return_id', 'order_item_id', 'fulfilment_type', 'return_requested_date', 'return_approval_date', 'return_status',
@@ -324,6 +408,8 @@ async function upsertRows(pool, table, columns, rows, conflictColumns, timestamp
   return affected;
 }
 
+const BATCH_CHUNK_SIZE = 1000;
+
 async function importRows({ pool, rows, sellerAccount, type, batch }) {
   const skippedRows = [];
   const seenLineIds = new Set();
@@ -350,20 +436,173 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
     seenLineIds.add(lineId);
     return true;
   });
+
   if (type === 'orders') {
-    await upsertRows(pool, 'myntra_order_details', ORDER_DETAIL_COLUMNS,
-      validRows.map(row => orderDetail(row, sellerAccount, batch)),
-      ['marketplace', 'seller_account', 'order_line_id']);
-    await upsertRows(pool, 'orders', NORMALIZED_ORDER_COLUMNS,
-      validRows.map(row => normalizedOrder(row, sellerAccount)),
-      ['marketplace', 'seller_account', 'order_item_id'], 'uploaded_at');
+    const dCols = ORDER_DETAIL_COLUMNS;
+    const dConflict = ['marketplace', 'seller_account', 'order_line_id'];
+    const dColumnSql = dCols.join(', ');
+    const dUpdateSql = dCols
+      .filter(column => !dConflict.includes(column) && column !== 'created_at')
+      .map(column => `${column} = EXCLUDED.${column}`)
+      .concat('updated_at = NOW()')
+      .join(', ');
+
+    const oCols = NORMALIZED_ORDER_COLUMNS;
+    const oConflict = ['marketplace', 'seller_account', 'order_item_id'];
+    const oColumnSql = oCols.join(', ');
+    const oUpdateSql = oCols
+      .filter(column => !oConflict.includes(column) && column !== 'created_at')
+      .map(column => `${column} = EXCLUDED.${column}`)
+      .concat('uploaded_at = NOW()')
+      .join(', ');
+
+    for (let i = 0; i < validRows.length; i += BATCH_CHUNK_SIZE) {
+      const chunk = validRows.slice(i, i + BATCH_CHUNK_SIZE);
+      const detailRows = chunk.map(row => orderDetail(row, sellerAccount, batch));
+      const orderRows = chunk.map(row => normalizedOrder(row, sellerAccount));
+
+      const dVals = [];
+      const dGroups = detailRows.map(row => {
+        const start = dVals.length;
+        dVals.push(...row);
+        return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+      });
+
+      const oVals = [];
+      const oGroups = orderRows.map(row => {
+        const start = oVals.length;
+        oVals.push(...row);
+        return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+      });
+
+      const blankTrackingRows = chunk.filter(row => !value(row, 'order tracking number'));
+      const synthesizedReturnRows = blankTrackingRows.map(row => synthesizedBlankTrackingReturn(row, sellerAccount));
+
+      const batchPromises = [
+        pool.query(
+          `INSERT INTO myntra_order_details (${dColumnSql}) VALUES ${dGroups.join(', ')}
+           ON CONFLICT (${dConflict.join(', ')}) DO UPDATE SET ${dUpdateSql}`,
+          dVals,
+        ),
+        pool.query(
+          `INSERT INTO orders (${oColumnSql}) VALUES ${oGroups.join(', ')}
+           ON CONFLICT (${oConflict.join(', ')}) DO UPDATE SET ${oUpdateSql}`,
+          oVals,
+        ),
+      ];
+
+      if (synthesizedReturnRows.length > 0) {
+        const retCols = NORMALIZED_RETURN_COLUMNS;
+        const retConflict = ['marketplace', 'seller_account', 'order_item_id'];
+        const retColumnSql = retCols.join(', ');
+        const retUpdateSql = retCols
+          .filter(column => !retConflict.includes(column) && column !== 'created_at')
+          .map(column => `${column} = EXCLUDED.${column}`)
+          .concat('uploaded_at = NOW()')
+          .join(', ');
+
+        const rVals = [];
+        const rGroups = synthesizedReturnRows.map(row => {
+          const start = rVals.length;
+          rVals.push(...row);
+          return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+        });
+
+        batchPromises.push(
+          pool.query(
+            `INSERT INTO returns (${retColumnSql}) VALUES ${rGroups.join(', ')}
+             ON CONFLICT (${retConflict.join(', ')}) DO UPDATE SET ${retUpdateSql}`,
+            rVals,
+          )
+        );
+      }
+
+      await Promise.all(batchPromises);
+
+      if (i + BATCH_CHUNK_SIZE < validRows.length) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+
+    try {
+      await backfillOrdersFromMyntraPayment(pool, sellerAccount);
+      await refreshOrderSettlementTotals(pool);
+    } catch (e) {
+      console.warn('[Myntra Upload] Warning: post-order backfill failed:', e.message);
+    }
   } else {
-    await upsertRows(pool, 'myntra_return_details', RETURN_DETAIL_COLUMNS,
-      validRows.map(row => returnDetail(row, sellerAccount, batch)),
-      ['marketplace', 'seller_account', 'order_line_id']);
-    await upsertRows(pool, 'returns', NORMALIZED_RETURN_COLUMNS,
-      validRows.map(row => normalizedReturn(row, sellerAccount)),
-      ['marketplace', 'seller_account', 'order_item_id'], 'uploaded_at');
+    const rCols = RETURN_DETAIL_COLUMNS;
+    const rConflict = ['marketplace', 'seller_account', 'order_line_id'];
+    const rColumnSql = rCols.join(', ');
+    const rUpdateSql = rCols
+      .filter(column => !rConflict.includes(column) && column !== 'created_at')
+      .map(column => `${column} = EXCLUDED.${column}`)
+      .concat('updated_at = NOW()')
+      .join(', ');
+
+    const nCols = NORMALIZED_RETURN_COLUMNS;
+    const nConflict = ['marketplace', 'seller_account', 'order_item_id'];
+    const nColumnSql = nCols.join(', ');
+    const nUpdateSql = nCols
+      .filter(column => !nConflict.includes(column) && column !== 'created_at')
+      .map(column => `${column} = EXCLUDED.${column}`)
+      .concat('uploaded_at = NOW()')
+      .join(', ');
+
+    for (let i = 0; i < validRows.length; i += BATCH_CHUNK_SIZE) {
+      const chunk = validRows.slice(i, i + BATCH_CHUNK_SIZE);
+      const detailRows = chunk.map(row => returnDetail(row, sellerAccount, batch));
+      const returnRows = chunk.map(row => normalizedReturn(row, sellerAccount));
+
+      const rVals = [];
+      const rGroups = detailRows.map(row => {
+        const start = rVals.length;
+        rVals.push(...row);
+        return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+      });
+
+      const nVals = [];
+      const nGroups = returnRows.map(row => {
+        const start = nVals.length;
+        nVals.push(...row);
+        return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+      });
+
+      await Promise.all([
+        pool.query(
+          `INSERT INTO myntra_return_details (${rColumnSql}) VALUES ${rGroups.join(', ')}
+           ON CONFLICT (${rConflict.join(', ')}) DO UPDATE SET ${rUpdateSql}`,
+          rVals,
+        ),
+        pool.query(
+          `INSERT INTO returns (${nColumnSql}) VALUES ${nGroups.join(', ')}
+           ON CONFLICT (${nConflict.join(', ')}) DO UPDATE SET ${nUpdateSql}`,
+          nVals,
+        ),
+      ]);
+
+      if (i + BATCH_CHUNK_SIZE < validRows.length) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+
+    // Ensure the return/exchange type correctly maps back to the main order ledger
+    await pool.query(`
+      UPDATE orders o
+      SET 
+        return_type = r.return_type,
+        orders_status = CASE 
+          WHEN r.return_reason = 'Cancel before ship' THEN 'Delivered'
+          WHEN r.return_type = 'RTO' THEN 'RTO'
+          WHEN o.orders_status IS NULL OR o.orders_status IN ('Delivered', 'Shipped', 'Complete', '') 
+            THEN 'Return Orders' 
+          ELSE o.orders_status 
+        END
+      FROM returns r
+      WHERE o.order_item_id = r.order_item_id
+        AND r.marketplace = 'myntra'
+        AND r.seller_account = $1
+    `, [sellerAccount]);
   }
   return { saved: validRows.length, skippedRows };
 }
@@ -422,12 +661,12 @@ router.get('/template/:type', (req, res) => {
       'Bareilly', 'UP', '243005', 416,
     ]]
     : [[
-      '10708', '14417', 'PPMP', 'SNGRKASS113289524', 'BT165-Nishi-Peach_XL_SA_Kurtaset', '35324487',
+      '10708', '14417', '14417', 'PPMP', 'SNGRKASS113289524', 'BT165-Nishi-Peach_XL_SA_Kurtaset', '35324487',
       '113289524', 'Sangria', '2026-04-13', '2026-04-15', '', '2026-04-22', '2026-04-24',
       '2026-04-25', '', 1, '', '100039181524', '5845830880', '11093910482',
       'f69f1745-f152-4ab1-a8ff-ccf9e8323e1f', 'Return', 'Ret Delivered', '100039181524', '', 1,
       '100155000000', 'OPEN_BOX_PICKUP', 'I did not like the fit', 'DLS', 'MYEC1098205736',
-      'MYSR1208758327', '', '', '2026-05-07',
+      'MYSR1208758327', '', '', '2026-05-07', '', '', '', '',
     ]];
   const workbook = XLSX.utils.book_new();
   const sheet = XLSX.utils.aoa_to_sheet([headers, ...samples]);
@@ -446,6 +685,7 @@ export {
   MYNTRA_SELLER_IDS,
   orderLifecycle,
   orderReturnType,
+  resolveReturnCreatedDate,
   parseSheet,
   validateLayout,
   validateSellerIds,
@@ -457,5 +697,7 @@ export {
   NORMALIZED_ORDER_COLUMNS,
   RETURN_DETAIL_COLUMNS,
   NORMALIZED_RETURN_COLUMNS,
+  synthesizedBlankTrackingReturn,
+  importRows,
 };
 export default router;

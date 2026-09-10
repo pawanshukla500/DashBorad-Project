@@ -1,19 +1,15 @@
-import pkg from 'pg';
-const { Pool } = pkg;
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getPool } from '../db/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
-});
-
 async function addPickAndPackDb() {
   console.log('Adding FBF Pick & Pack table to Rate Card schema...');
+  const pool = getPool();
   
   const queries = `
     -- Pick & Pack Fees depend on FSN/Vertical and Weight Slab + Zone (Only applies to FBF - Flipkart Fulfillment)

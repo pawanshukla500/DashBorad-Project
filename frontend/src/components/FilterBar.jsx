@@ -5,21 +5,24 @@ import { fetchFilters } from '../api/client';
 import { filtersForPath } from '../navigation';
 
 const MARKETPLACES = [
-  { id: '',         label: 'All' },
-  { id: 'flipkart', label: 'Flipkart' },
-  { id: 'amazon',   label: 'Amazon' },
-  { id: 'myntra',   label: 'Myntra' },
-  { id: 'meesho',   label: 'Meesho' },
-  { id: 'ajio',     label: 'Ajio' },
+  { id: '',          label: 'All' },
+  { id: 'flipkart',  label: 'Flipkart' },
+  { id: 'amazon',    label: 'Amazon' },
+  { id: 'myntra_vb', label: 'Myntra (VB)' },
+  { id: 'myntra_ej', label: 'Myntra (EJ)' },
+  { id: 'meesho',    label: 'Meesho' },
+  { id: 'ajio',      label: 'Ajio' },
 ];
 
 const MP_ACTIVE = {
-  '':         'bg-ink text-surface border-ink shadow-sm',
-  flipkart:   'bg-[#0456C8] text-white border-[#0456C8] shadow-sm',
-  amazon:     'bg-[#FF9900] text-black border-[#FF9900] shadow-sm',
-  myntra:     'bg-[#F13AB1] text-white border-[#F13AB1] shadow-sm',
-  meesho:     'bg-[#F43397] text-white border-[#F43397] shadow-sm',
-  ajio:       'bg-[#2C4152] text-white border-[#2C4152] shadow-sm',
+  '':          'bg-ink text-surface border-ink shadow-sm',
+  flipkart:    'bg-[#0456C8] text-white border-[#0456C8] shadow-sm',
+  amazon:      'bg-[#FF9900] text-black border-[#FF9900] shadow-sm',
+  myntra:      'bg-[#F13AB1] text-white border-[#F13AB1] shadow-sm',
+  myntra_vb:   'bg-[#F13AB1] text-white border-[#F13AB1] shadow-sm',
+  myntra_ej:   'bg-[#BE185D] text-white border-[#BE185D] shadow-sm',
+  meesho:      'bg-[#F43397] text-white border-[#F43397] shadow-sm',
+  ajio:        'bg-[#2C4152] text-white border-[#2C4152] shadow-sm',
 };
 
 function fmtTime(d) {
@@ -64,18 +67,12 @@ export default function FilterBar() {
     fetchFilters(refreshKey).then(setOpts).catch(() => {});
   }, [refreshKey, filtersShown]);
 
-  if (!filtersShown) {
-    return (
-      <div className="bg-surface/95 border-b border-border px-4 sm:px-6 py-2 font-body-sm text-body-sm text-outline">
-        Global date filters do not apply on this page — use the controls in the workspace below.
-      </div>
-    );
-  }
+  if (!filtersShown) return null;
 
-  const sel = 'font-body-sm text-body-sm border border-border rounded-lg px-2.5 py-1.5 text-ink bg-surface focus:outline-none focus:ring-2 focus:ring-primary/40 hover:border-outline transition-colors min-w-0';
+  const sel = 'font-sans text-body-sm border border-border rounded-lg px-2.5 py-1.5 text-ink bg-surface focus:outline-none focus:ring-2 focus:ring-primary/40 hover:border-outline transition-colors min-w-0';
 
   return (
-    <div className="bg-surface/95 backdrop-blur-sm border-b border-border sticky top-16 z-20">
+    <div className="border-t border-border">
       <div className="px-4 sm:px-6 py-2.5 flex items-center gap-2 flex-wrap">
         {contract.marketplace && (
           <div className="flex items-center gap-1 flex-wrap">
@@ -85,7 +82,7 @@ export default function FilterBar() {
                 <button
                   key={mp.id}
                   onClick={() => { updateFilter('marketplace', mp.id); if (mp.id === 'meesho') updateFilter('brand', ''); }}
-                  className={`px-3 py-1 rounded-full font-label-md text-label-md uppercase border transition-all ${
+                  className={`px-3 py-1 rounded-full font-sans text-label-md uppercase border transition-all ${
                     isActive
                       ? (MP_ACTIVE[mp.id] || MP_ACTIVE[''])
                       : 'bg-surface text-secondary border-border hover:border-outline hover:text-ink'
@@ -212,7 +209,7 @@ export default function FilterBar() {
               }
             }}
             disabled={!viewName.trim()}
-            className="rounded-lg bg-[#902A4A] px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+            className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary disabled:opacity-40"
           >
             Save view
           </button>

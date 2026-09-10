@@ -17,8 +17,8 @@ Before making any write:
 2. Inspect the existing schema, rate-card rows, active versions, and marketplace
    accounts. Produce a read-only report and a proposed row diff first.
 3. Take/export a database backup or a rate-card snapshot, then use a transaction
-   for DML. CockroachDB schema changes run as jobs: wait for SHOW JOBS to succeed
-   before using a new column in production queries.
+   for DML. PostgreSQL schema changes must be run during a quiet maintenance
+   window when they can lock large tables.
 4. Upload/import rate cards into a staging area. Validate and preview the parsed
    rules, dates, overlaps, ranges, coverage, and calculated fee examples.
 5. Only an admin may approve/publish a version. Publishing must atomically make
@@ -79,15 +79,8 @@ FROM marketplace_accounts
 ORDER BY marketplace, account_id;
 ```
 
-For CockroachDB DDL, wait for the schema-change job instead of assuming an
-`ALTER TABLE` is usable immediately:
-
-```sql
-SELECT job_id, status, running_status, fraction_completed, error
-FROM [SHOW JOBS]
-ORDER BY created DESC
-LIMIT 20;
-```
+For PostgreSQL DDL, check for blocking sessions before changing large tables
+and keep migrations idempotent.
 
 ## Current Flipkart table: reverse shipping
 

@@ -607,9 +607,10 @@ const RETURN_DATE_FIELDS     = ['return_approval_date', 'return_requested_date',
 const SETTLEMENT_DATE_FIELDS = ['Payment Date', 'Order Date', 'Dispatch Date'];
 
 const FIELD_ALIASES = {
-  'Order ID':            ['order number','order no','orderid','amazon-order-id','amazonorderid','merchant-order-id'],
-  'Order Item ID':       ['order item','order line id','sub order id','orderitemid','order-item-id','amazon-order-item-id','orderitemcode','order-item-code'],
-  'Final Invoice Amount':['invoice amount','selling price','gross amount','item total','item-price','itemprice','item price'],
+  'Order ID':            ['order number','order no','orderid','amazon-order-id','amazonorderid','merchant-order-id','sub_order_num','sub order num'],
+  'Order Item ID':       ['order item','order line id','sub order id','orderitemid','order-item-id','amazon-order-item-id','orderitemcode','order-item-code','sub_order_num','sub order num'],
+  'Amount': ['invoice amount','selling price','gross amount','item total','item-price','itemprice','item price','total_invoice_value','total invoice value'],
+    'Final Invoice Amount':['invoice amount','selling price','gross amount','item total','item-price','itemprice','item price','total_invoice_value','total invoice value'],
   'Total Offer Amount':  ['offer amount','discount amount'],
   'My Share':            ['seller share','your share','net seller amount'],
   'Order Date':          ['ordered date','purchase date','created date','purchase-date','purchasedate'],
@@ -624,7 +625,7 @@ const FIELD_ALIASES = {
   'Category':            ['product-group','productgroup','gl','browse-node','browsecategory'],
   'Shipping Fee':        ['shipping-price','shippingprice','shipping price','shipping charge'],
   'GST on MP':           ['item-tax','itemtax','item tax'],
-  'Return Requested Date': ['return date','requested date'],
+  'Return Requested Date': ['return date','requested date','cancel_return_date','cancel return date'],
   'Return Approval Date':  ['approval date','approved date','return-date','returndate'],
   'Payment Date':        ['settlement date','paid date','neft date'],
   'Bank Settlement':     ['bank settlement value','settlement value','bank amount'],
@@ -2043,9 +2044,19 @@ router.get('/unsettled-orders', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'DB not configured' });
   try {
     const pool = getPool();
-    const mp       = (req.query.marketplace && req.query.marketplace !== 'all') ? req.query.marketplace : null;
-    const mpWhere  = mp ? `AND o.marketplace = $1` : '';
-    const mpVals   = mp ? [mp] : [];
+    const mp       = (req.query.marketplace && req.query.marketplace !== 'all') ? String(req.query.marketplace).trim().toLowerCase() : null;
+    let mpWhere = '';
+    const mpVals = [];
+    if (mp === 'myntra_vb') {
+      mpWhere = "AND o.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
+    } else if (mp === 'myntra_ej') {
+      mpWhere = "AND o.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
+    } else if (mp === 'myntra') {
+      mpWhere = "AND o.marketplace = 'myntra'";
+    } else if (mp) {
+      mpVals.push(mp);
+      mpWhere = `AND o.marketplace = $${mpVals.length}`;
+    }
 
     const { rows } = await pool.query(`
       SELECT
@@ -2054,7 +2065,10 @@ router.get('/unsettled-orders', async (req, res) => {
         o.fsn,
         o.sku,
         o.category,
-        COALESCE(o.marketplace, 'flipkart')   AS marketplace,
+        CASE
+          WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
+          ELSE COALESCE(o.marketplace, 'flipkart')
+        END                                   AS marketplace,
         TO_CHAR(o.order_date, 'YYYY-MM-DD')   AS order_date,
         o.final_invoice_amount                 AS invoice_amount,
         o.orders_status,

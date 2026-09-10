@@ -2,18 +2,28 @@ import bcrypt from 'bcryptjs';
 import { getPool, isDbConfigured } from './index.js';
 import { AMAZON_BRAND, ensureAmazonSettlementRollups } from '../services/amazonSettlementRollups.js';
 import { amazonReportingRollupUnifiedSelect, ensureAmazonSettlementReportingRollups } from '../services/amazonSettlementReportingRollups.js';
+import { myntraInvoicesUnifiedSelect } from '../services/myntraSettlementReportingRollups.js';
+import { meeshoSettlementUnifiedSelect } from '../services/meeshoSettlementReportingRollups.js';
 import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 
 // Every item below this version is idempotent but not free: ALTER TABLE takes
 // a table lock even when the column already exists. Record completion so a
 // normal backend restart is a quick health check rather than a full DDL pass.
-const CURRENT_SCHEMA_VERSION = '2026.08.connection-stability-1';
+const CURRENT_SCHEMA_VERSION = '2026.08.myntra-invoices-unified-1';
 const MYNTRA_UPLOAD_SCHEMA_VERSION = '2026.08.myntra-ej-vb-order-return-1';
 const MYNTRA_SELLER_ID_SCHEMA_VERSION = '2026.08.myntra-seller-id-guard-1';
 const UPLOAD_AUDIT_RETENTION_SCHEMA_VERSION = '2026.08.upload-audit-retention-1';
 const NORMALIZED_RATE_CARD_SCHEMA_VERSION = '2026.08.normalized-rate-card-rules-1';
 const MP_INVOICE_IDEMPOTENCY_SCHEMA_VERSION = '2026.08.mp-invoice-idempotency-1';
+const MYNTRA_PAYMENT_LINKAGE_SCHEMA_VERSION = '2026.09.myntra-payment-linkage-1';
+const MYNTRA_ORDER_TYPE_SCHEMA_VERSION = '2026.09.myntra-order-type-1';
+const MYNTRA_ITEMIZED_FEES_SCHEMA_VERSION = '2026.09.myntra-itemized-fees-1';
 const MP_LEDGER_IDEMPOTENCY_SCHEMA_VERSION = '2026.08.mp-ledger-idempotency-1';
+const MYNTRA_RTO_RETURN_DATE_SCHEMA_VERSION = '2026.09.myntra-rto-return-date-1';
+const MYNTRA_PARTNER_WH_SCHEMA_VERSION = '2026.09.myntra-partner-warehouse-1';
+const MYNTRA_BLANK_TRACKING_RTO_SCHEMA_VERSION = '2026.09.myntra-blank-tracking-rto-1';
+const MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION = '2026.09.myntra-ej-rate-cards-1';
+const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimization-1';
 
 const TABLES = [`
   CREATE TABLE IF NOT EXISTS orders (
@@ -425,6 +435,28 @@ const TABLES = [`
   )`,
 
   /* ── Amazon Settlement — raw V2 line items ─────────────────────────────────── */
+
+  /* 💰 Meesho Settlement — raw multi-sheet items -------------------------------- */
+  `CREATE TABLE IF NOT EXISTS meesho_settlement_items (
+    id                   SERIAL PRIMARY KEY,
+    settlement_id        TEXT,
+    payment_date         DATE,
+    order_item_id        TEXT,
+    sku                  TEXT,
+    transaction_type     TEXT,
+    bank_settlement      NUMERIC(14,2),
+    sale_amount          NUMERIC(14,2),
+    commission_fee       NUMERIC(10,2),
+    fixed_fee            NUMERIC(10,2),
+    shipping_fee         NUMERIC(10,2),
+    reverse_shipping     NUMERIC(10,2),
+    other_fee            NUMERIC(10,2),
+    tcs                  NUMERIC(10,2),
+    tds                  NUMERIC(10,2),
+    claims               NUMERIC(14,2),
+    uploaded_at          TIMESTAMPTZ DEFAULT NOW()
+  )`,
+
   `CREATE TABLE IF NOT EXISTS amazon_settlement_items (
     id                          SERIAL PRIMARY KEY,
     settlement_id               TEXT,
@@ -617,6 +649,8 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_returns_item       ON returns(order_item_id)`,
   `CREATE INDEX IF NOT EXISTS IX_returns_market_requested ON returns(marketplace, return_requested_date DESC)`,
   `CREATE INDEX IF NOT EXISTS IX_returns_market_order_sku ON returns(marketplace, order_id, sku)`,
+  `CREATE INDEX IF NOT EXISTS IX_meesho_item ON meesho_settlement_items(order_item_id)`,
+  `CREATE INDEX IF NOT EXISTS IX_meesho_date ON meesho_settlement_items(payment_date)`,
   `CREATE INDEX IF NOT EXISTS IX_fko_item           ON fk_settlement_orders(order_item_id)`,
   `CREATE INDEX IF NOT EXISTS IX_fko_payment_date   ON fk_settlement_orders(payment_date)`,
   `CREATE INDEX IF NOT EXISTS IX_fko_market_payment ON fk_settlement_orders(marketplace, payment_date DESC)`,
@@ -656,6 +690,14 @@ export async function initDb() {
       await ensureNormalizedRateCardSchema(pool);
       await ensureMpInvoiceIdempotencySchema(pool);
       await ensureMpLedgerIdempotencySchema(pool);
+      await ensureMyntraPaymentLinkageSchema(pool);
+      await ensureMyntraOrderTypeSchema(pool);
+      await ensureMyntraItemizedFeesSchema(pool);
+      await ensureMyntraRtoReturnDateFix(pool);
+      await ensureMyntraPartnerWarehouseSchema(pool);
+      await ensureMyntraBlankTrackingRtoFix(pool);
+      await ensureMyntraEjRateCardsSeed(pool);
+      await ensureDbConnectionOptimization(pool);
       // A read-model migration changes the view definition as well as the
       // backing table, so it must run on already-current installations too.
       await ensureAmazonSettlementReportingRollups(pool);
@@ -828,6 +870,7 @@ export async function initDb() {
     await pool.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received_neft_id TEXT`).catch(() => {});
     await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS is_received BOOLEAN DEFAULT FALSE`).catch(() => {});
     await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS received_date DATE`).catch(() => {});
+      await pool.query(`ALTER TABLE meesho_settlement_items ADD COLUMN IF NOT EXISTS reverse_shipping NUMERIC(10,2) DEFAULT 0`).catch(() => {});
 
     // order_spf_tracking: track SPF received vs not received per order
     await pool.query(`
@@ -868,6 +911,7 @@ export async function initDb() {
         ('shopsy',    'Shopsy',      'order',   'violet'),
         ('amazon',    'Amazon',      'order',   'amber'),
         ('myntra',    'Myntra SOR',  'invoice', 'rose'),
+        ('meesho',    'Meesho',      'order',   'emerald'),
         ('zepto',     'Zepto',       'ledger',  'emerald'),
         ('cocoblue',  'Cocoblue',    'invoice', 'sky')
       ON CONFLICT (marketplace) DO NOTHING
@@ -897,6 +941,16 @@ export async function initDb() {
         amount_received     NUMERIC(14,2) DEFAULT 0,
         payment_date        DATE,
         payment_reference   TEXT,
+        order_release_id     TEXT,
+        order_line_id        TEXT,
+        return_id            TEXT,
+        order_type           TEXT,
+        tcs_amount           NUMERIC(14,2),
+        fixed_fee_amount     NUMERIC(14,2),
+        shipping_fee_amount  NUMERIC(14,2),
+        pick_pack_fee_amount NUMERIC(14,2),
+        gateway_fee_amount   NUMERIC(14,2),
+        gst_on_mp_fees       NUMERIC(14,2),
         source_fingerprint  TEXT,
         status              VARCHAR(30)   DEFAULT 'Pending',
         notes               TEXT,
@@ -1253,6 +1307,14 @@ export async function initDb() {
     await ensureNormalizedRateCardSchema(pool);
     await ensureMpInvoiceIdempotencySchema(pool);
     await ensureMpLedgerIdempotencySchema(pool);
+    await ensureMyntraPaymentLinkageSchema(pool);
+    await ensureMyntraOrderTypeSchema(pool);
+    await ensureMyntraItemizedFeesSchema(pool);
+    await ensureMyntraRtoReturnDateFix(pool);
+    await ensureMyntraPartnerWarehouseSchema(pool);
+    await ensureMyntraBlankTrackingRtoFix(pool);
+    await ensureMyntraEjRateCardsSeed(pool);
+    await ensureDbConnectionOptimization(pool);
 
     await pool.query(
       `INSERT INTO schema_version (version) VALUES ('2026.07.longterm-1') ON CONFLICT (version) DO NOTHING`
@@ -1471,6 +1533,108 @@ async function ensureMpInvoiceIdempotencySchema(pool) {
  * re-importing a statement updates its source values without resetting an
  * operator's reconciliation decision.
  */
+/**
+ * A Myntra order is settled more than once: a Forward payout, a Reverse
+ * refund line for the same order, and sometimes a second payout under a new
+ * NEFT reference. Payment rows now keep the Order Release / Order Line /
+ * Return identities from the payment export so every settlement of one order
+ * stays distinct and can be linked back to the imported Order rows
+ * (orders.order_id = Order Release ID, orders.order_item_id = Order Line ID).
+ */
+async function ensureMyntraPaymentLinkageSchema(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [MYNTRA_PAYMENT_LINKAGE_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  await pool.query(`ALTER TABLE mp_invoices ADD COLUMN IF NOT EXISTS order_release_id TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE mp_invoices ADD COLUMN IF NOT EXISTS order_line_id TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE mp_invoices ADD COLUMN IF NOT EXISTS return_id TEXT`).catch(() => {});
+  await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_release
+    ON mp_invoices (marketplace, seller_account, order_release_id)`).catch(() => {});
+  await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_release_line
+    ON mp_invoices (order_release_id, order_line_id)`).catch(() => {});
+
+  // Myntra (EJ and VB) return exports carry gatepass columns. Keep them in the
+  // account-scoped audit table; they are not part of the normalized model.
+  await pool.query(`ALTER TABLE myntra_return_details ADD COLUMN IF NOT EXISTS gatepass_id TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE myntra_return_details ADD COLUMN IF NOT EXISTS gatepass_status TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE myntra_return_details ADD COLUMN IF NOT EXISTS gatepass_type TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE myntra_return_details ADD COLUMN IF NOT EXISTS gatepass_lastmodified DATE`).catch(() => {});
+
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [MYNTRA_PAYMENT_LINKAGE_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${MYNTRA_PAYMENT_LINKAGE_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * Myntra payment rows settle as Forward or Reverse (plus NOD non-order
+ * deductions). The reporting view splits a row's money between bank
+ * settlement and refunded principal using that type, so it must be stored —
+ * older imports only carry the sign of the invoice amount as a fallback.
+ */
+async function ensureMyntraOrderTypeSchema(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [MYNTRA_ORDER_TYPE_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  await pool.query(`ALTER TABLE mp_invoices ADD COLUMN IF NOT EXISTS order_type TEXT`).catch(() => {});
+  // Backfill: a Reverse row was stored with a negated invoice amount, and rows
+  // that carry a Return ID are Reverse even when amounts were blank.
+  await pool.query(`
+    UPDATE mp_invoices
+    SET order_type = CASE
+      WHEN COALESCE(order_release_id, '') = '' THEN 'nod'
+      WHEN COALESCE(return_id, '') <> '' OR invoice_amount < 0 THEN 'reverse'
+      ELSE 'forward'
+    END
+    WHERE marketplace = 'myntra' AND order_type IS NULL
+  `).catch(() => {});
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [MYNTRA_ORDER_TYPE_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${MYNTRA_ORDER_TYPE_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * Myntra payment exports itemize each fee, but GST-inclusive. The reporting
+ * model needs the GST-free components (commission ex-GST for the rate audit,
+ * fixed fee, shipping, pick-pack, gateway, TCS) plus the GST charged on them.
+ * Historical rows are backfilled from their bridged other_deductions figure;
+ * re-importing a payment file refreshes them with exact components.
+ */
+async function ensureMyntraItemizedFeesSchema(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [MYNTRA_ITEMIZED_FEES_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  const columns = [
+    ['tcs_amount', 'NUMERIC(14,2)'],
+    ['fixed_fee_amount', 'NUMERIC(14,2)'],
+    ['shipping_fee_amount', 'NUMERIC(14,2)'],
+    ['pick_pack_fee_amount', 'NUMERIC(14,2)'],
+    ['gateway_fee_amount', 'NUMERIC(14,2)'],
+    ['gst_on_mp_fees', 'NUMERIC(14,2)'],
+  ];
+  for (const [name, type] of columns) {
+    await pool.query(`ALTER TABLE mp_invoices ADD COLUMN IF NOT EXISTS ${name} ${type}`).catch(() => {});
+  }
+  // The view reads these as COALESCE(..., 0) after this migration.
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [MYNTRA_ITEMIZED_FEES_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${MYNTRA_ITEMIZED_FEES_SCHEMA_VERSION} applied.`);
+}
+
 async function ensureMpLedgerIdempotencySchema(pool) {
   const { rowCount } = await pool.query(
     `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
@@ -1671,6 +1835,12 @@ async function ensureMyntraUploadSchema(pool) {
       master_bag_id           TEXT,
       lmdo_status             TEXT,
       lmdo_last_modified_on   DATE,
+      gatepass_id             TEXT,
+      gatepass_status         TEXT,
+      gatepass_type           TEXT,
+      gatepass_lastmodified   DATE,
+      warehouse_id            TEXT,
+      partner_warehouse_code  TEXT,
       source_data             JSONB NOT NULL DEFAULT '{}'::jsonb,
       upload_batch            TEXT,
       created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1752,6 +1922,251 @@ async function ensureMyntraSellerIdSchema(pool) {
     [MYNTRA_SELLER_ID_SCHEMA_VERSION],
   );
   console.log(`[db] Schema ${MYNTRA_SELLER_ID_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * Ensures Myntra RTO rows use order_rto_date as the effective return_created_date
+ * when return_created_date was recorded as 1970/epoch placeholder in source reports.
+ */
+async function ensureMyntraRtoReturnDateFix(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [MYNTRA_RTO_RETURN_DATE_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  console.log('[db] Applying Myntra RTO return date fix (order_rto_date -> return_created_date)...');
+
+  // Fix myntra_return_details: update return_created_date to order_rto_date for RTOs where return_created_date was 1970/epoch
+  await pool.query(`
+    UPDATE myntra_return_details
+    SET return_created_date = order_rto_date,
+        updated_at = NOW()
+    WHERE marketplace = 'myntra'
+      AND (return_type = 'RTO' OR return_created_date <= DATE '1970-01-05')
+      AND order_rto_date IS NOT NULL
+      AND order_rto_date > DATE '1970-01-05'
+  `);
+
+  // Fix normalized returns table
+  await pool.query(`
+    UPDATE returns r
+    SET return_requested_date = m.order_rto_date,
+        return_date = m.order_rto_date
+    FROM myntra_return_details m
+    WHERE r.order_item_id = m.order_line_id
+      AND r.marketplace = 'myntra'
+      AND (r.return_type = 'RTO' OR r.return_requested_date <= DATE '1970-01-05' OR r.return_date <= DATE '1970-01-05')
+      AND m.order_rto_date IS NOT NULL
+      AND m.order_rto_date > DATE '1970-01-05'
+  `);
+
+  // Ensure orders status and return_type are aligned for RTOs
+  await pool.query(`
+    UPDATE orders o
+    SET 
+      return_type = 'RTO',
+      orders_status = 'RTO'
+    FROM returns r
+    WHERE o.order_item_id = r.order_item_id
+      AND r.marketplace = 'myntra'
+      AND r.return_type = 'RTO'
+  `);
+
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [MYNTRA_RTO_RETURN_DATE_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${MYNTRA_RTO_RETURN_DATE_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * Ensures myntra_return_details has warehouse_id and partner_warehouse_code columns.
+ * Backfills warehouse_id and partner_warehouse_code from source_data JSONB if present,
+ * maintaining full backwards compatibility for historical and new reports alike.
+ */
+async function ensureMyntraPartnerWarehouseSchema(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [MYNTRA_PARTNER_WH_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  await pool.query(`ALTER TABLE myntra_return_details ADD COLUMN IF NOT EXISTS warehouse_id TEXT`);
+  await pool.query(`ALTER TABLE myntra_return_details ADD COLUMN IF NOT EXISTS partner_warehouse_code TEXT`);
+  await pool.query(`
+    UPDATE myntra_return_details
+    SET warehouse_id = COALESCE(
+      NULLIF(TRIM(source_data ->> 'warehouse_id'), ''),
+      NULLIF(TRIM(source_data ->> 'seller_warehouse_id'), '')
+    )
+    WHERE warehouse_id IS NULL AND source_data IS NOT NULL
+  `);
+  await pool.query(`
+    UPDATE myntra_return_details
+    SET partner_warehouse_code = NULLIF(TRIM(source_data ->> 'partner_warehouse_code'), '')
+    WHERE partner_warehouse_code IS NULL AND source_data ? 'partner_warehouse_code'
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ix_myntra_return_detail_wh ON myntra_return_details (warehouse_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS ix_myntra_return_detail_partner_wh ON myntra_return_details (partner_warehouse_code)`);
+
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [MYNTRA_PARTNER_WH_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${MYNTRA_PARTNER_WH_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * Ensures Myntra orders with blank tracking numbers are marked 'Delivered' in orders,
+ * with return_type 'RTO', and have a matching RTO entry in returns table with
+ * return_reason = 'Cancel before ship'.
+ */
+async function ensureMyntraBlankTrackingRtoFix(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [MYNTRA_BLANK_TRACKING_RTO_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  console.log('[db] Applying Myntra blank tracking number RTO fix...');
+
+  // 1. Update orders table for all Myntra orders with blank tracking numbers
+  await pool.query(`
+    UPDATE orders o
+    SET 
+      orders_status = 'Delivered',
+      return_type = 'RTO'
+    FROM myntra_order_details m
+    WHERE o.marketplace = 'myntra'
+      AND o.seller_account = m.seller_account
+      AND o.order_item_id = m.order_line_id
+      AND (m.tracking_number IS NULL OR TRIM(m.tracking_number) = '')
+  `);
+
+  // 2. Synthesize returns records for these blank-tracking orders
+  await pool.query(`
+    INSERT INTO returns (
+      marketplace, seller_account, return_id, order_item_id, order_id,
+      fulfilment_type, return_requested_date, return_approval_date, return_date,
+      return_status, return_reason, return_sub_reason, return_type, return_result,
+      sku, fsn, product_title, quantity
+    )
+    SELECT 
+      'myntra',
+      m.seller_account,
+      'RTO-' || m.order_line_id,
+      m.order_line_id,
+      m.order_release_id,
+      COALESCE(o.fulfilment_type, 'Non-FBM'),
+      COALESCE(m.cancelled_on, m.order_created_on),
+      COALESCE(m.cancelled_on, m.order_created_on),
+      COALESCE(m.cancelled_on, m.order_created_on),
+      'Delivered',
+      'Cancel before ship',
+      m.source_data ->> 'cancellation reason',
+      'RTO',
+      'Delivered',
+      m.seller_sku_code,
+      m.myntra_sku_code,
+      m.style_name,
+      1
+    FROM myntra_order_details m
+    LEFT JOIN orders o 
+      ON o.marketplace = 'myntra'
+     AND o.seller_account = m.seller_account
+     AND o.order_item_id = m.order_line_id
+    WHERE m.marketplace = 'myntra'
+      AND (m.tracking_number IS NULL OR TRIM(m.tracking_number) = '')
+    ON CONFLICT (marketplace, seller_account, order_item_id) DO UPDATE
+    SET 
+      return_reason = 'Cancel before ship',
+      return_type = 'RTO',
+      return_status = 'Delivered',
+      return_requested_date = EXCLUDED.return_requested_date,
+      return_date = EXCLUDED.return_date,
+      uploaded_at = NOW()
+  `);
+
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [MYNTRA_BLANK_TRACKING_RTO_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${MYNTRA_BLANK_TRACKING_RTO_SCHEMA_VERSION} applied.`);
+}
+
+async function ensureMyntraEjRateCardsSeed(pool) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1`,
+    [MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION],
+  );
+  if (rows.length > 0) return;
+
+  console.log(`[db] Applying migration ${MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION}: Seeding Myntra EJ default rate cards...`);
+
+  await pool.query(`
+    INSERT INTO rc_pick_pack (category, start_date, end_date, price_min, price_max, rate, marketplace, fulfilment_type, seller_account)
+    SELECT category, start_date, end_date, price_min, price_max, rate, marketplace, fulfilment_type, 'myntra_ej'
+    FROM rc_pick_pack
+    WHERE marketplace = 'myntra' AND seller_account = 'myntra_vb'
+      AND NOT EXISTS (
+        SELECT 1 FROM rc_pick_pack WHERE marketplace = 'myntra' AND seller_account = 'myntra_ej'
+      );
+
+    INSERT INTO rc_reverse_shipping (category, start_date, end_date, price_min, price_max, weight_slab, local_fee, zonal_fee, national_fee, marketplace, seller_account)
+    SELECT category, start_date, end_date, price_min, price_max, weight_slab, local_fee, zonal_fee, national_fee, marketplace, 'myntra_ej'
+    FROM rc_reverse_shipping
+    WHERE marketplace = 'myntra' AND seller_account = 'myntra_vb'
+      AND NOT EXISTS (
+        SELECT 1 FROM rc_reverse_shipping WHERE marketplace = 'myntra' AND seller_account = 'myntra_ej'
+      );
+  `);
+
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * Configures role-level TCP keepalive and idle session timeout on the PostgreSQL server,
+ * and clears out any orphaned zombie sessions left behind by terminated backend processes.
+ */
+async function ensureDbConnectionOptimization(pool) {
+  try {
+    // 1. Role-level keepalive and idle session policy:
+    // Ensures PostgreSQL proactively pings every 30s to prevent NAT firewall drops,
+    // explicitly disables idle_session_timeout so pooled connections are NEVER killed by the server,
+    // and terminates sessions only if stuck in an uncommitted transaction for > 3 minutes.
+    await pool.query('ALTER ROLE CURRENT_USER SET tcp_keepalives_idle = 30;').catch(() => {});
+    await pool.query('ALTER ROLE CURRENT_USER SET tcp_keepalives_interval = 5;').catch(() => {});
+    await pool.query('ALTER ROLE CURRENT_USER SET tcp_keepalives_count = 5;').catch(() => {});
+    await pool.query('ALTER ROLE CURRENT_USER SET idle_session_timeout = 0;').catch(() => {});
+    await pool.query("ALTER ROLE CURRENT_USER SET idle_in_transaction_session_timeout = '180s';").catch(() => {});
+
+    // 2. Terminate any preexisting zombie sessions from previous crashed/restarted processes
+    const res = await pool.query(`
+      SELECT pid, pg_terminate_backend(pid) as terminated
+      FROM pg_stat_activity 
+      WHERE pid != pg_backend_pid() 
+        AND datname = current_database()
+        AND usename = current_user
+        AND state = 'idle'
+        AND (now() - state_change) > interval '5 minutes'
+    `).catch(() => ({ rows: [] }));
+    if (res.rows?.length > 0) {
+      console.log(`[db] Cleaned up ${res.rows.length} orphaned idle database sessions on startup.`);
+    }
+
+    await pool.query(
+      `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+      [DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION],
+    ).catch(() => {});
+    console.log(`[db] Server-side TCP keepalives and idle session timeout policy confirmed.`);
+  } catch (err) {
+    console.warn(`[db] Non-critical: Could not apply server connection optimization:`, err.message);
+  }
 }
 
 /**
@@ -1851,6 +2266,10 @@ SELECT
 FROM fk_settlement_orders
 UNION ALL
 ${amazonReportingRollupUnifiedSelect()}
+UNION ALL
+${myntraInvoicesUnifiedSelect()}
+UNION ALL
+${meeshoSettlementUnifiedSelect()}
 `;
   try {
     await pool.query(sql);

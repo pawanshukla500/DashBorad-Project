@@ -56,7 +56,6 @@ export default function FeeAlertBanner() {
   const isNew = newAlerts.length > 0;
   const bg    = isNew ? 'bg-rose-600'   : 'bg-amber-500';
   const bdr   = isNew ? 'border-rose-700' : 'border-amber-600';
-  const icon  = isNew ? '⚡'              : '📈';
   const btnCls = isNew
     ? 'bg-surface text-rose-700 hover:bg-rose-50 border border-rose-200'
     : 'bg-surface text-amber-700 hover:bg-amber-50 border border-amber-200';
@@ -75,9 +74,9 @@ export default function FeeAlertBanner() {
       className={`${bg} ${bdr} border-b text-white flex items-center gap-3 px-4 py-2.5 flex-wrap shrink-0`}
       style={{ zIndex: 50 }}
     >
-      <span className="text-lg shrink-0">{icon}</span>
+      <span className="material-symbols-outlined text-[20px] shrink-0">{isNew ? 'warning' : 'trending_up'}</span>
       <div className="flex-1 min-w-0">
-        <span className="text-sm font-bold">{headline}:&nbsp;</span>
+        <span className="text-sm font-semibold">{headline}:&nbsp;</span>
         <span className="text-sm opacity-90">
           {names.join(', ')}{extra}
         </span>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ADMIN_WORKSPACE, WORKSPACES, canAccessWorkspace, isWorkspaceActive } from '../navigation';
@@ -13,25 +13,30 @@ const ICONS = {
   admin: 'admin_panel_settings',
 };
 
-function WorkspaceIcon({ name }) {
+function WorkspaceIcon({ name, filled }) {
   return (
-    <span className="material-symbols-outlined">{ICONS[name] || 'circle'}</span>
+    <span
+      className="material-symbols-outlined text-[20px]"
+      style={filled ? { fontVariationSettings: "'FILL' 1" } : undefined}
+    >
+      {ICONS[name] || 'circle'}
+    </span>
   );
 }
 
 function Brand() {
   return (
-    <div className="flex items-center px-6 mb-8 gap-2">
+    <div className="flex items-center px-6 mb-6 gap-2">
       <span className="material-symbols-outlined text-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>dashboard_customize</span>
-      <span className="font-headline-md text-headline-md font-bold text-ink tracking-tight">ReconCentral</span>
+      <span className="font-display text-headline-md font-semibold text-ink tracking-tight">ReconCentral</span>
     </div>
   );
 }
 
 export default function Sidebar({ open = false, onClose }) {
   const location = useLocation();
-  const { user, logout } = useAuth();
-  
+  const { user } = useAuth();
+
   useEffect(() => {
     onClose?.();
   }, [location.pathname, onClose]);
@@ -46,7 +51,7 @@ export default function Sidebar({ open = false, onClose }) {
           type="button"
           aria-label="Close navigation"
           onClick={onClose}
-          className="fixed inset-0 z-40 bg-ink/40 backdrop-blur-[1px] lg:hidden"
+          className="fixed inset-0 z-40 bg-ink/40 lg:hidden"
         />
       )}
 
@@ -57,7 +62,7 @@ export default function Sidebar({ open = false, onClose }) {
       >
         <Brand />
 
-        <nav className="flex-1 overflow-y-auto px-4 space-y-1">
+        <nav className="flex-1 overflow-y-auto px-4 space-y-0.5">
           {workspaces.map(workspace => {
             const active = isWorkspaceActive(location.pathname, workspace);
             return (
@@ -65,36 +70,18 @@ export default function Sidebar({ open = false, onClose }) {
                 key={workspace.key}
                 to={workspace.path}
                 aria-current={active ? 'page' : undefined}
-                className={`flex items-center gap-3 px-3 py-2 transition-colors duration-200 ${
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
                   active
-                    ? 'text-primary font-bold border-l-2 border-primary bg-surface-container-low rounded-r-lg'
-                    : 'text-secondary font-medium hover:text-ink hover:bg-surface-container rounded-lg border-l-2 border-transparent'
+                    ? 'text-primary font-semibold bg-surface-container-low'
+                    : 'text-secondary font-medium hover:text-ink hover:bg-surface-container-low'
                 }`}
               >
-                <WorkspaceIcon name={workspace.key} />
-                <span className="min-w-0">
-                  <span className="block truncate text-[14px]">{workspace.label}</span>
-                </span>
+                <WorkspaceIcon name={workspace.key} filled={active} />
+                <span className="min-w-0 truncate text-[14px]">{workspace.label}</span>
               </Link>
             );
           })}
         </nav>
-
-        <div className="mt-auto px-4 pt-4 border-t border-border">
-          <div className="flex items-center gap-3 px-3 py-2 text-secondary hover:text-ink hover:bg-surface-container transition-colors duration-200 rounded-lg cursor-pointer" onClick={logout}>
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-container text-xs font-bold text-on-primary">
-              {user?.username?.charAt(0).toUpperCase() || 'U'}
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-body-sm text-body-sm font-bold text-ink">
-                {user?.username || 'User'}
-              </p>
-              <p className="truncate text-[10px] font-bold uppercase tracking-wider text-outline">
-                Logout
-              </p>
-            </div>
-          </div>
-        </div>
       </aside>
     </>
   );

@@ -103,7 +103,7 @@ export default function ProfitLossPage() {
         subtitle="Settlement P&L from orders · returns · bank receipts"
       >
         {isAdmin && (
-          <Link to="/charges" className="text-xs text-[#902A4A] hover:text-[#701f38] flex items-center gap-1 border border-[#902A4A]/25 px-3 py-1.5 rounded-lg hover:bg-[#902A4A]/[0.06] transition-colors">
+          <Link to="/charges" className="text-xs text-primary hover:text-indigo-dark flex items-center gap-1 border border-primary/25 px-3 py-1.5 rounded-lg hover:bg-primary/5 transition-colors font-medium">
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
             Configure Charges
           </Link>
@@ -282,7 +282,7 @@ export default function ProfitLossPage() {
               </p>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="finance-table">
                 <thead>
                   <tr className="bg-surface-container-low border-b border-border">
                     {['Category','Orders','Returns','Return Rate','Gross Revenue','Bank Received','Deductions','Refund Debited','Net Bank','Margin %'].map(h => (

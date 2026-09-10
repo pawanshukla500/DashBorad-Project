@@ -161,7 +161,7 @@ async function loadFromDb(marketplace = 'flipkart', sellerAccount = 'default') {
       ? `(CASE WHEN seller_account = $2[1] THEN 0 ELSE 1 END)`
       : `1`;
 
-    // During a rolling Cockroach schema migration, keep current rate-card
+    // During rolling PostgreSQL schema upgrades, keep current rate-card
     // calculations working until the optional price-band columns are visible.
     const reverseShippingQuery = pool.query(
       `SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, weight_slab, local_fee, zonal_fee, national_fee FROM rc_reverse_shipping WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, price_min, weight_slab`,

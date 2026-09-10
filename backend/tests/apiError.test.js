@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { publicApiError } from '../utils/apiError.js';
+import { DatabaseUnavailableError } from '../db/index.js';
 
 describe('framework API error responses', () => {
+  it('returns a retryable service-unavailable response for database outages', () => {
+    expect(publicApiError(new DatabaseUnavailableError(new Error('socket closed')))).toEqual({
+      status: 503,
+      body: {
+        error: 'Database connection is temporarily unavailable. Please retry shortly.',
+        code: 'DB_UNAVAILABLE',
+      },
+    });
+  });
+
   it('does not turn oversized uploads into an HTML error page', () => {
     expect(publicApiError({ code: 'LIMIT_FILE_SIZE' })).toEqual({
       status: 413,

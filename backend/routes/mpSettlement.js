@@ -17,14 +17,18 @@ import { notifySkuSettlementBenchmarkAfterImport } from '../services/skuSettleme
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { getRateCard } from '../services/rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { pagination } from '../utils/requestParams.js';
 import { optionalNumber, optionalString } from '../utils/valueParsers.js';
+import { MYNTRA_SELLER_IDS } from './myntraUpload.js';
+import { classifyMyntraNod } from '../services/myntraNodClassification.js';
 
 const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
+  limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
 });
 const req2   = createRequire(import.meta.url);
 const XLSX   = req2('xlsx');
@@ -39,6 +43,25 @@ function hasValue(value) {
 
 function strictDate(value) {
   return hasValue(value) ? normalizeSqlDate(value) : null;
+}
+
+// Myntra payment exports write dates as M/D/YY (e.g. "4/2/26" is 2 April 2026).
+// A plain DMY read silently swaps day and month for every day above 12, so the
+// Myntra importer tries MDY first and falls back to standard inference.
+function myntraDate(value) {
+  if (!hasValue(value)) return null;
+  // cellDates:true gives real Date objects; only text cells need MDY parsing.
+  if (value instanceof Date) return normalizeSqlDate(value);
+  const s = String(value).trim();
+  const mdy = normalizeSqlDate(s, { format: 'MDY' });
+  if (mdy) return mdy;
+  return normalizeSqlDate(s);
+}
+
+// Excel text cells often keep a leading apostrophe ("'132509375680735653501").
+// Strip it so the stored identity matches the Order file's plain ID.
+function stripIdApostrophe(value) {
+  return String(value ?? '').trim().replace(/^'/, '');
 }
 
 function strictPositiveInteger(value) {
@@ -73,6 +96,12 @@ const INVOICE_STATUS_BY_KEY = new Map([
 ]);
 
 function calculatedInvoiceStatus(amountReceived, netPayable) {
+  // Reverse/refund rows carry negative receivable and payment amounts. A
+  // negative payment is valid only when it covers a negative payable amount.
+  if (netPayable < 0) {
+    if (amountReceived >= -0.01) return 'Pending';
+    return amountReceived <= netPayable + 0.01 ? 'Paid' : 'Partial';
+  }
   if (amountReceived <= 0) return 'Pending';
   return amountReceived >= netPayable - 0.01 ? 'Paid' : 'Partial';
 }
@@ -89,33 +118,57 @@ export function invoiceSourceFingerprint({
   invoiceDate,
   sku,
   paymentReference,
+  orderType,
+  orderLineId,
+  returnId,
 }) {
-  const canonical = [marketplace, sellerAccount, invoiceNumber, invoiceDate, sku, paymentReference]
-    .map(value => String(value ?? '').trim())
-    .join('\u001f');
-  return createHash('md5').update(canonical).digest('hex');
+  const canonical = [marketplace, sellerAccount, invoiceNumber, invoiceDate, sku, paymentReference, orderType]
+    .map(value => String(value ?? '').trim());
+  // Myntra settles one order multiple times: separate order lines of the same
+  // release, Forward plus Reverse pairs, and second payouts under a new NEFT.
+  // The order line and return identities keep each settlement row unique.
+  // Files without those columns keep their previous fingerprint unchanged.
+  if (orderLineId) canonical.push(String(orderLineId).trim());
+  if (returnId) canonical.push(String(returnId).trim());
+  return createHash('md5').update(canonical.join('\u001f')).digest('hex');
 }
 
 // Parse one invoice row before any write. This keeps a malformed finance cell
 // from becoming 0 and then being treated as a valid, paid/partially-paid row.
 export function parseInvoiceUploadRow(row, { marketplace, sellerAccount, batch }) {
-  const invoiceNumber = str(invoiceAlias(row, 'invoice_number', 'invoice no', 'invoiceno', 'invoice#'));
-  const rawInvoiceDate = invoiceAlias(row, 'invoice_date', 'invoicedate', 'date', 'dispatch_date', 'dispatchdate');
-  const invoiceDate = strictDate(rawInvoiceDate);
+  // Myntra payment rows identify the settled order by Order Release ID — the
+  // same ID the Order upload stores as orders.order_id — with Store Order ID
+  // only as a fallback for layouts without the release column.
+  const orderReleaseId = stripIdApostrophe(invoiceAlias(row, 'order_release_id'));
+  const orderLineId = stripIdApostrophe(invoiceAlias(row, 'order_line_id'));
+  const returnId = stripIdApostrophe(invoiceAlias(row, 'return_id'));
+  const rawInvoiceNumber = stripIdApostrophe(
+    invoiceAlias(row, 'invoice_number', 'invoice no', 'invoiceno', 'invoice#', 'order_release_id', 'store_order_id'),
+  );
+  const invoiceNumber = orderReleaseId || rawInvoiceNumber || stripIdApostrophe(row['NOD_Comment']) || '';
+  const parseDate = marketplace === 'myntra' ? myntraDate : strictDate;
+  const rawInvoiceDate = invoiceAlias(row, 'invoice_date', 'invoicedate', 'date', 'dispatch_date', 'dispatchdate', 'payment_date');
+  const invoiceDate = parseDate(rawInvoiceDate);
   if (!invoiceNumber) return { error: 'invoice number is empty' };
   if (!invoiceDate) return { error: `invoice date is empty or invalid${hasValue(rawInvoiceDate) ? `: ${rawInvoiceDate}` : ''}` };
 
+  const invoiceAmountRaw = marketplace === 'myntra'
+    ? invoiceAlias(row, 'customer_paid_amt', 'sale_total_customer_paid', 'invoice_amount', 'sale_amount', 'amount', 'taxable_amount', 'settled_amount')
+    : invoiceAlias(row, 'invoice_amount', 'invoiceamount', 'sale_amount', 'saleamount', 'amount', 'taxable_amount', 'customer_paid_amt', 'settled_amount');
+
   const moneyFields = [
-    ['invoice amount', invoiceAlias(row, 'invoice_amount', 'invoiceamount', 'sale_amount', 'saleamount', 'amount'), true],
+    ['invoice amount', invoiceAmountRaw, true],
     ['commission %', invoiceAlias(row, 'commission_pct', 'commission%', 'commissionpct', 'commissionrate'), false],
     ['commission amount', invoiceAlias(row, 'commission_amount', 'commissionamount', 'commission'), false],
     ['TDS %', invoiceAlias(row, 'tds_pct', 'tds%', 'tdspct', 'tdsrate'), false],
     ['TDS amount', invoiceAlias(row, 'tds_amount', 'tdsamount', 'tds'), false],
-    ['other deductions', invoiceAlias(row, 'other_deductions', 'otherdeductions', 'deductions', 'other'), false],
-    ['net payable', invoiceAlias(row, 'net_payable', 'netpayable', 'net'), false],
-    ['amount received', invoiceAlias(row, 'amount_received', 'amountreceived', 'received', 'paid'), false],
+    ['other deductions', invoiceAlias(row, 'other_deductions', 'otherdeductions', 'deductions', 'other', 'fixed_fee', 'shipping_fee', 'logistics_commission'), false],
+    ['net payable', invoiceAlias(row, 'net_payable', 'netpayable', 'net', 'settled_amount'), false],
+    ['amount received', invoiceAlias(row, 'amount_received', 'amountreceived', 'received', 'paid', 'settled_amount'), false],
     ['MRP', invoiceAlias(row, 'mrp'), false],
-    ['selling price', invoiceAlias(row, 'selling_price', 'sellingprice', 'sp'), false],
+    // Myntra payment exports have no selling-price column; commission there is
+    // computed on the taxable amount, so use it as the rate-card price base.
+    ['selling price', invoiceAlias(row, 'selling_price', 'sellingprice', 'sp', 'taxable_amount'), false],
   ];
   const parsed = {};
   for (const [label, raw, required] of moneyFields) {
@@ -124,10 +177,21 @@ export function parseInvoiceUploadRow(row, { marketplace, sellerAccount, batch }
     parsed[label] = result.value;
   }
 
-  if (parsed['invoice amount'] <= 0) return { error: 'invoice amount must be greater than zero' };
-  for (const label of ['commission %', 'commission amount', 'TDS %', 'TDS amount', 'other deductions', 'net payable', 'amount received', 'MRP', 'selling price']) {
+  if (parsed['invoice amount'] <= 0 && invoiceNumber) {
+    // Reverse/Return rows in Myntra payment files can have positive or zero invoice amounts
+    // but negative net payables
+  }
+  for (const label of ['TDS %', 'MRP', 'selling price']) {
     if (parsed[label] < 0) return { error: `${label} cannot be negative` };
   }
+  
+  // Floating point precision fixes for things like -3.33066907387546e-16
+  for (const label of ['commission amount', 'other deductions', 'net payable', 'invoice amount', 'amount received']) {
+    if (Math.abs(parsed[label]) < 0.01) {
+      parsed[label] = 0;
+    }
+  }
+
   for (const label of ['commission %', 'TDS %']) {
     if (parsed[label] > 100) return { error: `${label} cannot exceed 100` };
   }
@@ -137,25 +201,104 @@ export function parseInvoiceUploadRow(row, { marketplace, sellerAccount, batch }
   if (quantity == null) return { error: `invalid quantity: ${rawQuantity}` };
 
   const rawDispatchDate = invoiceAlias(row, 'dispatch_date', 'dispatchdate');
-  const dispatchDate = strictDate(rawDispatchDate);
+  const dispatchDate = parseDate(rawDispatchDate);
   if (hasValue(rawDispatchDate) && !dispatchDate) return { error: `invalid dispatch date: ${rawDispatchDate}` };
   const rawPaymentDate = invoiceAlias(row, 'payment_date', 'paymentdate');
-  const paymentDate = strictDate(rawPaymentDate);
+  const paymentDate = parseDate(rawPaymentDate);
   if (hasValue(rawPaymentDate) && !paymentDate) return { error: `invalid payment date: ${rawPaymentDate}` };
 
-  const sku = str(invoiceAlias(row, 'sku', 'fsn', 'article_no', 'articleno'));
-  const paymentReference = str(invoiceAlias(row, 'payment_reference', 'paymentreference', 'neft_id', 'utr', 'reference'));
-  const commissionAmount = hasValue(moneyFields[2][1])
+  const sku = str(invoiceAlias(row, 'sku', 'fsn', 'article_no', 'articleno', 'packet_id'));
+  const paymentReference = str(invoiceAlias(row, 'payment_reference', 'paymentreference', 'neft_id', 'utr', 'reference', 'neft_ref'));
+  let invoiceAmount = parsed['invoice amount'];
+  let commissionAmount = hasValue(moneyFields[2][1])
     ? parsed['commission amount']
-    : parsed['invoice amount'] * parsed['commission %'] / 100;
-  const tdsAmount = hasValue(moneyFields[4][1])
+    : invoiceAmount * parsed['commission %'] / 100;
+  let tdsAmount = hasValue(moneyFields[4][1])
     ? parsed['TDS amount']
-    : parsed['invoice amount'] * parsed['TDS %'] / 100;
-  const netPayable = hasValue(moneyFields[6][1])
+    : invoiceAmount * parsed['TDS %'] / 100;
+  let otherDeductions = parsed['other deductions'];
+
+  const nodComment = str(invoiceAlias(row, 'nod_comment', 'nodcomment') || row['NOD_Comment']);
+  let orderType = str(invoiceAlias(row, 'order_type', 'ordertype')).toLowerCase();
+  if (!orderType && nodComment) {
+    orderType = 'nod';
+  }
+  // Reverse refunds and NOD (non-order deduction) rows legitimately settle with
+  // negative amounts. Any other negative receipt is treated as corrupt input.
+  const myntraNegativeSettlement = orderType === 'reverse' || orderType === 'nod';
+  if (parsed['amount received'] < 0 && !(marketplace === 'myntra' && myntraNegativeSettlement)) {
+    return { error: 'amount received cannot be negative' };
+  }
+  if (marketplace === 'myntra' && orderType === 'reverse') {
+    // Reverse amounts represent refunds/credits to us, while the invoice is a refund to the customer.
+    invoiceAmount = -Math.abs(invoiceAmount);
+    commissionAmount = -Math.abs(commissionAmount);
+    tdsAmount = -Math.abs(tdsAmount);
+  }
+
+  let netPayable = hasValue(moneyFields[6][1])
     ? parsed['net payable']
-    : parsed['invoice amount'] - commissionAmount - tdsAmount - parsed['other deductions'];
-  const amountReceived = parsed['amount received'];
-  if (netPayable < 0) return { error: 'net payable cannot be negative' };
+    : invoiceAmount - commissionAmount - tdsAmount - otherDeductions;
+
+  if (marketplace === 'myntra' && hasValue(moneyFields[6][1])) {
+    // Roll up fragmented fee columns (shipping, fixed, gateway, pick_and_pack, etc)
+    // into a single other_deductions figure by mathematically bridging the gap.
+    otherDeductions = invoiceAmount - netPayable - commissionAmount - tdsAmount;
+    otherDeductions = Math.round(otherDeductions * 100) / 100;
+  }
+
+  // Myntra payment layouts itemize every fee, but GST-inclusive:
+  //   Commission 283.919  = 240.609 ex-GST + 43.31 GST (rate = ex / taxable)
+  //   Logistics_Commission 53.1 = fixed_fee 45 + 8.1 GST
+  // The payout math is customer_paid − commission(incl GST) − TCS − TDS −
+  // logistics(incl GST) = settled. Store the components separately and
+  // GST-free so fee reports and the rate audit are apples-to-apples with
+  // Flipkart/Amazon. Reverse rows refund commission/TCS/TDS (negative) while
+  // reverse shipping and its GST stay charges (positive).
+  let tcsAmount = null;
+  let fixedFeeAmount = null;
+  let shippingFeeAmount = null;
+  let pickPackFeeAmount = null;
+  let gatewayFeeAmount = null;
+  let gstOnMpFees = null;
+  const myntraFeeLayout = marketplace === 'myntra' && (
+    hasValue(invoiceAlias(row, 'logistics_commission'))
+    || hasValue(invoiceAlias(row, 'igst_tcs'))
+    || hasValue(invoiceAlias(row, 'order_type'))
+  );
+  if (myntraFeeLayout) {
+    const sign = orderType === 'reverse' ? -1 : 1;
+    const commissionIncl = Math.abs(num(invoiceAlias(row, 'commission', 'commission_amount')));
+    const round2v = v => Math.round(v * 100) / 100;
+    const commissionEx = round2v(commissionIncl / 1.18);
+    const commissionGst = round2v(commissionIncl - commissionEx);
+    const tcsRaw = Math.abs(
+      num(invoiceAlias(row, 'igst_tcs')) + num(invoiceAlias(row, 'cgst_tcs')) + num(invoiceAlias(row, 'sgst_tcs')),
+    );
+    const fixedRaw = Math.abs(num(invoiceAlias(row, 'fixed_fee')));
+    const shippingRaw = Math.abs(num(invoiceAlias(row, 'shipping_fee')));
+    const pickPackRaw = Math.abs(num(invoiceAlias(row, 'pick_and_pack_fee')));
+    const gatewayRaw = Math.abs(num(invoiceAlias(row, 'payment_gateway_fee')));
+    // Logistics_Commission is the GST-inclusive total of the fee columns.
+    const logisticsIncl = Math.abs(num(invoiceAlias(row, 'logistics_commission')));
+    const feeEx = round2v(fixedRaw + shippingRaw + pickPackRaw + gatewayRaw);
+    const feeGst = Math.max(0, round2v(logisticsIncl - feeEx));
+
+    commissionAmount = sign * commissionEx;
+    tdsAmount = sign * Math.abs(tdsAmount);
+    tcsAmount = sign * tcsRaw;
+    gstOnMpFees = sign * commissionGst + feeGst;
+    fixedFeeAmount = fixedRaw;
+    shippingFeeAmount = shippingRaw;
+    pickPackFeeAmount = pickPackRaw;
+    gatewayFeeAmount = gatewayRaw;
+    // What the payout actually deducted besides commission/TDS: TCS plus the
+    // GST-inclusive fee total (for Reverse, TCS comes back as a credit).
+    otherDeductions = round2v(sign * tcsRaw + logisticsIncl);
+  }
+
+  let amountReceived = parsed['amount received'];
+  // Return net payables are natively negative
   const rawStatus = invoiceAlias(row, 'status', 'payment_status', 'paymentstatus');
   const requestedStatus = canonicalInvoiceStatus(rawStatus);
   if (hasValue(rawStatus) && !requestedStatus) {
@@ -166,6 +309,9 @@ export function parseInvoiceUploadRow(row, { marketplace, sellerAccount, batch }
     return { error: `payment status ${requestedStatus} does not match amount received` };
   }
   const status = requestedStatus || calculatedStatus;
+  
+  // Myntra payment files include both Forward and Reverse rows for the same Store_Order_id + SKU + Payment Ref.
+  // We must differentiate them to avoid duplicate constraint failures.
 
   return {
     fingerprint: invoiceSourceFingerprint({
@@ -175,13 +321,18 @@ export function parseInvoiceUploadRow(row, { marketplace, sellerAccount, batch }
       invoiceDate,
       sku,
       paymentReference,
+      orderType,
+      orderLineId,
+      returnId,
     }),
     values: [
       marketplace, sellerAccount, invoiceNumber, invoiceDate, dispatchDate, sku,
       str(invoiceAlias(row, 'product_title', 'product', 'product_name', 'productname', 'title', 'description')),
-      quantity, parsed.MRP, parsed['selling price'], parsed['invoice amount'], parsed['commission %'], commissionAmount,
-      parsed['TDS %'], tdsAmount, parsed['other deductions'], netPayable, amountReceived,
-      paymentDate, paymentReference, status, str(invoiceAlias(row, 'notes', 'remarks', 'remark')), batch,
+      quantity, parsed.MRP, parsed['selling price'], invoiceAmount, parsed['commission %'], commissionAmount,
+      parsed['TDS %'], tdsAmount, otherDeductions, netPayable, amountReceived,
+      paymentDate, paymentReference, status, str(invoiceAlias(row, 'notes', 'remarks', 'remark', 'nod_comment') || row['NOD_Comment']), batch,
+      orderReleaseId || null, orderLineId || null, returnId || null, orderType || null,
+      tcsAmount, fixedFeeAmount, shippingFeeAmount, pickPackFeeAmount, gatewayFeeAmount, gstOnMpFees,
     ],
   };
 }
@@ -190,7 +341,10 @@ const INVOICE_STORAGE_COLUMNS = [
   'marketplace', 'seller_account', 'invoice_number', 'invoice_date', 'dispatch_date', 'sku', 'product_title',
   'quantity', 'mrp', 'selling_price', 'invoice_amount', 'commission_pct', 'commission_amount',
   'tds_pct', 'tds_amount', 'other_deductions', 'net_payable', 'amount_received',
-  'payment_date', 'payment_reference', 'status', 'notes', 'upload_batch', 'source_fingerprint',
+  'payment_date', 'payment_reference', 'status', 'notes', 'upload_batch',
+  'order_release_id', 'order_line_id', 'return_id', 'order_type',
+  'tcs_amount', 'fixed_fee_amount', 'shipping_fee_amount', 'pick_pack_fee_amount', 'gateway_fee_amount', 'gst_on_mp_fees',
+  'source_fingerprint',
 ];
 
 const INVOICE_UPSERT_UPDATE_SET = INVOICE_STORAGE_COLUMNS
@@ -203,6 +357,32 @@ function inputError(message) {
   const error = new Error(message);
   error.status = 400;
   return error;
+}
+
+// A Myntra payment file must be imported under the account that owns its rows,
+// exactly like the Order and Return importers. Seller_Id is present on every
+// Myntra payment export (VB is 10708, EJ is 45833).
+export function validateMyntraInvoiceSellerIds(rows, sellerAccount) {
+  const expectedSellerId = MYNTRA_SELLER_IDS[sellerAccount];
+  if (!expectedSellerId) return;
+  const mismatches = rows
+    .map((row, index) => ({
+      rowNum: index + 2,
+      sellerId: stripIdApostrophe(invoiceAlias(row, 'seller_id', 'sellerid')),
+    }))
+    .filter(entry => entry.sellerId && entry.sellerId !== expectedSellerId);
+  if (!mismatches.length) return;
+
+  const foundIds = [...new Set(mismatches.map(entry => entry.sellerId))].slice(0, 4);
+  const selectedName = sellerAccount === 'myntra_ej' ? 'Myntra (EJ)' : 'Myntra (VB)';
+  const correctName = sellerAccount === 'myntra_ej' ? 'Myntra (VB)' : 'Myntra (EJ)';
+  const expectedOther = sellerAccount === 'myntra_ej' ? MYNTRA_SELLER_IDS.myntra_vb : MYNTRA_SELLER_IDS.myntra_ej;
+  const hint = foundIds.includes(expectedOther)
+    ? ` This appears to be the ${correctName} file.`
+    : '';
+  throw inputError(
+    `Wrong Myntra account selected. ${selectedName} accepts seller ID ${expectedSellerId}, but ${mismatches.length} row(s) contain ${foundIds.join(', ')}.${hint} No data was saved.`,
+  );
 }
 
 const MP_RECO_TYPES = new Set(['order', 'invoice', 'ledger', 'setup']);
@@ -774,6 +954,194 @@ router.delete('/invoices', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// POST /invoices/backfill-myntra — backfill orders table with Myntra settlement totals
+router.post('/invoices/backfill-myntra', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'DB not configured' });
+  try {
+    const pool = getPool();
+    const account = str(req.query.seller_account || req.body?.seller_account);
+    const { ordersUpdated } = await backfillOrdersFromMyntraPayment(pool, account);
+    await refreshOrderSettlementTotals(pool);
+    res.json({ ok: true, ordersUpdated });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /monthly-summary or /invoices/monthly-summary — Myntra month-wise settlement summary
+const handleMonthlySummary = async (req, res) => {
+  if (!(await isDbConfigured())) return res.json({ configured: false, data: [] });
+  try {
+    const pool = getPool();
+    const marketplace = str(req.query.marketplace) || 'myntra';
+    const sellerAcc = str(req.query.seller_account || req.query.sellerAccount) || 'all';
+
+    const accountWhere = (sellerAcc && sellerAcc !== 'all') ? `AND seller_account = '${sellerAcc}'` : '';
+
+    const [ordRes, nodRes, unsettleRes] = await Promise.all([
+      pool.query(`
+        SELECT
+          TO_CHAR(payment_date, 'YYYY-MM') AS month,
+          seller_account,
+          COUNT(DISTINCT order_line_id) AS order_count,
+          ROUND(SUM(CASE WHEN COALESCE(order_type, '') <> 'reverse' THEN invoice_amount ELSE 0 END)::numeric, 2) AS gross_sales,
+          ROUND(SUM(CASE WHEN COALESCE(order_type, '') = 'reverse' THEN ABS(invoice_amount) ELSE 0 END)::numeric, 2) AS returns_amount,
+          ROUND(SUM(CASE WHEN COALESCE(order_type, '') <> 'reverse' THEN invoice_amount ELSE -ABS(invoice_amount) END)::numeric, 2) AS net_sales,
+          ROUND(SUM(COALESCE(commission_amount, 0))::numeric, 2) AS commission,
+          ROUND(SUM(COALESCE(fixed_fee_amount, 0))::numeric, 2) AS fixed_fee,
+          ROUND(SUM(CASE WHEN COALESCE(order_type, '') = 'reverse' THEN COALESCE(shipping_fee_amount, 0) ELSE 0 END)::numeric, 2) AS reverse_shipping,
+          ROUND(SUM(COALESCE(pick_pack_fee_amount, 0))::numeric, 2) AS pick_pack_fee,
+          ROUND(SUM(COALESCE(gateway_fee_amount, 0))::numeric, 2) AS gateway_fee,
+          ROUND(SUM(COALESCE(tcs_amount, 0))::numeric, 2) AS tcs,
+          ROUND(SUM(COALESCE(tds_amount, 0))::numeric, 2) AS tds,
+          ROUND(SUM(COALESCE(gst_on_mp_fees, 0))::numeric, 2) AS gst_on_mp_fees,
+          ROUND(SUM(amount_received)::numeric, 2) AS order_bank_received,
+          COUNT(DISTINCT CASE WHEN COALESCE(order_type, '') <> 'reverse' THEN order_line_id END) AS forward_count,
+          COUNT(DISTINCT CASE WHEN COALESCE(order_type, '') = 'reverse' THEN order_line_id END) AS return_count
+        FROM mp_invoices
+        WHERE marketplace = $1
+          AND order_line_id IS NOT NULL
+          AND COALESCE(order_type, '') <> 'nod'
+          ${accountWhere}
+        GROUP BY TO_CHAR(payment_date, 'YYYY-MM'), seller_account
+        ORDER BY month DESC, seller_account
+      `, [marketplace]),
+
+      pool.query(`
+        SELECT
+          TO_CHAR(payment_date, 'YYYY-MM') AS month,
+          seller_account,
+          invoice_number,
+          notes,
+          amount_received
+        FROM mp_invoices
+        WHERE marketplace = $1
+          AND payment_date IS NOT NULL
+          AND (order_type = 'nod' OR notes ILIKE '%nod%' OR invoice_number ILIKE '%nod%')
+          ${accountWhere}
+        ORDER BY payment_date DESC
+      `, [marketplace]),
+
+      pool.query(`
+        SELECT
+          TO_CHAR(order_date, 'YYYY-MM') AS month,
+          seller_account,
+          COUNT(*) AS unsettled_count,
+          ROUND(SUM(COALESCE(final_invoice_amount, 0))::numeric, 2) AS unsettled_amount
+        FROM orders o
+        WHERE marketplace = $1
+          ${accountWhere}
+          AND NOT EXISTS (
+            SELECT 1 FROM mp_invoices i
+            WHERE i.marketplace = o.marketplace
+              AND i.seller_account = o.seller_account
+              AND i.order_line_id = o.order_item_id
+          )
+        GROUP BY TO_CHAR(order_date, 'YYYY-MM'), seller_account
+      `, [marketplace]),
+    ]);
+
+    const nodByMonth = {};
+    for (const r of nodRes.rows) {
+      const key = `${r.month}|${r.seller_account}`;
+      if (!nodByMonth[key]) {
+        nodByMonth[key] = {
+          marketingMfb: 0,
+          splitNod: 0,
+          spf: 0,
+          creditNotes: 0,
+          other: 0,
+          netNod: 0,
+        };
+      }
+      const val = Number(r.amount_received || 0);
+      const c = classifyMyntraNod(r.invoice_number, r.notes, val);
+      nodByMonth[key].netNod += val;
+
+      if (c.category === 'marketing' || c.category === 'mfb' || c.category === 'service_tax_invoice') {
+        nodByMonth[key].marketingMfb += val;
+      } else if (c.category === 'split_nod') {
+        nodByMonth[key].splitNod += val;
+      } else if (c.category === 'spf' || c.category === 'logistics_reimb') {
+        nodByMonth[key].spf += val;
+      } else if (c.category === 'credit_note') {
+        nodByMonth[key].creditNotes += val;
+      } else {
+        nodByMonth[key].other += val;
+      }
+    }
+
+    const unsettleByMonth = {};
+    for (const u of unsettleRes.rows) {
+      const key = `${u.month}|${u.seller_account}`;
+      unsettleByMonth[key] = {
+        count: Number(u.unsettled_count || 0),
+        amount: Number(u.unsettled_amount || 0),
+      };
+    }
+
+    const data = ordRes.rows.map(r => {
+      const key = `${r.month}|${r.seller_account}`;
+      const nod = nodByMonth[key] || { marketingMfb: 0, splitNod: 0, spf: 0, creditNotes: 0, other: 0, netNod: 0 };
+      const unsettle = unsettleByMonth[key] || { count: 0, amount: 0 };
+
+      const grossSales = Number(r.gross_sales || 0);
+      const returns = Number(r.returns_amount || 0);
+      const netSales = Number(r.net_sales || 0);
+      const commission = Number(r.commission || 0);
+      const fixedFee = Number(r.fixed_fee || 0);
+      const reverseShipping = Number(r.reverse_shipping || 0);
+      const pickPack = Number(r.pick_pack_fee || 0);
+      const gateway = Number(r.gateway_fee || 0);
+      const tcs = Number(r.tcs || 0);
+      const tds = Number(r.tds || 0);
+      const gst = Number(r.gst_on_mp_fees || 0);
+      const totalOrderFees = Math.round((commission + fixedFee + reverseShipping + pickPack + gateway + tcs + tds + gst) * 100) / 100;
+
+      const orderNetBank = Number(r.order_bank_received || 0);
+      const netNod = Math.round(nod.netNod * 100) / 100;
+      const totalBankSettled = Math.round((orderNetBank + netNod) * 100) / 100;
+
+      return {
+        month: r.month,
+        seller_account: r.seller_account,
+        seller_account_label: r.seller_account === 'myntra_ej' ? 'Myntra (EJ)' : 'Myntra (VB)',
+        order_count: Number(r.order_count || 0),
+        forward_count: Number(r.forward_count || 0),
+        return_count: Number(r.return_count || 0),
+        gross_sales: grossSales,
+        returns_amount: returns,
+        net_sales: netSales,
+        commission,
+        fixed_fee: fixedFee,
+        reverse_shipping: reverseShipping,
+        pick_pack_fee: pickPack,
+        gateway_fee: gateway,
+        tcs,
+        tds,
+        gst_on_mp_fees: gst,
+        total_order_fees: totalOrderFees,
+        order_bank_received: orderNetBank,
+        marketing_mfb_deductions: Math.round(nod.marketingMfb * 100) / 100,
+        split_nod_deductions: Math.round(nod.splitNod * 100) / 100,
+        spf_reimbursements: Math.round(nod.spf * 100) / 100,
+        credit_notes: Math.round(nod.creditNotes * 100) / 100,
+        net_nod: netNod,
+        total_bank_settled: totalBankSettled,
+        unsettled_count: unsettle.count,
+        unsettled_amount: unsettle.amount,
+      };
+    });
+
+    res.json({ data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+};
+
+router.get('/monthly-summary', handleMonthlySummary);
+router.get('/invoices/monthly-summary', handleMonthlySummary);
+
 // POST /invoices/upload?marketplace=myntra — Excel bulk upload
 router.post('/invoices/upload', upload.single('file'), async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'DB not configured' });
@@ -794,6 +1162,7 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
     const raw   = XLSX.utils.sheet_to_json(ws, { defval: '' });
     const batch = new Date().toISOString().replace(/[:.]/g, '-');
     if (!raw.length) throw inputError('The workbook has headers but no data rows. No data was saved.');
+    if (mp === 'myntra') validateMyntraInvoiceSellerIds(raw, sellerAccount);
 
     const recordsByFingerprint = new Map();
     for (let index = 0; index < raw.length; index++) {
@@ -837,6 +1206,14 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
       clearSkuSettlementBenchmarkCache(mp);
       void notifySkuSettlementBenchmarkAfterImport(pool, mp)
         .catch(error => console.warn('[sku settlement notification]', error.message));
+    }
+    // Myntra payments feed the unified_settlements view, so the per-order
+    // settlement read model must be rebuilt exactly like Flipkart/Amazon do
+    // after their settlement imports.
+    if (mp === 'myntra' && (inserted || updated)) {
+      const affectedOrderIds = raw.map(r => stripIdApostrophe(invoiceAlias(r, 'order_release_id', 'order_id', 'release_id'))).filter(Boolean);
+      await backfillOrdersFromMyntraPayment(pool, sellerAccount, affectedOrderIds);
+      await refreshOrderSettlementTotals(pool);
     }
     // Keep the Data Center history separate for Myntra EJ and VB even though
     // they share the same validated importer and database table.

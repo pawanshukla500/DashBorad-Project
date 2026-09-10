@@ -43,11 +43,47 @@ describe('PostgreSQL transport policy', () => {
     });
   });
 
+  it('allows a non-TLS Docker service database on the private production network', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.DATABASE_URL = 'postgresql://payments:secret@postgres:5432/reconciliation';
+    process.env.PG_SSL = 'false';
+
+    expect(resolvePgConfig().ssl).toBe(false);
+    expect(getDatabaseStatus().transport).toEqual({
+      tlsEnabled: false,
+      certificateVerified: null,
+      productionReady: true,
+    });
+  });
+
+  it('ignores legacy POSTGRES_DATABASE_URL values', () => {
+    process.env.NODE_ENV = 'development';
+    delete process.env.DATABASE_URL;
+    process.env.POSTGRES_DATABASE_URL = 'postgresql://payments:secret@db.example.com:5432/old';
+    process.env.POSTGRES_PG_SSL = 'true';
+
+    expect(() => resolvePgConfig()).toThrow(DatabaseUnavailableError);
+    expect(getDatabaseStatus().configured).toBe(false);
+  });
+
   it('keeps an explicitly non-TLS loopback connection available for local development', () => {
     process.env.NODE_ENV = 'development';
     process.env.DATABASE_URL = 'postgresql://payments:secret@127.0.0.1:5432/reconciliation';
     process.env.PG_SSL = 'false';
 
     expect(resolvePgConfig().ssl).toBe(false);
+  });
+
+  it('configures WAN TCP keepalives and idle pool options for network stability', () => {
+    process.env.NODE_ENV = 'development';
+    process.env.DATABASE_URL = 'postgresql://payments:secret@127.0.0.1:5432/reconciliation';
+    process.env.PG_SSL = 'false';
+
+    const config = resolvePgConfig();
+    expect(config.keepAlive).toBe(true);
+    expect(config.keepAliveInitialDelayMillis).toBe(10_000);
+    expect(config.idleTimeoutMillis).toBe(60_000);
+    expect(config.min).toBeGreaterThanOrEqual(2);
+    expect(config.max).toBe(20);
   });
 });

@@ -1,8 +1,10 @@
 {
   "name": "flipkart-dashboard",
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
     "start": "concurrently \"npm run backend\" \"npm run frontend\"",
+    "tunnel": "node scripts/db-tunnel.js",
     "backend": "cd backend && npm run dev",
     "frontend": "cd frontend && npm run dev",
     "install": "cd backend && npm install && cd ../frontend && npm install"

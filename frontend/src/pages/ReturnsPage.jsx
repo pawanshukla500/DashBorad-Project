@@ -131,7 +131,7 @@ export default function ReturnsPage() {
             </div>
             <div className="overflow-x-auto">
               {lr ? <Skeleton /> : (
-                <table className="w-full text-xs">
+                <table className="finance-table">
                   <thead>
                     <tr className="bg-gradient-to-r from-slate-800 to-slate-700 text-white">
                       {[
@@ -558,7 +558,7 @@ function SkuDrawer({ sku, onClose }) {
             <div className="p-6 text-rose-600 text-sm">{error}</div>
           )}
           {!loading && !error && (
-            <table className="w-full text-xs">
+            <table className="finance-table">
               <thead className="sticky top-0">
                 <tr className="bg-surface-container border-b border-border">
                   {['Order Date','Order Item ID','State','Status','Return Type','Return Reason','Completion','Invoice','My Share'].map(h => (

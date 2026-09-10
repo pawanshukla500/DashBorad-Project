@@ -507,7 +507,7 @@ async function processAllSheets(jobId, pool, wb, marketplace, filename, sheetKey
       .reduce((s, r) => s + (r.inserted || 0), 0);
 
     // The next Payment Check visit must see the newly imported settlement, not
-    // the five-minute reporting cache used to save CockroachDB read units.
+    // the five-minute reporting cache used to reduce repeated PostgreSQL reads.
     if (results.orders?.inserted) {
       clearSkuSettlementBenchmarkCache('flipkart');
       void notifySkuSettlementBenchmarkAfterImport(pool, 'flipkart')
