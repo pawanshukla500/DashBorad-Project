@@ -1,6 +1,9 @@
+name: reconcentral
+
 services:
   reconcentral:
     container_name: ReconCentral
+    image: reconcentral:latest
     build:
       context: .
       dockerfile: Dockerfile
