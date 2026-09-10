@@ -121,8 +121,10 @@ export default function LoginPage() {
         {/* Left Side: Graphic Area */}
         <div className="hidden lg:flex w-[45%] bg-primary-container flex-col justify-between p-12 lg:p-16 relative overflow-hidden">
           <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: "radial-gradient(circle at 100% 0%, white 0%, transparent 50%)" }}></div>
-          <div className="z-10 flex items-center gap-2">
-            <span className="material-symbols-outlined text-on-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>dashboard_customize</span>
+          <div className="z-10 flex items-center gap-3">
+            <div className="h-9 w-9 rounded-lg bg-white p-1 flex items-center justify-center shadow-sm">
+              <img src="/logo.png" alt="ReconCentral Logo" className="h-7 w-7 object-contain" />
+            </div>
             <span className="font-display text-headline-md font-semibold text-on-primary tracking-tight">ReconCentral</span>
           </div>
           <div className="z-10 mt-auto pb-12">
@@ -156,8 +158,8 @@ export default function LoginPage() {
 
         {/* Right Side: Login Form Area */}
         <div className="w-full lg:w-[55%] flex flex-col justify-center items-center p-6 sm:p-12 bg-surface">
-          <div className="lg:hidden flex items-center gap-2 mb-12 self-start w-full max-w-[440px] mx-auto">
-            <span className="material-symbols-outlined text-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>dashboard_customize</span>
+          <div className="lg:hidden flex items-center gap-2.5 mb-12 self-start w-full max-w-[440px] mx-auto">
+            <img src="/logo.png" alt="ReconCentral Logo" className="h-8 w-8 object-contain" />
             <span className="font-display text-headline-md font-semibold text-ink tracking-tight">ReconCentral</span>
           </div>
 
