@@ -20,10 +20,16 @@ services:
       - shared_infra
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.reconcentral.rule=Host(`payments.youthnic.shop`) || Host(`reconcentral.srv1845788.hstgr.cloud`) || Host(`recon.srv1845788.hstgr.cloud`)"
+      - "traefik.http.routers.reconcentral.rule=Host(`payments.youthnic.shop`)"
       - "traefik.http.routers.reconcentral.entrypoints=websecure"
       - "traefik.http.routers.reconcentral.tls=true"
       - "traefik.http.routers.reconcentral.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.reconcentral.service=reconcentral"
+      - "traefik.http.routers.reconcentral-fallback.rule=Host(`reconcentral.srv1845788.hstgr.cloud`)"
+      - "traefik.http.routers.reconcentral-fallback.entrypoints=websecure"
+      - "traefik.http.routers.reconcentral-fallback.tls=true"
+      - "traefik.http.routers.reconcentral-fallback.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.reconcentral-fallback.service=reconcentral"
       - "traefik.http.services.reconcentral.loadbalancer.server.port=3001"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
