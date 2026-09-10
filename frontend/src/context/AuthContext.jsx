@@ -8,6 +8,7 @@ import {
 } from '../api/firebase';
 import { formatAuthError } from '../utils/authErrors';
 import { withNormalizedRole } from '../utils/roles';
+import { invalidateApiReadCache } from '../api/client';
 
 const AuthContext = createContext(null);
 
@@ -90,6 +91,7 @@ export function AuthProvider({ children }) {
     }
     // Remove the token written by pre-Firebase-session versions of the app.
     localStorage.removeItem('token');
+    invalidateApiReadCache();
     setUser(null);
   };
 

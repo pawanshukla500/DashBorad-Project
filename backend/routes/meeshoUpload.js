@@ -7,11 +7,16 @@ import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 
 const require = createRequire(import.meta.url);
 const XLSX = require('xlsx');
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 150 * 1024 * 1024 },
+  fileFilter: spreadsheetFileFilter,
+});
 const router = express.Router();
 
 router.post('/', upload.single('file'), async (req, res) => {

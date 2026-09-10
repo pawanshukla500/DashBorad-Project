@@ -9,11 +9,13 @@ import { optionalNumber as num, optionalString as str } from '../utils/valuePars
 import { clearSkuSettlementBenchmarkCache } from '../services/skuSettlementBenchmark.js';
 import { notifySkuSettlementBenchmarkAfterImport } from '../services/skuSettlementNotifications.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 
 const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
+  fileFilter: spreadsheetFileFilter,
 });
 const req2   = createRequire(import.meta.url);
 const XLSX   = req2('xlsx');

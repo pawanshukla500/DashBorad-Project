@@ -77,9 +77,12 @@ import { optionalNumber as num, optionalString as str } from '../utils/valuePars
 import { requireAdmin } from '../utils/authMiddleware.js';
 
 const router  = express.Router();
+import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
+
 const upload  = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
+  fileFilter: spreadsheetFileFilter,
 });
 const reqXlsx = createRequire(import.meta.url);
 const XLSX    = reqXlsx('xlsx');

@@ -17,11 +17,13 @@ import {
 } from '../services/returnReports.js';
 import { refreshAmazonSettlementReportingRollups } from '../services/amazonSettlementReportingRollups.js';
 import { ORDER_SETTLEMENT_TOTALS_TABLE, refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 
 const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
+  fileFilter: spreadsheetFileFilter,
 });
 const req2   = createRequire(import.meta.url);
 const XLSX   = req2('xlsx');
@@ -1482,9 +1484,11 @@ router.get('/sku-master', async (req, res) => {
     if (search) conds.push(`(master_sku ILIKE $${vals.push('%'+search+'%')} OR listing_sku ILIKE $${vals.length})`);
     const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
 
+    const countVals = [...vals];
+    const listVals = [...vals, pageSize, offset];
     const [rows, cnt] = await Promise.all([
-      pool.query(`SELECT id, master_sku, marketplace, listing_sku, cogs, launch_date, product_name, weight_slab, created_at FROM sku_master ${where} ORDER BY marketplace, master_sku, listing_sku LIMIT $${vals.push(pageSize)} OFFSET $${vals.push(offset)}`, vals),
-      pool.query(`SELECT COUNT(*) AS total FROM sku_master ${where}`, vals.slice(0, vals.length - 2)),
+      pool.query(`SELECT id, master_sku, marketplace, listing_sku, cogs, launch_date, product_name, weight_slab, created_at FROM sku_master ${where} ORDER BY marketplace, master_sku, listing_sku LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}`, listVals),
+      pool.query(`SELECT COUNT(*) AS total FROM sku_master ${where}`, countVals),
     ]);
 
     res.json({ total: +cnt.rows[0].total, page, pageSize, data: rows.rows });

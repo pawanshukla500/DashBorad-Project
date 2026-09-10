@@ -36,6 +36,12 @@ export function publicApiError(error) {
       body: { error: 'Unexpected upload field or file.', code: 'MULTIPART_INVALID' },
     };
   }
+  if (error?.status === 400 && error?.isPublic && typeof error?.message === 'string') {
+    return {
+      status: 400,
+      body: { error: error.message, code: error.code || 'BAD_REQUEST' },
+    };
+  }
   return {
     status: 500,
     body: { error: 'The service could not complete this request. Please retry shortly.', code: 'INTERNAL_ERROR' },

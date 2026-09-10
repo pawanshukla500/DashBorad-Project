@@ -75,8 +75,13 @@ export default function CalculatorPage() {
 
   async function handleRefresh() {
     setRefreshing(true);
-    try { await refreshRateCard(); await fetchRateCardCategories().then(d => setCategories(d.categories || [])); }
-    catch { }
+    try {
+      await refreshRateCard();
+      const d = await fetchRateCardCategories();
+      setCategories(d?.categories || []);
+    } catch (err) {
+      console.error('[CalculatorPage] Refresh rate card failed:', err);
+    }
     setRefreshing(false);
   }
 

@@ -1,6 +1,13 @@
+function sanitizeCell(val) {
+  if (typeof val === 'string' && /^[=+\-@\t\r]/.test(val)) {
+    return `'${val}`;
+  }
+  return val;
+}
+
 // Build a sheet from header + data rows, set column widths, freeze header row
 function makeSheet(XLSX, headers, rows, colWidths) {
-  const aoa = [headers, ...rows];
+  const aoa = [headers.map(sanitizeCell), ...rows.map(row => row.map(sanitizeCell))];
   const ws  = XLSX.utils.aoa_to_sheet(aoa);
 
   // Freeze top row

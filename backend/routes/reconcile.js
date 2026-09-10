@@ -395,7 +395,12 @@ router.get('/non-order', async (req, res) => {
   try {
     const pool = getPool();
     const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
-    const myntraAccFilter = (sellerAcc && sellerAcc !== 'all') ? `AND seller_account = '${sellerAcc}'` : '';
+    const myntraParams = [];
+    let myntraAccFilter = '';
+    if (sellerAcc && sellerAcc !== 'all') {
+      myntraParams.push(sellerAcc);
+      myntraAccFilter = `AND seller_account = $${myntraParams.length}`;
+    }
 
     const [spf, storage, ads, gads, amazon, myntraNod, meeshoClaims] = await Promise.all([
       pool.query(`
@@ -439,7 +444,8 @@ router.get('/non-order', async (req, res) => {
         WHERE marketplace = 'myntra' ${myntraAccFilter}
           AND (order_type = 'nod' OR notes ILIKE '%nod%' OR invoice_number ILIKE '%nod%')
         ORDER BY payment_date DESC
-      `),
+      `, myntraParams),
+
       pool.query(`
         SELECT
           settlement_id AS neft_id,

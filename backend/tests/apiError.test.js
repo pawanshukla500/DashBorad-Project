@@ -37,4 +37,18 @@ describe('framework API error responses', () => {
       body: { error: 'The service could not complete this request. Please retry shortly.', code: 'INTERNAL_ERROR' },
     });
   });
+
+  it('exposes safe public validation errors with status 400', () => {
+    const error = new Error('Unsupported file type ".exe". Only spreadsheet files are permitted.');
+    error.status = 400;
+    error.isPublic = true;
+    error.code = 'INVALID_FILE_TYPE';
+    expect(publicApiError(error)).toEqual({
+      status: 400,
+      body: {
+        error: 'Unsupported file type ".exe". Only spreadsheet files are permitted.',
+        code: 'INVALID_FILE_TYPE',
+      },
+    });
+  });
 });

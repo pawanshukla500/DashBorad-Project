@@ -36,6 +36,16 @@ process.on('uncaughtException', (error) => {
 dotenv.config({ override: true });
 
 export const app = express();
+app.disable('x-powered-by');
+
+// Apply standard defensive HTTP headers
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
 const PORT = process.env.PORT || 3001;
 let databaseSchemaReady = false;
 

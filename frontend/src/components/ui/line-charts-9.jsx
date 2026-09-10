@@ -42,20 +42,25 @@ function ChartStyle({ id, config }) {
   const colorConfig = Object.entries(config || {}).filter(([, item]) => item?.theme || item?.color);
   if (!colorConfig.length) return null;
 
+  const safeId = String(id || '').replace(/[^a-zA-Z0-9_-]/g, '');
   const css = Object.entries(THEMES)
     .map(([theme, prefix]) => {
       const decls = colorConfig
         .map(([key, itemConfig]) => {
-          const color = itemConfig.theme?.[theme] || itemConfig.color;
-          return color ? `  --color-${key}: ${color};` : null;
+          const rawColor = itemConfig.theme?.[theme] || itemConfig.color;
+          if (!rawColor) return null;
+          const safeKey = String(key).replace(/[^a-zA-Z0-9_-]/g, '');
+          const safeColor = String(rawColor).replace(/[<>"'`]/g, '');
+          return safeKey ? `  --color-${safeKey}: ${safeColor};` : null;
         })
         .filter(Boolean)
         .join('\n');
-      return `${prefix} [data-chart=${id}] {\n${decls}\n}`;
+      return `${prefix} [data-chart=${safeId}] {\n${decls}\n}`;
     })
     .join('\n');
 
-  return <style dangerouslySetInnerHTML={{ __html: css }} />;
+  const safeCss = css.replace(/<\/style/gi, '<\\/style');
+  return <style dangerouslySetInnerHTML={{ __html: safeCss }} />;
 }
 
 const ChartTooltip = RechartsPrimitive.Tooltip;

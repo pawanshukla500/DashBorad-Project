@@ -35,16 +35,16 @@ export async function scrapeRateCard(options = {}) {
     throw new Error('Flipkart credentials missing. Please set FLIPKART_EMAIL and FLIPKART_PASSWORD in .env');
   }
 
-  console.log('Launching browser for Rate Card scraping...');
-  const browser = await puppeteer.launch({
-    headless: headless,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1366, height: 768 });
-
+  let browser = null;
   try {
+    console.log('Launching browser for Rate Card scraping...');
+    browser = await puppeteer.launch({
+      headless: headless,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1366, height: 768 });
     const hasCookies = await loadCookies(page);
     
     // Navigate to seller hub
@@ -175,6 +175,8 @@ export async function scrapeRateCard(options = {}) {
     console.error('Scraping error:', error);
     return { success: false, error: error.message };
   } finally {
-    await browser.close();
+    if (browser) {
+      try { await browser.close(); } catch { /* ignore close error */ }
+    }
   }
 }

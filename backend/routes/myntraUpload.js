@@ -14,11 +14,13 @@ import { forEachDbBatch } from '../utils/dbBatch.js';
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 
 const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
+  fileFilter: spreadsheetFileFilter,
 });
 const require = createRequire(import.meta.url);
 const XLSX = require('xlsx');
