@@ -32,4 +32,34 @@ describe('Amazon settlement line validation', () => {
     expect(parsed.scientificOrderItemCode).toBe(true);
     expect(parsed.values.order_item_code).toBeNull();
   });
+
+  it('skips repeated embedded header rows seamlessly', () => {
+    const headerRow = parseAmazonSettlementLine(
+      ['settlement-id', 'transaction-type', 'amount-type', 'amount-description', 'amount', 'posted-date', 'quantity-purchased', 'currency', 'order-item-code'],
+      index,
+    );
+    expect(headerRow.skip).toBe(true);
+    expect(headerRow.error).toBeUndefined();
+  });
+
+  it('handles SheetJS dense mode cell objects and normalizes Amazon date formats', () => {
+    const denseRow = [
+      { t: 'n', v: 26816726482 },
+      { t: 's', v: 'Order' },
+      { t: 's', v: 'ItemFees' },
+      { t: 's', v: 'Commission' },
+      { t: 'n', v: -135.5 },
+      { t: 's', v: '31.03.2026' },
+      { t: 'n', v: 1 },
+      { t: 's', v: 'INR' },
+      { t: 's', v: '408-1234567-8901234' },
+    ];
+    const parsed = parseAmazonSettlementLine(denseRow, index);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed.values.settlement_id).toBe('26816726482');
+    expect(parsed.values.amount).toBe(-135.5);
+    expect(parsed.values.posted_date).toBe('2026-03-31');
+    expect(parsed.values.currency).toBe('INR');
+  });
 });
+

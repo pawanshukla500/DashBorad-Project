@@ -81,7 +81,7 @@ import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 
 const upload  = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
+  limits: { fileSize: 150 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
   fileFilter: spreadsheetFileFilter,
 });
 const reqXlsx = createRequire(import.meta.url);
@@ -136,12 +136,16 @@ export function hasHeader(idx, ...candidates) {
   });
 }
 
-// Get a value from a row using multiple candidate header names. First match wins.
 function getCell(row, idx, ...candidates) {
   for (const c of candidates) {
     const norm = (c + '').toLowerCase().replace(/[\s_-]+/g, '');
-    if (idx[c]      != null) return (row[idx[c]]      ?? '').toString().trim();
-    if (idx[norm]   != null) return (row[idx[norm]]   ?? '').toString().trim();
+    let cell = undefined;
+    if (idx[c] != null) cell = row[idx[c]];
+    else if (idx[norm] != null) cell = row[idx[norm]];
+    if (cell !== undefined && cell !== null) {
+      const val = (typeof cell === 'object' && cell !== null && 'v' in cell) ? cell.v : cell;
+      return (val ?? '').toString().trim();
+    }
   }
   return '';
 }
@@ -308,6 +312,12 @@ export function parseAmazonSettlementLine(row, idx, { fallbackSettlementId = nul
   // Summary/envelope rows do not carry the line-item trinity and are handled
   // separately. They should not be counted as malformed transactions.
   if (!transactionType && !amountType && !amountDescription && !rawAmount) return { skip: true };
+
+  // Skip repeated embedded headers (e.g. from concatenating weekly exports)
+  if (currentSettlementId?.toLowerCase() === 'settlement-id' || transactionType?.toLowerCase() === 'transaction-type') {
+    return { skip: true };
+  }
+
   if (!settlementId) return { error: 'settlement-id is missing for a transaction line' };
   if (!transactionType) return { error: 'transaction-type is empty' };
   if (!amountType) return { error: 'amount-type is empty' };
@@ -542,12 +552,20 @@ async function markFlexReturnsReceived(pool, returnRows) {
   return received.length;
 }
 
-function dt(v) { return normalizeSqlDate(v); }
+function dt(v) {
+  if (!v) return null;
+  const s = (v + '').trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  return normalizeSqlDate(s);
+}
 function dtIso(v) {
   if (!v) return null;
   const s = (v + '').trim();
   if (!s) return null;
-  // Amazon uses ISO 8601 with TZ — Date handles it directly
+  const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}:\d{2}:\d{2})(?:\s*UTC)?$/i);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}T${m[4]}Z`;
   const d = new Date(s);
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
@@ -1464,115 +1482,196 @@ router.post('/amazon-flex-returns', upload.single('file'), async (req, res) => {
 //
 //    Guards against XLSX precision loss in order-item-code (scientific notation).
 // ═════════════════════════════════════════════════════════════════════════════
-router.post('/amazon-settlement', upload.single('file'), async (req, res) => {
-  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
-  if (!req.file) return res.status(400).json({ error: 'No file provided' });
+const amazonSettlementJobs = new Map();
 
+export function getAmazonSettlementJob(jobId) {
+  return amazonSettlementJobs.get(jobId) || null;
+}
+
+// ── GET /amazon-settlement/progress/:jobId — frontend polls this every 2s ─────
+router.get('/amazon-settlement/progress/:jobId', (req, res) => {
+  const job = amazonSettlementJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found or expired' });
+  res.json(job);
+});
+
+export async function processAmazonSettlementWorkbook({ buffer, filename, jobId = null }) {
+  const pool = getPool();
+  const job = jobId ? amazonSettlementJobs.get(jobId) : null;
   const marketplace = 'amazon';
+
   let envelopeInserted = 0, linesInserted = 0, replacedLines = 0, skipped = 0;
   let scientificWarning = false;
-  let pool;
   const skippedRows = [];
+  const allSettlementIds = [];
+  const allAffectedOrderIds = new Set();
+  let totalSkuResolved = 0;
 
   try {
-    pool = getPool();
-    const { headers, data } = parseFile(req.file.buffer);
-    req.file.buffer = null;
-    if (!headers.length) return res.status(400).json({ error: 'File has no readable headers' });
-
-    const idx = buildHeaderIndex(headers);
-    if (!hasHeader(idx, 'settlement-id', 'amount-description', 'amount-type')) {
-      return res.status(400).json({ error: 'Invalid file format. Please upload an Amazon Settlement (Payment) file.' });
+    if (job) {
+      job.msg = 'Reading settlement workbook…';
+      job.status = 'processing';
+      job.percent = 5;
     }
 
-    // ── Envelopes (Summary rows) ─────────────────────────────────────────────
-    const envelopes = new Map();
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      const sid = str(getCell(row, idx, 'settlement-id'));
-      const rawTotalAmount = getCell(row, idx, 'total-amount');
-      const totalAmt = num(rawTotalAmount);
-      const txType   = str(getCell(row, idx, 'transaction-type'));
-      if (sid && rawTotalAmount && !txType && totalAmt == null) {
-        skipped++;
-        skippedRows.push({ rowNum: i + 2, reason: `invalid total-amount: ${rawTotalAmount}`, data: { row: row.slice(0, 12) } });
-        continue;
-      }
-      // Envelope detection: settlement-id present, and either total-amount
-      // present OR no transaction-type (i.e. it's the summary row, not a line).
-      if (sid && (totalAmt != null || !txType)) {
-        envelopes.set(sid, {
-          sid, totalAmt,
-          startDt: dt(getCell(row, idx, 'settlement-start-date')),
-          endDt:   dt(getCell(row, idx, 'settlement-end-date')),
-          depDt:   dt(getCell(row, idx, 'deposit-date')),
+    const wb = XLSX.read(buffer, {
+      type: 'buffer',
+      dense: true,
+      cellDates: false,
+      cellNF: false,
+      cellStyles: false,
+    });
+
+    const candidateSheets = [];
+    for (const sheetName of wb.SheetNames) {
+      const ws = wb.Sheets[sheetName];
+      if (!ws || !ws['!ref']) continue;
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      if (range.e.r < 1) continue;
+
+      const headerRow = ws[0] || [];
+      const headers = headerRow.map(c => ((c && c.v !== undefined ? c.v : c) ?? '').toString().trim());
+      const idx = buildHeaderIndex(headers);
+
+      if (hasHeader(idx, 'settlement-id', 'amount-description', 'amount-type')) {
+        candidateSheets.push({
+          sheetName,
+          headers,
+          idx,
+          ws,
+          rowCount: range.e.r + 1,
         });
       }
     }
 
-    // ── Line items (data rows) ──────────────────────────────────────────────
-    const lines = [];
-    let lastSeenSid = null;
-
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      const currentSid = str(getCell(row, idx, 'settlement-id'));
-      if (currentSid) lastSeenSid = currentSid;
-      const parsed = parseAmazonSettlementLine(row, idx, { fallbackSettlementId: lastSeenSid });
-      if (parsed.skip) {
-        continue;
-      }
-      if (parsed.error) {
-        skipped++;
-        skippedRows.push({ rowNum: i + 2, reason: parsed.error, data: { row: row.slice(0, 16) } });
-        continue;
-      }
-      if (parsed.scientificOrderItemCode) {
-        scientificWarning = true;
-      }
-      lines.push(parsed.values);
+    if (!candidateSheets.length) {
+      throw inputError('Invalid file format. Please upload an Amazon Settlement (Payment) file.');
     }
 
-    if (!lines.length) {
+    const totalWorkbookRows = candidateSheets.reduce((sum, s) => sum + Math.max(0, s.rowCount - 1), 0);
+    const totalSheets = candidateSheets.length;
+    if (job) {
+      job.totalRows = totalWorkbookRows;
+      job.sheets = candidateSheets.map(s => s.sheetName);
+    }
+
+    let processedRowsTotal = 0;
+
+    for (let sheetIdx = 0; sheetIdx < candidateSheets.length; sheetIdx++) {
+      const sheet = candidateSheets[sheetIdx];
+      const sheetName = sheet.sheetName;
+      if (job) {
+        job.currentSheet = sheetName;
+        job.msg = `Parsing sheet ${sheetName} (${sheetIdx + 1}/${totalSheets})…`;
+      }
+
+      const envelopes = new Map();
+      const linesBySettlement = new Map();
+      let lastSeenSid = null;
+
+      for (let r = 1; r < sheet.rowCount; r++) {
+        const row = sheet.ws[r];
+        if (!row) continue;
+
+        const sid = str(getCell(row, sheet.idx, 'settlement-id'));
+        if (sid && sid.toLowerCase() === 'settlement-id') continue; // repeated header
+
+        const rawTotalAmount = getCell(row, sheet.idx, 'total-amount');
+        const totalAmt = num(rawTotalAmount);
+        const txType   = str(getCell(row, sheet.idx, 'transaction-type'));
+
+        if (sid && rawTotalAmount && !txType && totalAmt == null) {
+          skipped++;
+          if (skippedRows.length < 500) {
+            skippedRows.push({ rowNum: r + 1, sheet: sheetName, reason: `invalid total-amount: ${rawTotalAmount}`, data: { sid } });
+          }
+          continue;
+        }
+
+        // Envelope detection: settlement-id present, and either total-amount
+        // present OR no transaction-type (i.e. it's the summary row, not a line).
+        if (sid && (totalAmt != null || !txType)) {
+          envelopes.set(sid, {
+            sid,
+            totalAmt,
+            startDt: dt(getCell(row, sheet.idx, 'settlement-start-date')),
+            endDt:   dt(getCell(row, sheet.idx, 'settlement-end-date')),
+            depDt:   dt(getCell(row, sheet.idx, 'deposit-date')),
+          });
+        }
+
+        if (sid) lastSeenSid = sid;
+        const parsed = parseAmazonSettlementLine(row, sheet.idx, { fallbackSettlementId: lastSeenSid });
+        if (parsed.skip) continue;
+        if (parsed.error) {
+          skipped++;
+          if (skippedRows.length < 500) {
+            skippedRows.push({ rowNum: r + 1, sheet: sheetName, reason: parsed.error, data: { sid: lastSeenSid, txType } });
+          }
+          continue;
+        }
+        if (parsed.scientificOrderItemCode) {
+          scientificWarning = true;
+        }
+
+        const lineSid = parsed.values.settlement_id;
+        let sList = linesBySettlement.get(lineSid);
+        if (!sList) {
+          sList = [];
+          linesBySettlement.set(lineSid, sList);
+        }
+        sList.push(parsed.values);
+      }
+
+      // Free worksheet dense array from memory
+      delete sheet.ws;
+      delete wb.Sheets[sheetName];
+
+      const sheetSettlementIds = Array.from(linesBySettlement.keys());
+      for (let sIdx = 0; sIdx < sheetSettlementIds.length; sIdx++) {
+        const sid = sheetSettlementIds[sIdx];
+        const settlementLines = linesBySettlement.get(sid) || [];
+        const envelope = envelopes.get(sid) || null;
+
+        processedRowsTotal += settlementLines.length;
+
+        if (job) {
+          job.currentSettlement = sid;
+          job.msg = `Ingesting ${sheetName} settlement ${sid} (${settlementLines.length.toLocaleString()} lines)…`;
+          job.percent = Math.min(85, 10 + Math.round((processedRowsTotal / Math.max(1, totalWorkbookRows)) * 75));
+        }
+
+        const replacement = await replaceAmazonSettlement({
+          pool,
+          settlementId: sid,
+          envelope,
+          filename,
+          lines: settlementLines,
+        });
+
+        // Release array immediately
+        linesBySettlement.delete(sid);
+
+        envelopeInserted += replacement.envelopeInserted;
+        linesInserted += replacement.linesInserted;
+        replacedLines += replacement.replacedLines;
+        allSettlementIds.push(sid);
+
+        replacement.affectedOrderIds.forEach(id => allAffectedOrderIds.add(id));
+
+        const skuResolved = await resolveOrphanSkus(pool, sid);
+        totalSkuResolved += skuResolved.totalResolved;
+        await refreshAmazonSettlementReportingRollups(pool, sid);
+      }
+    }
+
+    if (!linesInserted && !envelopeInserted) {
       throw inputError('Settlement report has no valid transaction lines. Review skipped-row reasons and correct the file before retrying.');
     }
-    if (lines.some(line => !line.settlement_id)) {
-      throw inputError('Every settlement line needs a settlement-id or a valid envelope row');
-    }
 
-    const settlementIds = [...new Set(lines.map(line => line.settlement_id))];
-
-    const totalRows = data.length;
-    data.length = 0;
-
-    let allAffectedOrderIds = new Set();
-    let totalSkuResolved = 0;
-
-    // Process each settlement sequentially
-    for (const sid of settlementIds) {
-      const settlementLines = lines.filter(line => line.settlement_id === sid);
-      const envelope = envelopes.get(sid) || null;
-
-      const replacement = await replaceAmazonSettlement({
-        pool,
-        settlementId: sid,
-        envelope,
-        filename: req.file.originalname,
-        lines: settlementLines,
-      });
-
-      envelopeInserted += replacement.envelopeInserted;
-      linesInserted += replacement.linesInserted;
-      replacedLines += replacement.replacedLines;
-
-      replacement.affectedOrderIds.forEach(id => allAffectedOrderIds.add(id));
-
-      const skuResolved = await resolveOrphanSkus(pool, sid);
-      totalSkuResolved += skuResolved.totalResolved;
-      // A resolver can update SKU/item-code linkage after the transactional
-      // replacement. Rebuild this settlement once more so the reporting read
-      // model reflects that final linkage before the upload response returns.
-      await refreshAmazonSettlementReportingRollups(pool, sid);
+    if (job) {
+      job.msg = 'Backfilling order financial columns from settlement aggregates…';
+      job.percent = 88;
     }
 
     // ── Backfill orders table from settlement aggregates ────────────────────
@@ -1581,40 +1680,121 @@ router.post('/amazon-settlement', upload.single('file'), async (req, res) => {
       allAffectedOrderIds,
       { resetMissing: true },
     );
+
+    if (job) {
+      job.msg = 'Refreshing order settlement totals…';
+      job.percent = 95;
+    }
+
     await refreshOrderSettlementTotals(pool);
 
-    const logId = await logUpload(pool, 'amazon_settlement', req.file.originalname, marketplace,
-                                  linesInserted, replacedLines, skipped, 'ok');
+    const logId = await logUpload(
+      pool,
+      'amazon_settlement',
+      filename,
+      marketplace,
+      linesInserted,
+      replacedLines,
+      skipped,
+      'ok',
+    );
     await saveSkippedRows(pool, logId, skippedRows);
     clearSkuSettlementBenchmarkCache('amazon');
     void notifySkuSettlementBenchmarkAfterImport(pool, 'amazon')
       .catch(error => console.warn('[sku settlement notification]', error.message));
 
-    res.json({
+    const finalResult = {
       ok: true,
-      settlement_ids:   settlementIds,
+      settlement_ids: [...new Set(allSettlementIds)],
       envelopeInserted,
       linesInserted,
       replacedLines,
       skipped,
-      total:            totalRows,
-      skuResolution:    totalSkuResolved,
-      ordersBackfilled,        // { rowsUpdated, distinctOrders }
+      total: totalWorkbookRows,
+      skuResolution: totalSkuResolved,
+      ordersBackfilled,
       scientificNotationWarning: scientificWarning
         ? 'order-item-code values appear to have been corrupted to scientific notation by XLSX. Linkage via order_id is unaffected, but for exact item-level match download the settlement as CSV/TSV instead of XLSX.'
         : null,
       logId,
-    });
-  } catch (e) {
-    console.error('[amazon-settlement]', e);
+    };
+
+    if (job) {
+      job.percent = 100;
+      job.status = 'done';
+      job.msg = 'Import complete';
+      job.result = finalResult;
+      setTimeout(() => amazonSettlementJobs.delete(jobId), 600_000);
+    }
+
+    return finalResult;
+  } catch (error) {
+    if (job) {
+      job.status = 'error';
+      job.error = error.message;
+      setTimeout(() => amazonSettlementJobs.delete(jobId), 600_000);
+    }
     try {
       const logPool = pool || getPool();
-      const logId = await logUpload(logPool, 'amazon_settlement', req.file?.originalname, marketplace,
-        linesInserted, 0, skipped, 'error', e.message);
+      const logId = await logUpload(
+        logPool,
+        'amazon_settlement',
+        filename,
+        marketplace,
+        linesInserted,
+        0,
+        skipped,
+        'error',
+        error.message,
+      );
       await saveSkippedRows(logPool, logId, skippedRows);
     } catch {}
-    res.status(e.status || 500).json({ error: e.message });
+    throw error;
   }
+}
+
+router.post('/amazon-settlement', upload.single('file'), async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  if (!req.file) return res.status(400).json({ error: 'No file provided' });
+
+  const filename = req.file.originalname;
+  const isSync = req.query.sync === 'true';
+
+  if (isSync) {
+    try {
+      const result = await processAmazonSettlementWorkbook({
+        buffer: req.file.buffer,
+        filename,
+      });
+      return res.json(result);
+    } catch (e) {
+      console.error('[amazon-settlement]', e);
+      return res.status(e.status || 500).json({ error: e.message });
+    }
+  }
+
+  // Async mode: respond immediately with jobId, process in background
+  const jobId = `amz_set_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+  amazonSettlementJobs.set(jobId, {
+    status: 'processing',
+    msg: 'Reading settlement workbook…',
+    percent: 0,
+    totalRows: 0,
+    linesInserted: 0,
+  });
+
+  res.json({ ok: true, jobId, status: 'started' });
+
+  const buffer = req.file.buffer;
+  req.file.buffer = null;
+
+  setImmediate(async () => {
+    try {
+      await processAmazonSettlementWorkbook({ buffer, filename, jobId });
+    } catch (e) {
+      console.error(`[amazon-settlement background job ${jobId}]`, e);
+    }
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

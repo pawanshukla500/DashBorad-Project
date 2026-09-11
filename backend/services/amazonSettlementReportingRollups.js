@@ -133,7 +133,7 @@ export async function ensureAmazonSettlementReportingRollups(pool) {
 
 /** Rebuild one settlement (or all historical data when settlementId is omitted). */
 export async function refreshAmazonSettlementReportingRollups(queryable, settlementId = null) {
-  const ownsTransaction = typeof queryable.connect === 'function';
+  const ownsTransaction = typeof queryable.connect === 'function' && typeof queryable.release !== 'function';
   const client = ownsTransaction ? await queryable.connect() : queryable;
   const params = settlementId ? [settlementId] : [];
   const scope = settlementId ? 'AND l.settlement_id = $1' : '';
