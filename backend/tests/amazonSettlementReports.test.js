@@ -81,4 +81,11 @@ describe('Amazon settlement report service', () => {
     expect(metricsSql).not.toMatch(/\(SELECT\s+COALESCE/);
     expect(result.period).toMatchObject({ gross_sales: '1000', total_refunds: '100' });
   });
+
+  it('correctly maps storage, removal, ads, and warehouse prep from Amazon settlements', () => {
+    expect(CATEGORY_CASE_SQL).toContain("amount_description ILIKE 'Storage%Fee%'");
+    expect(CATEGORY_CASE_SQL).toContain("amount_description ILIKE 'StorageBilling%'");
+    expect(CATEGORY_CASE_SQL).toContain("amount_description ILIKE 'DisposalComplete%'");
+    expect(CATEGORY_CASE_SQL).toContain("amount_description ILIKE 'WarehousePrep%'");
+  });
 });
