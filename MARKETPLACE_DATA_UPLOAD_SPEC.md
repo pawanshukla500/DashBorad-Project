@@ -269,12 +269,12 @@ Previous migrations attempted to synthesize composite keys like `AMZ-{order_id}-
   - Consumer listing prices in India are whole-rupee integers (e.g. ₹429, ₹499), from which Amazon calculates `Product Amount = unitPrice / 1.05` (e.g. ₹408.58).
   - Pipeline computes:
     - $\text{unitSellingPrice} = \text{round}(\text{Product Amount} \times 1.05) \quad (\text{if within 0.05 of whole rupee})$ (e.g. ₹408.58 $\rightarrow$ ₹429.00)
-    - $\text{final\_invoice\_amount} = \text{round}(\text{unitSellingPrice} \times \text{Quantity}, 2)$ (e.g. $12 \times 429 = \text{₹5,148}$, $20 \times 429 = \text{₹8,580}$)
+    - $\text{orders.product\_amount} = \text{final\_invoice\_amount} = \text{round}(\text{unitSellingPrice} \times \text{Quantity}, 2)$ (e.g. $12 \times 429 = \text{₹5,148}$, $20 \times 429 = \text{₹8,580}$) — stored with 5% price added up directly at upload time so there is zero confusion between product amount and final invoice.
     - $\text{Line Product Base} = \text{round}(\text{Quantity} \times \text{Product Amount}, 2)$ (e.g. $20 \times 408.58 = \text{₹8,171.60}$)
     - $\text{item\_tax (5\% GST)} = \text{round}(\text{final\_invoice\_amount} - \text{Line Product Base}, 2)$ (e.g. $8,580 - 8,171.60 = \text{₹408.40}$, exactly matching Amazon settlement `Product Tax`!)
-  - **No Shipping or Gift in Product Invoice Amount**: Shipping Amount and Gift Amount are buyer charges (often reversed or discounted by Amazon via shipping promotions/chargebacks) and are **strictly excluded** from $\text{final\_invoice\_amount}$. They are preserved in separate audit columns (`sale_shipping_amount`, `sale_gift_amount`) on `orders`.
+  - **No Shipping or Gift in Product Invoice Amount**: Shipping Amount and Gift Amount are buyer charges (often reversed or discounted by Amazon via shipping promotions/chargebacks) and are **strictly excluded** from $\text{final\_invoice\_amount}$ and $\text{product\_amount}$. They are preserved in separate audit columns (`sale_shipping_amount`, `sale_gift_amount`) on `orders`.
 - **Multi-Kind Order Aggregation**:
-  - **Same Order ID, Same SKU (Split Shipments)**: When an order is split into multiple packages for the same SKU, the pipeline aggregates across rows: $\sum \text{qty}$, $\sum \text{product\_amount}$, $\sum \text{item\_tax}$, and $\sum \text{final\_invoice\_amount} = \sum \text{product\_amount} + \sum \text{item\_tax}$.
+  - **Same Order ID, Same SKU (Split Shipments)**: When an order is split into multiple packages for the same SKU, the pipeline aggregates across rows: $\sum \text{qty}$, $\sum \text{product\_amount} = \sum \text{final\_invoice\_amount}$, and $\sum \text{item\_tax}$.
   - **Same Order ID, Different SKUs (Multi-SKU Orders)**: Preserved as distinct natural rows `(order_id, sku1)`, `(order_id, sku2)` in the `orders` table. Composite reconciliation joins always use `(order_id, sku)`.
 
 ### 4.4 Amazon FBA Returns (Amazon Fulfilled)

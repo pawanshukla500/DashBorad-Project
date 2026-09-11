@@ -1034,8 +1034,8 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
       }
 
       const invoiceAmount = Math.round(unitSellingPrice * quantity * 100) / 100;
-      const lineProductAmount = Math.round((productAmount * quantity) * 100) / 100;
-      const lineItemTax = Math.round((invoiceAmount - lineProductAmount) * 100) / 100;
+      const lineProductBase = Math.round((productAmount * quantity) * 100) / 100;
+      const lineItemTax = Math.round((invoiceAmount - lineProductBase) * 100) / 100;
 
       const record = {
         order_id: orderId,
@@ -1048,7 +1048,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         purchase_date_time: dtIso(getCell(row, idx, 'Customer Shipment Date')) || `${shipmentDate}T00:00:00.000Z`,
         qty: quantity,
         currency,
-        product_amount: lineProductAmount,
+        product_amount: invoiceAmount,
         item_tax: lineItemTax,
         sale_shipping_amount: saleShippingAmount,
         sale_gift_amount: saleGiftAmount,
@@ -1072,7 +1072,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         existing.item_tax = Math.round(((existing.item_tax || 0) + (record.item_tax || 0)) * 100) / 100;
         existing.sale_shipping_amount = Math.round(((existing.sale_shipping_amount || 0) + (record.sale_shipping_amount || 0)) * 100) / 100;
         existing.sale_gift_amount = Math.round(((existing.sale_gift_amount || 0) + (record.sale_gift_amount || 0)) * 100) / 100;
-        existing.final_invoice_amount = Math.round(((existing.product_amount || 0) + (existing.item_tax || 0)) * 100) / 100;
+        existing.final_invoice_amount = existing.product_amount;
         if (existing.order_type === 'exchange' && record.order_type !== 'exchange') {
           existing.order_type = record.order_type;
         }

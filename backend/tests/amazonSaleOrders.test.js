@@ -79,7 +79,7 @@ describe('Amazon Sale Order workflow', () => {
     expect(uploadRoute).toContain('const invoiceAmount = Math.round(unitSellingPrice * quantity * 100) / 100;');
     expect(uploadRoute).toContain('order_date: shipmentDate ? shipmentDate.slice(0, 10) : null');
     expect(uploadRoute).toContain("'order_type'");
-    expect(uploadRoute).toContain("'item_tax'");
-    expect(uploadRoute).toContain('existing.final_invoice_amount = Math.round(((existing.product_amount || 0) + (existing.item_tax || 0)) * 100) / 100;');
+    expect(uploadRoute).toContain('product_amount: invoiceAmount,');
+    expect(uploadRoute).toContain('existing.final_invoice_amount = existing.product_amount;');
   });
 });
