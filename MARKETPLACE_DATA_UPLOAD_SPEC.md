@@ -259,14 +259,15 @@ Previous migrations attempted to synthesize composite keys like `AMZ-{order_id}-
   `Customer Shipment Date`, `Merchant SKU`, `FNSKU`, `ASIN`, `FC`, `Quantity`, `Amazon Order Id`, `Currency`, `Product Amount`, `Shipping Amount`, `Gift Amount`, `Shipment To City`, `Shipment To State`, `Shipment To Postal Code`.
 - **Target Table**: `orders` (upsert on natural key `(order_id, sku)`).
 - **Warehouse Master**: Upserts fulfillment center codes into `amazon_fc_master` (`fc_code`, `state`, `city`).
-- **5% GST & Unit Price Invariant**:
-  - In Amazon Seller Central exports, `Product Amount` is the **per-unit base price exclusive of GST**.
+- **5% GST & Product Amount Invariant**:
+  - In Amazon Seller Central exports, `Product Amount` is the **per-unit base price exclusive of 5% GST**.
   - Pipeline computes:
-    - $\text{Line Product Base} = \text{Quantity} \times \text{Product Amount}$
-    - $\text{item\_tax (5\% GST)} = \text{Line Product Base} \times 0.05$
-    - $\text{final\_invoice\_amount} = (\text{Line Product Base} \times 1.05) + \text{Shipping Amount} + \text{Gift Amount}$
+    - $\text{Line Product Base} = \text{round}(\text{Quantity} \times \text{Product Amount}, 2)$
+    - $\text{item\_tax (5\% GST)} = \text{round}(\text{Line Product Base} \times 0.05, 2)$
+    - $\text{final\_invoice\_amount} = \text{round}(\text{Line Product Base} + \text{item\_tax}, 2) = \text{Line Product Base} \times 1.05$
+  - **No Shipping or Gift in Product Invoice Amount**: Shipping Amount and Gift Amount are buyer charges (often reversed or discounted by Amazon via shipping promotions/chargebacks) and are **strictly excluded** from $\text{final\_invoice\_amount}$. They are preserved in separate audit columns (`sale_shipping_amount`, `sale_gift_amount`) on `orders`.
 - **Multi-Kind Order Aggregation**:
-  - **Same Order ID, Same SKU (Split Shipments)**: When an order is split into multiple packages for the same SKU, the pipeline aggregates across rows: $\sum \text{qty}$, $\sum \text{product\_amount}$, $\sum \text{item\_tax}$, and $\sum \text{final\_invoice\_amount}$.
+  - **Same Order ID, Same SKU (Split Shipments)**: When an order is split into multiple packages for the same SKU, the pipeline aggregates across rows: $\sum \text{qty}$, $\sum \text{product\_amount}$, $\sum \text{item\_tax}$, and $\sum \text{final\_invoice\_amount} = \sum \text{product\_amount} + \sum \text{item\_tax}$.
   - **Same Order ID, Different SKUs (Multi-SKU Orders)**: Preserved as distinct natural rows `(order_id, sku1)`, `(order_id, sku2)` in the `orders` table.
 
 ### 4.4 Amazon FBA Returns (Amazon Fulfilled)
