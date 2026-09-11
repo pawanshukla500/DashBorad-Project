@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, uploadMeeshoSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData } from '../api/client';
+import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, pollAmazonSettlementProgress, uploadMeeshoSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData } from '../api/client';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const MARKETPLACES = [
@@ -227,7 +227,23 @@ export default function UploadPage() {
         uploadFd.append('file', uploadFile);
         uploadFd.append('marketplace', uploadContext.marketplace);
         if (uploadContext.dataType === 'amazon-settlement') {
-          res = await uploadAmazonSettlement(uploadFd);
+          const startRes = await uploadAmazonSettlement(uploadFd);
+          if (startRes.jobId) {
+            let poll;
+            let attempts = 0;
+            const MAX_ATTEMPTS = 600; // ~20 min for large multi-sheet workbooks
+            do {
+              await new Promise(r => setTimeout(r, 2000));
+              poll = await pollAmazonSettlementProgress(startRes.jobId);
+              setProgress(poll);
+              if (poll.status === 'error') throw new Error(poll.error || 'Upload failed');
+              attempts += 1;
+              if (attempts >= MAX_ATTEMPTS) throw new Error('Settlement upload timed out — check Upload Status Board and retry if needed');
+            } while (poll.status !== 'done');
+            res = poll.result || poll;
+          } else {
+            res = startRes;
+          }
         } else if (uploadContext.dataType === 'meesho-settlement') {
           res = await uploadMeeshoSettlement(uploadFd);
         } else if (uploadContext.dataType === 'myntra-invoices') {

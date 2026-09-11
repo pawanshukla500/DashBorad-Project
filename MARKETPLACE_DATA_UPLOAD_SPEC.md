@@ -276,18 +276,42 @@ Previous migrations attempted to synthesize composite keys like `AMZ-{order_id}-
 - **Headers**: `Return Type`, `Customer Order ID`, `Shipment ID`, `SKU` (FNSKU), `mSKU` (Seller SKU), `ASIN`, `Units`, `Forward Leg Tracking ID`, `Reverse Leg Tracking ID`, `RMA ID`, `Return Status`, `Carrier`, `Pick -up date`, `Last Updated On`, `Return Reason`.
 
 ### 4.6 Amazon Settlement (Flat-File V2 Long Format)
-- **Route**: `POST /api/upload/amazon-settlement`
+- **Route**: `POST /api/upload/amazon-settlement` (Async background execution by default; optional `?sync=true` for scripts/tests)
+- **Progress Endpoint**: `GET /api/upload/amazon-settlement/progress/:jobId`
+- **File Limit**: 150MB Multer memory buffer.
+- **Multi-Sheet Discovery**:
+  - Automatically iterates over all sheets in the workbook (e.g. `Electronic`, `COD`).
+  - Evaluates header columns (`settlement-id`, `amount-description`, `amount-type`) to detect valid settlement sheets.
+  - Seamlessly handles multi-month workbooks containing multiple sheets and tens of weekly cycles.
+- **Dense Mode Streaming**:
+  - Parsed with SheetJS `dense: true` (`cellDates: false, cellNF: false, cellStyles: false`).
+  - Reads 800k+ rows in <25 seconds with ~350MB peak heap, eliminating Node.js out-of-memory errors.
+  - Sheet worksheet matrix and per-settlement line arrays are deleted from memory as soon as each settlement commits to PostgreSQL.
+- **Repeated Embedded Header Skipping**:
+  - When sellers merge weekly settlement exports, embedded header rows (`settlement-id = 'settlement-id'`) appear inside data sections. The parser detects and skips these cleanly with zero false validation errors.
+- **Date & Timestamp Normalization**:
+  - Amazon uses `DD.MM.YYYY HH:mm:ss UTC` for envelope start/end/deposit dates and `DD.MM.YYYY` for transaction posted dates.
+  - The pipeline normalizes them to SQL `DATE` (`YYYY-MM-DD`) and ISO 8601 `TIMESTAMPTZ` (`YYYY-MM-DDTHH:mm:ssZ`).
 - **Tables**:
   - `amazon_settlements`: Settlement envelope summary (`settlement_id`, `settlement_start_date`, `settlement_end_date`, `deposit_date`, `total_amount`, `currency`).
-  - `amazon_settlement_lines`: Granular transaction line items (15,000 to 40,000+ rows per report).
+  - `amazon_settlement_lines`: Granular transaction line items (15,000 to 40,000+ rows per weekly cycle).
+  - `amazon_order_settlement_rollups`: Precomputed read model at `(settlement_id, posted_month, order_id, sku)`.
 - **Query-Time Linkage Rules**:
   1. If `order_item_code` is present -> `JOIN orders ON orders.order_item_id = lines.order_item_code` (exact item match).
   2. If only `order_id` is present (e.g. Fulfillment Fee Refunds) -> `JOIN orders ON orders.order_id = lines.order_id`.
   3. If neither `order_item_code` nor `order_id` is present -> categorized as **Non-Order Deductions** (storage fees, subscription fees, coupon redemption fees, Amazon Advertising).
+- **Orphan SKU Resolution (`resolveOrphanSkus`)**:
+  - Amazon Fulfillment Fee Refund rows lack a SKU. The resolver pairs each refund row to its original order charge row by `(order_id, amount_description, ABS(amount))` to assign the Merchant SKU.
+- **Row-to-Column Aggregation Bridge (`backfillOrdersFromSettlement`)**:
+  - Pivots row-level line items (`Principal`, `Product Tax`, `order_commission`, `order_closing_fee`, `order_fba_fee`, `order_shipping`, `order_tcs`, `order_tds`, `inventory_reimbursement`) into order columns: `final_invoice_amount`, `settlement_amount`, `commission`, `fixed_fee`, `pick_pack_fee`, `shipping_fee`, `tcs`, `tds`, `spf_amount`.
 - **Post-Upload Hooks**:
-  - `refreshAmazonSettlementReportingRollups(pool)`
+  - `refreshAmazonSettlementRollups(client, settlementId)`
+  - `refreshAmazonSettlementReportingRollups(pool, settlementId)`
   - `refreshOrderSettlementTotals(pool)`
   - `invalidateAmazonReconciliationCache()`
+  - `clearSkuSettlementBenchmarkCache('amazon')`
+  - `notifySkuSettlementBenchmarkAfterImport(pool, 'amazon')`
+
 
 ---
 

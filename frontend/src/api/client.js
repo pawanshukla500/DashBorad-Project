@@ -593,6 +593,8 @@ export const uploadAmazonSettlement    = (formData) =>
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 900000,
   }).then(r => r.data);
+export const pollAmazonSettlementProgress = (jobId) =>
+  api.get(`/upload/amazon-settlement/progress/${jobId}`).then(r => r.data);
 export const fetchAmazonSettlementSummary = () =>
   api.get('/upload/amazon-settlement/summary').then(r => r.data);
 export const fetchAmazonNonOrder = ({ settlement_id, month, page = 1, pageSize = 100 } = {}) =>

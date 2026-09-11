@@ -87,7 +87,7 @@ export async function ensureOrderSettlementTotals(pool) {
 
 /** Rebuild atomically in the caller's transaction after settlement-source writes. */
 export async function refreshOrderSettlementTotals(queryable) {
-  const ownsTransaction = typeof queryable.connect === 'function';
+  const ownsTransaction = typeof queryable.connect === 'function' && typeof queryable.release !== 'function';
   const client = ownsTransaction ? await queryable.connect() : queryable;
   try {
     if (ownsTransaction) await client.query('BEGIN');
