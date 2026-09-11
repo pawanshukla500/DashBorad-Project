@@ -1017,7 +1017,13 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
       }
       if (!fcCode) fulfilmentType = null;
 
-      const invoiceAmount = productAmount + saleShippingAmount + saleGiftAmount;
+      // Amazon Seller Central Sale Orders report exports productAmount as the PER-UNIT base price (exclusive of 5% GST).
+      // Calculate total base product amount, 5% GST, and final customer invoice amount.
+      const lineProductAmount = Math.round((productAmount * quantity) * 100) / 100;
+      const lineItemTax = Math.round((lineProductAmount * 0.05) * 100) / 100;
+      const lineProductWithTax = lineProductAmount + lineItemTax;
+      const invoiceAmount = Math.round((lineProductWithTax + saleShippingAmount + saleGiftAmount) * 100) / 100;
+
       const record = {
         order_id: orderId,
         sku,
@@ -1029,7 +1035,8 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         purchase_date_time: dtIso(getCell(row, idx, 'Customer Shipment Date')) || `${shipmentDate}T00:00:00.000Z`,
         qty: quantity,
         currency,
-        product_amount: productAmount,
+        product_amount: lineProductAmount,
+        item_tax: lineItemTax,
         sale_shipping_amount: saleShippingAmount,
         sale_gift_amount: saleGiftAmount,
         final_invoice_amount: invoiceAmount,
@@ -1047,10 +1054,11 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
       if (byNaturalKey.has(key)) {
         const existing = byNaturalKey.get(key);
         existing.qty = (existing.qty || 0) + (record.qty || 0);
-        existing.product_amount = (existing.product_amount || 0) + (record.product_amount || 0);
-        existing.sale_shipping_amount = (existing.sale_shipping_amount || 0) + (record.sale_shipping_amount || 0);
-        existing.sale_gift_amount = (existing.sale_gift_amount || 0) + (record.sale_gift_amount || 0);
-        existing.final_invoice_amount = (existing.final_invoice_amount || 0) + (record.final_invoice_amount || 0);
+        existing.product_amount = Math.round(((existing.product_amount || 0) + (record.product_amount || 0)) * 100) / 100;
+        existing.item_tax = Math.round(((existing.item_tax || 0) + (record.item_tax || 0)) * 100) / 100;
+        existing.sale_shipping_amount = Math.round(((existing.sale_shipping_amount || 0) + (record.sale_shipping_amount || 0)) * 100) / 100;
+        existing.sale_gift_amount = Math.round(((existing.sale_gift_amount || 0) + (record.sale_gift_amount || 0)) * 100) / 100;
+        existing.final_invoice_amount = Math.round(((existing.final_invoice_amount || 0) + (record.final_invoice_amount || 0)) * 100) / 100;
       } else {
         byNaturalKey.set(key, record);
       }
@@ -1062,7 +1070,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
     const fields = [
       'order_id', 'sku', 'fnsku', 'fsn', 'warehouse_id', 'fulfilment_type',
       'order_date', 'purchase_date_time', 'qty', 'currency', 'product_amount',
-      'sale_shipping_amount', 'sale_gift_amount', 'final_invoice_amount',
+      'item_tax', 'sale_shipping_amount', 'sale_gift_amount', 'final_invoice_amount',
       'delivery_city', 'delivery_state', 'delivery_pincode', 'brand_name', 'brand', 'marketplace',
       'shipping_zone', 'category',
     ];
