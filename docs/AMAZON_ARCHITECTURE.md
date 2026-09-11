@@ -78,6 +78,42 @@ catalogue entry in `backend/services/amazonReconciliation.js`.
 When adding a new output column to `amazon_settlement_lines`, update the table
 definition and any corresponding projection in `unified_settlements` together.
 
+## Order Lifecycle Settlement Invariants (Sale vs Customer Return vs RTO)
+
+Settlement analysis across real Amazon disbursements reveals three distinct financial states:
+
+1. **Clean Sale (`404-6721619-9765160`)**:
+   - Order rows only (13 rows).
+   - Gross sale (`Principal` + `Product Tax`) = +₹429.00.
+   - Deductions: Pick & Pack (-₹20.06), Weight Handling (-₹28.32), Closing Fee (-₹16.52), TCS (-₹2.04), TDS (-₹0.42).
+   - Net bank payout = +₹361.64.
+2. **Customer Return (`407-7285146-4911556`)**:
+   - Sale order rows + Refund rows (18 rows).
+   - Buyer refund reverses gross price (-₹854.00) and credits back TCS (+₹4.07).
+   - Amazon **retains** all FBA fees (Pick & Pack -₹20.06, Weight Handling -₹28.32, Closing Fee -₹31.86) and charges an additional `Refund commission` (-₹60.18).
+   - Net settlement loss to seller = **-₹141.24**.
+3. **RTO / Courier Return (`171-5824998-0676344`)**:
+   - Sale order rows + Refund rows + `Fulfillment Fee Refund` rows (31 rows).
+   - Amazon issues `Fulfillment Fee Refund` under `Item Fee Adjustment` that **refunds 100%** of Pick & Pack (+₹20.06), Weight Handling (+₹50.74), and Closing Fee (+₹31.86).
+   - Net settlement loss to seller = **-₹0.58** (only unrefunded TDS rounding).
+
+## Dynamic Fee Resilience (Zero Schema Breaks)
+
+To handle new fee items introduced by Amazon (e.g. `ItemFees :: Discount Fee`, `High Return Rate Fee`) without modifying table schemas or breaking queries:
+- **`other_fee` / `mp_other_fee`**: Captures unclassified fees automatically.
+- **`fee_breakdown JSONB`**: Records the exact description-to-amount key-value map.
+- **`net_settlement`**: Always algebraic `SUM(amount)`, guaranteeing 100% mathematical integrity.
+
+## Non-Order Deductions & 117-Fee Taxonomy
+
+Non-order operational costs are segregated from order P&L:
+- **Storage Fees**: `Storage Fee`, `StorageBillingCGST/SGST`, `StorageRenewalBilling%`, `FBAStorageFee%`.
+- **Removal & Disposal**: `RemovalComplete%`, `DisposalComplete%`.
+- **Advertising**: `Cost of Advertising`, `Sponsored%`, `CPC%`.
+- **Service & Prep Fees**: `WarehousePrep%`, `Manual Processing Fee%`, `Subscription%`.
+- **Reimbursements**: `Damaged:Warehouse`, `Lost:Warehouse`, `MISSING_FROM_INBOUND`, `CRETURN_WRONG_ITEM`.
+
+
 ## Amazon payment reconciliation parameters
 
 The order-level payment screen is available at **Reconciliation → Amazon

@@ -312,6 +312,53 @@ Previous migrations attempted to synthesize composite keys like `AMZ-{order_id}-
   - `clearSkuSettlementBenchmarkCache('amazon')`
   - `notifySkuSettlementBenchmarkAfterImport(pool, 'amazon')`
 
+### 4.7 Amazon Order Lifecycle Invariants & Financial Mechanics
+Real-world audit of Amazon settlement data (`APril-2026 to may2026.xlsx`) reveals three distinct financial lifecycles across Order, Refund, and Fee Adjustment transaction types:
+
+| Metric / Stage | 1. Clean Sale (`404-6721619-9765160`) | 2. Customer Return (`407-7285146-4911556`) | 3. RTO / Courier Return (`171-5824998-0676344`) |
+| :--- | :--- | :--- | :--- |
+| **Transaction Types** | `Order` (13 rows) | `Order` (13 rows) + `Refund` (5 rows) | `Order` (16 rows) + `Refund` (9 rows) + `Fulfillment Fee Refund` (6 rows) |
+| **Gross Customer Bill** | +₹429.00 (`Principal` + `Product Tax`) | +₹854.00 (Sale) | +₹599.00 (Sale) |
+| **Customer Refund** | ₹0.00 | **-₹854.00** (100% reversed to buyer) | **-₹599.00** (100% reversed to buyer) |
+| **FBA Pick & Pack** | -₹20.06 (₹17 + GST) | -₹20.06 (*Retained by Amazon*) | -₹20.06 $\rightarrow$ **+₹20.06 Refunded by Amazon** |
+| **FBA Weight Handling**| -₹28.32 (₹24 + GST) | -₹28.32 (*Retained by Amazon*) | -₹50.74 $\rightarrow$ **+₹50.74 Refunded by Amazon** |
+| **Fixed Closing Fee** | -₹16.52 (₹14 + GST) | -₹31.86 (*Retained by Amazon*) | -₹31.86 $\rightarrow$ **+₹31.86 Refunded by Amazon** |
+| **Refund Commission** | ₹0.00 | **-₹60.18** (20% fee + GST charged to seller) | ₹0.00 |
+| **Statutory Taxes** | TCS -₹2.04, TDS -₹0.42 | TCS ₹0.00 net, TDS -₹0.82 | TCS ₹0.00 net, TDS -₹0.58 |
+| **Net Bank Payout** | **+₹361.64** (*Clean positive payout*) | **-₹141.24** (*Direct loss to seller*) | **-₹0.58** (*Near-zero loss, only TDS rounding*) |
+
+#### Core Invariant: Customer Return vs RTO Return
+- **On Customer Returns** (delivered, then returned by buyer): Amazon does **NOT** refund Pick & Pack, Weight Handling, or Closing fees, and charges an additional `Refund commission` (20% fee + GST). The seller suffers a substantial cash deficit on the settlement ledger.
+- **On RTO Returns** (courier delivery failed / cancelled before delivery): Amazon issues separate `Fulfillment Fee Refund` rows under `Item Fee Adjustment` that refund 100% of Pick & Pack, Weight Handling, and Closing fees back to the seller. The seller's net settlement impact is virtually ₹0.
+
+### 4.8 Dynamic Fee Adaptation Model (Zero Schema Breakage)
+Amazon frequently adds or renames fee descriptions over time (e.g. `ItemFees :: Discount Fee`, `High Return Rate Fee`, `Inventory Placement Service Fee`). The pipeline guarantees zero schema breakage and zero data loss through a hybrid columnar + JSONB design:
+
+1. **Tier 1 (Raw Ledger Table `amazon_settlement_lines`)**: Stores every raw row verbatim with full transaction descriptions, types, and amounts.
+2. **Tier 2 (Rollup Models `amazon_order_settlement_rollups` & `orders`)**:
+   - Standard known fees map to dedicated columns: `commission`, `fixed_fee`, `pick_pack_fee`, `shipping_fee`, `tcs`, `tds`.
+   - **`other_fee` / `mp_other_fee NUMERIC(14,2)`**: Automatically captures any newly introduced debit that does not match standard column definitions.
+   - **`fee_breakdown JSONB`**: Stores the complete key-value dictionary of all exact fee descriptions and amounts (e.g. `{"ItemFees :: Discount Fee": -15.00, "Fixed closing fee": -27.00, ...}`).
+   - **Mathematical Invariant**: `net_settlement` / `bank_settlement` is always computed as the exact algebraic sum of all credits minus debits (`SUM(amount)`), guaranteeing that new fees never cause payment reconciliation drifts.
+
+### 4.9 Complete Non-Order Expense Segregation & 117-Fee Taxonomy
+Amazon settlement reports mix operational account-level charges with order transactions. In accordance with the 117-fee catalog defined in the `Settelments Description` master sheet, non-order items must be segregated strictly into dedicated ledger domains and **never** rolled into order-level unit profitability:
+
+1. **`storage_fee` (FBA Warehouse Storage)**:
+   - Matches: `amount_description ILIKE 'Storage%Fee%'`, `StorageBillingCGST`, `StorageBillingSGST`, `StorageRenewalBilling%`, `FBAStorageFee%`, `%Long%Term%Storage%`, `FBA%Storage%`.
+   - Covers monthly cubic-foot warehouse rent and long-term storage penalties.
+2. **`removal_fee` (Stock Returns & Disposal)**:
+   - Matches: `RemovalComplete%`, `RemovalCompleteCGST/SGST`, `DisposalComplete%`, `DisposalCompleteCGST/SGST`, `FBA Removal Order%`.
+   - Covers return of unsellable stock to the seller's factory or scrapping inside Amazon fulfillment centers.
+3. **`ads_billing` (Sponsored Products & PPC)**:
+   - Matches: `Cost of Advertising`, `Sponsored%`, `Advertising%`, `Ads%`, `CPC%`.
+   - Covers Amazon Sponsored Product PPC click spend.
+4. **`service_fee` (Warehouse Prep & Account Services)**:
+   - Matches: `WarehousePrep%`, `WarehousePrepCGST/SGST`, `Manual Processing Fee%`, `Unplanned Service Fee%`, `Service%Fee%`, `Subscription%` (Professional selling plan).
+5. **`inventory_reimbursement` (Amazon Warehouse & Transit Claims)**:
+   - Matches: `amount_type = 'FBA Inventory Reimbursement'`, `Damaged:Warehouse`, `Lost:Warehouse`, `MISSING_FROM_INBOUND`, `COMPENSATED_CLAWBACK`, `CRETURN_WRONG_ITEM` (buyer returned wrong item), `CS_ERROR_ITEMS`, `SAFE-T Reimbursement`.
+6. **`other_credit` / `other_debit`**:
+   - Matches: `Seller Rewards` (growth incentives), `BalanceAdjustment`, `Current Reserve Amount`.
 
 ---
 
