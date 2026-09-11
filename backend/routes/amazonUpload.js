@@ -586,7 +586,7 @@ function looksScientific(v) {
 }
 
 // ── Amazon Zone Logic ────────────────────────────────────────────────────────
-function calculateAmazonZone(fromCity, fromState, toCity, toState) {
+export function calculateAmazonZone(fromCity, fromState, toCity, toState) {
   if (!fromCity || !fromState || !toCity || !toState) return 'National';
 
   const fCity = (fromCity + '').toUpperCase().trim();
