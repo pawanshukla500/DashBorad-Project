@@ -39,6 +39,9 @@ Whenever modifying, extending, or debugging data ingestion, orders, returns, set
    - Zero synthetic keys: Never create synthetic `AMZ-{order_id}-{sku}` keys.
    - Flex returns column swap: file `SKU` = FNSKU; file `mSKU` = Merchant SKU (backend maps `mSKU -> sku` and `SKU -> fnsku`).
    - Settlement V2 join strategy: joins via `order_item_code` or `order_id` at query time; unlinked rows are non-order deductions.
+   - Customer Return vs RTO: Customer returns retain FBA fulfillment fees and charge refund commission (-₹141.24 loss); RTO returns refund 100% of FBA fulfillment and closing fees via `Fulfillment Fee Refund` rows (net loss ~₹0).
+   - Dynamic fee resilience: Store unknown fees in `other_fee` and full key-value maps in `fee_breakdown JSONB`.
+   - Non-order segregation: Segregate storage, removal/disposal, and PPC advertising from order-level unit economics.
 3. **Database Batching**:
    - Always batch multi-row inserts via `forEachDbBatch` to avoid PostgreSQL's 65,535 parameter limit.
    - Always invoke `refreshOrderSettlementTotals(pool)` after ingesting orders or settlement items.
