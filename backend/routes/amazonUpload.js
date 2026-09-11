@@ -1018,11 +1018,24 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
       if (!fcCode) fulfilmentType = null;
 
       // Amazon Seller Central Sale Orders report exports productAmount as the PER-UNIT base price (exclusive of 5% GST).
-      // Calculate total base product amount, 5% GST, and final customer invoice amount.
-      // Shipping and gift amounts are tracked separately and NOT summed into the product invoice amount.
+      // Retail consumer listing prices are set at whole rupee values (e.g. ₹429, ₹499), where productAmount = unitPrice / 1.05 (e.g. 408.58).
+      // If Product Amount is 0, this is an Amazon customer exchange/replacement order (order_type = 'exchange').
+      // Calculate clean unit selling price (inclusive of 5% GST) first, then multiply by quantity.
+      const isZeroPrice = productAmount === 0;
+      const orderType = isZeroPrice ? 'exchange' : 'standard';
+
+      let unitSellingPrice = 0;
+      if (!isZeroPrice) {
+        const rawWithTax = productAmount * 1.05;
+        const roundedWhole = Math.round(rawWithTax);
+        unitSellingPrice = Math.abs(rawWithTax - roundedWhole) < 0.05
+          ? roundedWhole
+          : Math.round(rawWithTax * 100) / 100;
+      }
+
+      const invoiceAmount = Math.round(unitSellingPrice * quantity * 100) / 100;
       const lineProductAmount = Math.round((productAmount * quantity) * 100) / 100;
-      const lineItemTax = Math.round((lineProductAmount * 0.05) * 100) / 100;
-      const invoiceAmount = Math.round((lineProductAmount + lineItemTax) * 100) / 100;
+      const lineItemTax = Math.round((invoiceAmount - lineProductAmount) * 100) / 100;
 
       const record = {
         order_id: orderId,
@@ -1031,7 +1044,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         fsn: asin,
         warehouse_id: fcCode,
         fulfilment_type: fulfilmentType,
-        order_date: shipmentDate,
+        order_date: shipmentDate ? shipmentDate.slice(0, 10) : null,
         purchase_date_time: dtIso(getCell(row, idx, 'Customer Shipment Date')) || `${shipmentDate}T00:00:00.000Z`,
         qty: quantity,
         currency,
@@ -1048,6 +1061,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         marketplace,
         shipping_zone: shippingZone,
         category: (sku || "").startsWith("EJ") ? "Sarees & Dress Materials" : "Women's Kurtas & Kurtis",
+        order_type: orderType,
       };
 
       const key = `${orderId}|${sku}`;
@@ -1059,6 +1073,9 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         existing.sale_shipping_amount = Math.round(((existing.sale_shipping_amount || 0) + (record.sale_shipping_amount || 0)) * 100) / 100;
         existing.sale_gift_amount = Math.round(((existing.sale_gift_amount || 0) + (record.sale_gift_amount || 0)) * 100) / 100;
         existing.final_invoice_amount = Math.round(((existing.product_amount || 0) + (existing.item_tax || 0)) * 100) / 100;
+        if (existing.order_type === 'exchange' && record.order_type !== 'exchange') {
+          existing.order_type = record.order_type;
+        }
       } else {
         byNaturalKey.set(key, record);
       }
@@ -1072,7 +1089,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
       'order_date', 'purchase_date_time', 'qty', 'currency', 'product_amount',
       'item_tax', 'sale_shipping_amount', 'sale_gift_amount', 'final_invoice_amount',
       'delivery_city', 'delivery_state', 'delivery_pincode', 'brand_name', 'brand', 'marketplace',
-      'shipping_zone', 'category',
+      'shipping_zone', 'category', 'order_type',
     ];
     const updateSet = fields
       .filter(field => !['order_id', 'sku', 'marketplace'].includes(field))

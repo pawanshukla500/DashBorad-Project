@@ -73,11 +73,13 @@ describe('Amazon Sale Order workflow', () => {
   });
 
   it('calculates 5% GST and aggregates multi-row same-SKU split orders', () => {
-    expect(uploadRoute).toContain('const lineProductAmount = Math.round((productAmount * quantity) * 100) / 100;');
-    expect(uploadRoute).toContain('const lineItemTax = Math.round((lineProductAmount * 0.05) * 100) / 100;');
-    expect(uploadRoute).toContain('const invoiceAmount = Math.round((lineProductAmount + lineItemTax) * 100) / 100;');
+    expect(uploadRoute).toContain('const isZeroPrice = productAmount === 0;');
+    expect(uploadRoute).toContain("const orderType = isZeroPrice ? 'exchange' : 'standard';");
+    expect(uploadRoute).toContain('unitSellingPrice = Math.abs(rawWithTax - roundedWhole) < 0.05');
+    expect(uploadRoute).toContain('const invoiceAmount = Math.round(unitSellingPrice * quantity * 100) / 100;');
+    expect(uploadRoute).toContain('order_date: shipmentDate ? shipmentDate.slice(0, 10) : null');
+    expect(uploadRoute).toContain("'order_type'");
     expect(uploadRoute).toContain("'item_tax'");
-    expect(uploadRoute).toContain('existing.item_tax = Math.round(((existing.item_tax || 0) + (record.item_tax || 0)) * 100) / 100;');
     expect(uploadRoute).toContain('existing.final_invoice_amount = Math.round(((existing.product_amount || 0) + (existing.item_tax || 0)) * 100) / 100;');
   });
 });
