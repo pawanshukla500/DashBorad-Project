@@ -1019,10 +1019,10 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
 
       // Amazon Seller Central Sale Orders report exports productAmount as the PER-UNIT base price (exclusive of 5% GST).
       // Calculate total base product amount, 5% GST, and final customer invoice amount.
+      // Shipping and gift amounts are tracked separately and NOT summed into the product invoice amount.
       const lineProductAmount = Math.round((productAmount * quantity) * 100) / 100;
       const lineItemTax = Math.round((lineProductAmount * 0.05) * 100) / 100;
-      const lineProductWithTax = lineProductAmount + lineItemTax;
-      const invoiceAmount = Math.round((lineProductWithTax + saleShippingAmount + saleGiftAmount) * 100) / 100;
+      const invoiceAmount = Math.round((lineProductAmount + lineItemTax) * 100) / 100;
 
       const record = {
         order_id: orderId,
@@ -1058,7 +1058,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         existing.item_tax = Math.round(((existing.item_tax || 0) + (record.item_tax || 0)) * 100) / 100;
         existing.sale_shipping_amount = Math.round(((existing.sale_shipping_amount || 0) + (record.sale_shipping_amount || 0)) * 100) / 100;
         existing.sale_gift_amount = Math.round(((existing.sale_gift_amount || 0) + (record.sale_gift_amount || 0)) * 100) / 100;
-        existing.final_invoice_amount = Math.round(((existing.final_invoice_amount || 0) + (record.final_invoice_amount || 0)) * 100) / 100;
+        existing.final_invoice_amount = Math.round(((existing.product_amount || 0) + (existing.item_tax || 0)) * 100) / 100;
       } else {
         byNaturalKey.set(key, record);
       }
