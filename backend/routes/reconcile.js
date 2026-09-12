@@ -4,6 +4,11 @@ import { getRateCard, calculateFees, normalizeCategory } from '../services/rateC
 import { ORDER_SETTLEMENT_TOTALS_TABLE } from '../services/orderSettlementTotals.js';
 import { pagination } from '../utils/requestParams.js';
 import { classifyMyntraNod, summarizeMyntraNod } from '../services/myntraNodClassification.js';
+import {
+  computeOutstandingMatrix,
+  getOutstandingConfig,
+  updateOutstandingConfig,
+} from '../services/outstandingPaymentsService.js';
 
 const router = express.Router();
 
@@ -325,179 +330,37 @@ router.get('/unsettled', async (req, res) => {
 });
 
 // ── GET /api/reconcile/outstanding/summary ────────────────────────────────────
-// Consolidated and marketplace-wise overview of outstanding amounts & aging
+// Consolidated and marketplace-wise overview of outstanding amounts & aging (B2C & D2C)
 router.get('/outstanding/summary', async (req, res) => {
   if (!(await isDbConfigured())) return res.json({ configured: false });
   try {
     const pool = getPool();
-    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
-    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
-    const startDate = req.query.startDate || null;
-    const endDate = req.query.endDate || null;
+    const result = await computeOutstandingMatrix(pool, req.query);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-    let orderFilterSql = '';
-    const orderVals = [];
-    if (mkt) orderFilterSql += ` AND o.marketplace = $${orderVals.push(mkt)}`;
-    if (sellerAcc && sellerAcc !== 'all') orderFilterSql += ` AND o.seller_account = $${orderVals.push(sellerAcc)}`;
-    if (startDate) orderFilterSql += ` AND o.order_date >= $${orderVals.push(startDate)}`;
-    if (endDate) orderFilterSql += ` AND o.order_date <= $${orderVals.push(endDate)}`;
+// ── GET /api/reconcile/outstanding/config ──────────────────────────────────────
+router.get('/outstanding/config', async (req, res) => {
+  if (!(await isDbConfigured())) return res.json({ configured: false, data: [] });
+  try {
+    const pool = getPool();
+    const configs = await getOutstandingConfig(pool);
+    res.json({ success: true, data: configs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-    let invFilterSql = '';
-    const invVals = [];
-    if (mkt) invFilterSql += ` AND marketplace = $${invVals.push(mkt)}`;
-    if (sellerAcc && sellerAcc !== 'all') invFilterSql += ` AND seller_account = $${invVals.push(sellerAcc)}`;
-
-    const [unsettledAgg, invoiceAgg] = await Promise.all([
-      pool.query(`
-        WITH unsettled AS (
-          SELECT
-            o.marketplace,
-            o.seller_account,
-            COALESCE(o.final_invoice_amount, 0) AS amount,
-            COALESCE(CURRENT_DATE - o.order_date::date, 999) AS days_old
-          FROM orders o
-          WHERE NOT EXISTS (
-            SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
-          ) ${orderFilterSql}
-        )
-        SELECT
-          marketplace,
-          seller_account,
-          COUNT(*) AS order_count,
-          ROUND(COALESCE(SUM(amount), 0), 2) AS total_amount,
-          ROUND(COALESCE(SUM(CASE WHEN days_old <= 15 THEN amount ELSE 0 END), 0), 2) AS aging_0_15,
-          ROUND(COALESCE(SUM(CASE WHEN days_old > 15 AND days_old <= 30 THEN amount ELSE 0 END), 0), 2) AS aging_16_30,
-          ROUND(COALESCE(SUM(CASE WHEN days_old > 30 AND days_old <= 60 THEN amount ELSE 0 END), 0), 2) AS aging_31_60,
-          ROUND(COALESCE(SUM(CASE WHEN days_old > 60 THEN amount ELSE 0 END), 0), 2) AS aging_60_plus,
-          COUNT(CASE WHEN days_old <= 15 THEN 1 END) AS count_0_15,
-          COUNT(CASE WHEN days_old > 15 AND days_old <= 30 THEN 1 END) AS count_16_30,
-          COUNT(CASE WHEN days_old > 30 AND days_old <= 60 THEN 1 END) AS count_31_60,
-          COUNT(CASE WHEN days_old > 60 THEN 1 END) AS count_60_plus
-        FROM unsettled
-        GROUP BY marketplace, seller_account
-        ORDER BY marketplace, seller_account
-      `, orderVals),
-      pool.query(`
-        SELECT
-          marketplace,
-          seller_account,
-          COUNT(*) AS invoice_count,
-          ROUND(COALESCE(SUM(net_payable - amount_received), 0), 2) AS pending_amount
-        FROM mp_invoices
-        WHERE net_payable > amount_received ${invFilterSql}
-        GROUP BY marketplace, seller_account
-      `, invVals),
-    ]);
-
-    const mpDisplayName = (m, a) => {
-      if (m === 'myntra') return a === 'myntra_ej' ? 'Myntra (EJ)' : a === 'myntra_vb' ? 'Myntra (VB)' : 'Myntra';
-      if (m === 'flipkart') return 'Flipkart';
-      if (m === 'amazon') return 'Amazon';
-      if (m === 'meesho') return 'Meesho';
-      return m ? m.charAt(0).toUpperCase() + m.slice(1) : 'Unknown';
-    };
-
-    const byMarketplace = [];
-    let totalUnsettledOrders = 0;
-    let totalUnsettledAmount = 0;
-    let totalPendingInvoices = 0;
-    let totalPendingInvoiceAmount = 0;
-    const agingTotals = {
-      '0-15 days': { count: 0, amount: 0 },
-      '16-30 days': { count: 0, amount: 0 },
-      '31-60 days': { count: 0, amount: 0 },
-      '60+ days': { count: 0, amount: 0 },
-    };
-
-    for (const r of unsettledAgg.rows) {
-      const count = Number(r.order_count || 0);
-      const amount = Number(r.total_amount || 0);
-      totalUnsettledOrders += count;
-      totalUnsettledAmount += amount;
-
-      const a0_15 = Number(r.aging_0_15 || 0);
-      const a16_30 = Number(r.aging_16_30 || 0);
-      const a31_60 = Number(r.aging_31_60 || 0);
-      const a60_plus = Number(r.aging_60_plus || 0);
-
-      agingTotals['0-15 days'].count += Number(r.count_0_15 || 0);
-      agingTotals['0-15 days'].amount += a0_15;
-      agingTotals['16-30 days'].count += Number(r.count_16_30 || 0);
-      agingTotals['16-30 days'].amount += a16_30;
-      agingTotals['31-60 days'].count += Number(r.count_31_60 || 0);
-      agingTotals['31-60 days'].amount += a31_60;
-      agingTotals['60+ days'].count += Number(r.count_60_plus || 0);
-      agingTotals['60+ days'].amount += a60_plus;
-
-      const invMatch = invoiceAgg.rows.find(i => i.marketplace === r.marketplace && i.seller_account === r.seller_account);
-      const invCount = invMatch ? Number(invMatch.invoice_count || 0) : 0;
-      const invAmount = invMatch ? Number(invMatch.pending_amount || 0) : 0;
-
-      byMarketplace.push({
-        marketplace: r.marketplace,
-        seller_account: r.seller_account,
-        display_name: mpDisplayName(r.marketplace, r.seller_account),
-        unsettled_orders_count: count,
-        unsettled_amount: amount,
-        pending_invoices_count: invCount,
-        pending_invoices_amount: invAmount,
-        total_outstanding: Math.round((amount + invAmount) * 100) / 100,
-        aging_0_15: a0_15,
-        aging_16_30: a16_30,
-        aging_31_60: a31_60,
-        aging_60_plus: a60_plus,
-      });
-    }
-
-    for (const inv of invoiceAgg.rows) {
-      totalPendingInvoices += Number(inv.invoice_count || 0);
-      totalPendingInvoiceAmount += Number(inv.pending_amount || 0);
-      const existing = byMarketplace.find(b => b.marketplace === inv.marketplace && b.seller_account === inv.seller_account);
-      if (!existing) {
-        byMarketplace.push({
-          marketplace: inv.marketplace,
-          seller_account: inv.seller_account,
-          display_name: mpDisplayName(inv.marketplace, inv.seller_account),
-          unsettled_orders_count: 0,
-          unsettled_amount: 0,
-          pending_invoices_count: Number(inv.invoice_count || 0),
-          pending_invoices_amount: Number(inv.pending_amount || 0),
-          total_outstanding: Number(inv.pending_amount || 0),
-          aging_0_15: 0,
-          aging_16_30: 0,
-          aging_31_60: 0,
-          aging_60_plus: 0,
-        });
-      }
-    }
-
-    const totalOutstandingAmount = Math.round((totalUnsettledAmount + totalPendingInvoiceAmount) * 100) / 100;
-    const overdueAmount30d = Math.round((agingTotals['31-60 days'].amount + agingTotals['60+ days'].amount) * 100) / 100;
-    const overdueOrders30d = agingTotals['31-60 days'].count + agingTotals['60+ days'].count;
-
-    for (const item of byMarketplace) {
-      item.percentage_of_total = totalOutstandingAmount > 0
-        ? Math.round((item.total_outstanding / totalOutstandingAmount) * 1000) / 10
-        : 0;
-    }
-
-    res.json({
-      configured: true,
-      total_outstanding_amount: totalOutstandingAmount,
-      total_unsettled_orders: totalUnsettledOrders,
-      total_unsettled_amount: Math.round(totalUnsettledAmount * 100) / 100,
-      total_pending_invoices: totalPendingInvoices,
-      total_pending_invoice_amount: Math.round(totalPendingInvoiceAmount * 100) / 100,
-      overdue_amount_30d: overdueAmount30d,
-      overdue_orders_30d: overdueOrders30d,
-      aging: {
-        '0-15 days': { count: agingTotals['0-15 days'].count, amount: Math.round(agingTotals['0-15 days'].amount * 100) / 100 },
-        '16-30 days': { count: agingTotals['16-30 days'].count, amount: Math.round(agingTotals['16-30 days'].amount * 100) / 100 },
-        '31-60 days': { count: agingTotals['31-60 days'].count, amount: Math.round(agingTotals['31-60 days'].amount * 100) / 100 },
-        '60+ days': { count: agingTotals['60+ days'].count, amount: Math.round(agingTotals['60+ days'].amount * 100) / 100 },
-      },
-      by_marketplace: byMarketplace,
-    });
+// ── PUT /api/reconcile/outstanding/config/:channelKey ─────────────────────────
+router.put('/outstanding/config/:channelKey', async (req, res) => {
+  if (!(await isDbConfigured())) return res.json({ configured: false });
+  try {
+    const pool = getPool();
+    const updated = await updateOutstandingConfig(pool, req.params.channelKey, req.body);
+    res.json({ success: true, data: updated });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
