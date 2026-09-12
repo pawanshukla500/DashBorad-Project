@@ -11,6 +11,8 @@ const READ_RETRY_DELAYS_MS = [0, 400, 1_200];
 const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 25_000;
 const MIN_HEALTH_CHECK_INTERVAL_MS = 5_000;
 const DEFAULT_READ_STATEMENT_TIMEOUT_MS = 90_000;
+const DEFAULT_POOL_IDLE_TIMEOUT_MS = 55_000;
+const DEFAULT_POOL_MAX_LIFETIME_SECONDS = 15 * 60;
 
 let _pool = null;
 let _realPool = null;
@@ -24,6 +26,8 @@ let lastHealthCheckAt = null;
 let lastDbFailureAt = null;
 let lastDbRecoveryAt = null;
 let consecutiveDbFailures = 0;
+let poolRecreateRequested = false;
+let lastPoolRecreatedAt = null;
 
 function positiveInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
   const parsed = Number.parseInt(value, 10);
@@ -41,6 +45,20 @@ function readStatementTimeoutMs() {
   return positiveInteger(process.env.PG_READ_STATEMENT_TIMEOUT_MS, DEFAULT_READ_STATEMENT_TIMEOUT_MS, {
     min: 5_000,
     max: 5 * 60_000,
+  });
+}
+
+function poolIdleTimeoutMs() {
+  return positiveInteger(process.env.PG_POOL_IDLE_TIMEOUT_MS, DEFAULT_POOL_IDLE_TIMEOUT_MS, {
+    min: 10_000,
+    max: 10 * 60_000,
+  });
+}
+
+function poolMaxLifetimeSeconds() {
+  return positiveInteger(process.env.PG_POOL_MAX_LIFETIME_SECONDS, DEFAULT_POOL_MAX_LIFETIME_SECONDS, {
+    min: 60,
+    max: 2 * 60 * 60,
   });
 }
 
@@ -157,8 +175,8 @@ export function resolvePgConfig() {
     // query cannot make Firebase-authenticated requests wait in the pool.
     max: positiveInteger(process.env.PG_POOL_MAX, 20, { min: 1, max: 100 }),
     min: positiveInteger(process.env.PG_POOL_MIN, 2, { min: 0, max: 100 }),
-    idleTimeoutMillis: 60_000,
-    maxLifetimeSeconds: 1800,
+    idleTimeoutMillis: poolIdleTimeoutMs(),
+    maxLifetimeSeconds: poolMaxLifetimeSeconds(),
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
     // Interactive API reads must fail clearly rather than pinning a pool
     // connection forever. Import/rebuild transactions explicitly clear this
@@ -212,21 +230,28 @@ function isPoolAcquireTimeout(error) {
   return /timeout exceeded when trying to connect/i.test(String(error?.message || ''));
 }
 
-function isConnectionCheckoutError(error) {
+function isConnectionBreakError(error) {
   const code = String(error?.code || '');
   const msg = String(error?.message || '').toLowerCase();
   return (
     code === 'ECONNRESET' ||
     code === 'EPIPE' ||
+    code === 'ECONNABORTED' ||
     /connection terminated|socket.*hang up|server closed the connection|connection.*closed/i.test(msg)
   );
+}
+
+function queryTextFrom(query) {
+  if (typeof query === 'string') return query;
+  if (query && typeof query === 'object' && typeof query.text === 'string') return query.text;
+  return '';
 }
 
 // Retrying an INSERT after a network break can duplicate a completed write.
 // Only idempotent read statements are retried in the same request. Writes fail
 // clearly and their normal upload/API flow can safely decide whether to retry.
 function isSafeReadStatement(text) {
-  const start = String(text || '').replace(/^\s*(?:\/\*[\s\S]*?\*\/\s*)*/, '').toLowerCase();
+  const start = queryTextFrom(text).replace(/^\s*(?:\/\*[\s\S]*?\*\/\s*)*/, '').toLowerCase();
   return /^(select|show|explain|values)\b/.test(start);
 }
 
@@ -250,6 +275,15 @@ function markDatabaseOffline(error) {
   lastDbError = String(error?.message || error || 'Database connection failed').slice(0, 500);
   lastDbFailureAt = now;
   consecutiveDbFailures += 1;
+  if (isRetryableConnectionError(error) && !isPoolAcquireTimeout(error)) poolRecreateRequested = true;
+  scheduleRecovery();
+}
+
+function markPoolSuspect(error) {
+  const now = new Date().toISOString();
+  lastDbError = String(error?.message || error || 'Database connection failed').slice(0, 500);
+  lastDbFailureAt = now;
+  poolRecreateRequested = true;
   scheduleRecovery();
 }
 
@@ -264,6 +298,7 @@ async function pingDatabase(timeoutMs = 5_000) {
     // It is not proof that PostgreSQL is down, so do not falsely mark the
     // database offline or make healthy API responses return a 503.
     if (isPoolAcquireTimeout(error)) return !dbOffline;
+    if (isRetryableConnectionError(error) && !isPoolAcquireTimeout(error)) poolRecreateRequested = true;
     markDatabaseOffline(error);
     return false;
   }
@@ -282,16 +317,22 @@ export async function recoverDatabaseConnection() {
   if (!_realPool) return false;
   if (recoveryInFlight) return recoveryInFlight;
   recoveryInFlight = (async () => {
-    // If consecutive connection attempts failed, flush stale sockets and recreate pool
-    if (consecutiveDbFailures >= 2) {
-      console.log('[db] Multiple connection failures detected. Re-establishing connection pool...');
+    // If the pool emitted idle socket errors or consecutive checks failed,
+    // build a fresh pool before the next public request fans out dashboard
+    // reads through possibly stale clients.
+    if (poolRecreateRequested || consecutiveDbFailures >= 2) {
+      console.log('[db] Re-establishing PostgreSQL connection pool after transport failure...');
       const oldPool = _realPool;
       try {
-        _realPool = createRealPool();
+        const replacementPool = createRealPool();
+        _realPool = replacementPool;
+        poolRecreateRequested = false;
+        lastPoolRecreatedAt = new Date().toISOString();
         if (oldPool) {
           void oldPool.end().catch(() => {});
         }
       } catch (err) {
+        poolRecreateRequested = true;
         console.warn('[db] Pool recreation error:', err.message);
       }
     }
@@ -324,6 +365,8 @@ async function keepPoolWarmAndHealthy() {
   } catch (error) {
     if (isPoolAcquireTimeout(error)) return;
     console.warn('[db] Pool keepalive check failed:', error?.message || error);
+    if (isRetryableConnectionError(error)) poolRecreateRequested = true;
+    markDatabaseOffline(error);
     void recoverDatabaseConnection();
   }
 }
@@ -369,12 +412,14 @@ function createRealPool() {
 
   const realPool = new Pool(config);
   realPool.on('error', error => {
-    // Idle client errors are a normal symptom of remote NAT state timeouts or server socket drops.
-    // pg-pool automatically discards this closed client from the pool.
-    // Do NOT flip dbOffline = true immediately; schedule a background check to confirm status.
+    // Idle client errors are a normal symptom of container restarts, NAT state
+    // expiry, or server socket drops. pg-pool discards the failed client, then
+    // we proactively rebuild the pool in the background so the next dashboard
+    // fan-out does not inherit a cluster of stale sockets.
     console.warn('[db] Idle pool client disconnected and discarded by pool:', error.message);
     if (!dbOffline && isRetryableConnectionError(error)) {
-      scheduleRecovery();
+      markPoolSuspect(error);
+      void recoverDatabaseConnection();
     }
   });
   return realPool;
@@ -452,14 +497,16 @@ export function getPool() {
             if (!retryableRead || attempt === READ_RETRY_DELAYS_MS.length - 1) break;
             continue;
           }
-          // If we hit a severed/stale connection from the pool before exhausted attempts:
-          if (attempt < READ_RETRY_DELAYS_MS.length - 1) {
-            if (retryableRead) continue;
-            // For non-read statements, if the failure was a stale checkout connection error on attempt 0:
-            if (attempt === 0 && isConnectionCheckoutError(error)) {
-              console.warn('[db] Stale pooled connection dropped on write checkout, retrying on fresh connection...');
-              continue;
-            }
+
+          if (!isPoolAcquireTimeout(error)) poolRecreateRequested = true;
+
+          // A SELECT can be safely replayed after a stale socket; an INSERT,
+          // UPDATE, DELETE, or DDL may already have reached PostgreSQL before
+          // the TCP break was observed, so fail clearly instead of risking a
+          // duplicate write or partial upload state.
+          if (retryableRead && attempt < READ_RETRY_DELAYS_MS.length - 1) {
+            markPoolSuspect(error);
+            continue;
           }
           markDatabaseOffline(error);
           break;
@@ -477,6 +524,7 @@ export function getPool() {
         return client;
       } catch (error) {
         if (isRetryableConnectionError(error)) {
+          if (isConnectionBreakError(error)) poolRecreateRequested = true;
           if (!isPoolAcquireTimeout(error)) markDatabaseOffline(error);
           throw new DatabaseUnavailableError(error);
         }
@@ -498,6 +546,8 @@ export function getPool() {
       lastDbFailureAt = null;
       lastDbRecoveryAt = null;
       consecutiveDbFailures = 0;
+      poolRecreateRequested = false;
+      lastPoolRecreatedAt = null;
       return endingPool?.end();
     },
   };
@@ -527,6 +577,8 @@ export function getDatabaseStatus() {
     lastFailureAt: lastDbFailureAt,
     lastRecoveryAt: lastDbRecoveryAt,
     consecutiveFailures: consecutiveDbFailures,
+    poolRecreatePending: poolRecreateRequested,
+    lastPoolRecreatedAt,
     healthCheck: {
       enabled: Boolean(healthCheckTimer),
       intervalMs: healthCheckIntervalMs(),
@@ -537,6 +589,9 @@ export function getDatabaseStatus() {
     transport: databaseTransportStatus(),
     pool: _realPool ? {
       max: _realPool.options.max,
+      min: _realPool.options.min,
+      idleTimeoutMillis: _realPool.options.idleTimeoutMillis,
+      maxLifetimeSeconds: _realPool.options.maxLifetimeSeconds,
       total: _realPool.totalCount,
       idle: _realPool.idleCount,
       waiting: _realPool.waitingCount,

@@ -1,10 +1,10 @@
 # Hostinger VPS deployment
 
-This deployment runs the API and frontend as separate Docker containers behind
-Caddy. Caddy serves the React build, proxies `/api` and `/health` to the API,
-and obtains/renews HTTPS certificates. PostgreSQL runs in Docker on the same
-Hostinger VPS and should be reachable from the API through a private Docker or
-local host-gateway path.
+This deployment runs ReconCentral as one Node.js Docker container behind
+Traefik. The container serves the React build, `/api`, and `/health`; Traefik
+handles HTTPS routing. PostgreSQL runs in Docker on the same Hostinger VPS and
+should be reachable from the API through a private Docker or local host-gateway
+path.
 
 ## First-time VPS setup
 
@@ -34,8 +34,10 @@ local host-gateway path.
    DATABASE_ENGINE=postgresql
    PG_SSL=false
    PG_POOL_MAX=20
-   PG_POOL_MIN=0
-   PG_HEALTHCHECK_INTERVAL_MS=30000
+   PG_POOL_MIN=2
+   PG_POOL_IDLE_TIMEOUT_MS=55000
+   PG_POOL_MAX_LIFETIME_SECONDS=900
+   PG_HEALTHCHECK_INTERVAL_MS=25000
 
    # Add the existing Firebase Admin and optional notification variables here.
    # GOOGLE_APPLICATION_CREDENTIALS must reference a file mounted into the API
@@ -62,6 +64,31 @@ The database container `postgresql-6k6a-postgresql-1` is hardened as follows:
   DATABASE_URL=postgresql://pawanshukla:PASSWORD@postgres:5432/paymentapp
   PG_SSL=false
   ```
+- **Health Check**: The PostgreSQL compose project should include a native
+  `pg_isready` healthcheck so Hostinger/Docker Manager reports database health
+  directly, not only the API container's health.
+
+The PostgreSQL service should use this network and health shape:
+
+```yaml
+services:
+  postgresql:
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d paymentapp"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      shared_infra:
+        aliases:
+          - postgres
+
+networks:
+  shared_infra:
+    external: true
+```
 - **Automated Daily Backups**:
   - Script: `/opt/backups/scripts/backup-postgres.sh`
   - Daily cron: `/etc/cron.d/postgres-backup` (runs at 02:00 UTC)
@@ -102,6 +129,13 @@ Add these repository secrets:
 Pushes to `master` run tests and the frontend build before the deploy job.
 The VPS pulls only fast-forward Git history, then recreates changed containers.
 The deployment stops if tests fail or the VPS has unexpected local Git edits.
+The deploy job also verifies that the API container can resolve the configured
+database host from inside Docker and that `/health` reports a connected,
+schema-ready PostgreSQL runtime before CI/CD passes.
+
+The ReconCentral compose file exposes port `3001` only to Docker networks.
+Traefik remains the public entrypoint on ports `80` and `443`; direct public
+access to `3001` should not be required.
 
 ## Recovery commands
 

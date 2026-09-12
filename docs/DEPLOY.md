@@ -10,13 +10,13 @@ in Docker**.
     |
     | HTTPS
     v
-[Caddy web container]
+[Traefik]
     |
-    | Docker network: app
+    | Docker network: shared_infra
     v
-[Node API container]
+[ReconCentral Node container serving React + API]
     |
-    | Docker/private network: data
+    | Docker/private network: shared_infra
     v
 [PostgreSQL Docker container on the Hostinger VPS]
 ```
@@ -40,8 +40,10 @@ DATABASE_URL=postgresql://USER:PASSWORD@postgres:5432/paymentapp
 DATABASE_ENGINE=postgresql
 PG_SSL=false
 PG_POOL_MAX=20
-PG_POOL_MIN=0
-PG_HEALTHCHECK_INTERVAL_MS=30000
+PG_POOL_MIN=2
+PG_POOL_IDLE_TIMEOUT_MS=55000
+PG_POOL_MAX_LIFETIME_SECONDS=900
+PG_HEALTHCHECK_INTERVAL_MS=25000
 PG_APPLICATION_NAME=reconcentral-api
 
 # Add Firebase Admin credentials and optional notification variables here.
@@ -62,6 +64,7 @@ compose file maps that name to Docker's host gateway for the API container.
 cd /opt/reconcentral
 docker compose --env-file .env -f docker-compose.production.yml up -d --build --remove-orphans
 docker compose -f docker-compose.production.yml ps
+docker exec ReconCentral node -e "fetch('http://127.0.0.1:3001/health').then(async r=>{const body=await r.json(); if(!r.ok || !body.dbConnected) process.exit(1); console.log(JSON.stringify({dbConnected: body.dbConnected, database: body.database}, null, 2));})"
 curl -fsS https://app.example.com/health
 ```
 
@@ -87,6 +90,11 @@ For the Hostinger Docker setup, the recommended result is:
 - expected database name, currently `paymentapp`
 - `sslEnabled: false` only when the API uses a private Docker/local path
 - non-zero upload/history counts matching production data
+
+The `/health` response also exposes `database.pool.idleTimeoutMillis`,
+`database.pool.maxLifetimeSeconds`, and `database.poolRecreatePending`. A
+healthy same-VPS deployment should normally show the pool connected, schema
+ready, and no pending pool recreation.
 
 ## Security checklist
 
