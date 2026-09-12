@@ -68,26 +68,26 @@ describe('Myntra layout mapping', () => {
     expect(fulfillment('SJIT')).toBe('FBM');
     expect(orderLifecycle(order)).toBe('Delivered');
     expect(orderReturnType(order)).toBeNull();
-    expect(orderLifecycle({ ...order, 'order tracking number': '' })).toBe('Delivered');
-    expect(orderReturnType({ ...order, 'order tracking number': '' })).toBe('RTO');
+    expect(orderLifecycle({ ...order, 'order tracking number': '' })).toBe('Cancelled');
+    expect(orderReturnType({ ...order, 'order tracking number': '' })).toBe('Courier Return');
   });
 
-  it('synthesizes an RTO return for orders with blank tracking number with Cancel before ship reason', () => {
+  it('synthesizes a Courier Return for orders with blank tracking number with Cancel Before Dispached reason', () => {
     const blankTrackingOrder = {
       ...order,
       'order tracking number': '',
       'cancelled on': '10-Apr-2026',
       'cancellation reason': 'Delayed Delivery Cancellation',
     };
-    expect(orderLifecycle(blankTrackingOrder)).toBe('Delivered');
-    expect(orderReturnType(blankTrackingOrder)).toBe('RTO');
+    expect(orderLifecycle(blankTrackingOrder)).toBe('Cancelled');
+    expect(orderReturnType(blankTrackingOrder)).toBe('Courier Return');
     const synthesized = synthesizedBlankTrackingReturn(blankTrackingOrder, 'myntra_vb');
     expect(synthesized).toHaveLength(NORMALIZED_RETURN_COLUMNS.length);
     expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_id')]).toBe('RTO-11074259318');
     expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('order_item_id')]).toBe('11074259318');
-    expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_type')]).toBe('RTO');
-    expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_status')]).toBe('Delivered');
-    expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_reason')]).toBe('Cancel before ship');
+    expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_type')]).toBe('Courier Return');
+    expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_status')]).toBe('Cancelled');
+    expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_reason')]).toBe('Cancel Before Dispached');
     expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_sub_reason')]).toBe('Delayed Delivery Cancellation');
     expect(synthesized[NORMALIZED_RETURN_COLUMNS.indexOf('return_requested_date')]).toBe('2026-04-10');
   });

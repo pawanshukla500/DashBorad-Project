@@ -22,6 +22,7 @@ const MP_LEDGER_IDEMPOTENCY_SCHEMA_VERSION = '2026.08.mp-ledger-idempotency-1';
 const MYNTRA_RTO_RETURN_DATE_SCHEMA_VERSION = '2026.09.myntra-rto-return-date-1';
 const MYNTRA_PARTNER_WH_SCHEMA_VERSION = '2026.09.myntra-partner-warehouse-1';
 const MYNTRA_BLANK_TRACKING_RTO_SCHEMA_VERSION = '2026.09.myntra-blank-tracking-rto-1';
+const MYNTRA_BLANK_TRACKING_CANCELLED_SCHEMA_VERSION = '2026.09.myntra-blank-tracking-cancelled-2';
 const MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION = '2026.09.myntra-ej-rate-cards-1';
 const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimization-1';
 
@@ -696,6 +697,7 @@ export async function initDb() {
       await ensureMyntraRtoReturnDateFix(pool);
       await ensureMyntraPartnerWarehouseSchema(pool);
       await ensureMyntraBlankTrackingRtoFix(pool);
+      await ensureMyntraBlankTrackingCancelledFix(pool);
       await ensureMyntraEjRateCardsSeed(pool);
       await ensureDbConnectionOptimization(pool);
       // A read-model migration changes the view definition as well as the
@@ -1313,6 +1315,7 @@ export async function initDb() {
     await ensureMyntraRtoReturnDateFix(pool);
     await ensureMyntraPartnerWarehouseSchema(pool);
     await ensureMyntraBlankTrackingRtoFix(pool);
+    await ensureMyntraBlankTrackingCancelledFix(pool);
     await ensureMyntraEjRateCardsSeed(pool);
     await ensureDbConnectionOptimization(pool);
 
@@ -2093,6 +2096,85 @@ async function ensureMyntraBlankTrackingRtoFix(pool) {
     [MYNTRA_BLANK_TRACKING_RTO_SCHEMA_VERSION],
   );
   console.log(`[db] Schema ${MYNTRA_BLANK_TRACKING_RTO_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * Ensures Myntra orders with blank tracking numbers are marked 'Cancelled' in orders,
+ * with return_type 'Courier Return', and have a matching entry in returns table with
+ * return_status = 'Cancelled' and return_reason = 'Cancel Before Dispached'.
+ */
+async function ensureMyntraBlankTrackingCancelledFix(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [MYNTRA_BLANK_TRACKING_CANCELLED_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  console.log('[db] Applying Myntra blank tracking number Cancelled / Courier Return fix...');
+
+  // 1. Update orders table for all Myntra orders with blank tracking numbers
+  await pool.query(`
+    UPDATE orders o
+    SET 
+      orders_status = 'Cancelled',
+      return_type = 'Courier Return'
+    FROM myntra_order_details m
+    WHERE o.marketplace = 'myntra'
+      AND o.seller_account = m.seller_account
+      AND o.order_item_id = m.order_line_id
+      AND (m.tracking_number IS NULL OR TRIM(m.tracking_number) = '')
+  `);
+
+  // 2. Synthesize or update returns records for these blank-tracking orders
+  await pool.query(`
+    INSERT INTO returns (
+      marketplace, seller_account, return_id, order_item_id, order_id,
+      fulfilment_type, return_requested_date, return_approval_date, return_date,
+      return_status, return_reason, return_sub_reason, return_type, return_result,
+      sku, fsn, product_title, quantity
+    )
+    SELECT 
+      'myntra',
+      m.seller_account,
+      'RTO-' || m.order_line_id,
+      m.order_line_id,
+      m.order_release_id,
+      COALESCE(o.fulfilment_type, 'Non-FBM'),
+      COALESCE(m.cancelled_on, m.order_created_on),
+      COALESCE(m.cancelled_on, m.order_created_on),
+      COALESCE(m.cancelled_on, m.order_created_on),
+      'Cancelled',
+      'Cancel Before Dispached',
+      COALESCE(m.source_data ->> 'cancellation reason', 'Cancel Before Dispached'),
+      'Courier Return',
+      'Cancelled',
+      m.seller_sku_code,
+      m.myntra_sku_code,
+      m.style_name,
+      1
+    FROM myntra_order_details m
+    LEFT JOIN orders o 
+      ON o.marketplace = 'myntra'
+     AND o.seller_account = m.seller_account
+     AND o.order_item_id = m.order_line_id
+    WHERE m.marketplace = 'myntra'
+      AND (m.tracking_number IS NULL OR TRIM(m.tracking_number) = '')
+    ON CONFLICT (marketplace, seller_account, order_item_id) DO UPDATE
+    SET 
+      return_reason = 'Cancel Before Dispached',
+      return_type = 'Courier Return',
+      return_status = 'Cancelled',
+      return_result = 'Cancelled',
+      return_requested_date = EXCLUDED.return_requested_date,
+      return_date = EXCLUDED.return_date,
+      uploaded_at = NOW()
+  `);
+
+  await pool.query(
+    `INSERT INTO schema_version (version, applied_at) VALUES ($1, NOW()) ON CONFLICT (version) DO NOTHING`,
+    [MYNTRA_BLANK_TRACKING_CANCELLED_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${MYNTRA_BLANK_TRACKING_CANCELLED_SCHEMA_VERSION} applied.`);
 }
 
 async function ensureMyntraEjRateCardsSeed(pool) {

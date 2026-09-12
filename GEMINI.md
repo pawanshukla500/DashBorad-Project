@@ -38,7 +38,7 @@ Whenever modifying, extending, or debugging data ingestion, orders, returns, set
    - `myntra_vb`: Seller ID `10708`
    - `myntra_ej`: Seller ID `45833`
    - Files with mismatched seller IDs must be rejected immediately with zero rows saved.
-   - Blank tracking number rule: If tracking number is blank, order is marked `Delivered` with `return_type = 'RTO'`, and a synthesized return (`Cancel before ship`) is inserted into `returns`.
+   - Blank tracking number rule: If tracking number is blank, order is marked `Cancelled` with `return_type = 'Courier Return'`, and a synthesized return (`Cancel Before Dispached`) is inserted into `returns`.
    - Return date resolution: If `return_created_date` is empty or 1970 epoch, fallback to `order_rto_date`.
 2. **Amazon Pipeline**:
    - Zero synthetic keys: Never create synthetic `AMZ-{order_id}-{sku}` keys.

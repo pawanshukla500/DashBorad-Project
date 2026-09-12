@@ -116,7 +116,7 @@ function fulfillment(model) {
 }
 
 function orderLifecycle(row) {
-  if (!value(row, 'order tracking number')) return 'Delivered';
+  if (!value(row, 'order tracking number')) return 'Cancelled';
   if (value(row, 'cancelled on')) return 'Cancelled';
   if (value(row, 'rto creation date')) return 'RTO';
   if (value(row, 'return creation date')) return 'Return Initiated';
@@ -125,7 +125,8 @@ function orderLifecycle(row) {
 }
 
 function orderReturnType(row) {
-  if (!value(row, 'order tracking number') || value(row, 'rto creation date')) return 'RTO';
+  if (!value(row, 'order tracking number')) return 'Courier Return';
+  if (value(row, 'rto creation date')) return 'RTO';
   return value(row, 'return creation date') ? 'Customer Return' : null;
 }
 
@@ -343,11 +344,11 @@ function synthesizedBlankTrackingReturn(row, sellerAccount) {
     fulfillment(value(row, 'po_type')),
     returnDate,
     returnDate,
-    'Delivered',
-    'Cancel before ship',
-    value(row, 'cancellation reason') || null,
-    'RTO',
-    'Delivered',
+    'Cancelled',
+    'Cancel Before Dispached',
+    value(row, 'cancellation reason') || 'Cancel Before Dispached',
+    'Courier Return',
+    'Cancelled',
     null,
     null,
     value(row, 'seller sku code'),
@@ -615,8 +616,9 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
       SET 
         return_type = r.return_type,
         orders_status = CASE 
-          WHEN r.return_reason = 'Cancel before ship' THEN 'Delivered'
+          WHEN r.return_reason IN ('Cancel before ship', 'Cancel Before Dispached') THEN 'Cancelled'
           WHEN r.return_type = 'RTO' THEN 'RTO'
+          WHEN r.return_type = 'Courier Return' THEN 'Cancelled'
           WHEN o.orders_status IS NULL OR o.orders_status IN ('Delivered', 'Shipped', 'Complete', '') 
             THEN 'Return Orders' 
           ELSE o.orders_status 

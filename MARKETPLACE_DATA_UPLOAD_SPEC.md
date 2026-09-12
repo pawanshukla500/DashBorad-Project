@@ -162,13 +162,13 @@ The business operates two distinct Myntra seller accounts:
   - All other PO types are classified as **`FBM`**.
 - **Blank Tracking Number & Synthesized Return Rule**:
   - When `order tracking number` is empty or blank:
-    1. Order in `orders` is marked with `orders_status = 'Delivered'` and `return_type = 'RTO'`.
+    1. Order in `orders` is marked with `orders_status = 'Cancelled'` and `return_type = 'Courier Return'`.
     2. A synthesized return row is automatically generated and inserted into `returns` with:
        - `return_id = 'RTO-' + order_line_id`
        - `order_item_id = order_line_id`
-       - `return_reason = 'Cancel before ship'`
-       - `return_type = 'RTO'`
-       - `return_status = 'Delivered'`
+       - `return_reason = 'Cancel Before Dispached'`
+       - `return_type = 'Courier Return'`
+       - `return_status = 'Cancelled'`
        - `return_requested_date = cancelled_on || created_on`
 - **Dual Table Ingestion**:
   1. `myntra_order_details`: Full 46-column audit record (`seller_account`, `order_line_id`, `order_release_id`, `store_order_id`, `style_id`, `vendor_article_number`, `brand`, `final_amount`, `seller_price`, raw `source_data` JSONB).
@@ -189,7 +189,7 @@ The business operates two distinct Myntra seller accounts:
 - **Order State Synchronization**:
   - Executes immediate cross-table update on `orders`:
     - Updates `return_type`.
-    - Updates `orders_status`: `'Delivered'` if return reason is 'Cancel before ship', `'RTO'` if return type is RTO, `'Return Orders'` if customer return.
+    - Updates `orders_status`: `'Cancelled'` if return reason is 'Cancel Before Dispached', `'RTO'` if return type is RTO, `'Return Orders'` if customer return.
 
 ### 3.4 Myntra Payments / Invoices (SOR Settlement) & NOD
 - **Route**: `POST /api/mp-settlement/invoices/upload?marketplace=myntra&seller_account=myntra_ej|myntra_vb`
