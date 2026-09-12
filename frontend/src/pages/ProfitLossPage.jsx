@@ -1,4 +1,4 @@
-﻿import { useFilters } from '../context/FilterContext';
+import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
 import { fetchProfitLoss, fetchCharges } from '../api/client';
 import { Link } from 'react-router-dom';
@@ -294,7 +294,7 @@ export default function ProfitLossPage() {
                   {byCategory.map((c, i) => (
                     <tr key={i} className="hover:bg-surface-container-low/60 transition-colors">
                       <td className="px-4 py-3">
-                        <span className="bg-primary-container text-primary px-2 py-0.5 rounded-full text-[10px] font-medium">{c.category}</span>
+                        <span className="inline-block bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize whitespace-nowrap">{c.category ? c.category.replace(/_/g, ' ') : '—'}</span>
                       </td>
                       <td className="px-4 py-3 text-ink font-medium">{num(c.orders)}</td>
                       <td className="px-4 py-3 text-secondary">{num(c.returns)}</td>
