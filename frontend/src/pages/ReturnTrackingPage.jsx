@@ -127,9 +127,7 @@ export default function ReturnTrackingPage() {
 
       {/* Info note about template */}
       <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-xs text-blue-800">
-        <svg className="w-4 h-4 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
+        <span className="material-symbols-outlined mt-0.5 shrink-0 text-[18px]" aria-hidden="true">info</span>
         <span>
           Download the Excel template pre-filled with all return orders → fill columns O–R (Received?, Condition, Date, Notes) →
           upload back. <strong>Condition: Good</strong> = no issue. <strong>Bad</strong> = damaged; system will auto-check if SPF
@@ -141,28 +139,25 @@ export default function ReturnTrackingPage() {
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex gap-1 bg-surface-container rounded-lg p-1">
           {[['all', 'All'], ['not-received', 'Not Received'], ['bad', 'Bad Returns'], ['spf-pending', 'SPF Pending']].map(([v, l]) => (
-            <button key={v} onClick={() => { setFilter(v); setPage(1); }}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${filter === v ? 'bg-surface text-ink shadow-sm' : 'text-secondary hover:text-ink'}`}
+            <button key={v} type="button" onClick={() => { setFilter(v); setPage(1); }}
+              aria-pressed={filter === v}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-primary/40 ${filter === v ? 'bg-surface text-ink shadow-sm' : 'text-secondary hover:text-ink'}`}
             >{l}</button>
           ))}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <button onClick={handleDownload}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-primary-container text-primary border border-primary rounded-lg hover:bg-primary-container font-semibold transition-colors"
+          <button type="button" onClick={handleDownload}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-primary-container text-primary border border-primary rounded-lg hover:bg-primary-container font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-primary/40"
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
+            <span className="material-symbols-outlined text-[16px]" aria-hidden="true">download</span>
             Download Template
           </button>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
             onChange={e => handleUpload(e.target.files[0])} />
-          <button onClick={() => fileRef.current?.click()} disabled={uploading}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 font-semibold transition-colors disabled:opacity-60"
+          <button type="button" onClick={() => fileRef.current?.click()} disabled={uploading} aria-busy={uploading}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 font-semibold transition-colors disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-emerald-400"
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12" />
-            </svg>
+            <span className={`material-symbols-outlined text-[16px] ${uploading ? 'animate-spin' : ''}`} aria-hidden="true">{uploading ? 'progress_activity' : 'upload'}</span>
             {uploading ? 'Uploading…' : 'Upload Returns'}
           </button>
         </div>
@@ -172,7 +167,9 @@ export default function ReturnTrackingPage() {
       {uploadMsg && (
         <div className={`px-4 py-2.5 rounded-lg text-sm flex items-center gap-2 ${uploadMsg.ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
           {uploadMsg.text}
-          <button onClick={() => setUploadMsg(null)} className="ml-auto text-outline hover:text-secondary text-base leading-none">✕</button>
+          <button type="button" onClick={() => setUploadMsg(null)} aria-label="Dismiss upload message" className="ml-auto flex h-7 w-7 items-center justify-center rounded-md text-outline hover:bg-surface hover:text-secondary focus-visible:ring-2 focus-visible:ring-primary/40">
+            <span className="material-symbols-outlined text-[16px]" aria-hidden="true">close</span>
+          </button>
         </div>
       )}
 

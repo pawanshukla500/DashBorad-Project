@@ -17,17 +17,16 @@ export default class ErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (
-        <div className="m-6 rounded-xl border border-rose-200 bg-rose-50 p-6">
+        <div className="m-6 rounded-xl border border-rose-200 bg-rose-50 p-6" role="alert">
           <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
+            <span className="material-symbols-outlined mt-0.5 shrink-0 text-[20px] text-rose-500" aria-hidden="true">error</span>
             <div>
               <p className="text-rose-700 font-semibold">Something went wrong</p>
               <p className="text-rose-600 text-sm font-mono mt-1">{this.state.error}</p>
               <button
+                type="button"
                 onClick={() => { this.setState({ error: null }); window.location.reload(); }}
-                className="mt-3 text-sm text-rose-700 underline hover:no-underline"
+                className="mt-3 rounded-md text-sm text-rose-700 underline hover:no-underline focus-visible:ring-2 focus-visible:ring-rose-400"
               >
                 Try again (reload page)
               </button>

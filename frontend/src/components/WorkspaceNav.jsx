@@ -19,7 +19,7 @@ export default function WorkspaceNav() {
             key={tab.path}
             to={tab.path}
             aria-current={active ? 'page' : undefined}
-            className={`relative flex shrink-0 items-center px-3 font-sans text-body-sm transition-colors ${
+            className={`relative flex min-h-[44px] shrink-0 items-center rounded-lg px-3 font-sans text-body-sm transition-colors focus-visible:ring-2 focus-visible:ring-primary/40 ${
               active
                 ? 'font-semibold text-primary'
                 : 'font-medium text-secondary hover:text-ink'

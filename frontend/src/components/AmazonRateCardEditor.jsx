@@ -4,12 +4,12 @@ import { currency as amount } from '../utils/format';
 import { useAuth } from '../context/AuthContext';
 
 const TABS = [
-  { id: 'commission', label: 'Commission', icon: '💰', color: 'bg-indigo-600', text: 'text-indigo-600' },
-  { id: 'fixed_closing_fee', label: 'Fixed Closing Fee', icon: '🏷️', color: 'bg-violet-600', text: 'text-violet-600' },
-  { id: 'fba_pick_pack', label: 'Pick & Pack (FBA)', icon: '📦', color: 'bg-cyan-600', text: 'text-cyan-600' },
-  { id: 'fba_weight_handling', label: 'Weight Handling', icon: '⚖️', color: 'bg-rose-600', text: 'text-rose-600' },
-  { id: 'technology_fee', label: 'Flex Tech Fee', icon: '💻', color: 'bg-blue-600', text: 'text-blue-600' },
-  { id: 'return_processing_fee', label: 'Return Processing', icon: '🔄', color: 'bg-amber-600', text: 'text-amber-600' }
+  { id: 'commission', label: 'Commission', icon: 'currency_rupee', color: 'bg-indigo-600', text: 'text-indigo-600' },
+  { id: 'fixed_closing_fee', label: 'Fixed Closing Fee', icon: 'sell', color: 'bg-violet-600', text: 'text-violet-600' },
+  { id: 'fba_pick_pack', label: 'Pick & Pack (FBA)', icon: 'inventory_2', color: 'bg-cyan-600', text: 'text-cyan-600' },
+  { id: 'fba_weight_handling', label: 'Weight Handling', icon: 'scale', color: 'bg-rose-600', text: 'text-rose-600' },
+  { id: 'technology_fee', label: 'Flex Tech Fee', icon: 'computer', color: 'bg-blue-600', text: 'text-blue-600' },
+  { id: 'return_processing_fee', label: 'Return Processing', icon: 'assignment_return', color: 'bg-amber-600', text: 'text-amber-600' }
 ];
 
 const EMPTY_RULE = {
@@ -110,8 +110,8 @@ function RuleForm({ catalog, tab, initialRule, onSave, onCancel, saving }) {
           <input value={form.notes || ''} onChange={e => patch('notes', e.target.value)} placeholder="Rate card reference" className="input bg-white" />
         </Field>
         <div className="flex-1 flex justify-end items-end gap-3 min-w-[200px]">
-          <button type="button" onClick={onCancel} className="px-3 py-1.5 text-xs font-bold text-secondary hover:text-ink">Cancel</button>
-          <button type="submit" disabled={saving} className="rounded-lg bg-primary px-5 py-2 text-xs font-bold text-white hover:bg-primary/90 disabled:opacity-50">
+          <button type="button" onClick={onCancel} className="rounded-lg px-3 py-1.5 text-xs font-bold text-secondary hover:text-ink focus-visible:ring-2 focus-visible:ring-primary/40">Cancel</button>
+          <button type="submit" disabled={saving} aria-busy={saving} className="rounded-lg bg-primary px-5 py-2 text-xs font-bold text-white hover:bg-primary/90 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2">
             {saving ? 'Saving…' : initialRule?.id ? 'Save change' : 'Add rate parameter'}
           </button>
         </div>
@@ -157,8 +157,8 @@ function RuleTable({ rules, onEdit, onDelete, deleting }) {
                 {rule.start_date ? rule.start_date.slice(0,10) : 'Always'}
               </td>
               <td className="px-4 py-3 text-right">
-                <button onClick={() => onEdit(rule)} className="px-3 py-1.5 text-xs font-bold text-primary hover:bg-surface-container rounded transition-colors mr-2">Edit</button>
-                <button onClick={() => onDelete(rule)} disabled={deleting === rule.id} className="px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded transition-colors">Del</button>
+                <button type="button" onClick={() => onEdit(rule)} className="mr-2 rounded px-3 py-1.5 text-xs font-bold text-primary transition-colors hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary/40">Edit</button>
+                <button type="button" onClick={() => onDelete(rule)} disabled={deleting === rule.id} className="rounded px-3 py-1.5 text-xs font-bold text-rose-600 transition-colors hover:bg-rose-50 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-rose-400">Del</button>
               </td>
             </tr>
           ))}
@@ -239,13 +239,13 @@ export default function AmazonRateCardEditor({ sellerAccount = 'default' }) {
             const isAct = tab === t.id;
             const gapCnt = (t.id === tab) ? missingCategories.length : 0; // Only calculate for active tab for perf, or could calculate all
             return (
-              <button key={t.id} onClick={() => { setTab(t.id); setEditing(null); }}
-                className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold rounded-t-xl transition-all ${
+              <button key={t.id} type="button" onClick={() => { setTab(t.id); setEditing(null); }}
+                className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold rounded-t-xl transition-all focus-visible:ring-2 focus-visible:ring-primary/40 ${
                   isAct
                     ? `${t.color} text-white -mb-px border border-b-white border-border`
                     : 'text-secondary hover:text-ink hover:bg-surface-container-low'
                 }`}>
-                <span>{t.icon}</span>
+                <span className="material-symbols-outlined text-[18px]" aria-hidden="true">{t.icon}</span>
                 {t.label}
               </button>
             );
@@ -259,12 +259,13 @@ export default function AmazonRateCardEditor({ sellerAccount = 'default' }) {
               <button
                 type="button"
                 onClick={() => setShowMissing(!showMissing)}
-                className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-orange-100/50 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500 text-white shadow-sm">
-                    {activeTabConfig.icon}
-                  </div>
+                  aria-expanded={showMissing}
+                  className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-orange-100/50 transition-colors focus-visible:ring-2 focus-visible:ring-orange-400"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500 text-white shadow-sm">
+                      <span className="material-symbols-outlined text-[18px]" aria-hidden="true">{activeTabConfig.icon}</span>
+                    </div>
                   <h3 className="text-sm font-bold text-orange-950">
                     {missingCategories.length} categories missing {activeTabConfig.label}
                   </h3>
@@ -283,7 +284,7 @@ export default function AmazonRateCardEditor({ sellerAccount = 'default' }) {
                         <button
                           type="button"
                           onClick={() => { setEditing({ ...EMPTY_RULE, fee_code: tab, category: cat }); setShowMissing(false); }}
-                          className="w-full flex items-center justify-between gap-2 text-left group"
+                          className="group flex w-full items-center justify-between gap-2 text-left focus-visible:ring-2 focus-visible:ring-primary/40"
                         >
                           <span className="text-xs font-semibold text-ink truncate uppercase">{cat}</span>
                           <span className="shrink-0 text-[10px] font-bold text-primary bg-primary-container px-2 py-0.5 rounded-md group-hover:bg-primary-container">
@@ -301,13 +302,14 @@ export default function AmazonRateCardEditor({ sellerAccount = 'default' }) {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-base font-bold text-ink">{activeTabConfig.label} Rates</h2>
             {isAdmin && !editing && (
-              <button onClick={() => setEditing({ ...EMPTY_RULE, fee_code: tab })} className="rounded-full bg-primary px-4 py-2 text-xs font-bold text-white hover:bg-primary/90">
-                + Add {activeTabConfig.label}
+              <button type="button" onClick={() => setEditing({ ...EMPTY_RULE, fee_code: tab })} className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-xs font-bold text-white hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2">
+                <span className="material-symbols-outlined text-[16px]" aria-hidden="true">add</span>
+                Add {activeTabConfig.label}
               </button>
             )}
           </div>
 
-          {error && <div className="mb-4 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{error}</div>}
+          {error && <div className="mb-4 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700" role="alert">{error}</div>}
 
           {isAdmin && editing && (
             <RuleForm catalog={data.feeCatalog} tab={tab} initialRule={editing} onSave={saveRule} onCancel={() => setEditing(null)} saving={saving} />

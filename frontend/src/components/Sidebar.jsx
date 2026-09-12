@@ -17,6 +17,7 @@ function WorkspaceIcon({ name, filled }) {
   return (
     <span
       className="material-symbols-outlined text-[20px]"
+      aria-hidden="true"
       style={filled ? { fontVariationSettings: "'FILL' 1" } : undefined}
     >
       {ICONS[name] || 'circle'}
@@ -28,7 +29,7 @@ function Brand() {
   return (
     <div className="flex items-center px-6 mb-6 gap-2.5">
       <img src="/logo.png" alt="ReconCentral Logo" className="h-8 w-8 object-contain" />
-      <span className="font-display text-headline-md font-semibold text-ink tracking-tight">ReconCentral</span>
+      <span className="font-display text-headline-md font-semibold text-ink">ReconCentral</span>
     </div>
   );
 }
@@ -59,6 +60,7 @@ export default function Sidebar({ open = false, onClose }) {
         className={`fixed inset-y-0 left-0 z-50 flex w-sidebar-width shrink-0 flex-col bg-surface border-r border-border py-6 transition-transform duration-200 lg:static lg:z-auto lg:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
+        aria-label="Primary navigation"
       >
         <Brand />
 
@@ -70,7 +72,7 @@ export default function Sidebar({ open = false, onClose }) {
                 key={workspace.key}
                 to={workspace.path}
                 aria-current={active ? 'page' : undefined}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-primary/40 ${
                   active
                     ? 'text-primary font-semibold bg-surface-container-low'
                     : 'text-secondary font-medium hover:text-ink hover:bg-surface-container-low'

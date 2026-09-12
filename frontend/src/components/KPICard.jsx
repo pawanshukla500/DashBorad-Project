@@ -25,18 +25,18 @@ export default function KPICard({ title, label, value, sub, color = 'primary', i
   const animatedValue = useAnimatedDisplayValue(value);
 
   return (
-    <div className={`bg-surface rounded-xl border border-border ${compact ? 'p-card-padding' : 'p-4'} flex flex-col gap-3`}>
+    <div className={`bg-surface rounded-xl border border-border ${compact ? 'p-card-padding' : 'p-4'} flex min-w-0 flex-col gap-3`} role="group" aria-label={heading}>
       <div className="flex items-start justify-between gap-2">
-        <p className="font-sans text-label-md text-outline uppercase">{heading}</p>
+        <p className="min-w-0 font-sans text-label-md text-outline uppercase">{heading}</p>
         {icon && (
-          <div className={`${compact ? 'w-8 h-8' : 'w-9 h-9'} rounded-lg flex items-center justify-center shrink-0 border ${tone.bg} ${tone.text} ${tone.border}`}>
+          <div className={`${compact ? 'w-8 h-8' : 'w-9 h-9'} rounded-lg flex items-center justify-center shrink-0 border ${tone.bg} ${tone.text} ${tone.border}`} aria-hidden="true">
             {icon}
           </div>
         )}
       </div>
-      <div>
-        <p className="font-sans text-financial-lg font-semibold text-ink tracking-tight tabular-nums">{animatedValue}</p>
-        {sub && <p className="font-sans text-body-sm text-outline mt-1">{sub}</p>}
+      <div className="min-w-0">
+        <p className="break-words font-sans text-financial-lg font-semibold text-ink tabular-nums">{animatedValue}</p>
+        {sub && <p className="mt-1 min-w-0 font-sans text-body-sm text-outline">{sub}</p>}
       </div>
     </div>
   );
