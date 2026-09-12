@@ -80,7 +80,37 @@ export async function ensureOrderSettlementTotals(pool) {
     SELECT COUNT(*) AS count, COALESCE(SUM(settled_row_count), 0) AS settled_rows
     FROM ${ORDER_SETTLEMENT_TOTALS_TABLE}
   `);
-  if (needsMetricBackfill || Number(rows[0]?.count || 0) === 0 || Number(rows[0]?.settled_rows || 0) === 0) {
+
+  // Ensure any Amazon orders missing an order_item_id are healed from settlements or natural keys
+  const healRes = await pool.query(`
+    WITH sl AS (
+      SELECT DISTINCT ON (order_id, sku) order_id, sku, order_item_code
+      FROM amazon_settlement_lines
+      WHERE order_item_code IS NOT NULL AND order_item_code != ''
+      ORDER BY order_id, sku, posted_date DESC
+    ),
+    healed_from_settlement AS (
+      UPDATE orders o
+      SET order_item_id = sl.order_item_code
+      FROM sl
+      WHERE o.order_id = sl.order_id
+        AND o.sku = sl.sku
+        AND o.marketplace = 'amazon'
+        AND (o.order_item_id IS NULL OR o.order_item_id = '')
+      RETURNING o.id
+    ),
+    healed_remaining AS (
+      UPDATE orders o
+      SET order_item_id = 'AMZ:' || o.order_id || ':' || o.sku
+      WHERE o.marketplace = 'amazon'
+        AND (o.order_item_id IS NULL OR o.order_item_id = '')
+      RETURNING o.id
+    )
+    SELECT (SELECT COUNT(*) FROM healed_from_settlement) + (SELECT COUNT(*) FROM healed_remaining) AS healed_count;
+  `);
+  const healedCount = Number(healRes.rows[0]?.healed_count || 0);
+
+  if (needsMetricBackfill || Number(rows[0]?.count || 0) === 0 || Number(rows[0]?.settled_rows || 0) === 0 || healedCount > 0) {
     await refreshOrderSettlementTotals(pool);
   }
 }

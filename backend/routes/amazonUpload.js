@@ -1064,6 +1064,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
       const lineItemTax = Math.round((invoiceAmount - lineProductBase) * 100) / 100;
 
       const record = {
+        order_item_id: `AMZ:${orderId}:${sku}`,
         order_id: orderId,
         sku,
         fnsku,
@@ -1111,7 +1112,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
     const rows = [...byNaturalKey.values()];
     if (!rows.length) throw inputError('No valid Amazon Sale Order rows were found. Review skipped-row reasons and correct the file before retrying.');
     const fields = [
-      'order_id', 'sku', 'fnsku', 'fsn', 'warehouse_id', 'fulfilment_type',
+      'order_item_id', 'order_id', 'sku', 'fnsku', 'fsn', 'warehouse_id', 'fulfilment_type',
       'order_date', 'purchase_date_time', 'qty', 'currency', 'product_amount',
       'item_tax', 'sale_shipping_amount', 'sale_gift_amount', 'final_invoice_amount',
       'delivery_city', 'delivery_state', 'delivery_pincode', 'brand_name', 'brand', 'marketplace',
@@ -1119,7 +1120,9 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
     ];
     const updateSet = fields
       .filter(field => !['order_id', 'sku', 'marketplace'].includes(field))
-      .map(field => `${field} = COALESCE(EXCLUDED.${field}, orders.${field})`)
+      .map(field => field === 'order_item_id'
+        ? `order_item_id = COALESCE(orders.order_item_id, EXCLUDED.order_item_id)`
+        : `${field} = COALESCE(EXCLUDED.${field}, orders.${field})`)
       .join(',\n            ');
 
     await forEachDbBatch(rows, fields.length, async batch => {
@@ -2098,7 +2101,7 @@ async function backfillOrdersFromSettlement(pool, affectedOrderIds = null, { res
     const { rowCount } = await client.query(`
     WITH classified AS (
       SELECT
-        l.order_id, l.sku, l.amount, l.transaction_type, l.amount_description,
+        l.order_id, l.sku, l.amount, l.transaction_type, l.amount_description, l.order_item_code,
         ${CATEGORY_CASE_SQL} AS category
       FROM amazon_settlement_lines l
       WHERE l.order_id IS NOT NULL AND l.sku IS NOT NULL ${lineScope}
@@ -2106,6 +2109,7 @@ async function backfillOrdersFromSettlement(pool, affectedOrderIds = null, { res
     pivoted AS (
       SELECT
         order_id, sku,
+        MAX(NULLIF(order_item_code, '')) AS order_item_code,
 
         -- ── Sale Amount = Principal + Product Tax from Order rows only ──
         -- This is what the customer ACTUALLY paid for this line item
@@ -2139,6 +2143,7 @@ async function backfillOrdersFromSettlement(pool, affectedOrderIds = null, { res
       GROUP BY order_id, sku
     )
     UPDATE orders o SET
+      order_item_id          = COALESCE(NULLIF(p.order_item_code, ''), o.order_item_id, 'AMZ:' || o.order_id || ':' || o.sku),
       -- Gross sale amount (only overwrite if settlement actually has a value)
       final_invoice_amount   = COALESCE(NULLIF(p.gross_sale_amount, 0), o.final_invoice_amount),
       settlement_amount      = p.settlement_amount,
