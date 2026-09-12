@@ -615,3 +615,11 @@ export const updateAmazonRateRule = (id, body) =>
   api.put(`/upload/amazon-settlement/rate-rules/${id}`, body).then(r => r.data);
 export const deleteAmazonRateRule = (id) =>
   api.delete(`/upload/amazon-settlement/rate-rules/${id}`).then(r => r.data);
+
+export const fetchOutstandingSummary = (params = {}) =>
+  api.get('/reconcile/outstanding/summary', { params }).then(r => r.data);
+export const fetchOutstandingOrders = (params = {}) =>
+  api.get('/reconcile/outstanding/orders', { params }).then(r => r.data);
+export const fetchOutstandingInvoices = (params = {}) =>
+  api.get('/reconcile/outstanding/invoices', { params }).then(r => r.data);
+

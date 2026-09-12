@@ -67,20 +67,44 @@ export default function Sidebar({ open = false, onClose }) {
         <nav className="flex-1 overflow-y-auto px-4 space-y-0.5">
           {workspaces.map(workspace => {
             const active = isWorkspaceActive(location.pathname, workspace);
+            const showTabs = active && workspace.tabs && workspace.tabs.length > 1;
             return (
-              <Link
-                key={workspace.key}
-                to={workspace.path}
-                aria-current={active ? 'page' : undefined}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-primary/40 ${
-                  active
-                    ? 'text-primary font-semibold bg-surface-container-low'
-                    : 'text-secondary font-medium hover:text-ink hover:bg-surface-container-low'
-                }`}
-              >
-                <WorkspaceIcon name={workspace.key} filled={active} />
-                <span className="min-w-0 truncate text-[14px]">{workspace.label}</span>
-              </Link>
+              <div key={workspace.key} className="space-y-0.5">
+                <Link
+                  to={workspace.path}
+                  aria-current={active ? 'page' : undefined}
+                  className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                    active
+                      ? 'text-primary font-semibold bg-surface-container-low'
+                      : 'text-secondary font-medium hover:text-ink hover:bg-surface-container-low'
+                  }`}
+                >
+                  <WorkspaceIcon name={workspace.key} filled={active} />
+                  <span className="min-w-0 truncate text-[14px]">{workspace.label}</span>
+                </Link>
+
+                {showTabs && (
+                  <div className="pl-4 pr-1 py-0.5 space-y-0.5 border-l-2 border-primary/25 ml-5 my-0.5">
+                    {workspace.tabs.map(tab => {
+                      const tabActive = location.pathname === tab.path || (tab.aliases && tab.aliases.includes(location.pathname));
+                      return (
+                        <Link
+                          key={tab.path}
+                          to={tab.path}
+                          aria-current={tabActive ? 'page' : undefined}
+                          className={`flex items-center px-2.5 py-1.5 rounded-md text-[13px] transition-colors ${
+                            tabActive
+                              ? 'text-primary font-semibold bg-primary/10'
+                              : 'text-secondary hover:text-ink hover:bg-surface-container-low'
+                          }`}
+                        >
+                          <span className="truncate">{tab.label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             );
           })}
         </nav>

@@ -324,6 +324,331 @@ router.get('/unsettled', async (req, res) => {
   }
 });
 
+// ── GET /api/reconcile/outstanding/summary ────────────────────────────────────
+// Consolidated and marketplace-wise overview of outstanding amounts & aging
+router.get('/outstanding/summary', async (req, res) => {
+  if (!(await isDbConfigured())) return res.json({ configured: false });
+  try {
+    const pool = getPool();
+    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
+    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+    const startDate = req.query.startDate || null;
+    const endDate = req.query.endDate || null;
+
+    let orderFilterSql = '';
+    const orderVals = [];
+    if (mkt) orderFilterSql += ` AND o.marketplace = $${orderVals.push(mkt)}`;
+    if (sellerAcc && sellerAcc !== 'all') orderFilterSql += ` AND o.seller_account = $${orderVals.push(sellerAcc)}`;
+    if (startDate) orderFilterSql += ` AND o.order_date >= $${orderVals.push(startDate)}`;
+    if (endDate) orderFilterSql += ` AND o.order_date <= $${orderVals.push(endDate)}`;
+
+    let invFilterSql = '';
+    const invVals = [];
+    if (mkt) invFilterSql += ` AND marketplace = $${invVals.push(mkt)}`;
+    if (sellerAcc && sellerAcc !== 'all') invFilterSql += ` AND seller_account = $${invVals.push(sellerAcc)}`;
+
+    const [unsettledAgg, invoiceAgg] = await Promise.all([
+      pool.query(`
+        WITH unsettled AS (
+          SELECT
+            o.marketplace,
+            o.seller_account,
+            COALESCE(o.final_invoice_amount, 0) AS amount,
+            COALESCE(CURRENT_DATE - o.order_date::date, 999) AS days_old
+          FROM orders o
+          WHERE NOT EXISTS (
+            SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
+          ) ${orderFilterSql}
+        )
+        SELECT
+          marketplace,
+          seller_account,
+          COUNT(*) AS order_count,
+          ROUND(COALESCE(SUM(amount), 0), 2) AS total_amount,
+          ROUND(COALESCE(SUM(CASE WHEN days_old <= 15 THEN amount ELSE 0 END), 0), 2) AS aging_0_15,
+          ROUND(COALESCE(SUM(CASE WHEN days_old > 15 AND days_old <= 30 THEN amount ELSE 0 END), 0), 2) AS aging_16_30,
+          ROUND(COALESCE(SUM(CASE WHEN days_old > 30 AND days_old <= 60 THEN amount ELSE 0 END), 0), 2) AS aging_31_60,
+          ROUND(COALESCE(SUM(CASE WHEN days_old > 60 THEN amount ELSE 0 END), 0), 2) AS aging_60_plus,
+          COUNT(CASE WHEN days_old <= 15 THEN 1 END) AS count_0_15,
+          COUNT(CASE WHEN days_old > 15 AND days_old <= 30 THEN 1 END) AS count_16_30,
+          COUNT(CASE WHEN days_old > 30 AND days_old <= 60 THEN 1 END) AS count_31_60,
+          COUNT(CASE WHEN days_old > 60 THEN 1 END) AS count_60_plus
+        FROM unsettled
+        GROUP BY marketplace, seller_account
+        ORDER BY marketplace, seller_account
+      `, orderVals),
+      pool.query(`
+        SELECT
+          marketplace,
+          seller_account,
+          COUNT(*) AS invoice_count,
+          ROUND(COALESCE(SUM(net_payable - amount_received), 0), 2) AS pending_amount
+        FROM mp_invoices
+        WHERE net_payable > amount_received ${invFilterSql}
+        GROUP BY marketplace, seller_account
+      `, invVals),
+    ]);
+
+    const mpDisplayName = (m, a) => {
+      if (m === 'myntra') return a === 'myntra_ej' ? 'Myntra (EJ)' : a === 'myntra_vb' ? 'Myntra (VB)' : 'Myntra';
+      if (m === 'flipkart') return 'Flipkart';
+      if (m === 'amazon') return 'Amazon';
+      if (m === 'meesho') return 'Meesho';
+      return m ? m.charAt(0).toUpperCase() + m.slice(1) : 'Unknown';
+    };
+
+    const byMarketplace = [];
+    let totalUnsettledOrders = 0;
+    let totalUnsettledAmount = 0;
+    let totalPendingInvoices = 0;
+    let totalPendingInvoiceAmount = 0;
+    const agingTotals = {
+      '0-15 days': { count: 0, amount: 0 },
+      '16-30 days': { count: 0, amount: 0 },
+      '31-60 days': { count: 0, amount: 0 },
+      '60+ days': { count: 0, amount: 0 },
+    };
+
+    for (const r of unsettledAgg.rows) {
+      const count = Number(r.order_count || 0);
+      const amount = Number(r.total_amount || 0);
+      totalUnsettledOrders += count;
+      totalUnsettledAmount += amount;
+
+      const a0_15 = Number(r.aging_0_15 || 0);
+      const a16_30 = Number(r.aging_16_30 || 0);
+      const a31_60 = Number(r.aging_31_60 || 0);
+      const a60_plus = Number(r.aging_60_plus || 0);
+
+      agingTotals['0-15 days'].count += Number(r.count_0_15 || 0);
+      agingTotals['0-15 days'].amount += a0_15;
+      agingTotals['16-30 days'].count += Number(r.count_16_30 || 0);
+      agingTotals['16-30 days'].amount += a16_30;
+      agingTotals['31-60 days'].count += Number(r.count_31_60 || 0);
+      agingTotals['31-60 days'].amount += a31_60;
+      agingTotals['60+ days'].count += Number(r.count_60_plus || 0);
+      agingTotals['60+ days'].amount += a60_plus;
+
+      const invMatch = invoiceAgg.rows.find(i => i.marketplace === r.marketplace && i.seller_account === r.seller_account);
+      const invCount = invMatch ? Number(invMatch.invoice_count || 0) : 0;
+      const invAmount = invMatch ? Number(invMatch.pending_amount || 0) : 0;
+
+      byMarketplace.push({
+        marketplace: r.marketplace,
+        seller_account: r.seller_account,
+        display_name: mpDisplayName(r.marketplace, r.seller_account),
+        unsettled_orders_count: count,
+        unsettled_amount: amount,
+        pending_invoices_count: invCount,
+        pending_invoices_amount: invAmount,
+        total_outstanding: Math.round((amount + invAmount) * 100) / 100,
+        aging_0_15: a0_15,
+        aging_16_30: a16_30,
+        aging_31_60: a31_60,
+        aging_60_plus: a60_plus,
+      });
+    }
+
+    for (const inv of invoiceAgg.rows) {
+      totalPendingInvoices += Number(inv.invoice_count || 0);
+      totalPendingInvoiceAmount += Number(inv.pending_amount || 0);
+      const existing = byMarketplace.find(b => b.marketplace === inv.marketplace && b.seller_account === inv.seller_account);
+      if (!existing) {
+        byMarketplace.push({
+          marketplace: inv.marketplace,
+          seller_account: inv.seller_account,
+          display_name: mpDisplayName(inv.marketplace, inv.seller_account),
+          unsettled_orders_count: 0,
+          unsettled_amount: 0,
+          pending_invoices_count: Number(inv.invoice_count || 0),
+          pending_invoices_amount: Number(inv.pending_amount || 0),
+          total_outstanding: Number(inv.pending_amount || 0),
+          aging_0_15: 0,
+          aging_16_30: 0,
+          aging_31_60: 0,
+          aging_60_plus: 0,
+        });
+      }
+    }
+
+    const totalOutstandingAmount = Math.round((totalUnsettledAmount + totalPendingInvoiceAmount) * 100) / 100;
+    const overdueAmount30d = Math.round((agingTotals['31-60 days'].amount + agingTotals['60+ days'].amount) * 100) / 100;
+    const overdueOrders30d = agingTotals['31-60 days'].count + agingTotals['60+ days'].count;
+
+    for (const item of byMarketplace) {
+      item.percentage_of_total = totalOutstandingAmount > 0
+        ? Math.round((item.total_outstanding / totalOutstandingAmount) * 1000) / 10
+        : 0;
+    }
+
+    res.json({
+      configured: true,
+      total_outstanding_amount: totalOutstandingAmount,
+      total_unsettled_orders: totalUnsettledOrders,
+      total_unsettled_amount: Math.round(totalUnsettledAmount * 100) / 100,
+      total_pending_invoices: totalPendingInvoices,
+      total_pending_invoice_amount: Math.round(totalPendingInvoiceAmount * 100) / 100,
+      overdue_amount_30d: overdueAmount30d,
+      overdue_orders_30d: overdueOrders30d,
+      aging: {
+        '0-15 days': { count: agingTotals['0-15 days'].count, amount: Math.round(agingTotals['0-15 days'].amount * 100) / 100 },
+        '16-30 days': { count: agingTotals['16-30 days'].count, amount: Math.round(agingTotals['16-30 days'].amount * 100) / 100 },
+        '31-60 days': { count: agingTotals['31-60 days'].count, amount: Math.round(agingTotals['31-60 days'].amount * 100) / 100 },
+        '60+ days': { count: agingTotals['60+ days'].count, amount: Math.round(agingTotals['60+ days'].amount * 100) / 100 },
+      },
+      by_marketplace: byMarketplace,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/reconcile/outstanding/orders ──────────────────────────────────────
+router.get('/outstanding/orders', async (req, res) => {
+  const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 200 });
+  if (!(await isDbConfigured())) return res.json({ configured: false, data: [], total: 0, total_amount: 0, page, pageSize });
+  try {
+    const pool = getPool();
+    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
+    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+    const agingBucket = req.query.aging_bucket || req.query.agingBucket || null;
+    const status = req.query.status || null;
+    const search = (req.query.search || '').trim();
+    const startDate = req.query.startDate || null;
+    const endDate = req.query.endDate || null;
+
+    let filterSql = '';
+    const vals = [];
+
+    if (mkt) filterSql += ` AND o.marketplace = $${vals.push(mkt)}`;
+    if (sellerAcc && sellerAcc !== 'all') filterSql += ` AND o.seller_account = $${vals.push(sellerAcc)}`;
+    if (startDate) filterSql += ` AND o.order_date >= $${vals.push(startDate)}`;
+    if (endDate) filterSql += ` AND o.order_date <= $${vals.push(endDate)}`;
+    if (status && status !== 'all') filterSql += ` AND o.orders_status = $${vals.push(status)}`;
+
+    if (agingBucket && agingBucket !== 'all') {
+      const b = String(agingBucket).toLowerCase().replace(/\s+/g, '').replace(/days/g, '');
+      if (b === '0-15' || b === '0_15') {
+        filterSql += ` AND (CURRENT_DATE - o.order_date::date) <= 15`;
+      } else if (b === '16-30' || b === '16_30') {
+        filterSql += ` AND (CURRENT_DATE - o.order_date::date) > 15 AND (CURRENT_DATE - o.order_date::date) <= 30`;
+      } else if (b === '31-60' || b === '31_60') {
+        filterSql += ` AND (CURRENT_DATE - o.order_date::date) > 30 AND (CURRENT_DATE - o.order_date::date) <= 60`;
+      } else if (b === '60+' || b === '60_plus' || b === '60plus') {
+        filterSql += ` AND ((CURRENT_DATE - o.order_date::date) > 60 OR o.order_date IS NULL)`;
+      }
+    }
+
+    if (search) {
+      filterSql += ` AND (o.order_id ILIKE $${vals.push(`%${search}%`)} OR o.order_item_id ILIKE $${vals.push(`%${search}%`)} OR o.sku ILIKE $${vals.push(`%${search}%`)})`;
+    }
+
+    const dataVals = [...vals, pageSize, offset];
+
+    const [data, cnt] = await Promise.all([
+      pool.query(`
+        SELECT
+          o.order_item_id, o.order_id, o.order_date,
+          COALESCE(CURRENT_DATE - o.order_date::date, 999) AS days_outstanding,
+          CASE
+            WHEN CURRENT_DATE - o.order_date::date <= 15 THEN '0-15 days'
+            WHEN CURRENT_DATE - o.order_date::date <= 30 THEN '16-30 days'
+            WHEN CURRENT_DATE - o.order_date::date <= 60 THEN '31-60 days'
+            ELSE '60+ days'
+          END AS aging_bucket,
+          o.sku, o.category, o.fulfilment_type,
+          o.orders_status, o.final_invoice_amount,
+          o.qty, o.weight_slab, o.shipping_zone, o.marketplace, o.seller_account,
+          rt.return_status, rt.return_type AS ret_type, rt.return_reason
+        FROM orders o
+        LEFT JOIN order_returns rt ON rt.order_item_id = o.order_item_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
+        ) ${filterSql}
+        ORDER BY o.order_date DESC NULLS LAST, o.order_item_id
+        LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}
+      `, dataVals),
+      pool.query(`
+        SELECT
+          COUNT(*) AS total,
+          ROUND(COALESCE(SUM(o.final_invoice_amount), 0), 2) AS total_amount
+        FROM orders o
+        WHERE NOT EXISTS (
+          SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
+        ) ${filterSql}
+      `, vals),
+    ]);
+
+    res.json({
+      data: data.rows,
+      total: Number(cnt.rows[0].total || 0),
+      total_amount: Number(cnt.rows[0].total_amount || 0),
+      page,
+      pageSize,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/reconcile/outstanding/invoices ────────────────────────────────────
+router.get('/outstanding/invoices', async (req, res) => {
+  const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 200 });
+  if (!(await isDbConfigured())) return res.json({ configured: false, data: [], total: 0, total_pending: 0, total_net_payable: 0, total_received: 0, page, pageSize });
+  try {
+    const pool = getPool();
+    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
+    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+    const search = (req.query.search || '').trim();
+
+    let filterSql = '';
+    const vals = [];
+    if (mkt) filterSql += ` AND marketplace = $${vals.push(mkt)}`;
+    if (sellerAcc && sellerAcc !== 'all') filterSql += ` AND seller_account = $${vals.push(sellerAcc)}`;
+    if (search) {
+      filterSql += ` AND (invoice_number ILIKE $${vals.push(`%${search}%`)} OR sku ILIKE $${vals.push(`%${search}%`)} OR order_release_id ILIKE $${vals.push(`%${search}%`)})`;
+    }
+
+    const dataVals = [...vals, pageSize, offset];
+
+    const [data, cnt] = await Promise.all([
+      pool.query(`
+        SELECT
+          id, marketplace, seller_account, invoice_number, invoice_date, dispatch_date,
+          sku, product_title, quantity, invoice_amount, net_payable, amount_received,
+          ROUND(net_payable - amount_received, 2) AS pending_balance,
+          payment_date, payment_reference, status, notes,
+          COALESCE(CURRENT_DATE - invoice_date::date, 999) AS days_outstanding
+        FROM mp_invoices
+        WHERE net_payable > amount_received ${filterSql}
+        ORDER BY invoice_date DESC NULLS LAST, id
+        LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}
+      `, dataVals),
+      pool.query(`
+        SELECT
+          COUNT(*) AS total,
+          ROUND(COALESCE(SUM(net_payable - amount_received), 0), 2) AS total_pending,
+          ROUND(COALESCE(SUM(net_payable), 0), 2) AS total_net_payable,
+          ROUND(COALESCE(SUM(amount_received), 0), 2) AS total_received
+        FROM mp_invoices
+        WHERE net_payable > amount_received ${filterSql}
+      `, vals),
+    ]);
+
+    res.json({
+      data: data.rows,
+      total: Number(cnt.rows[0].total || 0),
+      total_pending: Number(cnt.rows[0].total_pending || 0),
+      total_net_payable: Number(cnt.rows[0].total_net_payable || 0),
+      total_received: Number(cnt.rows[0].total_received || 0),
+      page,
+      pageSize,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/reconcile/by-order ───────────────────────────────────────────────
 // Search by order_id → returns all item_ids under that order with settlement status
 router.get('/by-order', async (req, res) => {
