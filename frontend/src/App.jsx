@@ -22,6 +22,7 @@ const CalculatorPage = lazy(() => import('./pages/CalculatorPage'));
 const StatementPage = lazy(() => import('./pages/StatementPage'));
 const OrderLifecyclePage = lazy(() => import('./pages/OrderLifecyclePage'));
 const PaymentReconciliationPage = lazy(() => import('./pages/PaymentReconciliationPage'));
+const OutstandingPaymentsPage = lazy(() => import('./pages/OutstandingPaymentsPage'));
 const RateAuditPage = lazy(() => import('./pages/RateAuditPage'));
 const AmazonReconciliationPage = lazy(() => import('./pages/AmazonReconciliationPage'));
 const UploadPage = lazy(() => import('./pages/UploadPage'));
@@ -160,6 +161,7 @@ function AppRoutes({ user }) {
       <Route path="/cash-flow" element={<CashFlowPage />} />
       <Route path="/calculator" element={<CalculatorPage />} />
       <Route path="/payments" element={<PaymentReconciliationPage />} />
+      <Route path="/outstanding-payments" element={<OutstandingPaymentsPage />} />
       <Route path="/statement" element={<StatementPage />} />
       <Route path="/unified-linkup" element={<OrderLifecyclePage />} />
       <Route path="/rate-audit" element={<RateAuditPage />} />
