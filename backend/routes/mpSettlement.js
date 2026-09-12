@@ -82,6 +82,26 @@ function invoiceAlias(row, ...keys) {
   return '';
 }
 
+export function isRepeatedHeaderValue(val) {
+  const norm = String(val ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  return norm === 'sellerid' || norm === 'seller' || norm === 'orderreleaseid' || norm === 'orderid' || norm === 'orderlineid';
+}
+
+export function isRepeatedInvoiceHeader(row) {
+  if (!row || typeof row !== 'object') return false;
+  const sellerId = invoiceAlias(row, 'seller_id', 'sellerid');
+  if (sellerId && isRepeatedHeaderValue(sellerId)) return true;
+  const orderReleaseId = invoiceAlias(row, 'order_release_id', 'order_id');
+  if (orderReleaseId && isRepeatedHeaderValue(orderReleaseId)) return true;
+  const orderLineId = invoiceAlias(row, 'order_line_id');
+  if (orderLineId && isRepeatedHeaderValue(orderLineId)) return true;
+  const neftRef = invoiceAlias(row, 'neft_ref', 'payment_reference');
+  if (neftRef && String(neftRef).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'neftref') return true;
+  const invNo = invoiceAlias(row, 'invoice_number', 'invoiceno');
+  if (invNo && String(invNo).trim().toLowerCase().replace(/[\s_-]+/g, '') === 'invoicenumber') return true;
+  return false;
+}
+
 function invalidNumberLabel(label, raw, { required = false } = {}) {
   if (!hasValue(raw)) return required ? { error: `${label} is empty` } : { value: 0 };
   const value = optionalNumber(raw);
@@ -136,6 +156,9 @@ export function invoiceSourceFingerprint({
 // Parse one invoice row before any write. This keeps a malformed finance cell
 // from becoming 0 and then being treated as a valid, paid/partially-paid row.
 export function parseInvoiceUploadRow(row, { marketplace, sellerAccount, batch }) {
+  if (isRepeatedInvoiceHeader(row)) {
+    return { error: 'repeated header row' };
+  }
   // Myntra payment rows identify the settled order by Order Release ID — the
   // same ID the Order upload stores as orders.order_id — with Store Order ID
   // only as a fallback for layouts without the release column.
@@ -366,11 +389,12 @@ export function validateMyntraInvoiceSellerIds(rows, sellerAccount) {
   const expectedSellerId = MYNTRA_SELLER_IDS[sellerAccount];
   if (!expectedSellerId) return;
   const mismatches = rows
+    .filter(row => !isRepeatedInvoiceHeader(row))
     .map((row, index) => ({
       rowNum: index + 2,
       sellerId: stripIdApostrophe(invoiceAlias(row, 'seller_id', 'sellerid')),
     }))
-    .filter(entry => entry.sellerId && entry.sellerId !== expectedSellerId);
+    .filter(entry => entry.sellerId && !isRepeatedHeaderValue(entry.sellerId) && entry.sellerId !== expectedSellerId);
   if (!mismatches.length) return;
 
   const foundIds = [...new Set(mismatches.map(entry => entry.sellerId))].slice(0, 4);
@@ -1211,7 +1235,10 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
     // settlement read model must be rebuilt exactly like Flipkart/Amazon do
     // after their settlement imports.
     if (mp === 'myntra' && (inserted || updated)) {
-      const affectedOrderIds = raw.map(r => stripIdApostrophe(invoiceAlias(r, 'order_release_id', 'order_id', 'release_id'))).filter(Boolean);
+      const affectedOrderIds = raw
+        .filter(r => !isRepeatedInvoiceHeader(r))
+        .map(r => stripIdApostrophe(invoiceAlias(r, 'order_release_id', 'order_id', 'release_id')))
+        .filter(Boolean);
       await backfillOrdersFromMyntraPayment(pool, sellerAccount, affectedOrderIds);
       await refreshOrderSettlementTotals(pool);
     }
