@@ -449,7 +449,23 @@ export function parseAmazonFbaReturnRow(row, idx) {
   };
 }
 
+function flexTransitDays(value, label) {
+  const text = String(value ?? '').trim();
+  if (!text) return { value: null };
+  const cleanNum = text.replace(/^[>]/, '').trim();
+  if (!/^\d+$/.test(cleanNum)) return { error: `${label} must be a whole number` };
+  const parsed = Number(cleanNum);
+  return Number.isSafeInteger(parsed) && parsed >= 0
+    ? { value: parsed }
+    : { error: `${label} must be a whole number` };
+}
+
 export function parseAmazonFlexReturnRow(row, idx) {
+  const returnStatus = str(getCell(row, idx, 'Return Status'));
+  if (returnStatus && (returnStatus.toLowerCase().includes('cancelled pick-up') || returnStatus.toLowerCase().includes('canceled pick-up'))) {
+    return { skipped: true, reason: 'Customer cancelled pick-up (Return cancelled)' };
+  }
+
   const orderId = amazonReturnText(getCell(row, idx, 'Customer Order ID', 'customer-order-id', 'order-id'), 'Customer Order ID', { required: true });
   const sellerSku = amazonReturnText(getCell(row, idx, 'mSKU', 'msku'), 'mSKU', { required: true });
   const rmaId = amazonReturnText(getCell(row, idx, 'RMA ID', 'rma-id'), 'RMA ID');
@@ -461,8 +477,8 @@ export function parseAmazonFlexReturnRow(row, idx) {
   const units = positiveInteger(getCell(row, idx, 'Units'));
   const rawOtp = getCell(row, idx, 'Returned with OTP');
   const returnedWithOtp = bool(rawOtp);
-  const transitDays = strictOptionalInteger(getCell(row, idx, 'Days In-transit'), 'Days In-transit');
-  const completeDays = strictOptionalInteger(getCell(row, idx, 'Days Since Return Complete'), 'Days Since Return Complete');
+  const transitDays = flexTransitDays(getCell(row, idx, 'Days In-transit'), 'Days In-transit');
+  const completeDays = flexTransitDays(getCell(row, idx, 'Days Since Return Complete'), 'Days Since Return Complete');
   if (orderId.error || sellerSku.error || rmaId.error || pickupDate.error || updatedDate.error) {
     return orderId.error ? orderId : (sellerSku.error ? sellerSku : (rmaId.error ? rmaId : (pickupDate.error ? pickupDate : updatedDate)));
   }
@@ -477,6 +493,8 @@ export function parseAmazonFlexReturnRow(row, idx) {
     rmaId: rmaId.value, sellerSku: sellerSku.value, reverseTrackingId, forwardTrackingId, shipmentId,
     orderId: orderId.value, rowNumber: 0,
   });
+  const rawType = (str(getCell(row, idx, 'Return Type')) || '').trim().toUpperCase();
+  const returnType = (rawType === 'UNDELIVERED' || rawType.startsWith('UNDELIVERABLE')) ? 'RTO' : 'CUSTOMER_RETURN';
   return {
     values: {
       order_item_id: orderItemId,
@@ -492,7 +510,7 @@ export function parseAmazonFlexReturnRow(row, idx) {
       units,
       forward_tracking_id: forwardTrackingId,
       reverse_logistics_tracking_id: reverseTrackingId,
-      return_status: str(getCell(row, idx, 'Return Status')),
+      return_status: returnStatus,
       carrier: str(getCell(row, idx, 'Carrier')),
       return_requested_date: pickupDate.value,
       return_approval_date: updatedDate.value,
@@ -500,7 +518,7 @@ export function parseAmazonFlexReturnRow(row, idx) {
       days_in_transit: transitDays.value,
       days_since_return_complete: completeDays.value,
       return_reason: str(getCell(row, idx, 'Return Reason')),
-      return_type: str(getCell(row, idx, 'Return Type')) || 'CUSTOMER_RETURN',
+      return_type: returnType,
       fulfilment_type: 'Flex',
       marketplace: 'amazon',
     },
@@ -555,10 +573,17 @@ async function markFlexReturnsReceived(pool, returnRows) {
 
 function dt(v) {
   if (!v) return null;
+  if (v instanceof Date) {
+    return isNaN(v.getTime()) ? null : `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
+  }
   const s = (v + '').trim();
   if (!s) return null;
   const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
   if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  const d = new Date(s);
+  if (!isNaN(d.getTime()) && !/^\d+$/.test(s) && (s.includes('GMT') || s.includes('T') || s.includes('UTC'))) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
   return normalizeSqlDate(s);
 }
 function dtIso(v) {
@@ -1465,6 +1490,11 @@ router.post('/amazon-flex-returns', upload.single('file'), async (req, res) => {
 
     for (let i = 0; i < data.length; i++) {
       const parsed = parseAmazonFlexReturnRow(data[i], idx);
+      if (parsed.skipped) {
+        skipped++;
+        skippedRows.push({ rowNum: i + 2, reason: parsed.reason, data: { row: data[i].slice(0, 18) } });
+        continue;
+      }
       if (parsed.error) {
         skipped++;
         skippedRows.push({ rowNum: i + 2, reason: parsed.error, data: { row: data[i].slice(0, 18) } });
@@ -1496,6 +1526,28 @@ router.post('/amazon-flex-returns', upload.single('file'), async (req, res) => {
     inserted = r.inserted;
     updated  = r.updated;
     const receivedMarked = await markFlexReturnsReceived(pool, rows);
+
+    // Sync return_type and orders_status into orders table for matching Amazon orders
+    await pool.query(`
+      UPDATE orders o
+      SET 
+        return_type = r.return_type,
+        orders_status = CASE 
+          WHEN r.return_type = 'RTO' THEN 'RTO'
+          WHEN o.orders_status IS NULL OR o.orders_status IN ('Delivered', 'Shipped', 'Complete', '') THEN 'Returned'
+          ELSE o.orders_status 
+        END
+      FROM (
+        SELECT DISTINCT ON (order_id, sku) order_id, sku, return_type
+        FROM returns
+        WHERE marketplace = 'amazon'
+        ORDER BY order_id, sku, return_date_time DESC NULLS LAST, uploaded_at DESC
+      ) r
+      WHERE o.order_id = r.order_id
+        AND o.sku = r.sku
+        AND o.marketplace = 'amazon'
+        AND (o.return_type IS DISTINCT FROM r.return_type OR o.orders_status IN ('Delivered', 'Shipped', 'Complete', '', NULL))
+    `);
 
     const logId = await logUpload(pool, 'amazon_flex_returns', req.file.originalname, marketplace,
                                   inserted, updated, skipped, 'ok');

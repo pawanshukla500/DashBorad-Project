@@ -296,12 +296,28 @@ Previous migrations attempted to synthesize composite keys like `AMZ-{order_id}-
 
 ### 4.5 Amazon Flex Returns (Seller Fulfilled)
 - **Route**: `POST /api/upload/amazon-flex-returns`
-- **Natural Key**: **RMA ID** (`RMA ID`). Stored directly in `returns.order_item_id`.
+- **Natural Key**: **RMA ID** (`RMA ID`). If RMA ID is missing, falls back to `FLEX-TRACK-{reverse_tracking_id}-{sku}` or `{forward_tracking_id}-{sku}`. Stored directly in `returns.order_item_id`.
 - **CRITICAL COLUMN SWAP**:
   - In Amazon Flex exports, the column header `SKU` contains the Amazon FNSKU barcode.
   - The column header `mSKU` contains the actual merchant seller SKU.
   - Ingestion mapping: `mSKU -> sku` and `SKU -> fnsku`.
-- **Headers**: `Return Type`, `Customer Order ID`, `Shipment ID`, `SKU` (FNSKU), `mSKU` (Seller SKU), `ASIN`, `Units`, `Forward Leg Tracking ID`, `Reverse Leg Tracking ID`, `RMA ID`, `Return Status`, `Carrier`, `Pick -up date`, `Last Updated On`, `Return Reason`.
+- **Exclusion Filter (Customer Cancelled Pick-up)**:
+  - **Rule**: If `Return Status` matches `Customer cancelled pick-up` (or variant `canceled pick-up`), the return request was cancelled by the buyer prior to courier handover.
+  - **Action**: These rows are **strictly filtered out and excluded** from insertion into `returns` (`skipped: true`). This prevents phantom return records and false RTO/return classification on active or delivered orders.
+- **Return Type & RTO Classification**:
+  - **RTO (`return_type = 'RTO'`)**: Triggered when `Return Type = 'UNDELIVERED'` or starts with `UNDELIVERABLE`. The parcel was never delivered to the customer and was returned by the courier. In Flex files, 100% of these rows have a blank `Return Reason`.
+  - **Customer Return (`return_type = 'CUSTOMER_RETURN'`)**: Triggered when `Return Type = 'CUSTOMER_RETURN'`. The customer received the shipment and initiated a return with explicit return reasons (`Too small`, `Item doesn't fit`, `Too large`, `Performance or quality not adequate`, etc.).
+- **Transit Days Normalization**:
+  - Amazon exports transit durations with inequality prefixes (e.g. `>90`, `>7`).
+  - The parser cleans leading `>` signs to store clean integer values in `returns.days_in_transit` and `returns.days_since_return_complete`.
+- **Headers**: `Return Type`, `Customer Order ID`, `Shipment ID`, `SKU` (FNSKU), `mSKU` (Seller SKU), `ASIN`, `Units`, `Forward Leg Tracking ID`, `Reverse Leg Tracking ID`, `RMA ID`, `Return Status`, `Carrier`, `Pick -up date`, `Last Updated On`, `Return Reason`, `Days In-transit`, `Days Since Return Complete`, `Returned with OTP`.
+- **Main Orders Ledger Sync**:
+  - Post-upsert sync query updates `orders` for matching `(order_id, sku)` pairs:
+    - `orders.return_type = r.return_type`
+    - `orders.orders_status = CASE WHEN r.return_type = 'RTO' THEN 'RTO' WHEN o.orders_status IS NULL OR o.orders_status IN ('Delivered', 'Shipped', 'Complete', '') THEN 'Returned' ELSE o.orders_status END`.
+- **Physical Warehouse Receipt Sync**:
+  - If `Return Status = 'Returned to Seller'`, the backend automatically marks physical receipt in `returns_received` and flags `returns.is_received = TRUE`.
+
 
 ### 4.6 Amazon Settlement (Flat-File V2 Long Format)
 - **Route**: `POST /api/upload/amazon-settlement` (Async background execution by default; optional `?sync=true` for scripts/tests)

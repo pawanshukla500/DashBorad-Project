@@ -80,4 +80,41 @@ describe('Amazon Flex return receipt rule', () => {
     expect(custParsed.values.disposition).toBe('CUSTOMER_DAMAGED');
     expect(custParsed.values.customer_comment).toBe('Defect in fabric');
   });
+
+  it('skips rows where Return Status is Customer cancelled pick-up', () => {
+    const flexIndex = buildHeaderIndex([
+      'Customer Order ID', 'mSKU', 'RMA ID', 'Units', 'Return Status', 'Return Type', 'Return Request Date'
+    ]);
+    const row = ['402-1234567-8901234', 'SKU-RED-M', 'RMA-999', '1', 'Customer cancelled pick-up', 'CUSTOMER_RETURN', '2026-06-15'];
+    const res = parseAmazonFlexReturnRow(row, flexIndex);
+    expect(res.skipped).toBe(true);
+    expect(res.reason).toContain('Customer cancelled pick-up');
+  });
+
+  it('maps UNDELIVERED to RTO and CUSTOMER_RETURN to CUSTOMER_RETURN with >90 transit days cleaned', () => {
+    const flexIndex = buildHeaderIndex([
+      'Customer Order ID', 'mSKU', 'RMA ID', 'Units', 'Return Status', 'Return Type', 'Return Request Date', 'Days In-transit', 'Days Since Return Complete'
+    ]);
+    const rtoRow = ['402-1234567-8901234', 'SKU-A', 'RMA-001', '1', 'Returned to Seller', 'UNDELIVERED', '2026-06-15', '>90', '>7'];
+    const rtoParsed = parseAmazonFlexReturnRow(rtoRow, flexIndex);
+    expect(rtoParsed.values.return_type).toBe('RTO');
+    expect(rtoParsed.values.days_in_transit).toBe(90);
+    expect(rtoParsed.values.days_since_return_complete).toBe(7);
+
+    const crRow = ['402-1234567-8901234', 'SKU-B', 'RMA-002', '1', 'Returned to Seller', 'CUSTOMER_RETURN', '2026-06-15', '45', '3'];
+    const crParsed = parseAmazonFlexReturnRow(crRow, flexIndex);
+    expect(crParsed.values.return_type).toBe('CUSTOMER_RETURN');
+    expect(crParsed.values.days_in_transit).toBe(45);
+    expect(crParsed.values.days_since_return_complete).toBe(3);
+  });
+
+  it('parses formatted GMT date strings correctly', () => {
+    const flexIndex = buildHeaderIndex([
+      'Customer Order ID', 'mSKU', 'RMA ID', 'Units', 'Return Status', 'Return Type', 'Pick -up date', 'Last Updated On'
+    ]);
+    const row = ['402-1234567-8901234', 'SKU-A', 'RMA-001', '1', 'Returned to Seller', 'UNDELIVERED', 'Tue Jun 16 2026 23:59:50 GMT+0530', 'Wed Jun 24 2026 14:20:00 GMT+0530'];
+    const parsed = parseAmazonFlexReturnRow(row, flexIndex);
+    expect(parsed.values.return_requested_date).toBe('2026-06-16');
+    expect(parsed.values.return_approval_date).toBe('2026-06-24');
+  });
 });
