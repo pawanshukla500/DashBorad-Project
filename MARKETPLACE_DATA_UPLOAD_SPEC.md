@@ -279,9 +279,20 @@ Previous migrations attempted to synthesize composite keys like `AMZ-{order_id}-
 
 ### 4.4 Amazon FBA Returns (Amazon Fulfilled)
 - **Route**: `POST /api/upload/amazon-fba-returns`
-- **Natural Key**: **License Plate Number (LPN)** (`license-plate-number`). Stored directly in `returns.order_item_id`.
+- **Natural Key**: **License Plate Number (LPN)** (`license-plate-number`). Stored directly in `returns.order_item_id` (composite `${lpn}-${order_id}` to prevent cross-order collision).
 - **Headers**: `return-date`, `order-id`, `sku`, `asin`, `fnsku`, `product-name`, `quantity`, `fulfillment-center-id`, `detailed-disposition`, `reason`, `license-plate-number`, `customer-comments`.
 - **Query Join**: Links to `orders` on `(order_id, sku)`.
+- **Customer Return vs. RTO (Undelivered) Classification**:
+  - **RTO / Courier Return (`return_type = 'RTO'`)**: Triggered when `reason` starts with `UNDELIVERABLE` (e.g. `UNDELIVERABLE_REFUSED`, `UNDELIVERABLE_UNKNOWN`) or `UNDELIVERED`. Amazon courier failed delivery or customer refused delivery before receipt. In settlements, Amazon refunds 100% of FBA fulfillment and closing fees via `Item Fee Adjustment`.
+  - **Customer Return (`return_type = 'CUSTOMER_RETURN'`)**: Triggered for all buyer-initiated reasons (`QUALITY_UNACCEPTABLE`, `APPAREL_TOO_SMALL`, `POOR_FIT`, `APPAREL_STYLE`, `APPAREL_TOO_LARGE`, `DID_NOT_LIKE_COLOR`, `DEFECTIVE`, `SWITCHEROO`, etc.). Buyer received item and returned it. In settlements, Amazon retains fulfillment fees and charges `Refund commission` (20% fee + GST).
+- **QC Disposition Mapping (`final_condition`)**:
+  - `detailed-disposition` is mapped directly to `returns.final_condition`.
+  - `SELLABLE` $\rightarrow$ Counted in **Good Returns** KPI.
+  - `CUSTOMER_DAMAGED`, `DEFECTIVE`, `DAMAGED`, `CARRIER_DAMAGED` $\rightarrow$ Counted in **Bad Returns** (QC Damaged / Rejected) KPI.
+- **Main Orders Ledger Sync**:
+  - Post-upsert sync query updates `orders` for matching `(order_id, sku)` pairs:
+    - `orders.return_type = returns.return_type`
+    - `orders.orders_status = 'RTO'` (for RTO) or `'Returned'` (for Customer Return).
 
 ### 4.5 Amazon Flex Returns (Seller Fulfilled)
 - **Route**: `POST /api/upload/amazon-flex-returns`

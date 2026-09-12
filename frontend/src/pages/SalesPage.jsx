@@ -422,8 +422,10 @@ function StatusBadge({ status }) {
 
 function ReturnTypeBadge({ type }) {
   if (!type) return <span className="text-outline">—</span>;
-  const cls = type === 'customer_return' ? 'bg-orange-50 text-orange-700' : type === 'courier_return' ? 'bg-purple-50 text-purple-700' : 'bg-surface-container text-secondary';
-  return <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${cls}`}>{type.replace('_', ' ')}</span>;
+  const isCust = type.toLowerCase().includes('customer') || type === 'Return';
+  const isRto = type.toLowerCase().includes('courier') || type.toUpperCase().includes('RTO');
+  const cls = isCust ? 'bg-orange-50 text-orange-700' : isRto ? 'bg-purple-50 text-purple-700' : 'bg-surface-container text-secondary';
+  return <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${cls}`}>{type.replace(/_/g, ' ')}</span>;
 }
 
 function TableSkeleton() {

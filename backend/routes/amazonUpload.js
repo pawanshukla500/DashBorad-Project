@@ -434,6 +434,7 @@ export function parseAmazonFbaReturnRow(row, idx) {
       quantity,
       warehouse_id: str(getCell(row, idx, 'fulfillment-center-id')),
       disposition: disposition.value,
+      final_condition: disposition.value,
       return_result: disposition.value,
       return_reason: reason,
       customer_comment: str(getCell(row, idx, 'customer-comments')),
@@ -442,7 +443,7 @@ export function parseAmazonFbaReturnRow(row, idx) {
       return_date_time: dtIso(getCell(row, idx, 'return-date')),
       return_approval_date: returnDate.value,
       fulfilment_type: 'FBA',
-      return_type: (reason === 'UNDELIVERABLE_REFUSED' || reason === 'UNDELIVERABLE_UNKNOWN') ? 'RTO' : 'CUSTOMER_RETURN',
+      return_type: (reason && (reason.startsWith('UNDELIVERABLE') || reason.startsWith('UNDELIVERED'))) ? 'RTO' : 'CUSTOMER_RETURN',
       marketplace: 'amazon',
     },
   };
@@ -1384,7 +1385,7 @@ router.post('/amazon-fba-returns', upload.single('file'), async (req, res) => {
 
     const FIELDS = [
       'order_item_id','return_id','license_plate_number','order_id','sku',
-      'fsn','asin','fnsku','product_title','quantity','warehouse_id','disposition','return_result',
+      'fsn','asin','fnsku','product_title','quantity','warehouse_id','disposition','final_condition','return_result',
       'return_reason','customer_comment','return_sub_reason','return_date','return_date_time',
       'return_approval_date','fulfilment_type','return_type','marketplace',
     ];
@@ -1392,6 +1393,28 @@ router.post('/amazon-fba-returns', upload.single('file'), async (req, res) => {
     const r = await batchUpsert(pool, 'returns', 'order_item_id', FIELDS, rows);
     inserted = r.inserted;
     updated  = r.updated;
+
+    // Sync return_type and orders_status into orders table for matching Amazon orders
+    await pool.query(`
+      UPDATE orders o
+      SET 
+        return_type = r.return_type,
+        orders_status = CASE 
+          WHEN r.return_type = 'RTO' THEN 'RTO'
+          WHEN o.orders_status IS NULL OR o.orders_status IN ('Delivered', 'Shipped', 'Complete', '') THEN 'Returned'
+          ELSE o.orders_status 
+        END
+      FROM (
+        SELECT DISTINCT ON (order_id, sku) order_id, sku, return_type
+        FROM returns
+        WHERE marketplace = 'amazon'
+        ORDER BY order_id, sku, return_date_time DESC NULLS LAST, uploaded_at DESC
+      ) r
+      WHERE o.order_id = r.order_id
+        AND o.sku = r.sku
+        AND o.marketplace = 'amazon'
+        AND (o.return_type IS DISTINCT FROM r.return_type OR o.orders_status IN ('Delivered', 'Shipped', 'Complete', '', NULL))
+    `);
 
     const logId = await logUpload(pool, 'amazon_fba_returns', req.file.originalname, marketplace,
                                   inserted, updated, skipped, 'ok');

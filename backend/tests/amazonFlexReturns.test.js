@@ -53,4 +53,31 @@ describe('Amazon Flex return receipt rule', () => {
     expect(parseAmazonFlexReturnRow(['402-1', 'SKU-1', 'RMA-1', '1.5', 'No'], flexIndex).error)
       .toContain('Units must be a positive whole number');
   });
+
+  it('classifies FBA returns into RTO for undelivered reasons and CUSTOMER_RETURN for customer reasons, mapping final_condition', () => {
+    const fbaIndex = buildHeaderIndex([
+      'return-date', 'order-id', 'sku', 'asin', 'fnsku', 'product-name',
+      'quantity', 'fulfillment-center-id', 'detailed-disposition', 'reason',
+      'license-plate-number', 'customer-comments'
+    ]);
+
+    // RTO row
+    const rtoParsed = parseAmazonFbaReturnRow([
+      '2026-07-31T17:51:42+00:00', '406-111', 'SKU-A', 'B001', 'X001', 'Product A',
+      '1', 'BLR5', 'SELLABLE', 'UNDELIVERABLE_REFUSED', 'LPN001', ''
+    ], fbaIndex);
+    expect(rtoParsed.values.return_type).toBe('RTO');
+    expect(rtoParsed.values.final_condition).toBe('SELLABLE');
+    expect(rtoParsed.values.disposition).toBe('SELLABLE');
+
+    // Customer Return row
+    const custParsed = parseAmazonFbaReturnRow([
+      '2026-07-31T17:51:42+00:00', '406-222', 'SKU-B', 'B002', 'X002', 'Product B',
+      '1', 'BOM5', 'CUSTOMER_DAMAGED', 'QUALITY_UNACCEPTABLE', 'LPN002', 'Defect in fabric'
+    ], fbaIndex);
+    expect(custParsed.values.return_type).toBe('CUSTOMER_RETURN');
+    expect(custParsed.values.final_condition).toBe('CUSTOMER_DAMAGED');
+    expect(custParsed.values.disposition).toBe('CUSTOMER_DAMAGED');
+    expect(custParsed.values.customer_comment).toBe('Defect in fabric');
+  });
 });

@@ -15,7 +15,13 @@ import ReturnTrendChart from '../components/charts/ReturnTrendChart';
 import OrderDetailDrawer, { OrderIdCell } from '../components/OrderDetailDrawer';
 import { currency, pct, num } from '../utils/format';
 
-const TYPE_COLORS = { customer_return: '#f59e0b', courier_return: '#8b5cf6' };
+const TYPE_COLORS = {
+  customer_return: '#f59e0b',
+  CUSTOMER_RETURN: '#f59e0b',
+  Return: '#f59e0b',
+  courier_return: '#8b5cf6',
+  RTO: '#8b5cf6',
+};
 
 export default function ReturnsPage() {
   const { filters, refreshKey } = useFilters();
