@@ -64,8 +64,17 @@ export default {
       borderRadius: {
         "DEFAULT": "0.25rem",
         "lg": "0.5rem",
-        "xl": "0.75rem",
+        "xl": "0.5rem",
+        "2xl": "0.5rem",
         "full": "9999px"
+      },
+      letterSpacing: {
+        tighter: "0",
+        tight: "0",
+        normal: "0",
+        wide: "0",
+        wider: "0",
+        widest: "0",
       },
       spacing: {
         "sm": "8px",
@@ -84,18 +93,18 @@ export default {
         mono: ["JetBrains Mono", "ui-monospace", "monospace"],
       },
       fontSize: {
-        "label-sm": ["11px", { "lineHeight": "16px", "letterSpacing": "0.06em", "fontWeight": "500" }],
-        "label-md": ["11px", { "lineHeight": "16px", "letterSpacing": "0.06em", "fontWeight": "500" }],
-        "display-lg": ["32px", { "lineHeight": "40px", "letterSpacing": "-0.03em", "fontWeight": "600" }],
-        "financial-lg": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+        "label-sm": ["11px", { "lineHeight": "16px", "letterSpacing": "0", "fontWeight": "500" }],
+        "label-md": ["11px", { "lineHeight": "16px", "letterSpacing": "0", "fontWeight": "500" }],
+        "display-lg": ["32px", { "lineHeight": "40px", "letterSpacing": "0", "fontWeight": "600" }],
+        "financial-lg": ["28px", { "lineHeight": "36px", "letterSpacing": "0", "fontWeight": "600" }],
         "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
         "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
         "body-sm": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
         "financial-md": ["16px", { "lineHeight": "24px", "fontWeight": "500" }],
         "financial-sm": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
-        "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
-        "headline-md": ["18px", { "lineHeight": "26px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
-        "headline-sm": ["18px", { "lineHeight": "26px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+        "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "0", "fontWeight": "600" }],
+        "headline-md": ["18px", { "lineHeight": "26px", "letterSpacing": "0", "fontWeight": "600" }],
+        "headline-sm": ["18px", { "lineHeight": "26px", "letterSpacing": "0", "fontWeight": "600" }],
       }
     }
   },

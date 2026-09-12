@@ -36,11 +36,11 @@ const LoginPage = lazy(() => import('./pages/LoginPage'));
 
 function FullScreenLoader() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background text-on-surface">
-      <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary/20 border-t-primary" />
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background text-on-surface" role="status" aria-live="polite" aria-busy="true">
+      <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary/20 border-t-primary" aria-hidden="true" />
       <div className="text-center">
         <p className="text-sm font-semibold">ReconCentral</p>
-        <p className="mt-1 text-xs text-outline">Loading Workspace…</p>
+        <p className="mt-1 text-xs text-outline">Loading workspace...</p>
       </div>
     </div>
   );
@@ -49,9 +49,9 @@ function FullScreenLoader() {
 function PageLoader() {
   return (
     <div className="flex min-h-[45vh] items-center justify-center">
-      <div className="flex items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-3 text-xs font-semibold text-secondary shadow-sm">
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
-        Loading workspace…
+      <div className="flex items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-3 text-xs font-semibold text-secondary shadow-sm" role="status" aria-live="polite" aria-busy="true">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-outline-variant border-t-primary" aria-hidden="true" />
+        Loading workspace...
       </div>
     </div>
   );
@@ -66,8 +66,15 @@ function UserMenu({ user, onLogout }) {
     const onDoc = (event) => {
       if (ref.current && !ref.current.contains(event.target)) setOpen(false);
     };
+    const onKey = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
 
   return (
@@ -77,7 +84,8 @@ function UserMenu({ user, onLogout }) {
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         aria-haspopup="menu"
-        className="flex items-center gap-2 rounded-lg py-1 pl-1 pr-2 hover:bg-surface-container-low"
+        aria-label="Open user menu"
+        className="flex items-center gap-2 rounded-lg py-1 pl-1 pr-2 transition-colors hover:bg-surface-container-low focus-visible:ring-2 focus-visible:ring-primary/40"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-container text-on-primary font-sans text-body-sm font-semibold">
           {user?.username?.charAt(0).toUpperCase() || 'U'}
@@ -96,7 +104,7 @@ function UserMenu({ user, onLogout }) {
             type="button"
             role="menuitem"
             onClick={() => { setOpen(false); onLogout(); }}
-            className="w-full px-3 py-2 text-left font-sans text-body-sm font-medium text-secondary hover:bg-surface-container-low hover:text-ink"
+            className="w-full px-3 py-2 text-left font-sans text-body-sm font-medium text-secondary transition-colors hover:bg-surface-container-low hover:text-ink focus-visible:ring-2 focus-visible:ring-primary/40"
           >
             Log out
           </button>
@@ -117,9 +125,9 @@ function AppChrome({ onOpenSidebar, user, onLogout }) {
           type="button"
           onClick={onOpenSidebar}
           aria-label="Open navigation"
-          className="lg:hidden rounded-lg p-2 text-secondary hover:bg-surface-container-low"
+          className="lg:hidden rounded-lg p-2 text-secondary transition-colors hover:bg-surface-container-low focus-visible:ring-2 focus-visible:ring-primary/40"
         >
-          <span className="material-symbols-outlined">menu</span>
+          <span className="material-symbols-outlined" aria-hidden="true">menu</span>
         </button>
 
         <h2 className="hidden sm:block shrink-0 font-display text-headline-md font-semibold text-ink">
@@ -204,6 +212,9 @@ function AppContent() {
 
   return (
     <div className="bg-canvas text-ink h-screen flex overflow-hidden font-sans selection:bg-primary-container selection:text-on-primary">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-on-primary">
+        Skip to content
+      </a>
       <Sidebar open={sidebarOpen} onClose={closeSidebar} />
 
       <div className="flex-1 flex flex-col min-h-0 relative w-full lg:w-[calc(100%-16rem)]">
@@ -215,7 +226,7 @@ function AppContent() {
         <ServiceStatusBanner />
         <FeeAlertBanner />
 
-        <main className="flex-1 pt-5 px-4 md:px-6 lg:px-container-padding pb-container-padding bg-transparent overflow-y-auto">
+        <main id="main-content" className="flex-1 pt-5 px-4 md:px-6 lg:px-container-padding pb-container-padding bg-transparent overflow-y-auto" tabIndex={-1}>
           <ErrorBoundary>
             <Suspense fallback={<PageLoader />}>
               <AppRoutes user={user} />

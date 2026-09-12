@@ -70,19 +70,22 @@ export default function FilterBar() {
   if (!filtersShown) return null;
 
   const sel = 'font-sans text-body-sm border border-border rounded-lg px-2.5 py-1.5 text-ink bg-surface focus:outline-none focus:ring-2 focus:ring-primary/40 hover:border-outline transition-colors min-w-0';
+  const advancedId = 'advanced-filters';
 
   return (
-    <div className="border-t border-border">
-      <div className="px-4 sm:px-6 py-2.5 flex items-center gap-2 flex-wrap">
+    <section className="border-t border-border" aria-label="Page filters">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 sm:px-6">
         {contract.marketplace && (
-          <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Marketplace filter">
             {MARKETPLACES.map(mp => {
               const isActive = filters.marketplace === mp.id;
               return (
                 <button
                   key={mp.id}
+                  type="button"
                   onClick={() => { updateFilter('marketplace', mp.id); if (mp.id === 'meesho') updateFilter('brand', ''); }}
-                  className={`px-3 py-1 rounded-full font-sans text-label-md uppercase border transition-all ${
+                  aria-pressed={isActive}
+                  className={`rounded-full border px-3 py-1 font-sans text-label-md uppercase transition-all focus-visible:ring-2 focus-visible:ring-primary/40 ${
                     isActive
                       ? (MP_ACTIVE[mp.id] || MP_ACTIVE[''])
                       : 'bg-surface text-secondary border-border hover:border-outline hover:text-ink'
@@ -100,29 +103,29 @@ export default function FilterBar() {
         )}
 
         {contract.dates && (
-          <div className="flex items-center bg-surface border border-border rounded-lg overflow-hidden hover:border-border transition-colors focus-within:ring-2 focus-within:ring-primary/50">
+          <div className="flex min-w-0 items-center overflow-hidden rounded-lg border border-border bg-surface transition-colors hover:border-border focus-within:ring-2 focus-within:ring-primary/50" role="group" aria-label="Date range filter">
             <div className="pl-2.5 pr-1.5 py-1 bg-surface-container-low border-r border-border">
-              <svg className="w-3.5 h-3.5 text-outline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
+              <span className="material-symbols-outlined text-[16px] text-outline" aria-hidden="true">calendar_month</span>
             </div>
             <input type="date" value={filters.startDate} onChange={e => updateFilter('startDate', e.target.value)}
-              className="text-xs px-1.5 py-1.5 text-ink bg-transparent focus:outline-none w-[118px]" />
-            <span className="text-outline text-xs">→</span>
+              aria-label="Start date"
+              className="w-[118px] bg-transparent px-1.5 py-1.5 text-xs text-ink focus:outline-none" />
+            <span className="material-symbols-outlined text-[14px] text-outline" aria-hidden="true">arrow_forward</span>
             <input type="date" value={filters.endDate} onChange={e => updateFilter('endDate', e.target.value)}
-              className="text-xs px-1.5 py-1.5 text-ink bg-transparent focus:outline-none w-[118px]" />
+              aria-label="End date"
+              className="w-[118px] bg-transparent px-1.5 py-1.5 text-xs text-ink focus:outline-none" />
           </div>
         )}
 
         {contract.groupBy && (
-          <select value={filters.groupBy} onChange={e => updateFilter('groupBy', e.target.value)} className={sel}>
+          <select value={filters.groupBy} onChange={e => updateFilter('groupBy', e.target.value)} className={sel} aria-label="Group report by">
             <option value="day">Daily</option>
             <option value="week">Weekly</option>
             <option value="month">Monthly</option>
           </select>
         )}
 
-        <div className="flex items-center gap-1.5 ml-auto">
+        <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
           {contract.advanced && (
             <>
               <select
@@ -131,7 +134,7 @@ export default function FilterBar() {
                   setSelectedView(e.target.value);
                   if (e.target.value) applyView(e.target.value);
                 }}
-                className="hidden lg:block max-w-[150px] rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-semibold text-secondary outline-none hover:border-border"
+                className="hidden max-w-[150px] rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-semibold text-secondary outline-none hover:border-border focus:ring-2 focus:ring-primary/40 lg:block"
                 aria-label="Saved filter view"
               >
                 <option value="">Saved views</option>
@@ -140,7 +143,9 @@ export default function FilterBar() {
               <button
                 type="button"
                 onClick={() => setShowMore(v => !v)}
-                className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
+                aria-expanded={showMore || hasAdvancedFilters}
+                aria-controls={advancedId}
+                className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-primary/40 ${
                   showMore || hasAdvancedFilters
                     ? 'border-primary bg-primary-container text-primary'
                     : 'border-border text-secondary hover:bg-surface-container-low'
@@ -151,18 +156,19 @@ export default function FilterBar() {
               </button>
             </>
           )}
-          <button onClick={resetFilters} className="text-xs text-outline hover:text-ink px-2 py-1.5">Reset</button>
+          <button type="button" onClick={resetFilters} className="rounded-lg px-2 py-1.5 text-xs text-outline transition-colors hover:bg-surface-container-low hover:text-ink focus-visible:ring-2 focus-visible:ring-primary/40">Reset</button>
           <button
+            type="button"
             onClick={handleRefresh}
             disabled={spinning}
             title="Refresh all data"
-            className={`flex items-center justify-center w-8 h-8 rounded-lg border transition-colors ${
+            aria-label="Refresh all data"
+            aria-busy={spinning}
+            className={`flex h-8 w-8 items-center justify-center rounded-lg border transition-colors focus-visible:ring-2 focus-visible:ring-primary/40 ${
               spinning ? 'border-primary bg-primary-container text-primary' : 'border-border text-outline hover:text-primary hover:border-primary'
             }`}
           >
-            <svg className={`w-3.5 h-3.5 ${spinning ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
+            <span className={`material-symbols-outlined text-[16px] ${spinning ? 'animate-spin' : ''}`} aria-hidden="true">refresh</span>
           </button>
           {lastSynced && (
             <span className="text-[10px] text-outline whitespace-nowrap hidden md:inline">
@@ -173,21 +179,21 @@ export default function FilterBar() {
       </div>
 
       {contract.advanced && (showMore || hasAdvancedFilters) && (
-        <div className="px-4 sm:px-6 pb-2.5 flex items-center gap-2 flex-wrap border-t border-border pt-2">
-          <select value={filters.category} onChange={e => updateFilter('category', e.target.value)} className={sel}>
+        <div id={advancedId} className="flex flex-wrap items-center gap-2 border-t border-border px-4 pb-2.5 pt-2 sm:px-6">
+          <select value={filters.category} onChange={e => updateFilter('category', e.target.value)} className={sel} aria-label="Category filter">
             <option value="">All Categories</option>
             {opts.categories.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
-          <select value={filters.region} onChange={e => updateFilter('region', e.target.value)} className={sel}>
+          <select value={filters.region} onChange={e => updateFilter('region', e.target.value)} className={sel} aria-label="State filter">
             <option value="">All States</option>
             {opts.regions.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
-          <select value={filters.status} onChange={e => updateFilter('status', e.target.value)} className={sel}>
+          <select value={filters.status} onChange={e => updateFilter('status', e.target.value)} className={sel} aria-label="Status filter">
             <option value="">All Statuses</option>
             {opts.statuses.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           {filters.marketplace !== 'meesho' && opts.brands.length > 0 && (
-            <select value={filters.brand} onChange={e => updateFilter('brand', e.target.value)} className={sel}>
+            <select value={filters.brand} onChange={e => updateFilter('brand', e.target.value)} className={sel} aria-label="Brand filter">
               <option value="">All Brands</option>
               {opts.brands.map(b => <option key={b} value={b}>{b}</option>)}
             </select>
@@ -197,6 +203,7 @@ export default function FilterBar() {
             value={viewName}
             onChange={e => setViewName(e.target.value)}
             placeholder="Name this view"
+            aria-label="Saved view name"
             className={`${sel} w-36`}
           />
           <button
@@ -209,7 +216,7 @@ export default function FilterBar() {
               }
             }}
             disabled={!viewName.trim()}
-            className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary disabled:opacity-40"
+            className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-on-primary disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2"
           >
             Save view
           </button>
@@ -220,13 +227,13 @@ export default function FilterBar() {
                 deleteView(selectedView);
                 setSelectedView('');
               }}
-              className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50"
+              className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 focus-visible:ring-2 focus-visible:ring-rose-400"
             >
               Delete view
             </button>
           )}
         </div>
       )}
-    </div>
+    </section>
   );
 }

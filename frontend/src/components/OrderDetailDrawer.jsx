@@ -26,18 +26,16 @@ export default function OrderDetailDrawer({ orderItemId, onClose }) {
 
   return (
     <>
-      <div className="fixed inset-0 bg-primary/50 backdrop-blur-sm z-40" onClick={onClose} />
-      <div className="fixed right-0 top-0 h-full w-full max-w-3xl bg-surface shadow-2xl z-50 flex flex-col overflow-hidden">
+      <button type="button" aria-label="Close order detail drawer" className="fixed inset-0 z-40 bg-primary/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed right-0 top-0 z-50 flex h-full w-full max-w-3xl flex-col overflow-hidden bg-surface shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="order-detail-title">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-surface-container-low shrink-0">
           <div>
-            <p className="text-xs text-secondary font-medium uppercase tracking-wider">Order Detail</p>
+            <p id="order-detail-title" className="text-xs text-secondary font-medium uppercase tracking-wider">Order Detail</p>
             <p className="text-sm font-mono text-ink mt-0.5 select-all">{orderItemId}</p>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg text-outline hover:text-ink hover:bg-surface-container-high transition-colors">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
+          <button type="button" aria-label="Close order detail drawer" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-outline transition-colors hover:bg-surface-container-high hover:text-ink focus-visible:ring-2 focus-visible:ring-primary/40">
+            <span className="material-symbols-outlined text-[20px]" aria-hidden="true">close</span>
           </button>
         </div>
 
@@ -56,12 +54,13 @@ export function OrderIdCell({ id, onOpen }) {
   if (!id) return <span className="text-outline">—</span>;
   return (
     <button
+      type="button"
       onClick={() => onOpen(id)}
-      className="font-mono text-[10px] text-primary hover:text-primary hover:underline underline-offset-2 text-left transition-colors group"
+      className="group rounded-sm text-left font-mono text-[10px] text-primary underline-offset-2 transition-colors hover:text-primary hover:underline focus-visible:ring-2 focus-visible:ring-primary/40"
       title="Click to view full detail"
     >
       {id}
-      <span className="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[9px]">↗</span>
+      <span className="material-symbols-outlined ml-1 align-middle text-[12px] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true">open_in_new</span>
     </button>
   );
 }
@@ -86,7 +85,7 @@ function DetailContent({ data }) {
       </div>
 
       {/* Order Information */}
-      <Section icon="📦" title="Order Information">
+      <Section icon="inventory_2" title="Order Information">
         {order ? (
           <>
             <Grid2>
@@ -123,14 +122,14 @@ function DetailContent({ data }) {
 
       {/* NEFT Cycle Breakdown — FK-portal style */}
       {settlementRows.length > 0 && (
-        <Section icon="🏦" title="Settlement by NEFT Cycle">
+        <Section icon="account_balance" title="Settlement by NEFT Cycle">
           <NeftCycleTable rows={settlementRows} />
         </Section>
       )}
 
       {/* Return Details */}
       {returnInfo && (
-        <Section icon="🔄" title="Return Details">
+        <Section icon="assignment_return" title="Return Details">
           <Grid2>
             <Field label="Return ID"      value={returnInfo.returnId} mono />
             <Field label="Return Type"    value={<Tag color={returnInfo.returnType?.includes('customer') ? 'orange' : 'purple'}>{(returnInfo.returnType || '').replace(/_/g, ' ')}</Tag>} />
@@ -156,14 +155,14 @@ function DetailContent({ data }) {
 
       {/* RC Fee Comparison */}
       {order && (
-        <Section icon="🧮" title="FK Charged vs Our Rate Card">
+        <Section icon="calculate" title="FK Charged vs Our Rate Card">
           <RcFeeComparison rcFees={rcFees} settlementRows={settlementRows} order={order} />
         </Section>
       )}
 
       {/* No settlement note */}
       {settlementRows.length === 0 && (
-        <Section icon="⏳" title="Settlement">
+        <Section icon="hourglass_empty" title="Settlement">
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
             <p className="text-amber-700 font-semibold text-sm">No settlement found for this order</p>
             <p className="text-amber-600 text-xs mt-1">This order has not yet been processed in any NEFT payment cycle by Flipkart.</p>
@@ -432,7 +431,7 @@ function NeftCycleTable({ rows }) {
         </thead>
         <tbody>
           {/* ── Seller Price ── */}
-          <GroupRow label="Seller Price" icon="▲"
+          <GroupRow label="Seller Price" icon="arrow_upward"
             values={rows.map(sellerPrice)} total={sum('saleAmount') + sum('totalOfferAmount') + sum('myShare')}
             n={n} green fmtV={fmtV} fmtTotal={fmtTotal}
           />
@@ -471,7 +470,7 @@ function NeftCycleTable({ rows }) {
 
           {/* ── Marketplace Fees ── */}
           {feeLines.length > 0 && <>
-            <GroupRow label="Marketplace Fees" icon="▼"
+            <GroupRow label="Marketplace Fees" icon="arrow_downward"
               values={rows.map(mpFeeSum)} total={feeLines.reduce((s, f) => s + sum(f.key), 0)}
               n={n} fmtV={fmtV} fmtTotal={fmtTotal}
             />
@@ -489,7 +488,7 @@ function NeftCycleTable({ rows }) {
 
           {/* ── Taxes ── */}
           {taxLines.length > 0 && <>
-            <GroupRow label="Taxes" icon="▼"
+            <GroupRow label="Taxes" icon="arrow_downward"
               values={rows.map(taxSum)} total={taxLines.reduce((s, t) => s + sum(t.key), 0)}
               n={n} fmtV={fmtV} fmtTotal={fmtTotal}
             />
@@ -572,7 +571,7 @@ function GroupRow({ label, icon, values, total, n, green, fmtV, fmtTotal }) {
   return (
     <tr className="bg-surface-container border-t-2 border-border">
       <td className="px-4 py-2.5 font-bold text-ink border-r border-border">
-        <span className={`mr-1.5 text-[9px] ${green ? 'text-emerald-600' : 'text-rose-500'}`}>{icon}</span>
+        <span className={`material-symbols-outlined mr-1.5 align-middle text-[14px] ${green ? 'text-emerald-600' : 'text-rose-500'}`} aria-hidden="true">{icon}</span>
         {label}
       </td>
       {values.map((v, i) => (
@@ -615,7 +614,7 @@ function Section({ icon, title, children }) {
   return (
     <div className="px-6 py-5">
       <div className="flex items-center gap-2 mb-4">
-        <span className="text-base">{icon}</span>
+        <span className="material-symbols-outlined text-[18px] text-primary" aria-hidden="true">{icon}</span>
         <h3 className="text-sm font-bold text-ink uppercase tracking-wide">{title}</h3>
       </div>
       {children}
@@ -677,7 +676,7 @@ const STATUS_TEXT = { Settled: 'text-emerald-700', Unsettled: 'text-amber-700', 
 
 function LoadingState() {
   return (
-    <div className="p-6 space-y-4 animate-pulse">
+    <div className="p-6 space-y-4 animate-pulse" role="status" aria-live="polite" aria-busy="true">
       <div className="h-10 bg-surface-container rounded-xl" />
       <div className="h-4 w-1/3 bg-surface-container rounded" />
       <div className="grid grid-cols-2 gap-3">
@@ -691,7 +690,7 @@ function LoadingState() {
 
 function ErrorState({ msg }) {
   return (
-    <div className="m-6 bg-rose-50 border border-rose-200 rounded-xl p-5">
+    <div className="m-6 bg-rose-50 border border-rose-200 rounded-xl p-5" role="alert">
       <p className="text-rose-700 font-semibold">Could not load order detail</p>
       <p className="text-rose-600 text-xs font-mono mt-1">{msg}</p>
     </div>

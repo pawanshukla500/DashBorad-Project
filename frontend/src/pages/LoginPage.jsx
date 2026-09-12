@@ -6,10 +6,11 @@ import { formatAuthError } from '../utils/authErrors';
 const REMEMBER_EMAIL_KEY = 'vb_remember_email';
 
 
-function Alert({ children, tone = 'error' }) {
+function Alert({ children, tone = 'error', id }) {
   const success = tone === 'success';
   return (
     <div
+      id={id}
       role={success ? 'status' : 'alert'}
       className={`mb-4 flex items-start gap-2.5 rounded-xl border px-3.5 py-3 text-sm ${
         success
@@ -17,13 +18,9 @@ function Alert({ children, tone = 'error' }) {
           : 'border-rose-200 bg-rose-50 text-rose-700 animate-shake'
       }`}
     >
-      <svg className="mt-0.5 h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        {success ? (
-          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-        ) : (
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3m0 4h.01M10.3 4.5L2.8 18a2 2 0 001.7 3h15a2 2 0 001.7-3L13.7 4.5a2 2 0 00-3.4 0z" />
-        )}
-      </svg>
+      <span className="material-symbols-outlined mt-0.5 shrink-0 text-[18px]" aria-hidden="true">
+        {success ? 'check_circle' : 'error'}
+      </span>
       <span className="font-medium leading-5">{children}</span>
     </div>
   );
@@ -34,11 +31,12 @@ function SubmitButton({ loading, children, loadingLabel }) {
     <button
       type="submit"
       disabled={loading}
-      className="w-full flex justify-center items-center gap-2 bg-primary hover:bg-indigo-dark text-on-primary font-sans text-body-md font-semibold py-3 px-4 rounded-lg disabled:cursor-wait disabled:opacity-70"
+      aria-busy={loading}
+      className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 font-sans text-body-md font-semibold text-on-primary transition-colors hover:bg-indigo-dark disabled:cursor-wait disabled:opacity-70 focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2"
     >
       {loading ? (
         <>
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-hidden="true" />
           {loadingLabel}
         </>
       ) : (
@@ -118,17 +116,37 @@ export default function LoginPage() {
     <div className="bg-canvas text-on-surface min-h-screen flex font-sans selection:bg-primary-container selection:text-on-primary">
       <div className="flex w-full min-h-screen">
         
-        {/* Left Side: Graphic Area */}
         <div className="hidden lg:flex w-[45%] bg-primary-container flex-col justify-between p-12 lg:p-16 relative overflow-hidden">
-          <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: "radial-gradient(circle at 100% 0%, white 0%, transparent 50%)" }}></div>
           <div className="z-10 flex items-center gap-3">
             <div className="h-9 w-9 rounded-lg bg-white p-1 flex items-center justify-center shadow-sm">
               <img src="/logo.png" alt="ReconCentral Logo" className="h-7 w-7 object-contain" />
             </div>
-            <span className="font-display text-headline-md font-semibold text-on-primary tracking-tight">ReconCentral</span>
+            <span className="font-display text-headline-md font-semibold text-on-primary">ReconCentral</span>
           </div>
           <div className="z-10 mt-auto pb-12">
-            <img alt="Abstract representation of financial data" className="w-full max-w-md h-auto mb-10 rounded-xl shadow-2xl border border-white/10 opacity-90 object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAmz4KnhVlMA66MOmTzuXXN_EKKQ_MPXH_j9C2cjhNq4pJwU55y9bzZ-gus75wfY2HrOzfprz6_od6nTvyi9QV_kBOwWba3v8ed3fkFL-SinPAt3o943MLV1V2m53uUsyH5ubpF7HYYvpstfpwrfet6vxC7yk4STmB_f6pQMT6zO1TXJJnY4g28VbD8r7eK72H8GOEsgGIU2eKxBXRPD_WaHHpKdp5ktdT01uC19bxlB1_7fVsG2CUz"/>
+            <div className="mb-10 max-w-md rounded-xl border border-white/15 bg-white/10 p-4 text-on-primary shadow-2xl backdrop-blur" aria-hidden="true">
+              <div className="flex items-center justify-between border-b border-white/15 pb-3">
+                <span className="text-xs font-semibold text-on-primary-container">September payout</span>
+                <span className="rounded-full bg-emerald-400/20 px-2 py-0.5 text-[11px] font-semibold text-emerald-100">Live</span>
+              </div>
+              <div className="grid grid-cols-2 gap-4 py-4">
+                <div>
+                  <p className="text-[11px] text-on-primary-container">Net received</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums">₹28.4L</p>
+                </div>
+                <div>
+                  <p className="text-[11px] text-on-primary-container">Open exceptions</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums">17</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {[72, 48, 84, 62].map((width, index) => (
+                  <div key={index} className="h-2 rounded-full bg-white/10">
+                    <div className="h-2 rounded-full bg-white" style={{ width: `${width}%` }} />
+                  </div>
+                ))}
+              </div>
+            </div>
             <h1 className="font-display text-display-lg text-on-primary mb-4 max-w-md">Every payout, clearly accounted for.</h1>
             <p className="font-sans text-body-lg text-on-primary-container mb-10 max-w-md opacity-90">
                 The financial control room designed specifically for Indian marketplace sellers. Take command of your cash flow with absolute precision.
@@ -136,19 +154,19 @@ export default function LoginPage() {
             <ul className="space-y-4">
               <li className="flex items-start gap-3">
                 <div className="bg-white/10 rounded-full p-1 mt-0.5">
-                  <span className="material-symbols-outlined text-on-primary text-sm">check</span>
+                  <span className="material-symbols-outlined text-on-primary text-sm" aria-hidden="true">check</span>
                 </div>
                 <span className="font-sans text-body-md text-on-primary opacity-90">Multi-marketplace visibility</span>
               </li>
               <li className="flex items-start gap-3">
                 <div className="bg-white/10 rounded-full p-1 mt-0.5">
-                  <span className="material-symbols-outlined text-on-primary text-sm">check</span>
+                  <span className="material-symbols-outlined text-on-primary text-sm" aria-hidden="true">check</span>
                 </div>
                 <span className="font-sans text-body-md text-on-primary opacity-90">Faster reconciliation</span>
               </li>
               <li className="flex items-start gap-3">
                 <div className="bg-white/10 rounded-full p-1 mt-0.5">
-                  <span className="material-symbols-outlined text-on-primary text-sm">check</span>
+                  <span className="material-symbols-outlined text-on-primary text-sm" aria-hidden="true">check</span>
                 </div>
                 <span className="font-sans text-body-md text-on-primary opacity-90">Profit clarity</span>
               </li>
@@ -156,11 +174,10 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* Right Side: Login Form Area */}
         <div className="w-full lg:w-[55%] flex flex-col justify-center items-center p-6 sm:p-12 bg-surface">
           <div className="lg:hidden flex items-center gap-2.5 mb-12 self-start w-full max-w-[440px] mx-auto">
             <img src="/logo.png" alt="ReconCentral Logo" className="h-8 w-8 object-contain" />
-            <span className="font-display text-headline-md font-semibold text-ink tracking-tight">ReconCentral</span>
+            <span className="font-display text-headline-md font-semibold text-ink">ReconCentral</span>
           </div>
 
           <div className="w-full max-w-[440px]">
@@ -171,7 +188,7 @@ export default function LoginPage() {
                   <p className="font-sans text-body-md text-secondary">Sign in to continue to your dashboard.</p>
                 </div>
 
-                {error && <Alert>{error}</Alert>}
+                {error && <Alert id="login-error">{error}</Alert>}
 
                 <form onSubmit={handleSubmit} className="space-y-6">
                   <div className="space-y-2">
@@ -185,6 +202,8 @@ export default function LoginPage() {
                       value={email}
                       onChange={event => setEmail(event.target.value)}
                       placeholder="name@company.com"
+                      aria-invalid={!!error}
+                      aria-describedby={error ? 'login-error' : undefined}
                       required
                     />
                   </div>
@@ -192,7 +211,7 @@ export default function LoginPage() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <label className="block font-sans text-body-sm font-medium text-ink" htmlFor="password">Password</label>
-                      <button type="button" onClick={openPasswordReset} className="font-sans text-body-sm text-primary hover:text-indigo-dark font-medium transition-colors focus:outline-none">
+                      <button type="button" onClick={openPasswordReset} className="rounded-md font-sans text-body-sm font-medium text-primary transition-colors hover:text-indigo-dark focus-visible:ring-2 focus-visible:ring-primary/40">
                         Forgot password?
                       </button>
                     </div>
@@ -206,14 +225,18 @@ export default function LoginPage() {
                         value={password}
                         onChange={event => setPassword(event.target.value)}
                         placeholder="••••••••"
+                        aria-invalid={!!error}
+                        aria-describedby={error ? 'login-error' : undefined}
                         required
                       />
                       <button
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-outline hover:text-ink transition-colors flex items-center justify-center"
+                        className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center justify-center rounded-md text-outline transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-primary/40"
                         type="button"
                         onClick={() => setShowPassword(value => !value)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        aria-pressed={showPassword}
                       >
-                        <span className="material-symbols-outlined text-xl">{showPassword ? 'visibility_off' : 'visibility'}</span>
+                        <span className="material-symbols-outlined text-xl" aria-hidden="true">{showPassword ? 'visibility_off' : 'visibility'}</span>
                       </button>
                     </div>
                   </div>
@@ -236,8 +259,8 @@ export default function LoginPage() {
               </>
             ) : (
               <>
-                <button type="button" onClick={returnToSignIn} className="mb-6 inline-flex items-center gap-2 font-sans text-body-sm font-medium text-secondary hover:text-ink">
-                  <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+                <button type="button" onClick={returnToSignIn} className="mb-6 inline-flex items-center gap-2 rounded-md font-sans text-body-sm font-medium text-secondary hover:text-ink focus-visible:ring-2 focus-visible:ring-primary/40">
+                  <span className="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_back</span>
                   Back to sign in
                 </button>
 
@@ -246,7 +269,7 @@ export default function LoginPage() {
                   <p className="font-sans text-body-md text-secondary">We’ll send recovery instructions to your work email.</p>
                 </div>
 
-                {error && <Alert>{error}</Alert>}
+                {error && <Alert id="reset-error">{error}</Alert>}
                 {resetSuccess && <Alert tone="success">{resetSuccess}</Alert>}
 
                 <form onSubmit={handleForgotPasswordSubmit} className="space-y-6">
@@ -261,6 +284,8 @@ export default function LoginPage() {
                       value={resetEmail}
                       onChange={event => setResetEmail(event.target.value)}
                       placeholder="name@company.com"
+                      aria-invalid={!!error}
+                      aria-describedby={error ? 'reset-error' : undefined}
                       required
                     />
                   </div>
@@ -273,11 +298,11 @@ export default function LoginPage() {
 
             <div className="mt-12 text-center flex flex-col sm:flex-row items-center justify-center gap-2 font-sans text-body-sm text-outline">
               <div className="flex items-center gap-1">
-                <span className="material-symbols-outlined text-sm">lock</span>
+                <span className="material-symbols-outlined text-sm" aria-hidden="true">lock</span>
                 <span>Your financial data is encrypted and protected.</span>
               </div>
               <span className="hidden sm:inline text-border">•</span>
-              <a className="text-primary hover:text-indigo-dark transition-colors font-medium" href="#">Contact support</a>
+              <a className="rounded-md text-primary transition-colors hover:text-indigo-dark font-medium focus-visible:ring-2 focus-visible:ring-primary/40" href="mailto:payments@youthnic.shop">Contact support</a>
             </div>
 
           </div>
