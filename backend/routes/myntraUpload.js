@@ -179,12 +179,24 @@ async function resolveMyntraAccount(pool, requestedAccount) {
   return account;
 }
 
+function isRepeatedMyntraHeader(row, type) {
+  if (!row || typeof row !== 'object') return false;
+  const sellerId = value(row, 'seller_id', 'seller id');
+  if (sellerId && (sellerId.toLowerCase().replace(/[\s_-]+/g, '') === 'sellerid' || sellerId.toLowerCase().replace(/[\s_-]+/g, '') === 'seller')) return true;
+  const lineId = value(row, 'order_line_id', 'order line id');
+  if (lineId && lineId.toLowerCase().replace(/[\s_-]+/g, '') === 'orderlineid') return true;
+  const parentId = value(row, 'order_id', 'order release id');
+  if (parentId && (parentId.toLowerCase().replace(/[\s_-]+/g, '') === 'orderid' || parentId.toLowerCase().replace(/[\s_-]+/g, '') === 'orderreleaseid')) return true;
+  return false;
+}
+
 function validateSellerIds(rows, type, sellerAccount) {
   const expectedSellerId = MYNTRA_SELLER_IDS[sellerAccount];
   const sellerColumn = type === 'orders' ? 'seller id' : 'seller_id';
   const mismatches = rows
+    .filter(row => !isRepeatedMyntraHeader(row, type))
     .map((row, index) => ({ row, rowNum: index + 2, sellerId: value(row, sellerColumn) }))
-    .filter(entry => entry.sellerId !== expectedSellerId);
+    .filter(entry => entry.sellerId && entry.sellerId !== expectedSellerId && entry.sellerId.toLowerCase().replace(/[\s_-]+/g, '') !== 'sellerid');
   if (!mismatches.length) return;
 
   const foundIds = [...new Set(mismatches.map(entry => entry.sellerId || '(blank)'))].slice(0, 4);
@@ -416,6 +428,14 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
   const skippedRows = [];
   const seenLineIds = new Set();
   const validRows = rows.filter((row, index) => {
+    if (isRepeatedMyntraHeader(row, type)) {
+      skippedRows.push({
+        rowNum: index + 2,
+        reason: 'repeated header row',
+        data: row,
+      });
+      return false;
+    }
     const lineId = type === 'orders' ? value(row, 'order line id') : value(row, 'order_line_id');
     const parentId = type === 'orders' ? value(row, 'order release id') : value(row, 'order_id');
     if (!lineId || !parentId) {
@@ -701,5 +721,6 @@ export {
   NORMALIZED_RETURN_COLUMNS,
   synthesizedBlankTrackingReturn,
   importRows,
+  isRepeatedMyntraHeader,
 };
 export default router;

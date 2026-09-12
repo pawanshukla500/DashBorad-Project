@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseInvoiceUploadRow } from '../routes/mpSettlement.js';
+import {
+  parseInvoiceUploadRow,
+  validateMyntraInvoiceSellerIds,
+  isRepeatedInvoiceHeader,
+} from '../routes/mpSettlement.js';
 
 describe('Myntra VB & EJ Order Reconciliation & Fee Logic', () => {
   const forwardRow = {
@@ -116,5 +120,47 @@ describe('Myntra VB & EJ Order Reconciliation & Fee Logic', () => {
     const totalExpense = Math.round((fixedFee + reverseShipping + netGst) * 100) / 100;
     expect(totalExpense).toBe(250.16);
     expect(netBank).toBe(-totalExpense);
+  });
+
+  it('detects repeated header rows and skips them during invoice row parsing', () => {
+    const repeatedHeaderRow = {
+      'NEFT_Ref': 'NEFT_Ref',
+      'Commission': 'Commission',
+      'Seller_Id': 'Seller_Id',
+      'Order_Release_Id': 'Order_Release_Id',
+      'order_line_id': 'order_line_id',
+      'Payment_Date': 'Payment_Date',
+      'customer_paid_amt': 'customer_paid_amt',
+    };
+
+    expect(isRepeatedInvoiceHeader(repeatedHeaderRow)).toBe(true);
+    expect(isRepeatedInvoiceHeader(forwardRow)).toBe(false);
+
+    const parsed = parseInvoiceUploadRow(repeatedHeaderRow, {
+      marketplace: 'myntra',
+      sellerAccount: 'myntra_ej',
+      batch: 'b1',
+    });
+    expect(parsed.error).toBe('repeated header row');
+  });
+
+  it('validates seller IDs ignoring repeated header rows with Seller_Id', () => {
+    const mixedRows = [
+      { 'Seller_Id': '45833', 'order_release_id': '100013851148' },
+      { 'Seller_Id': 'Seller_Id', 'order_release_id': 'order_release_id' },
+      { 'Seller_Id': '45833', 'order_release_id': '100013851149' },
+    ];
+
+    // Must NOT throw when expected seller ID matches and repeated header rows are present
+    expect(() => validateMyntraInvoiceSellerIds(mixedRows, 'myntra_ej')).not.toThrow();
+
+    // Must throw when an actual mismatch is present
+    const mismatchedRows = [
+      { 'Seller_Id': '10708', 'order_release_id': '100013851148' },
+      { 'Seller_Id': 'Seller_Id', 'order_release_id': 'order_release_id' },
+    ];
+    expect(() => validateMyntraInvoiceSellerIds(mismatchedRows, 'myntra_ej')).toThrow(
+      /Wrong Myntra account selected/,
+    );
   });
 });

@@ -21,6 +21,7 @@ import {
   validateLayout,
   validateMyntraRow,
   validateSellerIds,
+  isRepeatedMyntraHeader,
 } from '../routes/myntraUpload.js';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { initDb } from '../db/initDb.js';
@@ -295,6 +296,35 @@ describe('Myntra layout mapping', () => {
     const firstDetail = returnDetail(rows[0], 'myntra_vb', 'batch-template');
     expect(firstDetail[RETURN_DETAIL_COLUMNS.indexOf('warehouse_id')]).toBe('14417');
     expect(firstDetail[RETURN_DETAIL_COLUMNS.indexOf('partner_warehouse_code')]).toBe('14417');
+  });
+
+  it('detects repeated header rows and ignores them during order/return seller ID validation', () => {
+    const orderRepeatedHeader = {
+      'seller id': 'seller id',
+      'order release id': 'order release id',
+      'order line id': 'order line id',
+    };
+    expect(isRepeatedMyntraHeader(orderRepeatedHeader, 'orders')).toBe(true);
+
+    const returnRepeatedHeader = {
+      'seller_id': 'seller_id',
+      'order_id': 'order_id',
+      'order_line_id': 'order_line_id',
+    };
+    expect(isRepeatedMyntraHeader(returnRepeatedHeader, 'returns')).toBe(true);
+
+    const mixedOrderRows = [
+      { 'seller id': '45833', 'order release id': '100019530457', 'order line id': '11074259318' },
+      { 'seller id': 'seller id', 'order release id': 'order release id', 'order line id': 'order line id' },
+      { 'seller id': '45833', 'order release id': '100019530458', 'order line id': '11074259319' },
+    ];
+    expect(() => validateSellerIds(mixedOrderRows, 'orders', 'myntra_ej')).not.toThrow();
+
+    const mixedReturnRows = [
+      { 'seller_id': '10708', 'order_id': '100019530457', 'order_line_id': '11074259318' },
+      { 'seller_id': 'seller_id', 'order_id': 'order_id', 'order_line_id': 'order_line_id' },
+    ];
+    expect(() => validateSellerIds(mixedReturnRows, 'returns', 'myntra_vb')).not.toThrow();
   });
 });
 
