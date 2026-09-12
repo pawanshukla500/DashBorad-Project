@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback } from 'react';
-import { Link } from 'react-router-dom';
 import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
 import {
@@ -219,21 +218,6 @@ export default function Dashboard() {
         <OrderSearch />
       </PageHeader>
 
-      <section className="rounded-2xl border border-border bg-surface-container-low p-4 sm:p-5">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between mb-4">
-          <div>
-            <h3 className="font-display text-headline-md font-semibold text-ink">Daily reconciliation flow</h3>
-            <p className="mt-1 font-sans text-body-sm text-secondary max-w-[68ch]">Use these three steps in order. Everything else in the sidebar is analysis and detail.</p>
-          </div>
-          <span className="font-sans text-label-sm font-semibold uppercase text-primary">Start here</span>
-        </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          <DashboardAction step="1" title="Upload marketplace files" detail="Sales, returns, and settlement files" to="/upload" tone="indigo" />
-          <DashboardAction step="2" title="Fix data and rate gaps" detail="Failed uploads, missing rates, unsettled orders" to="/exceptions" tone="amber" />
-          <DashboardAction step="3" title="Review payouts and fee variance" detail="Actual payment, charges, and recovery opportunities" to="/statement" tone="emerald" />
-        </div>
-      </section>
-
       {/* KPI Cards */}
       <div className="grid grid-cols-2 xl:grid-cols-5 gap-4">
         {ls ? (
@@ -300,24 +284,6 @@ export default function Dashboard() {
   );
 }
 
-function DashboardAction({ step, title, detail, to, tone }) {
-  const styles = {
-    indigo: 'border-primary hover:border-primary hover:bg-indigo-50',
-    amber: 'border-amber-200 hover:border-amber-400 hover:bg-amber-50',
-    emerald: 'border-emerald-200 hover:border-emerald-400 hover:bg-emerald-50',
-  };
-  return (
-    <Link to={to} className={`group rounded-xl border bg-surface p-3 transition-colors ${styles[tone]}`}>
-      <div className="flex items-start gap-3">
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-white">{step}</span>
-        <div className="min-w-0">
-          <p className="text-xs font-bold text-ink group-hover:text-slate-950">{title}</p>
-          <p className="mt-1 text-[11px] leading-4 text-secondary">{detail}</p>
-        </div>
-      </div>
-    </Link>
-  );
-}
 
 function ErrorBox({ msg }) {
   return (
