@@ -622,4 +622,9 @@ export const fetchOutstandingOrders = (params = {}) =>
   api.get('/reconcile/outstanding/orders', { params }).then(r => r.data);
 export const fetchOutstandingInvoices = (params = {}) =>
   api.get('/reconcile/outstanding/invoices', { params }).then(r => r.data);
+export const fetchOutstandingConfig = () =>
+  api.get('/reconcile/outstanding/config').then(r => r.data);
+export const updateOutstandingConfig = (channelKey, body) =>
+  api.put(`/reconcile/outstanding/config/${channelKey}`, body).then(r => r.data);
+
 

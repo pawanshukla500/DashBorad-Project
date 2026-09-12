@@ -95,4 +95,93 @@ describe('Outstanding Payments Endpoints', () => {
       server.close();
     }
   });
+
+  it('GET /reconcile/outstanding/summary returns B2C channels, Myntra accounts, and D2C vendors', async () => {
+    const server = app.listen(0);
+    const port = server.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/summary`);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+
+      expect(data).toHaveProperty('configured');
+      if (data.configured) {
+        expect(data).toHaveProperty('kpis');
+        expect(typeof data.kpis.unsettled).toBe('number');
+        expect(typeof data.kpis.settled_not_paid).toBe('number');
+        expect(typeof data.kpis.settled_adjusted).toBe('number');
+        expect(typeof data.kpis.cashback).toBe('number');
+        expect(typeof data.kpis.total_outstanding).toBe('number');
+
+        expect(data).toHaveProperty('b2c');
+        expect(Array.isArray(data.b2c.channels)).toBe(true);
+        expect(data.b2c.channels.length).toBeGreaterThan(0);
+
+        // Verify Myntra accounts hierarchy
+        const myntra = data.b2c.channels.find(c => c.channel_key === 'myntra');
+        expect(myntra).toBeDefined();
+        expect(myntra.has_accounts).toBe(true);
+        expect(Array.isArray(myntra.accounts)).toBe(true);
+        expect(myntra.accounts.length).toBe(2);
+
+        const ej = myntra.accounts.find(a => a.seller_id === '45833' || a.account_key === 'myntra_ej');
+        const vb = myntra.accounts.find(a => a.seller_id === '10708' || a.account_key === 'myntra_vb');
+        expect(ej).toBeDefined();
+        expect(vb).toBeDefined();
+        expect(ej.unsettled).toBeGreaterThan(0);
+        expect(vb.unsettled).toBeGreaterThan(0);
+
+        // Verify D2C section
+        expect(data).toHaveProperty('d2c');
+        expect(Array.isArray(data.d2c.vendors)).toBe(true);
+        expect(data.d2c.vendors.length).toBeGreaterThanOrEqual(7);
+
+        const phonePe = data.d2c.vendors.find(v => v.vendor_key === 'phonepe');
+        expect(phonePe).toBeDefined();
+        expect(phonePe.vendor_name).toBe('PhonePe');
+      }
+    } finally {
+      server.close();
+    }
+  });
+
+  it('GET /reconcile/outstanding/config returns channel configs and PUT updates config', async () => {
+    const server = app.listen(0);
+    const port = server.address().port;
+
+    try {
+      const getRes = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config`);
+      expect(getRes.status).toBe(200);
+      const configJson = await getRes.json();
+      if (configJson.configured !== false) {
+        expect(configJson.success).toBe(true);
+        expect(Array.isArray(configJson.data)).toBe(true);
+        expect(configJson.data.length).toBeGreaterThan(0);
+
+        const myntraCfg = configJson.data.find(c => c.channel_key === 'myntra');
+        expect(myntraCfg).toBeDefined();
+        expect(myntraCfg.grace_period_days).toBeDefined();
+
+        const putRes = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config/myntra`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grace_period_days: 16 }),
+        });
+        expect(putRes.status).toBe(200);
+        const putJson = await putRes.json();
+        expect(putJson.success).toBe(true);
+        expect(putJson.data.grace_period_days).toBe(16);
+
+        // Revert back
+        await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config/myntra`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grace_period_days: 15 }),
+        });
+      }
+    } finally {
+      server.close();
+    }
+  });
 });
