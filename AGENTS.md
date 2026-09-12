@@ -45,4 +45,8 @@ Whenever modifying, extending, or debugging data ingestion, orders, returns, set
 3. **Database Batching**:
    - Always batch multi-row inserts via `forEachDbBatch` to avoid PostgreSQL's 65,535 parameter limit.
    - Always invoke `refreshOrderSettlementTotals(pool)` after ingesting orders or settlement items.
+4. **Automated Marketplace Discovery**:
+   - Any new portal (Meesho, Ajio, Shopsy, etc.) uploaded into `orders`, or configured in `mp_config` / `marketplace_accounts`, automatically surfaces across the Outstanding Payments matrix and filter tabs without code changes.
+   - Outstanding calculations strictly adhere to: `Total Orders - Returns - Marketplace Fees - Payment Received = Outstanding`.
+
 
