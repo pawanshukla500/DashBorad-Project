@@ -260,23 +260,23 @@ export default function OutstandingPaymentsPage() {
   const handleExportFull = async () => {
     if (!data) return;
     const today = new Date().toISOString().slice(0, 10);
-    const b2cHeaders = ['Channels', 'Unsettled (Rs)', 'Settled Not Paid (Rs)', 'Settled Adjusted (Rs)', 'Total (Rs)', 'OverDue (Rs)', 'Due (In Grace) (Rs)', 'Upcoming (Rs)', 'Due Total (Rs)', 'Cashback (Rs)'];
+    const b2cHeaders = ['Channels', 'Total Orders (Rs)', 'Orders Count', 'Returns (Rs)', 'Marketplace Fees (Rs)', 'Payment Received (Rs)', 'Outstanding (Rs)', 'OverDue (>60d) (Rs)'];
     const b2cRows = [];
     for (const c of data.b2c?.channels || []) {
       b2cRows.push([
-        c.channel_name, c.unsettled, c.settled_not_paid, c.settled_adjusted, c.total, c.overdue, c.due_in_grace, c.upcoming, c.due_total, c.cashback_outstanding || 0
+        c.channel_name, c.total_orders_amount || 0, c.total_orders_count || 0, c.returns_amount || 0, c.marketplace_fees || 0, c.payment_received || 0, c.total || 0, c.overdue || 0
       ]);
       if (c.accounts && c.accounts.length > 0) {
         for (const a of c.accounts) {
           b2cRows.push([
-            `  - ${a.account_name}`, a.unsettled, a.settled_not_paid, a.settled_adjusted, a.total, a.overdue, a.due_in_grace, a.upcoming, a.due_total, a.cashback_outstanding || 0
+            `  - ${a.account_name} (ID: ${a.seller_id})`, a.total_orders_amount || 0, a.total_orders_count || 0, a.returns_amount || 0, a.marketplace_fees || 0, a.payment_received || 0, a.total || 0, a.overdue || 0
           ]);
         }
       }
     }
     if (data.b2c?.total) {
       const t = data.b2c.total;
-      b2cRows.push(['Total', t.unsettled, t.settled_not_paid, t.settled_adjusted, t.total, t.overdue, t.due_in_grace, t.upcoming, t.due_total, t.cashback_outstanding]);
+      b2cRows.push(['Total', t.total_orders_amount || 0, t.total_orders_count || 0, t.returns_amount || 0, t.marketplace_fees || 0, t.payment_received || 0, t.total || 0, t.overdue || 0]);
     }
 
     const d2cHeaders = ['Vendors', 'Settled Not Paid (Rs)', 'Settled Adjusted (Rs)', 'Total (Rs)', 'OverDue (Rs)', 'Due (In Grace) (Rs)', 'Upcoming (Rs)'];
@@ -289,17 +289,17 @@ export default function OutstandingPaymentsPage() {
     }
 
     await exportXlsx([
-      { sheetName: 'B2C Outstanding', headers: b2cHeaders, rows: b2cRows, colWidths: [26, 18, 20, 20, 20, 16, 18, 18, 18, 16] },
+      { sheetName: 'B2C Outstanding', headers: b2cHeaders, rows: b2cRows, colWidths: [26, 20, 14, 18, 20, 22, 18, 18] },
       { sheetName: 'D2C Outstanding', headers: d2cHeaders, rows: d2cRows, colWidths: [20, 20, 20, 20, 18, 18, 18] },
     ], `Outstanding_Payments_Consolidated_${today}`);
   };
 
   const kpis = data?.kpis || {
-    unsettled: 6185459,
-    settled_not_paid: 14211964,
-    settled_adjusted: -244209,
-    cashback: 67162,
-    total_outstanding: 20220376,
+    total_orders: 169959492,
+    returns: 51778440,
+    marketplace_fees: 20194479,
+    payment_received: 91569506,
+    total_outstanding: 18085613,
   };
 
   const b2cChannels = data?.b2c?.channels || [];
@@ -313,6 +313,7 @@ export default function OutstandingPaymentsPage() {
       <div className="flex items-center justify-between flex-wrap gap-4 pt-1">
         <div>
           <h1 className="text-2xl font-bold text-ink tracking-tight">Outstanding Payments</h1>
+          <p className="text-xs text-secondary mt-0.5">Live marketplace order reconciliation & payment status</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -338,73 +339,77 @@ export default function OutstandingPaymentsPage() {
         </div>
       </div>
 
-      {/* 2. Top 5 KPI Cards Row (Exact match to reference image) */}
+      {/* 2. Top 5 KPI Cards Row: Total Orders, Returns, Marketplace Fees, Payment Received, Total Outstanding */}
       <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-5">
-        {/* UNSETTLED */}
-        <div className="rounded-xl border-2 border-[#fcd34d] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
-              UNSETTLED
-            </span>
-            <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#fef08a] bg-amber-50 text-amber-500">
-              <span className="material-symbols-outlined text-[14px]">schedule</span>
-            </div>
-          </div>
-          <div className="mt-2">
-            <span className="font-sans text-[23px] font-bold tracking-tight text-ink tabular-nums">
-              {formatCurrency(kpis.unsettled)}
-            </span>
-          </div>
-        </div>
-
-        {/* SETTLED NOT PAID */}
+        {/* TOTAL ORDERS */}
         <div className="rounded-xl border-2 border-[#38bdf8] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
-              SETTLED NOT PAID
+              TOTAL ORDERS
             </span>
-            <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#bae6fd] bg-sky-50 text-sky-500">
-              <span className="material-symbols-outlined text-[14px]">info</span>
+            <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#bae6fd] bg-sky-50 text-sky-600">
+              <span className="material-symbols-outlined text-[14px]">shopping_bag</span>
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[23px] font-bold tracking-tight text-ink tabular-nums">
-              {formatCurrency(kpis.settled_not_paid)}
+            <span className="font-sans text-[22px] font-bold tracking-tight text-ink tabular-nums">
+              {formatCurrency(kpis.total_orders || kpis.unsettled || 0)}
             </span>
+            <div className="text-[10px] text-slate-400 mt-0.5">Gross order value</div>
           </div>
         </div>
 
-        {/* SETTLED ADJ */}
+        {/* RETURNS */}
+        <div className="rounded-xl border-2 border-[#f87171] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
+              RETURNS
+            </span>
+            <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#fecaca] bg-rose-50 text-rose-500">
+              <span className="material-symbols-outlined text-[14px]">assignment_return</span>
+            </div>
+          </div>
+          <div className="mt-2">
+            <span className="font-sans text-[22px] font-bold tracking-tight text-ink tabular-nums">
+              {formatCurrency(kpis.returns || 0)}
+            </span>
+            <div className="text-[10px] text-slate-400 mt-0.5">Customer & RTO refunds</div>
+          </div>
+        </div>
+
+        {/* MARKETPLACE FEES */}
         <div className="rounded-xl border-2 border-[#c084fc] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
-              SETTLED ADJ
+              MARKETPLACE FEES
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#f3e8ff] bg-purple-50 text-purple-600">
-              <span className="material-symbols-outlined text-[14px]">swap_horiz</span>
+              <span className="material-symbols-outlined text-[14px]">receipt_long</span>
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[23px] font-bold tracking-tight text-ink tabular-nums">
-              {formatCurrency(kpis.settled_adjusted)}
+            <span className="font-sans text-[22px] font-bold tracking-tight text-ink tabular-nums">
+              {formatCurrency(kpis.marketplace_fees || 0)}
             </span>
+            <div className="text-[10px] text-slate-400 mt-0.5">Commissions & taxes</div>
           </div>
         </div>
 
-        {/* CASHBACK */}
+        {/* PAYMENT RECEIVED */}
         <div className="rounded-xl border-2 border-[#4ade80] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
-              CASHBACK
+              PAYMENT RECEIVED
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#dcfce7] bg-emerald-50 text-emerald-600">
-              <span className="material-symbols-outlined text-[14px]">redeem</span>
+              <span className="material-symbols-outlined text-[14px]">payments</span>
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[23px] font-bold tracking-tight text-ink tabular-nums">
-              {formatCurrency(kpis.cashback)}
+            <span className="font-sans text-[22px] font-bold tracking-tight text-ink tabular-nums">
+              {formatCurrency(kpis.payment_received || 0)}
             </span>
+            <div className="text-[10px] text-slate-400 mt-0.5">Bank payouts settled</div>
           </div>
         </div>
 
@@ -419,10 +424,30 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[23px] font-bold tracking-tight text-white tabular-nums">
-              {formatCurrency(kpis.total_outstanding)}
+            <span className="font-sans text-[22px] font-bold tracking-tight text-white tabular-nums">
+              {formatCurrency(kpis.total_outstanding || 0)}
             </span>
+            <div className="text-[10px] text-slate-300 mt-0.5">Net pending to receive</div>
           </div>
+        </div>
+      </div>
+
+      {/* 2b. Reconciliation Formula Ribbon (Simple & Sweet) */}
+      <div className="flex items-center justify-between flex-wrap gap-2 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 font-medium shadow-xs">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-slate-800">Formula:</span>
+          <span className="bg-sky-100 text-sky-800 px-2 py-0.5 rounded font-mono font-medium">Total Orders</span>
+          <span>−</span>
+          <span className="bg-rose-100 text-rose-800 px-2 py-0.5 rounded font-mono font-medium">Returns</span>
+          <span>−</span>
+          <span className="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-mono font-medium">Marketplace Fees</span>
+          <span>−</span>
+          <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-mono font-medium">Payment Received</span>
+          <span>=</span>
+          <span className="bg-[#0f2744] text-white px-2.5 py-0.5 rounded font-mono font-bold">Outstanding</span>
+        </div>
+        <div className="text-[11px] text-slate-500 font-mono">
+          Pure Live Database Mode • {b2cChannels.length} Channels Integrated
         </div>
       </div>
 
@@ -434,10 +459,10 @@ export default function OutstandingPaymentsPage() {
             <div className="flex h-7 w-7 items-center justify-center rounded bg-blue-100 text-blue-700">
               <span className="material-symbols-outlined text-[16px]">storefront</span>
             </div>
-            <h2 className="text-sm font-bold text-slate-900">B2C</h2>
+            <h2 className="text-sm font-bold text-slate-900">B2C Marketplaces</h2>
             <span
               className="material-symbols-outlined text-slate-400 text-[16px] cursor-help"
-              title="Consolidated marketplace channels. Click any row or account to inspect individual order line items."
+              title="Consolidated marketplace channels. Click any row or account to filter unsettled orders."
             >
               info
             </span>
@@ -453,21 +478,31 @@ export default function OutstandingPaymentsPage() {
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 font-bold text-[11px]">
                 <th className="py-3 px-4 min-w-[200px]">Channels</th>
-                <th className="py-3 px-4 text-right">Unsettled</th>
-                <th className="py-3 px-4 text-right">Settled Not Paid</th>
-                <th className="py-3 px-4 text-right">Settled Adjusted</th>
-                <th className="py-3 px-4 text-right font-extrabold text-slate-900">Total</th>
-                <th className="py-3 px-4 text-right">OverDue</th>
-                <th className="py-3 px-4 text-right">Due (In Grace)</th>
-                <th className="py-3 px-4 text-right">Upcoming</th>
-                <th className="py-3 px-4 text-right font-extrabold text-slate-900">Due Total</th>
-                <th className="py-3 px-4 text-right">Cashback Outstanding</th>
+                <th className="py-3 px-4 text-right">Total Orders</th>
+                <th className="py-3 px-4 text-right">Returns</th>
+                <th className="py-3 px-4 text-right">Marketplace Fees</th>
+                <th className="py-3 px-4 text-right">Payment Received</th>
+                <th className="py-3 px-4 text-right font-extrabold text-slate-900">Outstanding</th>
+                <th className="py-3 px-4 text-right">{'OverDue (>60d)'}</th>
+                <th className="py-3 px-4 text-center">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/80 text-slate-800">
               {b2cChannels.map(channel => {
                 const isExpanded = expandedChannels[channel.channel_key];
                 const isChannelSelected = selectedChannel === channel.channel_key && !selectedAccount;
+
+                // Status calculation
+                let statusBadge = null;
+                if ((channel.total_orders_amount || 0) === 0) {
+                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500">No Orders</span>;
+                } else if ((channel.total || 0) === 0) {
+                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">Settled</span>;
+                } else if ((channel.overdue || 0) > 0) {
+                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800">Overdue</span>;
+                } else {
+                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700">Current</span>;
+                }
 
                 return (
                   <tbody key={channel.channel_key} className="contents">
@@ -513,31 +548,30 @@ export default function OutstandingPaymentsPage() {
                         </div>
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-slate-900">
-                        {formatCurrency(channel.unsettled)}
+                        <div>{formatCurrency(channel.total_orders_amount || 0)}</div>
+                        {(channel.total_orders_count || 0) > 0 && (
+                          <div className="text-[10px] text-slate-400 font-normal">
+                            {channel.total_orders_count.toLocaleString('en-IN')} orders
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-slate-900">
-                        {formatCurrency(channel.settled_not_paid)}
+                        {formatCurrency(channel.returns_amount || 0)}
                       </td>
-                      <td className={`py-3 px-4 text-right font-mono ${channel.settled_adjusted < 0 ? 'text-slate-800 font-semibold' : 'text-slate-700'}`}>
-                        {formatCurrency(channel.settled_adjusted)}
+                      <td className="py-3 px-4 text-right font-mono text-slate-700">
+                        {formatCurrency(channel.marketplace_fees || 0)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">
-                        {formatCurrency(channel.total)}
-                      </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-800">
-                        {formatCurrency(channel.overdue)}
-                      </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-800">
-                        {formatCurrency(channel.due_in_grace)}
-                      </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-800">
-                        {formatCurrency(channel.upcoming)}
+                      <td className="py-3 px-4 text-right font-mono text-slate-900 font-medium">
+                        {formatCurrency(channel.payment_received || 0)}
                       </td>
                       <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">
-                        {formatCurrency(channel.due_total)}
+                        {formatCurrency(channel.total || 0)}
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-slate-800">
-                        {channel.cashback_outstanding > 0 ? formatCurrency(channel.cashback_outstanding) : '—'}
+                        {formatCurrency(channel.overdue || 0)}
+                      </td>
+                      <td className="py-3 px-4 text-center">
+                        {statusBadge}
                       </td>
                     </tr>
 
@@ -569,31 +603,34 @@ export default function OutstandingPaymentsPage() {
                             </button>
                           </td>
                           <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
-                            {formatCurrency(acc.unsettled)}
+                            <div>{formatCurrency(acc.total_orders_amount || 0)}</div>
+                            {(acc.total_orders_count || 0) > 0 && (
+                              <div className="text-[10px] text-slate-400 font-normal">
+                                {acc.total_orders_count.toLocaleString('en-IN')} orders
+                              </div>
+                            )}
                           </td>
                           <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
-                            {formatCurrency(acc.settled_not_paid)}
+                            {formatCurrency(acc.returns_amount || 0)}
                           </td>
                           <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
-                            {formatCurrency(acc.settled_adjusted)}
+                            {formatCurrency(acc.marketplace_fees || 0)}
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono font-semibold text-slate-800 text-[11px]">
-                            {formatCurrency(acc.total)}
+                          <td className="py-2.5 px-4 text-right font-mono text-slate-800 text-[11px]">
+                            {formatCurrency(acc.payment_received || 0)}
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
-                            {formatCurrency(acc.overdue)}
-                          </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
-                            {formatCurrency(acc.due_in_grace)}
+                          <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-900 text-[11px]">
+                            {formatCurrency(acc.total || 0)}
                           </td>
                           <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
-                            {formatCurrency(acc.upcoming)}
+                            {formatCurrency(acc.overdue || 0)}
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono font-semibold text-slate-800 text-[11px]">
-                            {formatCurrency(acc.due_total)}
-                          </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
-                            {acc.cashback_outstanding > 0 ? formatCurrency(acc.cashback_outstanding) : '—'}
+                          <td className="py-2.5 px-4 text-center">
+                            {(acc.total || 0) > 0 ? (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-amber-100 text-amber-800">Overdue</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-emerald-100 text-emerald-700">Settled</span>
+                            )}
                           </td>
                         </tr>
                       );
@@ -605,15 +642,22 @@ export default function OutstandingPaymentsPage() {
               {/* B2C Summary Row */}
               <tr className="border-t-2 border-slate-300 bg-slate-100/90 font-bold text-slate-900">
                 <td className="py-3 px-4 font-bold">Total</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.unsettled)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.settled_not_paid)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.settled_adjusted)}</td>
-                <td className="py-3 px-4 text-right font-mono font-extrabold">{formatCurrency(b2cTotal.total)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.overdue)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.due_in_grace)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.upcoming)}</td>
-                <td className="py-3 px-4 text-right font-mono font-extrabold">{formatCurrency(b2cTotal.due_total)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.cashback_outstanding)}</td>
+                <td className="py-3 px-4 text-right font-mono">
+                  <div>{formatCurrency(b2cTotal.total_orders_amount || 0)}</div>
+                  {(b2cTotal.total_orders_count || 0) > 0 && (
+                    <div className="text-[10px] text-slate-500 font-normal">
+                      {b2cTotal.total_orders_count.toLocaleString('en-IN')} orders
+                    </div>
+                  )}
+                </td>
+                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.returns_amount || 0)}</td>
+                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.marketplace_fees || 0)}</td>
+                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.payment_received || 0)}</td>
+                <td className="py-3 px-4 text-right font-mono font-extrabold">{formatCurrency(b2cTotal.total || 0)}</td>
+                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.overdue || 0)}</td>
+                <td className="py-3 px-4 text-center">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-primary/10 text-primary">Consolidated</span>
+                </td>
               </tr>
             </tbody>
           </table>

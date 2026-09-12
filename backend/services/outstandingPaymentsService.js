@@ -1,21 +1,21 @@
 import { ORDER_SETTLEMENT_TOTALS_TABLE } from './orderSettlementTotals.js';
 
 export const DEFAULT_B2C_CHANNELS = [
-  { key: 'myntra', name: 'Myntra', icon: 'myntra', defaultGrace: 15, defaultCycle: 15, cashback: 67162 },
-  { key: 'meesho', name: 'Meesho', icon: 'meesho', defaultGrace: 15, defaultCycle: 7, cashback: 0 },
+  { key: 'myntra', name: 'Myntra', icon: 'myntra', defaultGrace: 15, defaultCycle: 15, cashback: 0 },
   { key: 'flipkart', name: 'Flipkart', icon: 'flipkart', defaultGrace: 7, defaultCycle: 7, cashback: 0 },
   { key: 'amazon', name: 'Amazon-India', icon: 'amazon', defaultGrace: 14, defaultCycle: 7, cashback: 0 },
+  { key: 'meesho', name: 'Meesho', icon: 'meesho', defaultGrace: 15, defaultCycle: 7, cashback: 0 },
   { key: 'ajio', name: 'Ajio', icon: 'ajio', defaultGrace: 30, defaultCycle: 15, cashback: 0 },
 ];
 
 export const DEFAULT_D2C_VENDORS = [
-  { key: 'phonepe', name: 'PhonePe', graceDays: 2, cycleDays: 1, settledNotPaid: 18092, settledAdj: 0, overdue: 7763, inGrace: 0, upcoming: 10329 },
-  { key: 'manual', name: 'Manual', graceDays: 15, cycleDays: 15, settledNotPaid: 7707, settledAdj: 0, overdue: 2339, inGrace: 0, upcoming: 5368 },
-  { key: 'gokwik', name: 'Gokwik', graceDays: 3, cycleDays: 2, settledNotPaid: 224684, settledAdj: 4836, overdue: 102126, inGrace: 0, upcoming: 127393 },
-  { key: 'cod_ekart', name: 'COD-Ekart', graceDays: 7, cycleDays: 7, settledNotPaid: 154097, settledAdj: 0, overdue: 102039, inGrace: 0, upcoming: 52058 },
-  { key: 'cod_amazon', name: 'COD-Amazon', graceDays: 7, cycleDays: 7, settledNotPaid: 51741, settledAdj: 0, overdue: 23307, inGrace: 0, upcoming: 28434 },
-  { key: 'cod_delhivery', name: 'COD-Delhivery', graceDays: 7, cycleDays: 7, settledNotPaid: 3996, settledAdj: 0, overdue: 1888, inGrace: 0, upcoming: 2108 },
-  { key: 'cod_bluedart', name: 'COD-Bluedart', graceDays: 7, cycleDays: 7, settledNotPaid: 1544, settledAdj: 0, overdue: 0, inGrace: 0, upcoming: 1544 },
+  { key: 'phonepe', name: 'PhonePe', graceDays: 2, cycleDays: 1 },
+  { key: 'manual', name: 'Manual', graceDays: 15, cycleDays: 15 },
+  { key: 'gokwik', name: 'Gokwik', graceDays: 3, cycleDays: 2 },
+  { key: 'cod_ekart', name: 'COD-Ekart', graceDays: 7, cycleDays: 7 },
+  { key: 'cod_amazon', name: 'COD-Amazon', graceDays: 7, cycleDays: 7 },
+  { key: 'cod_delhivery', name: 'COD-Delhivery', graceDays: 7, cycleDays: 7 },
+  { key: 'cod_bluedart', name: 'COD-Bluedart', graceDays: 7, cycleDays: 7 },
 ];
 
 /**
@@ -85,7 +85,8 @@ export async function updateOutstandingConfig(pool, channelKey, { grace_period_d
 }
 
 /**
- * Compute the consolidated & marketplace-wise outstanding payment matrix
+ * Compute the consolidated & marketplace-wise outstanding payment matrix (Pure Live DB Mode)
+ * Formula: Total Orders - Returns - Marketplace Fees - Payment Received = Outstanding
  */
 export async function computeOutstandingMatrix(pool, filters = {}) {
   await ensureOutstandingConfigTable(pool);
@@ -110,43 +111,44 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
   `);
 
   const discoveredSet = new Set(discoveredRes.rows.map(r => r.marketplace));
-  // Ensure primary channels are present
   for (const def of DEFAULT_B2C_CHANNELS) {
     discoveredSet.add(def.key);
   }
 
-  // 2. Query real unsettled orders aggregated by marketplace & seller_account
-  const unsettledOrdersRes = await pool.query(`
-    WITH unsettled AS (
-      SELECT
-        LOWER(o.marketplace) AS marketplace,
-        COALESCE(o.seller_account, 'default') AS seller_account,
-        COALESCE(o.final_invoice_amount, 0) AS amount,
-        COALESCE(CURRENT_DATE - o.order_date::date, 999) AS days_old
-      FROM orders o
-      WHERE NOT EXISTS (
-        SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
-      )
-    )
-    SELECT
-      marketplace,
-      seller_account,
-      COUNT(*) AS order_count,
-      ROUND(COALESCE(SUM(amount), 0), 2) AS total_amount,
-      ROUND(COALESCE(SUM(CASE WHEN days_old <= 15 THEN amount ELSE 0 END), 0), 2) AS aging_0_15,
-      ROUND(COALESCE(SUM(CASE WHEN days_old > 15 AND days_old <= 30 THEN amount ELSE 0 END), 0), 2) AS aging_16_30,
-      ROUND(COALESCE(SUM(CASE WHEN days_old > 30 AND days_old <= 60 THEN amount ELSE 0 END), 0), 2) AS aging_31_60,
-      ROUND(COALESCE(SUM(CASE WHEN days_old > 60 THEN amount ELSE 0 END), 0), 2) AS aging_60_plus,
-      COUNT(CASE WHEN days_old <= 15 THEN 1 END) AS count_0_15,
-      COUNT(CASE WHEN days_old > 15 AND days_old <= 30 THEN 1 END) AS count_16_30,
-      COUNT(CASE WHEN days_old > 30 AND days_old <= 60 THEN 1 END) AS count_31_60,
-      COUNT(CASE WHEN days_old > 60 THEN 1 END) AS count_60_plus
-    FROM unsettled
-    GROUP BY marketplace, seller_account
-    ORDER BY marketplace, seller_account
+  // 2. Query pure live database orders + settlements + fee aggregates
+  const channelDataRes = await pool.query(`
+    SELECT 
+      LOWER(o.marketplace) AS marketplace,
+      COALESCE(o.seller_account, 'default') AS seller_account,
+      COUNT(DISTINCT o.order_item_id) AS total_orders_count,
+      ROUND(COALESCE(SUM(o.final_invoice_amount), 0), 2) AS total_orders_amount,
+      ROUND(COALESCE(SUM(ost.refund_amount), 0), 2) AS returns_amount,
+      ROUND(COALESCE(SUM(ost.net_bank), 0), 2) AS payment_received,
+      ROUND(COALESCE(SUM(
+        COALESCE(ost.commission, 0) + 
+        COALESCE(ost.fixed_fee, 0) + 
+        COALESCE(ost.collection_fee, 0) + 
+        COALESCE(ost.pick_pack_fee, 0) + 
+        COALESCE(ost.shipping_fee, 0) + 
+        COALESCE(ost.reverse_shipping, 0) + 
+        COALESCE(ost.franchise_fee, 0) + 
+        COALESCE(ost.tcs, 0) + 
+        COALESCE(ost.tds, 0) + 
+        COALESCE(ost.gst_on_mp_fees, 0)
+      ), 0), 2) AS marketplace_fees,
+      COUNT(CASE WHEN ost.order_item_id IS NULL THEN 1 END) AS unsettled_orders_count,
+      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS unsettled_order_amount,
+      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL AND (CURRENT_DATE - o.order_date::date) > 60 THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS aging_60_plus,
+      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL AND (CURRENT_DATE - o.order_date::date) BETWEEN 31 AND 60 THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS aging_31_60,
+      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL AND (CURRENT_DATE - o.order_date::date) BETWEEN 16 AND 30 THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS aging_16_30,
+      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL AND (CURRENT_DATE - o.order_date::date) <= 15 THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS aging_0_15
+    FROM orders o
+    LEFT JOIN ${ORDER_SETTLEMENT_TOTALS_TABLE} ost ON ost.order_item_id = o.order_item_id
+    GROUP BY LOWER(o.marketplace), COALESCE(o.seller_account, 'default')
+    ORDER BY LOWER(o.marketplace), seller_account
   `);
 
-  // 3. Query pending invoices aggregated by marketplace & seller_account
+  // 3. Query pending invoices from mp_invoices
   const pendingInvoicesRes = await pool.query(`
     SELECT
       LOWER(marketplace) AS marketplace,
@@ -158,7 +160,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     GROUP BY LOWER(marketplace), seller_account
   `);
 
-  // 4. Query non-order adjustments
+  // 4. Query Flipkart non-order adjustments if any
   let fkNetAdj = 0;
   try {
     const fkRes = await pool.query(`
@@ -172,12 +174,19 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     fkNetAdj = 0;
   }
 
-  // Build B2C Channel records
+  // Group database rows by marketplace
+  const dbRowsByMarketplace = new Map();
+  for (const row of channelDataRes.rows) {
+    const mp = row.marketplace;
+    if (!dbRowsByMarketplace.has(mp)) {
+      dbRowsByMarketplace.set(mp, []);
+    }
+    dbRowsByMarketplace.get(mp).push(row);
+  }
+
   const b2cChannels = [];
   const processedKeys = new Set();
-
-  // Known channel order for layout fidelity
-  const orderedChannelKeys = ['myntra', 'meesho', 'flipkart', 'amazon', 'ajio'];
+  const orderedChannelKeys = ['myntra', 'flipkart', 'amazon', 'meesho', 'ajio'];
   for (const m of discoveredSet) {
     if (!orderedChannelKeys.includes(m)) {
       orderedChannelKeys.push(m);
@@ -189,9 +198,6 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     processedKeys.add(chKey);
 
     const cfg = configMap.get(chKey) || {};
-    const graceDays = cfg.grace_period_days || 15;
-    const cycleDays = cfg.payment_cycle_days || 7;
-
     const channelName =
       cfg.channel_name ||
       (chKey === 'amazon' ? 'Amazon-India' :
@@ -201,287 +207,207 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
        chKey === 'ajio' ? 'Ajio' :
        chKey.charAt(0).toUpperCase() + chKey.slice(1));
 
-    // Find all unsettled and invoice rows for this channel
-    const uRows = unsettledOrdersRes.rows.filter(r => r.marketplace === chKey);
-    const iRows = pendingInvoicesRes.rows.filter(r => r.marketplace === chKey);
+    const rows = dbRowsByMarketplace.get(chKey) || [];
+    const invRows = pendingInvoicesRes.rows.filter(r => r.marketplace === chKey);
 
-    // Handle Myntra specifically for accounts segregation (myntra_ej: 45833, myntra_vb: 10708)
     if (chKey === 'myntra') {
-      const ejUnsettledRow = uRows.find(r => r.seller_account === 'myntra_ej' || r.seller_account === '45833');
-      const vbUnsettledRow = uRows.find(r => r.seller_account === 'myntra_vb' || r.seller_account === '10708');
+      // Myntra accounts segregation: myntra_ej (45833), myntra_vb (10708)
+      const ejRow = rows.find(r => r.seller_account === 'myntra_ej' || r.seller_account === '45833');
+      const vbRow = rows.find(r => r.seller_account === 'myntra_vb' || r.seller_account === '10708');
 
-      const ejInvRow = iRows.find(r => r.seller_account === 'myntra_ej' || r.seller_account === '45833');
-      const vbInvRow = iRows.find(r => r.seller_account === 'myntra_vb' || r.seller_account === '10708');
+      const ejOrdersCount = Number(ejRow?.total_orders_count || 0);
+      const ejOrdersAmt = Number(ejRow?.total_orders_amount || 0);
+      const ejReturns = Number(ejRow?.returns_amount || 0);
+      const ejPaid = Number(ejRow?.payment_received || 0);
+      const ejFees = Number(ejRow?.marketplace_fees || 0);
+      const ejUnsettledCount = Number(ejRow?.unsettled_orders_count || 0);
+      const ejUnsettled = Number(ejRow?.unsettled_order_amount || 0);
+      const ejOverdue = Number(ejRow?.aging_60_plus || 0) + Number(ejRow?.aging_31_60 || 0);
+      const ejInGrace = Number(ejRow?.aging_16_30 || 0);
+      const ejUpcoming = Number(ejRow?.aging_0_15 || 0);
 
-      const ejUnsettled = Number(ejUnsettledRow?.total_amount || 0);
-      const vbUnsettled = Number(vbUnsettledRow?.total_amount || 0);
+      const vbOrdersCount = Number(vbRow?.total_orders_count || 0);
+      const vbOrdersAmt = Number(vbRow?.total_orders_amount || 0);
+      const vbReturns = Number(vbRow?.returns_amount || 0);
+      const vbPaid = Number(vbRow?.payment_received || 0);
+      const vbFees = Number(vbRow?.marketplace_fees || 0);
+      const vbUnsettledCount = Number(vbRow?.unsettled_orders_count || 0);
+      const vbUnsettled = Number(vbRow?.unsettled_order_amount || 0);
+      const vbOverdue = Number(vbRow?.aging_60_plus || 0) + Number(vbRow?.aging_31_60 || 0);
+      const vbInGrace = Number(vbRow?.aging_16_30 || 0);
+      const vbUpcoming = Number(vbRow?.aging_0_15 || 0);
+
+      const totalOrdersCount = ejOrdersCount + vbOrdersCount;
+      const totalOrdersAmt = ejOrdersAmt + vbOrdersAmt;
+      const totalReturns = ejReturns + vbReturns;
+      const totalPaid = ejPaid + vbPaid;
+      const totalFees = ejFees + vbFees;
       const totalUnsettled = ejUnsettled + vbUnsettled;
-
-      // In screenshot: Settled Not Paid = ₹78,60,789, Settled Adj = ₹17,040, Total = ₹1,04,63,330
-      // If DB has invoices, use them; otherwise reflect proportional baseline
-      const ejInv = Number(ejInvRow?.pending_amount || 0);
-      const vbInv = Number(vbInvRow?.pending_amount || 0);
-      const totalSettledNotPaid = (ejInv + vbInv) > 0 ? (ejInv + vbInv) : 7860789;
-      const totalSettledAdj = 17040;
-
-      // OverDue, In Grace, Upcoming
-      const ejOverdue = Number(ejUnsettledRow?.aging_60_plus || 0) + Number(ejUnsettledRow?.aging_31_60 || 0);
-      const vbOverdue = Number(vbUnsettledRow?.aging_60_plus || 0) + Number(vbUnsettledRow?.aging_31_60 || 0);
-      const ejInGrace = Number(ejUnsettledRow?.aging_16_30 || 0);
-      const vbInGrace = Number(vbUnsettledRow?.aging_16_30 || 0);
-      const ejUpcoming = Number(ejUnsettledRow?.aging_0_15 || 0);
-      const vbUpcoming = Number(vbUnsettledRow?.aging_0_15 || 0);
-
-      // Distribute Settled Not Paid 50/50 between EJ and VB
-      const ejSettledNotPaid = Math.round(totalSettledNotPaid * 0.5);
-      const vbSettledNotPaid = totalSettledNotPaid - ejSettledNotPaid;
-      const ejSettledAdj = Math.round(totalSettledAdj * 0.5);
-      const vbSettledAdj = totalSettledAdj - ejSettledAdj;
-
-      const ejTotal = ejUnsettled + ejSettledNotPaid + ejSettledAdj;
-      const vbTotal = vbUnsettled + vbSettledNotPaid + vbSettledAdj;
-      const channelTotal = totalUnsettled + totalSettledNotPaid + totalSettledAdj;
-
-      const overdueVal = (ejOverdue + vbOverdue) > 0 ? (ejOverdue + vbOverdue) : 4855;
-      const inGraceVal = (ejInGrace + vbInGrace) > 0 ? (ejInGrace + vbInGrace) : 1115243;
-      const upcomingVal = (ejUpcoming + vbUpcoming) > 0 ? (ejUpcoming + vbUpcoming) : Math.max(0, channelTotal - overdueVal - inGraceVal);
+      const totalOverdue = ejOverdue + vbOverdue;
+      const totalInGrace = ejInGrace + vbInGrace;
+      const totalUpcoming = ejUpcoming + vbUpcoming;
 
       b2cChannels.push({
         channel_key: 'myntra',
         channel_name: 'Myntra',
         icon: 'myntra',
-        unsettled: totalUnsettled > 0 ? totalUnsettled : 2585501,
-        settled_not_paid: totalSettledNotPaid,
-        settled_adjusted: totalSettledAdj,
-        total: channelTotal > 0 ? channelTotal : 10463330,
-        overdue: overdueVal,
-        due_in_grace: inGraceVal,
-        upcoming: upcomingVal,
-        due_total: overdueVal + inGraceVal + upcomingVal,
-        cashback_outstanding: 67162,
+        total_orders_count: totalOrdersCount,
+        total_orders_amount: totalOrdersAmt,
+        returns_amount: totalReturns,
+        marketplace_fees: totalFees,
+        payment_received: totalPaid,
+        unsettled: totalUnsettled,
+        settled_not_paid: 0,
+        settled_adjusted: 0,
+        total: totalUnsettled,
+        overdue: totalOverdue,
+        due_in_grace: totalInGrace,
+        upcoming: totalUpcoming,
+        due_total: totalUnsettled,
+        cashback_outstanding: 0,
         has_accounts: true,
         accounts: [
           {
             account_key: 'myntra_ej',
             account_name: 'Myntra (EJ - 45833)',
             seller_id: '45833',
-            unsettled: ejUnsettled > 0 ? ejUnsettled : 1292750,
-            settled_not_paid: ejSettledNotPaid,
-            settled_adjusted: ejSettledAdj,
-            total: ejTotal > 0 ? ejTotal : 5231664,
-            overdue: ejOverdue > 0 ? ejOverdue : 2427,
-            due_in_grace: ejInGrace > 0 ? ejInGrace : 557621,
-            upcoming: ejUpcoming > 0 ? ejUpcoming : Math.round(upcomingVal * 0.5),
-            due_total: Math.round((overdueVal + inGraceVal + upcomingVal) * 0.5),
-            cashback_outstanding: 33581,
-            orders_count: Number(ejUnsettledRow?.order_count || 14062),
+            total_orders_count: ejOrdersCount,
+            total_orders_amount: ejOrdersAmt,
+            returns_amount: ejReturns,
+            marketplace_fees: ejFees,
+            payment_received: ejPaid,
+            unsettled: ejUnsettled,
+            settled_not_paid: 0,
+            settled_adjusted: 0,
+            total: ejUnsettled,
+            overdue: ejOverdue,
+            due_in_grace: ejInGrace,
+            upcoming: ejUpcoming,
+            due_total: ejUnsettled,
+            cashback_outstanding: 0,
+            orders_count: ejUnsettledCount,
           },
           {
             account_key: 'myntra_vb',
             account_name: 'Myntra (VB - 10708)',
             seller_id: '10708',
-            unsettled: vbUnsettled > 0 ? vbUnsettled : 1292751,
-            settled_not_paid: vbSettledNotPaid,
-            settled_adjusted: vbSettledAdj,
-            total: vbTotal > 0 ? vbTotal : 5231666,
-            overdue: vbOverdue > 0 ? vbOverdue : 2428,
-            due_in_grace: vbInGrace > 0 ? vbInGrace : 557622,
-            upcoming: vbUpcoming > 0 ? vbUpcoming : upcomingVal - Math.round(upcomingVal * 0.5),
-            due_total: (overdueVal + inGraceVal + upcomingVal) - Math.round((overdueVal + inGraceVal + upcomingVal) * 0.5),
-            cashback_outstanding: 33581,
-            orders_count: Number(vbUnsettledRow?.order_count || 8941),
+            total_orders_count: vbOrdersCount,
+            total_orders_amount: vbOrdersAmt,
+            returns_amount: vbReturns,
+            marketplace_fees: vbFees,
+            payment_received: vbPaid,
+            unsettled: vbUnsettled,
+            settled_not_paid: 0,
+            settled_adjusted: 0,
+            total: vbUnsettled,
+            overdue: vbOverdue,
+            due_in_grace: vbInGrace,
+            upcoming: vbUpcoming,
+            due_total: vbUnsettled,
+            cashback_outstanding: 0,
+            orders_count: vbUnsettledCount,
           },
         ],
       });
       continue;
     }
 
-    // Flipkart
-    if (chKey === 'flipkart') {
-      const uRow = uRows[0];
-      const iRow = iRows[0];
-      const dbUnsettled = Number(uRow?.total_amount || 0);
-      const unsettledVal = dbUnsettled > 0 ? dbUnsettled : 187601;
-      const settledNotPaidVal = Number(iRow?.pending_amount || 0) > 0 ? Number(iRow?.pending_amount || 0) : 5277752;
-      const settledAdjVal = -218069; // or fkNetAdj if negative
-      const totalVal = unsettledVal + settledNotPaidVal + settledAdjVal;
-
-      const overdueVal = Number(uRow?.aging_60_plus || 0) > 0 ? Number(uRow?.aging_60_plus || 0) : 933693;
-      const inGraceVal = 1746620;
-      const upcomingVal = Math.max(0, totalVal - overdueVal - inGraceVal);
-
-      b2cChannels.push({
-        channel_key: 'flipkart',
-        channel_name: 'Flipkart',
-        icon: 'flipkart',
-        unsettled: unsettledVal,
-        settled_not_paid: settledNotPaidVal,
-        settled_adjusted: settledAdjVal,
-        total: totalVal,
-        overdue: overdueVal,
-        due_in_grace: inGraceVal,
-        upcoming: upcomingVal,
-        due_total: totalVal,
-        cashback_outstanding: 0,
-        has_accounts: false,
-        accounts: [],
-        orders_count: Number(uRow?.order_count || 2221),
-      });
-      continue;
-    }
-
-    // Amazon
-    if (chKey === 'amazon') {
-      const uRow = uRows[0];
-      const iRow = iRows[0];
-      const dbUnsettled = Number(uRow?.total_amount || 0);
-      const unsettledVal = dbUnsettled > 0 ? dbUnsettled : 1512159;
-      const settledNotPaidVal = Number(iRow?.pending_amount || 0) > 0 ? Number(iRow?.pending_amount || 0) : 287883;
-      const settledAdjVal = -24438;
-      const totalVal = unsettledVal + settledNotPaidVal + settledAdjVal;
-
-      b2cChannels.push({
-        channel_key: 'amazon',
-        channel_name: 'Amazon-India',
-        icon: 'amazon',
-        unsettled: unsettledVal,
-        settled_not_paid: settledNotPaidVal,
-        settled_adjusted: settledAdjVal,
-        total: totalVal,
-        overdue: 30,
-        due_in_grace: 720,
-        upcoming: Math.max(0, totalVal - 750),
-        due_total: totalVal,
-        cashback_outstanding: 0,
-        has_accounts: false,
-        accounts: [],
-        orders_count: Number(uRow?.order_count || 0),
-      });
-      continue;
-    }
-
-    // Meesho
-    if (chKey === 'meesho') {
-      const uRow = uRows[0];
-      const iRow = iRows[0];
-      const unsettledVal = Number(uRow?.total_amount || 0) > 0 ? Number(uRow?.total_amount || 0) : 1900198;
-      const settledNotPaidVal = Number(iRow?.pending_amount || 0);
-      const settledAdjVal = 1422;
-      const totalVal = unsettledVal + settledNotPaidVal + settledAdjVal;
-
-      b2cChannels.push({
-        channel_key: 'meesho',
-        channel_name: 'Meesho',
-        icon: 'meesho',
-        unsettled: unsettledVal,
-        settled_not_paid: settledNotPaidVal,
-        settled_adjusted: settledAdjVal,
-        total: totalVal,
-        overdue: 2214,
-        due_in_grace: 0,
-        upcoming: Math.max(0, totalVal - 2214),
-        due_total: totalVal,
-        cashback_outstanding: 0,
-        has_accounts: false,
-        accounts: [],
-        orders_count: Number(uRow?.order_count || 0),
-      });
-      continue;
-    }
-
-    // Ajio
-    if (chKey === 'ajio') {
-      const uRow = uRows[0];
-      const iRow = iRows[0];
-      const unsettledVal = Number(uRow?.total_amount || 0);
-      const settledNotPaidVal = Number(iRow?.pending_amount || 0) > 0 ? Number(iRow?.pending_amount || 0) : 323680;
-      const settledAdjVal = -24999;
-      const totalVal = unsettledVal + settledNotPaidVal + settledAdjVal;
-
-      b2cChannels.push({
-        channel_key: 'ajio',
-        channel_name: 'Ajio',
-        icon: 'ajio',
-        unsettled: unsettledVal,
-        settled_not_paid: settledNotPaidVal,
-        settled_adjusted: settledAdjVal,
-        total: totalVal,
-        overdue: 119583,
-        due_in_grace: 0,
-        upcoming: Math.max(0, totalVal - 119583),
-        due_total: totalVal,
-        cashback_outstanding: 0,
-        has_accounts: false,
-        accounts: [],
-        orders_count: Number(uRow?.order_count || 0),
-      });
-      continue;
-    }
-
-    // Any other dynamically discovered marketplace in DB (Future Resilience)
-    let channelUnsettled = 0;
-    let channelOverdue = 0;
-    let channelInGrace = 0;
-    let channelUpcoming = 0;
-    let channelOrderCount = 0;
+    // Generic channel aggregation from live DB
+    let chOrdersCount = 0;
+    let chOrdersAmt = 0;
+    let chReturns = 0;
+    let chPaid = 0;
+    let chFees = 0;
+    let chUnsettledCount = 0;
+    let chUnsettled = 0;
+    let chOverdue = 0;
+    let chInGrace = 0;
+    let chUpcoming = 0;
 
     const channelAccounts = [];
-    for (const r of uRows) {
-      const amt = Number(r.total_amount || 0);
-      const cnt = Number(r.order_count || 0);
-      channelUnsettled += amt;
-      channelOrderCount += cnt;
-
+    for (const r of rows) {
+      const oc = Number(r.total_orders_count || 0);
+      const oa = Number(r.total_orders_amount || 0);
+      const ret = Number(r.returns_amount || 0);
+      const pd = Number(r.payment_received || 0);
+      const fee = Number(r.marketplace_fees || 0);
+      const uc = Number(r.unsettled_orders_count || 0);
+      const un = Number(r.unsettled_order_amount || 0);
       const od = Number(r.aging_60_plus || 0) + Number(r.aging_31_60 || 0);
       const ig = Number(r.aging_16_30 || 0);
       const up = Number(r.aging_0_15 || 0);
-      channelOverdue += od;
-      channelInGrace += ig;
-      channelUpcoming += up;
 
-      channelAccounts.push({
-        account_key: r.seller_account,
-        account_name: `${channelName} (${r.seller_account})`,
-        unsettled: amt,
-        settled_not_paid: 0,
-        settled_adjusted: 0,
-        total: amt,
-        overdue: od,
-        due_in_grace: ig,
-        upcoming: up,
-        due_total: amt,
-        cashback_outstanding: 0,
-        orders_count: cnt,
-      });
+      chOrdersCount += oc;
+      chOrdersAmt += oa;
+      chReturns += ret;
+      chPaid += pd;
+      chFees += fee;
+      chUnsettledCount += uc;
+      chUnsettled += un;
+      chOverdue += od;
+      chInGrace += ig;
+      chUpcoming += up;
+
+      if (r.seller_account && r.seller_account !== 'default') {
+        channelAccounts.push({
+          account_key: r.seller_account,
+          account_name: `${channelName} (${r.seller_account})`,
+          total_orders_count: oc,
+          total_orders_amount: oa,
+          returns_amount: ret,
+          marketplace_fees: fee,
+          payment_received: pd,
+          unsettled: un,
+          settled_not_paid: 0,
+          settled_adjusted: 0,
+          total: un,
+          overdue: od,
+          due_in_grace: ig,
+          upcoming: up,
+          due_total: un,
+          cashback_outstanding: 0,
+          orders_count: uc,
+        });
+      }
     }
 
     let channelInvPending = 0;
-    for (const ir of iRows) {
+    for (const ir of invRows) {
       channelInvPending += Number(ir.pending_amount || 0);
     }
 
-    const chTotal = channelUnsettled + channelInvPending;
+    const chTotalOutstanding = chUnsettled + channelInvPending;
     b2cChannels.push({
       channel_key: chKey,
       channel_name: channelName,
       icon: chKey,
-      unsettled: channelUnsettled,
+      total_orders_count: chOrdersCount,
+      total_orders_amount: chOrdersAmt,
+      returns_amount: chReturns,
+      marketplace_fees: chFees,
+      payment_received: chPaid,
+      unsettled: chUnsettled,
       settled_not_paid: channelInvPending,
-      settled_adjusted: 0,
-      total: chTotal,
-      overdue: channelOverdue,
-      due_in_grace: channelInGrace,
-      upcoming: channelUpcoming,
-      due_total: chTotal,
+      settled_adjusted: chKey === 'flipkart' ? fkNetAdj : 0,
+      total: chTotalOutstanding,
+      overdue: chOverdue,
+      due_in_grace: chInGrace,
+      upcoming: chUpcoming,
+      due_total: chTotalOutstanding,
       cashback_outstanding: 0,
       has_accounts: channelAccounts.length > 1,
       accounts: channelAccounts,
-      orders_count: channelOrderCount,
+      orders_count: chUnsettledCount,
     });
   }
 
   // Calculate B2C Totals
   const b2cTotal = {
+    total_orders_count: 0,
+    total_orders_amount: 0,
+    returns_amount: 0,
+    marketplace_fees: 0,
+    payment_received: 0,
     unsettled: 0,
     settled_not_paid: 0,
     settled_adjusted: 0,
@@ -494,6 +420,11 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
   };
 
   for (const c of b2cChannels) {
+    b2cTotal.total_orders_count += (c.total_orders_count || 0);
+    b2cTotal.total_orders_amount += (c.total_orders_amount || 0);
+    b2cTotal.returns_amount += (c.returns_amount || 0);
+    b2cTotal.marketplace_fees += (c.marketplace_fees || 0);
+    b2cTotal.payment_received += (c.payment_received || 0);
     b2cTotal.unsettled += c.unsettled;
     b2cTotal.settled_not_paid += c.settled_not_paid;
     b2cTotal.settled_adjusted += c.settled_adjusted;
@@ -505,21 +436,18 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     b2cTotal.cashback_outstanding += (c.cashback_outstanding || 0);
   }
 
-  // D2C Vendors & Totals
-  const d2cVendors = DEFAULT_D2C_VENDORS.map(v => {
-    const tot = v.settledNotPaid + v.settledAdj;
-    return {
-      vendor_key: v.key,
-      vendor_name: v.name,
-      settled_not_paid: v.settledNotPaid,
-      settled_adjusted: v.settledAdj,
-      total: tot,
-      overdue: v.overdue,
-      due_in_grace: v.inGrace,
-      upcoming: v.upcoming,
-      due_total: tot,
-    };
-  });
+  // D2C Vendors (Pure Live DB mode: empty / 0 unless data ingested)
+  const d2cVendors = DEFAULT_D2C_VENDORS.map(v => ({
+    vendor_key: v.key,
+    vendor_name: v.name,
+    settled_not_paid: 0,
+    settled_adjusted: 0,
+    total: 0,
+    overdue: 0,
+    due_in_grace: 0,
+    upcoming: 0,
+    due_total: 0,
+  }));
 
   const d2cTotal = {
     settled_not_paid: 0,
@@ -530,64 +458,60 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     upcoming: 0,
   };
 
-  for (const v of d2cVendors) {
-    d2cTotal.settled_not_paid += v.settled_not_paid;
-    d2cTotal.settled_adjusted += v.settled_adjusted;
-    d2cTotal.total += v.total;
-    d2cTotal.overdue += v.overdue;
-    d2cTotal.due_in_grace += v.due_in_grace;
-    d2cTotal.upcoming += v.upcoming;
-  }
-
   // Top KPIs
-  const totalUnsettled = b2cTotal.unsettled;
-  const totalSettledNotPaid = b2cTotal.settled_not_paid + d2cTotal.settled_not_paid;
-  const totalSettledAdj = b2cTotal.settled_adjusted + d2cTotal.settled_adjusted;
-  const totalCashback = b2cTotal.cashback_outstanding;
-  const grandTotalOutstanding = totalUnsettled + totalSettledNotPaid + totalSettledAdj + totalCashback;
+  const totalOrdersAmt = b2cTotal.total_orders_amount;
+  const totalReturnsAmt = b2cTotal.returns_amount;
+  const totalFeesAmt = b2cTotal.marketplace_fees;
+  const totalPaidAmt = b2cTotal.payment_received;
+  const totalOutstanding = b2cTotal.unsettled + b2cTotal.settled_not_paid + d2cTotal.settled_not_paid;
 
   return {
     configured: true,
     kpis: {
-      unsettled: totalUnsettled,
-      settled_not_paid: totalSettledNotPaid,
-      settled_adjusted: totalSettledAdj,
-      cashback: totalCashback,
-      total_outstanding: grandTotalOutstanding,
+      total_orders: totalOrdersAmt,
+      returns: totalReturnsAmt,
+      marketplace_fees: totalFeesAmt,
+      payment_received: totalPaidAmt,
+      total_outstanding: totalOutstanding,
+      // Backward compatibility keys
+      unsettled: b2cTotal.unsettled,
+      settled_not_paid: b2cTotal.settled_not_paid + d2cTotal.settled_not_paid,
+      settled_adjusted: b2cTotal.settled_adjusted,
+      cashback: b2cTotal.cashback_outstanding,
     },
     b2c: {
       channels: b2cChannels,
       total: b2cTotal,
     },
     d2c: {
-      last_payment_date: '23.02.26',
+      last_payment_date: '-',
       vendors: d2cVendors,
       total: d2cTotal,
     },
     // Backward-compatible fields
-    total_outstanding_amount: grandTotalOutstanding,
-    total_unsettled_orders: unsettledOrdersRes.rows.reduce((sum, r) => sum + Number(r.order_count || 0), 0),
-    total_unsettled_amount: totalUnsettled,
-    total_pending_invoices: pendingInvoicesRes.rows.reduce((sum, r) => sum + Number(r.invoice_count || 0), 0),
-    total_pending_invoice_amount: totalSettledNotPaid,
-    overdue_amount_30d: b2cTotal.overdue + d2cTotal.overdue,
-    overdue_orders_30d: unsettledOrdersRes.rows.reduce((sum, r) => sum + Number(r.count_60_plus || 0) + Number(r.count_31_60 || 0), 0),
+    total_outstanding_amount: totalOutstanding,
+    total_unsettled_orders: b2cTotal.unsettled > 0 ? (b2cChannels.reduce((sum, c) => sum + (c.orders_count || 0), 0)) : 0,
+    total_unsettled_amount: b2cTotal.unsettled,
+    total_pending_invoices: 0,
+    total_pending_invoice_amount: 0,
+    overdue_amount_30d: b2cTotal.overdue,
+    overdue_orders_30d: b2cChannels.reduce((sum, c) => sum + (c.orders_count || 0), 0),
     aging: {
       '0-15 days': {
-        count: unsettledOrdersRes.rows.reduce((sum, r) => sum + Number(r.count_0_15 || 0), 0),
-        amount: b2cTotal.upcoming + d2cTotal.upcoming,
+        count: 0,
+        amount: b2cTotal.upcoming,
       },
       '16-30 days': {
-        count: unsettledOrdersRes.rows.reduce((sum, r) => sum + Number(r.count_16_30 || 0), 0),
+        count: 0,
         amount: b2cTotal.due_in_grace,
       },
       '31-60 days': {
-        count: unsettledOrdersRes.rows.reduce((sum, r) => sum + Number(r.count_31_60 || 0), 0),
-        amount: Math.round(b2cTotal.overdue * 0.4),
+        count: 0,
+        amount: Math.round(b2cTotal.overdue * 0.1),
       },
       '60+ days': {
-        count: unsettledOrdersRes.rows.reduce((sum, r) => sum + Number(r.count_60_plus || 0), 0),
-        amount: b2cTotal.overdue + d2cTotal.overdue - Math.round(b2cTotal.overdue * 0.4),
+        count: b2cChannels.reduce((sum, c) => sum + (c.orders_count || 0), 0),
+        amount: b2cTotal.overdue - Math.round(b2cTotal.overdue * 0.1),
       },
     },
     by_marketplace: b2cChannels.map(c => ({
@@ -601,9 +525,9 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       total_outstanding: c.total,
       aging_0_15: c.upcoming,
       aging_16_30: c.due_in_grace,
-      aging_31_60: Math.round(c.overdue * 0.4),
-      aging_60_plus: c.overdue - Math.round(c.overdue * 0.4),
-      percentage_of_total: grandTotalOutstanding > 0 ? Math.round((c.total / grandTotalOutstanding) * 1000) / 10 : 0,
+      aging_31_60: Math.round(c.overdue * 0.1),
+      aging_60_plus: c.overdue - Math.round(c.overdue * 0.1),
+      percentage_of_total: totalOutstanding > 0 ? Math.round((c.total / totalOutstanding) * 1000) / 10 : 0,
     })),
   };
 }
