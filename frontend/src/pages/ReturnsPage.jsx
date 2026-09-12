@@ -197,14 +197,21 @@ export default function ReturnsPage() {
                         </td>
                         <td className="px-4 py-2.5"><CompletionBadge type={o.returnCompletionType} /></td>
                         <td className="px-4 py-2.5">
-                          {o.finalCondition
-                            ? <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
-                                o.finalCondition.toLowerCase().includes('good') ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
-                                : o.finalCondition.toLowerCase().includes('damage') ? 'bg-rose-50 text-rose-700 border-rose-100'
-                                : 'bg-surface-container-low text-secondary border-border'}`}>
-                                {o.finalCondition}
+                          {o.finalCondition ? (() => {
+                            const cond = o.finalCondition.toLowerCase();
+                            const isGood = cond.includes('good') || cond.includes('sellable') || cond.includes('pass') || cond.includes('new');
+                            const isBad = cond.includes('damag') || cond.includes('defect') || cond.includes('reject') || cond.includes('fail');
+                            const cls = isGood
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                              : isBad
+                              ? 'bg-rose-50 text-rose-700 border-rose-100'
+                              : 'bg-surface-container-low text-secondary border-border';
+                            return (
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${cls}`}>
+                                {o.finalCondition.replace(/_/g, ' ')}
                               </span>
-                            : <span className="text-surface">—</span>}
+                            );
+                          })() : <span className="text-surface">—</span>}
                         </td>
                         <td className="px-4 py-2.5">
                           <span className={`font-semibold ${+o.myShare > 0 ? 'text-emerald-700' : 'text-outline'}`}>
@@ -645,7 +652,7 @@ function StatusBadge({ status }) {
 }
 function TypeBadge({ type }) {
   if (!type) return <span className="text-outline">—</span>;
-  const isCustomer = type.toLowerCase().includes('customer');
+  const isCustomer = type.toLowerCase().includes('customer') || type === 'Return';
   const cls = isCustomer
     ? 'bg-orange-50 text-orange-700 border-orange-100'
     : 'bg-purple-50 text-purple-700 border-purple-100';
