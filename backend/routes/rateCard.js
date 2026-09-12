@@ -836,10 +836,14 @@ router.get('/reconcile', async (req, res) => {
       SELECT o.order_item_id as "orderItemId", o.order_date as "orderDate", o.category, o.final_invoice_amount as price,
              o.fulfilment_type as "fulfilmentType", o.brand as "brandName", o.payment_type as "paymentType",
              o.shipping_zone as zone,
-             s.commission, s.fixed_fee as "fixedFee", s.collection_fee as "collectionFee", s.bank_settlement as "bankSettlement"
+             COALESCE(s.commission, ost.commission, 0) as commission,
+             COALESCE(s.fixed_fee, ost.fixed_fee, 0) as "fixedFee",
+             COALESCE(s.collection_fee, ost.collection_fee, 0) as "collectionFee",
+             COALESCE(s.bank_settlement, ost.net_bank, 0) as "bankSettlement"
       FROM orders o
-      LEFT JOIN settlements s ON o.order_item_id = s.order_item_id
-      WHERE o.marketplace = $1 AND o.seller_account = $2
+      LEFT JOIN fk_settlement_orders s ON o.order_item_id = s.order_item_id
+      LEFT JOIN order_settlement_totals ost ON o.order_item_id = ost.order_item_id
+      WHERE o.marketplace = $1 AND COALESCE(o.seller_account, 'default') = $2
         AND o.final_invoice_amount > 0
     `, [mp, sa]);
 
@@ -931,14 +935,167 @@ router.post('/compare', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Mock remaining endpoints that frontend may require
-router.get('/fee-summary', (req, res) => res.json({}));
+// GET /api/rate-card/fee-summary
+router.get('/fee-summary', async (req, res) => {
+  try {
+    if (!(await isDbConfigured())) {
+      return res.json({
+        grossSales: 0,
+        netSettlement: 0,
+        saleOrders: 0,
+        returnOrders: 0,
+        totalDeducted: 0,
+        deductionPct: 0,
+        fees: [],
+        mpFees: [],
+        taxFees: [],
+        nonOrderFees: [],
+        spfFees: [],
+        spfClaimRows: [],
+      });
+    }
+
+    const pool = getPool();
+    const mp = req.query.marketplace || 'flipkart';
+    const sa = req.query.seller_account || req.query.sellerAccount;
+    const { startDate, endDate, category, month } = req.query;
+
+    const conds = [`o.marketplace = $1`];
+    const vals = [mp];
+
+    if (sa && sa !== 'all') {
+      conds.push(`COALESCE(o.seller_account, 'default') = $${vals.push(sa)}`);
+    }
+    if (category) {
+      conds.push(`o.category = $${vals.push(category)}`);
+    }
+    if (month) {
+      conds.push(`TO_CHAR(o.order_date, 'YYYY-MM') = $${vals.push(month)}`);
+    }
+    if (startDate) {
+      conds.push(`o.order_date >= $${vals.push(startDate)}`);
+    }
+    if (endDate) {
+      conds.push(`o.order_date <= $${vals.push(endDate)}`);
+    }
+
+    const whereClause = conds.join(' AND ');
+
+    const sql = `
+      SELECT
+        COUNT(DISTINCT o.order_item_id) AS total_orders,
+        COALESCE(SUM(o.final_invoice_amount), 0) AS gross_sales,
+        COALESCE(SUM(s.net_bank), 0) AS net_settlement,
+        COALESCE(SUM(s.refund_amount), 0) AS refunds,
+        COALESCE(SUM(s.commission), 0) AS commission,
+        COALESCE(SUM(s.fixed_fee), 0) AS fixed_fee,
+        COALESCE(SUM(s.collection_fee), 0) AS collection_fee,
+        COALESCE(SUM(s.pick_pack_fee), 0) AS pick_pack_fee,
+        COALESCE(SUM(s.shipping_fee), 0) AS shipping_fee,
+        COALESCE(SUM(s.reverse_shipping), 0) AS reverse_shipping,
+        COALESCE(SUM(s.franchise_fee), 0) AS franchise_fee,
+        COALESCE(SUM(s.tcs), 0) AS tcs,
+        COALESCE(SUM(s.tds), 0) AS tds,
+        COALESCE(SUM(s.gst_on_mp_fees), 0) AS gst_on_mp_fees
+      FROM orders o
+      JOIN order_settlement_totals s ON o.order_item_id = s.order_item_id
+      WHERE ${whereClause}
+    `;
+
+    const { rows } = await pool.query(sql, vals);
+    const r = rows[0] || {};
+    const grossSales = +r.gross_sales || 0;
+    const netSettlement = +r.net_settlement || 0;
+    const saleOrders = +r.total_orders || 0;
+    const returnOrders = +r.refunds > 0 ? 1 : 0;
+
+    const mpFeeDefs = [
+      { key: 'commission', label: 'Commission Fee', amount: +r.commission || 0 },
+      { key: 'fixedFee', label: 'Fixed Fee', amount: +r.fixed_fee || 0 },
+      { key: 'collectionFee', label: 'Collection Fee', amount: +r.collection_fee || 0 },
+      { key: 'pickPackFee', label: 'Pick & Pack Fee', amount: +r.pick_pack_fee || 0 },
+      { key: 'shippingFee', label: 'Shipping Fee', amount: +r.shipping_fee || 0 },
+      { key: 'reverseShipping', label: 'Reverse Shipping Fee', amount: +r.reverse_shipping || 0 },
+      { key: 'franchiseFee', label: 'Franchise Fee', amount: +r.franchise_fee || 0 },
+    ];
+
+    const totalMp = mpFeeDefs.reduce((s, f) => s + f.amount, 0);
+
+    const taxFeeDefs = [
+      {
+        key: 'gstOnMpFees',
+        label: 'GST on Marketplace Fees (18%)',
+        amount: +r.gst_on_mp_fees || 0,
+        group: 'tax',
+        statutory: '18% GST',
+        expected: +(totalMp * 0.18).toFixed(2),
+        variance: +(+r.gst_on_mp_fees - (totalMp * 0.18)).toFixed(2),
+        overcharged: (+r.gst_on_mp_fees || 0) > (totalMp * 0.18) + 2,
+      },
+      {
+        key: 'tcs',
+        label: 'TCS (Tax Collected at Source - 1%)',
+        amount: +r.tcs || 0,
+        group: 'tax',
+        statutory: '1% IGST/CGST',
+        expected: +(grossSales * 0.01).toFixed(2),
+        variance: +(+r.tcs - (grossSales * 0.01)).toFixed(2),
+        overcharged: (+r.tcs || 0) > (grossSales * 0.01) + 2,
+      },
+      {
+        key: 'tds',
+        label: 'TDS (u/s 194-O - 0.1%)',
+        amount: +r.tds || 0,
+        group: 'tax',
+        statutory: '0.1% IT-TDS',
+        expected: +(grossSales * 0.001).toFixed(2),
+        variance: +(+r.tds - (grossSales * 0.001)).toFixed(2),
+        overcharged: (+r.tds || 0) > (grossSales * 0.001) + 2,
+      },
+    ];
+
+    const totalTax = taxFeeDefs.reduce((s, f) => s + f.amount, 0);
+    const totalDeducted = +(totalMp + totalTax).toFixed(2);
+
+    const mpFees = mpFeeDefs.map(f => ({
+      ...f,
+      group: 'mp',
+      pctOfSales: grossSales > 0 ? +((f.amount / grossSales) * 100).toFixed(2) : 0,
+      pctOfTotal: totalDeducted > 0 ? +((f.amount / totalDeducted) * 100).toFixed(1) : 0,
+    }));
+
+    const taxFees = taxFeeDefs.map(f => ({
+      ...f,
+      pctOfSales: grossSales > 0 ? +((f.amount / grossSales) * 100).toFixed(2) : 0,
+      pctOfTotal: totalDeducted > 0 ? +((f.amount / totalDeducted) * 100).toFixed(1) : 0,
+    }));
+
+    const fees = [...mpFees, ...taxFees];
+
+    res.json({
+      grossSales,
+      netSettlement,
+      saleOrders,
+      returnOrders,
+      totalDeducted,
+      deductionPct: grossSales > 0 ? +((totalDeducted / grossSales) * 100).toFixed(1) : 0,
+      fees,
+      mpFees,
+      taxFees,
+      nonOrderFees: [],
+      spfFees: [],
+      spfClaimRows: [],
+    });
+  } catch (err) {
+    console.error('[rate-card/fee-summary]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/refresh', (req, res) => res.json({ ok: true }));
-router.get('/intelligence', (req, res) => res.json({}));
+router.get('/intelligence', (req, res) => res.json({ orderFees: [], nonOrderFees: [], alerts: [] }));
 router.post('/parse-image', (req, res) => res.json({ data: [] }));
-router.get('/rc-entry-reco', (req, res) => res.json({}));
+router.get('/rc-entry-reco', (req, res) => res.json({ commission: [], fixed_fee: [], pick_pack: [], franchise_fee: [] }));
 router.get('/rc-entry-orders', (req, res) => res.json({ orders: [], total: 0 }));
 
 export default router;
-
-// trigger reload

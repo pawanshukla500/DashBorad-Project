@@ -172,6 +172,7 @@ function AppRoutes({ user }) {
         path="/rate-card-config"
         element={user.role === 'admin' ? <RateCardConfigPage /> : <Navigate to="/upload" replace />}
       />
+      <Route path="/rate-card" element={<Navigate to="/rate-card-config" replace />} />
       <Route path="/insights" element={<InsightsPage />} />
       <Route path="/exceptions" element={<ExceptionInboxPage />} />
       <Route
