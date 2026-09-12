@@ -34,8 +34,11 @@ export function mountApiRoutes(app) {
   app.use('/api', auditMutationMiddleware);
   app.use('/api/auth', authRoutes);
 
-  // Everything below this line requires a valid Firebase identity.
-  app.use('/api', authMiddleware);
+  // Everything below this line requires a valid Firebase identity (except public health checks).
+  app.use('/api', (req, res, next) => {
+    if (req.path === '/health' || req.originalUrl === '/api/health') return next();
+    return authMiddleware(req, res, next);
+  });
 
   // The dashboard's short-lived aggregate cache is safe only until a
   // successful write. Invalidate it after every mutation so an upload, rate

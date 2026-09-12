@@ -93,21 +93,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 
-// Do not let a newly started server run dashboard reads while initDb is
-// acquiring schema locks. Previously that race blocked report queries and
-// exhausted the connection pool. Firebase authentication itself does not need
-// PostgreSQL, but the browser no longer calls a database-backed session route.
-app.use('/api', (_req, res, next) => {
-  if (databaseSchemaReady) return next();
-  return res.status(503).json({
-    error: 'The data service is preparing its database connection. Please retry in a moment.',
-    code: 'DATABASE_STARTING',
-  });
-});
-
-mountApiRoutes(app);
-
-app.get('/health', async (_, res) => {
+async function healthCheckHandler(_, res) {
   const configured = await isDbConfigured();
   let dbConnected = false;
   if (configured) {
@@ -132,7 +118,25 @@ app.get('/health', async (_, res) => {
       ? `${databaseEngine} connected`
       : `${databaseEngine} is unavailable; automatic reconnection is active. No empty-data fallback is used.`,
   });
+}
+
+// Public health check endpoints for liveness probes, monitoring, and deployments
+app.get('/health', healthCheckHandler);
+app.get('/api/health', healthCheckHandler);
+
+// Do not let a newly started server run dashboard reads while initDb is
+// acquiring schema locks. Previously that race blocked report queries and
+// exhausted the connection pool. Firebase authentication itself does not need
+// PostgreSQL, but the browser no longer calls a database-backed session route.
+app.use('/api', (_req, res, next) => {
+  if (databaseSchemaReady) return next();
+  return res.status(503).json({
+    error: 'The data service is preparing its database connection. Please retry in a moment.',
+    code: 'DATABASE_STARTING',
+  });
 });
+
+mountApiRoutes(app);
 
 const clientDist = process.env.CLIENT_DIST_PATH
   ? path.resolve(process.env.CLIENT_DIST_PATH)
