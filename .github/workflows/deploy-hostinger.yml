@@ -74,9 +74,16 @@ jobs:
           NODE_ENV=production
           PORT=3001
           APP_DOMAIN=${APP_DOMAIN}
-          CORS_ORIGINS=https://payments.youthnic.shop,https://reconcentral.srv1845788.hstgr.cloud,https://recon.srv1845788.hstgr.cloud,http://200.141.1.119:3001
+          CORS_ORIGINS=https://payments.youthnic.shop,https://reconcentral.srv1845788.hstgr.cloud,https://recon.srv1845788.hstgr.cloud
           DATABASE_URL=${DATABASE_URL}
           PG_SSL=false
+          PG_POOL_MAX=20
+          PG_POOL_MIN=2
+          PG_POOL_IDLE_TIMEOUT_MS=55000
+          PG_POOL_MAX_LIFETIME_SECONDS=900
+          PG_HEALTHCHECK_INTERVAL_MS=25000
+          PG_READ_STATEMENT_TIMEOUT_MS=90000
+          PG_APPLICATION_NAME=reconcentral-api
           JWT_SECRET=${JWT_SECRET}
           GEMINI_API_KEY=${GEMINI_API_KEY}
           RESEND_API_KEY=${RESEND_API_KEY}
@@ -118,8 +125,9 @@ jobs:
           chmod 600 .env
           ln -sf docker-compose.production.yml docker-compose.yml
 
-          # Ensure firewall allows container port 3001 for direct hostinger panel access
-          ufw allow 3001/tcp || true
+          # Keep public traffic on Traefik/HTTPS only. The API container is
+          # reachable to Traefik through Docker's shared_infra network.
+          ufw delete allow 3001/tcp || true
 
           # Remove old legacy collision folder if present
           rm -rf /opt/reconcentral/app
@@ -131,20 +139,48 @@ jobs:
           mkdir -p /docker
           ln -sfn /opt/reconcentral/ReconCentral /docker/reconcentral
 
+          echo "Verifying private database route from inside the app container..."
+          docker exec ReconCentral node -e "const dns=require('node:dns').promises; const raw=process.env.DATABASE_URL || ''; const host=new URL(raw).hostname; const privateHost=host==='localhost'||host==='127.0.0.1'||host==='postgres'||host==='host.docker.internal'||host.endsWith('.docker.internal')||/^10\\./.test(host)||/^192\\.168\\./.test(host)||/^172\\.(1[6-9]|2[0-9]|3[0-1])\\./.test(host); if(!privateHost){console.error('DATABASE_URL host is not private for same-VPS deployment'); process.exit(1);} dns.lookup(host).then(({address})=>console.log(JSON.stringify({databaseHost:host,resolved:address}))).catch(error=>{console.error(error.message); process.exit(1);});"
+
           echo "Verifying ReconCentral container health..."
           sleep 10
           docker ps --filter "name=ReconCentral"
 
           # Health check retry loop
+          healthy=0
           for i in {1..15}; do
-            if curl -fsS http://127.0.0.1:3001/health; then
+            if docker exec ReconCentral node -e "fetch('http://127.0.0.1:3001/health').then(async r=>{const body=await r.json().catch(()=>({})); const database=body.database || {}; if(!r.ok || !body.dbConnected || database.schemaReady !== true || database.transport?.productionReady !== true){console.error(JSON.stringify({status:r.status,dbConnected:body.dbConnected,schemaReady:database.schemaReady,transport:database.transport,pool:database.pool})); process.exit(1);} console.log(JSON.stringify({status:r.status,dbConnected:body.dbConnected,schemaReady:database.schemaReady,transport:database.transport,pool:database.pool}));}).catch(error=>{console.error(error.message); process.exit(1);})"; then
               echo ""
               echo "ReconCentral is live and healthy!"
+              healthy=1
               break
             fi
             echo "Waiting for ReconCentral to report healthy ($i/15)..."
             sleep 5
           done
+
+          if [ "$healthy" -ne 1 ]; then
+            echo "ReconCentral did not become database-ready in time."
+            docker logs ReconCentral --tail=200
+            exit 1
+          fi
+
+          APP_DOMAIN="$(grep -E '^APP_DOMAIN=' .env | cut -d= -f2- || true)"
+          if [ -n "$APP_DOMAIN" ]; then
+            public_healthy=0
+            for i in {1..6}; do
+              if curl -fsS "https://${APP_DOMAIN}/health" >/dev/null; then
+                public_healthy=1
+                break
+              fi
+              echo "Waiting for public HTTPS health route ($i/6)..."
+              sleep 5
+            done
+            if [ "$public_healthy" -ne 1 ]; then
+              echo "Public HTTPS health route did not become healthy."
+              exit 1
+            fi
+          fi
 
           docker image prune -f
           EOF

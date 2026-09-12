@@ -8,18 +8,29 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "3001:3001"
+    expose:
+      - "3001"
     env_file:
       - ./.env
     environment:
       NODE_ENV: production
       PORT: 3001
       CLIENT_DIST_PATH: /app/frontend/dist
+      PG_SSL: ${PG_SSL:-false}
+      PG_POOL_MAX: ${PG_POOL_MAX:-20}
+      PG_POOL_MIN: ${PG_POOL_MIN:-2}
+      PG_POOL_IDLE_TIMEOUT_MS: ${PG_POOL_IDLE_TIMEOUT_MS:-55000}
+      PG_POOL_MAX_LIFETIME_SECONDS: ${PG_POOL_MAX_LIFETIME_SECONDS:-900}
+      PG_HEALTHCHECK_INTERVAL_MS: ${PG_HEALTHCHECK_INTERVAL_MS:-25000}
+      PG_READ_STATEMENT_TIMEOUT_MS: ${PG_READ_STATEMENT_TIMEOUT_MS:-90000}
+      PG_APPLICATION_NAME: ${PG_APPLICATION_NAME:-reconcentral-api}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - shared_infra
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=shared_infra"
       - "traefik.http.routers.reconcentral.rule=Host(`payments.youthnic.shop`)"
       - "traefik.http.routers.reconcentral.entrypoints=websecure"
       - "traefik.http.routers.reconcentral.tls=true"

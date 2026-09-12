@@ -7,6 +7,8 @@ const ENV_KEYS = [
   'PG_SSL_REJECT_UNAUTHORIZED', 'POSTGRES_PG_SSL_REJECT_UNAUTHORIZED',
   'PG_SSL_CA', 'POSTGRES_PG_SSL_CA',
   'PG_READ_STATEMENT_TIMEOUT_MS',
+  'PG_POOL_IDLE_TIMEOUT_MS',
+  'PG_POOL_MAX_LIFETIME_SECONDS',
 ];
 const originalEnvironment = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
 
@@ -74,7 +76,7 @@ describe('PostgreSQL transport policy', () => {
     expect(resolvePgConfig().ssl).toBe(false);
   });
 
-  it('configures WAN TCP keepalives and idle pool options for network stability', () => {
+  it('configures TCP keepalives and bounded pool lifetime for network stability', () => {
     process.env.NODE_ENV = 'development';
     process.env.DATABASE_URL = 'postgresql://payments:secret@127.0.0.1:5432/reconciliation';
     process.env.PG_SSL = 'false';
@@ -82,8 +84,21 @@ describe('PostgreSQL transport policy', () => {
     const config = resolvePgConfig();
     expect(config.keepAlive).toBe(true);
     expect(config.keepAliveInitialDelayMillis).toBe(10_000);
-    expect(config.idleTimeoutMillis).toBe(60_000);
+    expect(config.idleTimeoutMillis).toBe(55_000);
+    expect(config.maxLifetimeSeconds).toBe(900);
     expect(config.min).toBeGreaterThanOrEqual(2);
     expect(config.max).toBe(20);
+  });
+
+  it('allows deployment to tune pool idle and lifetime limits without code changes', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.DATABASE_URL = 'postgresql://payments:secret@postgres:5432/reconciliation';
+    process.env.PG_SSL = 'false';
+    process.env.PG_POOL_IDLE_TIMEOUT_MS = '30000';
+    process.env.PG_POOL_MAX_LIFETIME_SECONDS = '300';
+
+    const config = resolvePgConfig();
+    expect(config.idleTimeoutMillis).toBe(30_000);
+    expect(config.maxLifetimeSeconds).toBe(300);
   });
 });
