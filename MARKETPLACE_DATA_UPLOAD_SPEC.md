@@ -507,3 +507,74 @@ When adding new marketplace features or maintaining existing upload routines:
 3. **Always use `forEachDbBatch`**: Any multi-row database write must be batched to respect PostgreSQL's 65,535 positional parameter boundary.
 4. **Always trigger downstream rollups**: After ingesting orders or settlement rows, call `refreshOrderSettlementTotals(pool)` and marketplace-specific rollups.
 5. **Always log uploads and skipped rows**: Use `logUpload` and `saveSkippedRows` so data health is auditable in the Data Hub UI.
+
+---
+
+## 9. Dynamic Marketplace Auto-Discovery & Outstanding Payments Architecture
+
+The system features an automated, zero-code discovery pipeline for any new marketplace portal (e.g. **Meesho**, **Ajio**, **Shopsy**, **Cocoblue**, **Zepto**, **JioMart**, or any future channel). When data for a new portal is uploaded, it automatically surfaces across the application without requiring code modifications or UI redeployment.
+
+### 9.1 Multi-Source Portal Discovery Engine
+The backend (`outstandingPaymentsService.js`) dynamically discovers all marketplaces via a unified database union query:
+
+```sql
+SELECT DISTINCT LOWER(marketplace) AS marketplace FROM (
+  SELECT marketplace FROM orders WHERE marketplace IS NOT NULL
+  UNION
+  SELECT marketplace FROM mp_config WHERE is_active = true
+  UNION
+  SELECT marketplace FROM marketplace_accounts WHERE is_active = true
+  UNION
+  SELECT marketplace FROM mp_invoices WHERE marketplace IS NOT NULL
+) sub WHERE marketplace != ''
+```
+
+Any channel found in `orders`, `mp_config`, `marketplace_accounts`, or `mp_invoices` is immediately registered in the reconciliation matrix.
+
+### 9.2 Pure Live Database Reconciliation Formula
+All metrics on the Outstanding Payments dashboard are 100% computed from live database tables with zero mock or baseline fallbacks:
+
+$$\text{Total Orders} - \text{Returns} - \text{Marketplace Fees} - \text{Payment Received} = \text{Outstanding}$$
+
+| Metric | Source Table / Field | Calculation Logic |
+| :--- | :--- | :--- |
+| **Total Orders** | `orders.final_invoice_amount` | `SUM(o.final_invoice_amount)` across all orders for this marketplace. |
+| **Orders Count** | `orders.order_item_id` | `COUNT(DISTINCT o.order_item_id)` |
+| **Returns** | `order_settlement_totals.refund_amount` | `SUM(ost.refund_amount)` for refunds linked to orders. |
+| **Marketplace Fees** | `order_settlement_totals` | `SUM(commission + fixed_fee + collection_fee + pick_pack_fee + shipping_fee + reverse_shipping + franchise_fee + tcs + tds + gst_on_mp_fees)` |
+| **Payment Received** | `order_settlement_totals.net_bank` | `SUM(ost.net_bank)` deposited payouts from the marketplace. |
+| **Outstanding** | `orders` + `mp_invoices` | Sum of `final_invoice_amount` for unsettled orders (`WHERE ost.order_item_id IS NULL`) + unpaid invoices. |
+| **Overdue (>60d)** | `orders.order_date` | Unsettled orders where `CURRENT_DATE - o.order_date::date > 60`. |
+
+### 9.3 Behavior When a New Portal is Added
+1. **Before Files Are Uploaded**:
+   - The portal appears with status `No Orders` and values set to `₹0` (clean display, zero artificial numbers).
+2. **After Order File Ingestion (`POST /api/upload/orders`)**:
+   - `Total Orders` and order counts immediately populate in real time.
+   - Status transitions to `Current` or `Overdue` based on order age.
+   - Outstanding balance reflects gross invoice value pending settlement.
+3. **After Settlement / Return Ingestion**:
+   - `order_settlement_totals` is automatically refreshed via `refreshOrderSettlementTotals(pool)`.
+   - `Returns`, `Marketplace Fees`, and `Payment Received` update in real time.
+   - `Outstanding` decreases exactly as payouts and deductions are settled.
+   - When all orders are settled (like Amazon), `Outstanding` becomes `₹0` with status `Settled`.
+
+### 9.4 Multi-Account Hierarchies
+- If a marketplace has multiple seller accounts (e.g. `myntra_ej` with Seller ID `45833` and `myntra_vb` with Seller ID `10708`, or future multi-account portals like Meesho Account 1 & Account 2), the system automatically groups them under the parent channel.
+- Operators can click the expandable chevron (`>`) to reveal individual account balances, orders counts, seller IDs, fees, and overdue amounts.
+
+### 9.5 Adding a New Portal: Step-by-Step Guide
+To introduce a new marketplace (e.g. `ajio` or `meesho`):
+1. **Step 1 (Optional Configuration)**:
+   Add an entry to `mp_config` or `marketplace_accounts`:
+   ```sql
+   INSERT INTO mp_config (marketplace, display_name, reco_type, is_active, color)
+   VALUES ('ajio', 'Ajio', 'order', true, 'amber');
+   ```
+2. **Step 2 (Upload Orders)**:
+   Upload the orders file via the Data Hub UI or `POST /api/upload/orders` with `marketplace = 'ajio'`.
+3. **Step 3 (Immediate Visibility)**:
+   - The new channel automatically appears in the **Outstanding Payments** table.
+   - The channel appears in the marketplace filter tabs across **Reconciliation**, **Sales**, and **Profit & Loss**.
+   - The channel is included in consolidated Excel exports and order drilldown drawers.
+
