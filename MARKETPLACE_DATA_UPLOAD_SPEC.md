@@ -244,6 +244,18 @@ Previous migrations attempted to synthesize composite keys like `AMZ-{order_id}-
 - Natural keys from Amazon Seller Central exports are stored directly.
 - Cross-table linkages happen at query time using indexed natural columns.
 
+### 4.1.1 Natural Uniqueness: Order ID + SKU Invariant
+- **Flipkart vs. Amazon Architecture**:
+  - In **Flipkart**, reconciliation is item-centric because Flipkart exports always supply a distinct, native `order_item_id` across sales, returns, and settlements.
+  - In **Amazon**, Seller Central sale order reports do **not** have an item ID column; they carry forward orders with `Amazon Order Id` and `Merchant SKU`.
+- **The Multi-SKU Reality**:
+  - In Amazon, thousands of orders (**1,518+ orders** in active dataset) are multi-SKU orders where the **Order ID is identical but the SKU changes** (spanning 2 to 12 distinct SKUs per order).
+  - Uniqueness and reconciliation for Amazon **must always be created and preserved on `(Order ID, SKU)`**.
+- **Critical Business Benefits of `(Order ID, SKU)`**:
+  1. **Partial Return Isolation**: If a buyer orders 2 or 3 distinct SKUs under the same `Order ID` and returns only 1 item, the system accurately marks only that specific SKU as `CUSTOMER_RETURN`, while the remaining SKUs stay `Delivered` with positive settlement earnings.
+  2. **Granular Unit Economics**: Product price, 5% GST, FBA pick & pack, and referral commissions are calculated and tracked per SKU line item.
+  3. **Database Enforcement**: Backed by PostgreSQL unique index `uq_orders_amazon_natural ON orders (order_id, sku) WHERE marketplace = 'amazon'`.
+
 ### 4.2 Key Vocabulary Across Amazon Exports
 | Export Type | File Column for Seller SKU | File Column for FNSKU | File Column for ASIN |
 | :--- | :--- | :--- | :--- |
