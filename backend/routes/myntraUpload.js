@@ -288,11 +288,12 @@ function orderDetail(row, sellerAccount, batch) {
 }
 
 function normalizedOrder(row, sellerAccount) {
+  const sellerPrice = money(value(row, 'seller price')) || money(value(row, 'final amount'));
   return [
     'myntra', value(row, 'order release id'), value(row, 'order line id'), value(row, 'myntra sku code'), value(row, 'seller sku code'),
     value(row, 'brand'), 'Myntra', value(row, 'article type'), null, value(row, 'po_type'), fulfillment(value(row, 'po_type')),
-    date(value(row, 'created on')), 1, money(value(row, 'final amount')), money(value(row, 'seller price')),
-    money(value(row, 'seller price')), value(row, 'state'), value(row, 'city'), value(row, 'seller warehouse id', 'warehouse id'),
+    date(value(row, 'created on')), 1, sellerPrice, sellerPrice,
+    sellerPrice, value(row, 'state'), value(row, 'city'), value(row, 'seller warehouse id', 'warehouse id'),
     null, value(row, 'zipcode'), orderLifecycle(row), orderReturnType(row), sellerAccount, value(row, 'brand'),
   ];
 }

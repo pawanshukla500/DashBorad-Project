@@ -19,13 +19,22 @@ const ALIAS = {
   rose: 'danger',
 };
 
-export default function KPICard({ title, label, value, sub, color = 'primary', icon, compact = false }) {
+export default function KPICard({ title, label, value, sub, color = 'primary', icon, compact = false, onClick }) {
   const tone = TONES[ALIAS[color] || color] || TONES.primary;
   const heading = title || label;
   const animatedValue = useAnimatedDisplayValue(value);
 
   return (
-    <div className={`bg-surface rounded-xl border border-border ${compact ? 'p-card-padding' : 'p-4'} flex min-w-0 flex-col gap-3`} role="group" aria-label={heading}>
+    <div
+      className={`bg-surface rounded-xl border border-border ${compact ? 'p-card-padding' : 'p-4'} flex min-w-0 flex-col gap-3 ${
+        onClick ? 'cursor-pointer hover:border-primary/40 hover:shadow-sm transition-all' : ''
+      }`}
+      role={onClick ? 'button' : 'group'}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(e); } } : undefined}
+      aria-label={heading}
+    >
       <div className="flex items-start justify-between gap-2">
         <p className="min-w-0 font-sans text-label-md text-outline uppercase">{heading}</p>
         {icon && (

@@ -173,6 +173,16 @@ describe('Outstanding Payments Endpoints', () => {
         expect(putJson.success).toBe(true);
         expect(putJson.data.grace_period_days).toBe(16);
 
+        // Verify 404 for unknown channel
+        const notFoundRes = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config/unknown_nonexistent_channel`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grace_period_days: 20 }),
+        });
+        expect(notFoundRes.status).toBe(404);
+        const notFoundJson = await notFoundRes.json();
+        expect(notFoundJson.error).toContain('not found');
+
         // Revert back
         await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config/myntra`, {
           method: 'PUT',

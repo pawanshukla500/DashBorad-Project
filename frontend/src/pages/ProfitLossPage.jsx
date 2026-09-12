@@ -1,7 +1,7 @@
 import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
 import { fetchProfitLoss, fetchCharges } from '../api/client';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import ExportButton from '../components/ExportButton';
 import { buildProfitLossExport } from '../utils/exportXlsx';
 import KPICard from '../components/KPICard';
@@ -19,11 +19,23 @@ import {
 const FEE_COLORS  = ['#6366f1','#f43f5e','#f59e0b','#10b981','#8b5cf6','#0ea5e9','#ec4899','#14b8a6','#f97316','#64748b'];
 
 export default function ProfitLossPage() {
+  const navigate = useNavigate();
   const { filters, refreshKey } = useFilters();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const dep = [JSON.stringify(filters), refreshKey];
   const reportFilters = { ...filters, _refresh: refreshKey || undefined };
+
+  const handleUnsettledClick = () => {
+    const params = new URLSearchParams();
+    if (filters.marketplace && filters.marketplace !== 'all') {
+      params.set('channel', filters.marketplace);
+    }
+    if (filters.account && filters.account !== 'all') {
+      params.set('account', filters.account);
+    }
+    navigate(`/outstanding-payments${params.toString() ? `?${params.toString()}` : ''}`);
+  };
 
   const { data: pl, loading, error } = useFetch(() => fetchProfitLoss(reportFilters), dep);
   const { data: charges } = useFetch(fetchCharges, []);
@@ -168,9 +180,10 @@ export default function ProfitLossPage() {
             <KPICard
               title="Unsettled Amount"
               value={currency(s.unsettledAmount)}
-              sub={`${num(s.unsettledCount)} orders pending`}
+              sub={`${num(s.unsettledCount)} orders pending • View List →`}
               color="purple"
               icon={<PendingIcon />}
+              onClick={handleUnsettledClick}
             />
           </div>
 
@@ -375,7 +388,20 @@ export default function ProfitLossPage() {
                 <StatRow label="Gross Revenue"     value={currency(s.grossRevenue)} />
                 <StatRow label="Bank Received"     value={currency(s.bankReceived)}    valueColor="text-sky-700" />
                 <StatRow label="Gap (unsettled)"   value={currency(s.unsettledAmount)} valueColor="text-amber-700" />
-                <StatRow label="Unsettled Orders"  value={num(s.unsettledCount)}       valueColor="text-amber-700" />
+                <StatRow
+                  label="Unsettled Orders"
+                  value={
+                    <button
+                      type="button"
+                      onClick={handleUnsettledClick}
+                      className="text-amber-700 hover:text-amber-900 underline font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Click to view unsettled orders list"
+                    >
+                      <span>{num(s.unsettledCount)}</span>
+                      <span className="material-symbols-outlined text-[13px]">arrow_forward</span>
+                    </button>
+                  }
+                />
               </div>
             </div>
 

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   fetchOutstandingSummary,
   fetchOutstandingOrders,
@@ -67,10 +68,17 @@ function ChannelIcon({ channelKey, className = 'w-5 h-5' }) {
 }
 
 export default function OutstandingPaymentsPage() {
+  const [searchParams] = useSearchParams();
+  const urlChannel = searchParams.get('channel') || null;
+  const urlAccount = searchParams.get('account') || null;
+
   // Summary Data State
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [expandedChannels, setExpandedChannels] = useState({ myntra: true });
+  const [expandedChannels, setExpandedChannels] = useState({
+    myntra: true,
+    ...(urlChannel ? { [urlChannel]: true } : {}),
+  });
 
   // Config Modal State
   const [configOpen, setConfigOpen] = useState(false);
@@ -79,8 +87,8 @@ export default function OutstandingPaymentsPage() {
   const [savingConfigKey, setSavingConfigKey] = useState(null);
 
   // Drilldown selection state
-  const [selectedChannel, setSelectedChannel] = useState(null); // e.g. 'myntra', 'flipkart'
-  const [selectedAccount, setSelectedAccount] = useState(null); // e.g. 'myntra_ej', 'myntra_vb'
+  const [selectedChannel, setSelectedChannel] = useState(urlChannel); // e.g. 'myntra', 'flipkart'
+  const [selectedAccount, setSelectedAccount] = useState(urlAccount); // e.g. 'myntra_ej', 'myntra_vb'
   const [activeDrilldownTab, setActiveDrilldownTab] = useState('orders'); // 'orders' | 'invoices'
 
   // Orders Table State
@@ -118,6 +126,24 @@ export default function OutstandingPaymentsPage() {
   useEffect(() => {
     loadSummary();
   }, [loadSummary]);
+
+  // Sync URL search params when they change and auto-scroll to drilldown
+  useEffect(() => {
+    if (urlChannel) {
+      setSelectedChannel(urlChannel);
+      setExpandedChannels(prev => ({ ...prev, [urlChannel]: true }));
+    }
+    if (urlAccount) {
+      setSelectedAccount(urlAccount);
+    }
+    if (urlChannel || urlAccount) {
+      const timer = setTimeout(() => {
+        const el = document.getElementById('outstanding-drilldown-section');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [urlChannel, urlAccount]);
 
   // 2. Load Configs when modal opens
   const openConfigModal = async () => {
@@ -267,11 +293,11 @@ export default function OutstandingPaymentsPage() {
         c.channel_name, c.total_orders_amount || 0, c.total_orders_count || 0, c.returns_amount || 0, c.marketplace_fees || 0, c.payment_received || 0, c.total || 0, c.overdue || 0
       ]);
       if (c.accounts && c.accounts.length > 0) {
-        for (const a of c.accounts) {
-          b2cRows.push([
-            `  - ${a.account_name} (ID: ${a.seller_id})`, a.total_orders_amount || 0, a.total_orders_count || 0, a.returns_amount || 0, a.marketplace_fees || 0, a.payment_received || 0, a.total || 0, a.overdue || 0
-          ]);
-        }
+          for (const a of c.accounts) {
+            b2cRows.push([
+              `  - ${a.account_name}${a.seller_id ? ` (ID: ${a.seller_id})` : ''}`, a.total_orders_amount || 0, a.total_orders_count || 0, a.returns_amount || 0, a.marketplace_fees || 0, a.payment_received || 0, a.total || 0, a.overdue || 0
+            ]);
+          }
       }
     }
     if (data.b2c?.total) {
@@ -505,7 +531,7 @@ export default function OutstandingPaymentsPage() {
                 }
 
                 return (
-                  <tbody key={channel.channel_key} className="contents">
+                  <Fragment key={channel.channel_key}>
                     {/* Main Channel Row */}
                     <tr
                       className={`group transition-colors ${
@@ -635,7 +661,7 @@ export default function OutstandingPaymentsPage() {
                         </tr>
                       );
                     })}
-                  </tbody>
+                  </Fragment>
                 );
               })}
 
@@ -777,7 +803,7 @@ export default function OutstandingPaymentsPage() {
       </div>
 
       {/* 5. Detailed Drilldown Section */}
-      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+      <div id="outstanding-drilldown-section" className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
         {/* Tab Selection */}
         <div className="px-5 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
@@ -809,13 +835,32 @@ export default function OutstandingPaymentsPage() {
 
           <div className="flex items-center gap-2 text-xs text-slate-500">
             {selectedChannel && (
-              <span className="rounded-md bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-indigo-700 font-semibold capitalize">
-                {selectedChannel} {selectedAccount ? `· ${selectedAccount}` : ''}
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-indigo-700 font-semibold capitalize">
+                <span>{selectedChannel} {selectedAccount ? `· ${selectedAccount}` : ''}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedChannel(null);
+                    setSelectedAccount(null);
+                  }}
+                  className="hover:text-indigo-900 rounded p-0.5 transition-colors"
+                  title="Clear channel filter"
+                >
+                  <span className="material-symbols-outlined text-[13px] block">close</span>
+                </button>
               </span>
             )}
             {agingFilter && (
-              <span className="rounded-md bg-amber-50 border border-amber-200 px-2 py-0.5 text-amber-700 font-semibold">
-                Tier: {agingFilter}
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-amber-50 border border-amber-200 px-2 py-0.5 text-amber-700 font-semibold">
+                <span>Tier: {agingFilter}</span>
+                <button
+                  type="button"
+                  onClick={() => setAgingFilter('')}
+                  className="hover:text-amber-900 rounded p-0.5 transition-colors"
+                  title="Clear aging filter"
+                >
+                  <span className="material-symbols-outlined text-[13px] block">close</span>
+                </button>
               </span>
             )}
           </div>

@@ -100,6 +100,9 @@ describe('Myntra layout mapping', () => {
     expect(mappedOrder[NORMALIZED_ORDER_COLUMNS.indexOf('order_id')]).toBe('100019530457');
     expect(mappedOrder[NORMALIZED_ORDER_COLUMNS.indexOf('order_item_id')]).toBe('11074259318');
     expect(mappedOrder[NORMALIZED_ORDER_COLUMNS.indexOf('order_date')]).toBe('2026-04-03');
+    expect(mappedOrder[NORMALIZED_ORDER_COLUMNS.indexOf('final_invoice_amount')]).toBe(416);
+    expect(mappedOrder[NORMALIZED_ORDER_COLUMNS.indexOf('my_share')]).toBe(416);
+    expect(mappedOrder[NORMALIZED_ORDER_COLUMNS.indexOf('total_share_amount')]).toBe(416);
     expect(mappedReturn[NORMALIZED_RETURN_COLUMNS.indexOf('order_id')]).toBe('100039181524');
     expect(mappedReturn[NORMALIZED_RETURN_COLUMNS.indexOf('order_item_id')]).toBe('11093910482');
     expect(mappedReturn[NORMALIZED_RETURN_COLUMNS.indexOf('return_requested_date')]).toBe('2026-04-24');

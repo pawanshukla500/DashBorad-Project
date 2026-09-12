@@ -360,6 +360,9 @@ router.put('/outstanding/config/:channelKey', async (req, res) => {
   try {
     const pool = getPool();
     const updated = await updateOutstandingConfig(pool, req.params.channelKey, req.body);
+    if (!updated) {
+      return res.status(404).json({ error: `Channel configuration not found for '${req.params.channelKey}'` });
+    }
     res.json({ success: true, data: updated });
   } catch (e) {
     res.status(500).json({ error: e.message });
