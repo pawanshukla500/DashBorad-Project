@@ -80,7 +80,7 @@ export default function SalesPage() {
                     <th key={h} className="text-left px-4 py-2.5 text-secondary font-medium whitespace-nowrap">{h}</th>
                   ))}
                   {showRc && ['RC Commission','RC Fixed','RC Collection','RC Pick&Pack','RC GST','RC Total Fees','RC Net','COGS','RC Profit','Margin%'].map(h => (
-                    <th key={h} className="text-right px-3 py-2.5 text-primary font-semibold whitespace-nowrap bg-primary-container text-[10px]">{h}</th>
+                    <th key={h} className="text-right px-3 py-2.5 text-indigo-800 font-semibold whitespace-nowrap bg-indigo-100/70 text-[10px]">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -92,7 +92,7 @@ export default function SalesPage() {
                   const commVar = (hasRc && fkComm > 0) ? rcComm - fkComm : null;
                   return (
                   <tr key={i} className="hover:bg-surface-container-low/60 transition-colors">
-                    <td className="px-4 py-2.5 text-secondary whitespace-nowrap">{o.orderDate}</td>
+                    <td className="px-4 py-2.5 text-secondary whitespace-nowrap font-mono text-xs">{o.orderDate || '—'}</td>
                     <td className="px-4 py-2.5"><OrderIdCell id={o.orderItemId} onOpen={setSelectedId} /></td>
                     <td className="px-4 py-2.5"><CategoryBadge cat={o.category} /></td>
                     <td className="px-4 py-2.5 text-secondary">{o.fulfilmentType}</td>
@@ -163,7 +163,7 @@ export default function SalesPage() {
 
 // ── Brand helpers ─────────────────────────────────────────────────────────────
 const BRAND_PALETTE = {
-  'Youthnic':        { bg: 'bg-primary-container',  text: 'text-primary',  dot: 'bg-primary',  bar: 'bg-primary-container' },
+  'Youthnic':        { bg: 'bg-indigo-50', text: 'text-indigo-700', dot: 'bg-indigo-600', bar: 'bg-indigo-500' },
   'Ethnic Junction': { bg: 'bg-emerald-100', text: 'text-emerald-700', dot: 'bg-emerald-500', bar: 'bg-emerald-400' },
   'Sangria':         { bg: 'bg-rose-100',    text: 'text-rose-700',    dot: 'bg-rose-500',    bar: 'bg-rose-400' },
   'Divastri':        { bg: 'bg-purple-100',  text: 'text-purple-700',  dot: 'bg-purple-500',  bar: 'bg-purple-400' },
@@ -175,7 +175,7 @@ const BRAND_DEFAULT = { bg: 'bg-surface-container', text: 'text-secondary', dot:
 function brandPalette(name) { return BRAND_PALETTE[name] || BRAND_DEFAULT; }
 
 const MP_BADGE = {
-  flipkart: 'bg-primary-container text-primary',
+  flipkart: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
   amazon:   'bg-amber-50  text-amber-700',
   myntra:   'bg-pink-50   text-pink-700',
   meesho:   'bg-purple-50 text-purple-700',
@@ -410,7 +410,11 @@ function SectionSkeleton({ title }) {
 
 function CategoryBadge({ cat }) {
   if (!cat) return null;
-  return <span className="inline-block bg-primary-container text-primary px-2 py-0.5 rounded-full text-[10px] font-medium">{cat}</span>;
+  return (
+    <span className="inline-block bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize whitespace-nowrap">
+      {cat.replace(/_/g, ' ')}
+    </span>
+  );
 }
 
 function StatusBadge({ status }) {

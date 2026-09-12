@@ -56,11 +56,11 @@ export function OrderIdCell({ id, onOpen }) {
     <button
       type="button"
       onClick={() => onOpen(id)}
-      className="group rounded-sm text-left font-mono text-[10px] text-primary underline-offset-2 transition-colors hover:text-primary hover:underline focus-visible:ring-2 focus-visible:ring-primary/40"
+      className="group inline-flex items-center gap-1 rounded text-left font-mono text-[11px] font-medium text-primary hover:text-indigo-800 hover:underline focus-visible:ring-2 focus-visible:ring-primary/40"
       title="Click to view full detail"
     >
-      {id}
-      <span className="material-symbols-outlined ml-1 align-middle text-[12px] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true">open_in_new</span>
+      <span>{id}</span>
+      <span className="material-symbols-outlined text-[13px] opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true">open_in_new</span>
     </button>
   );
 }
@@ -639,7 +639,7 @@ function Field({ label, value, mono }) {
 
 function AmountBox({ label, amount, color }) {
   const cols = {
-    indigo:  { bg: 'bg-primary-container',  text: 'text-primary',  val: 'text-primary'  },
+    indigo:  { bg: 'bg-indigo-50',  text: 'text-indigo-600',  val: 'text-indigo-900' },
     sky:     { bg: 'bg-sky-50',     text: 'text-sky-600',     val: 'text-sky-900'     },
     emerald: { bg: 'bg-emerald-50', text: 'text-emerald-600', val: 'text-emerald-900' },
     rose:    { bg: 'bg-rose-50',    text: 'text-rose-600',    val: 'text-rose-900'    },
@@ -655,7 +655,7 @@ function AmountBox({ label, amount, color }) {
 
 function Tag({ color, children }) {
   const cls = {
-    indigo:  'bg-primary-container text-primary',
+    indigo:  'bg-indigo-50 text-indigo-700 border border-indigo-200',
     sky:     'bg-sky-100 text-sky-700',
     emerald: 'bg-emerald-100 text-emerald-700',
     rose:    'bg-rose-100 text-rose-700',

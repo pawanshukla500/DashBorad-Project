@@ -168,7 +168,7 @@ export default function ReturnsPage() {
                         </td>
                         <td className="px-4 py-2.5">
                           {o.category
-                            ? <span className="bg-primary-container text-primary border border-primary px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize">{o.category}</span>
+                            ? <span className="bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize whitespace-nowrap">{o.category.replace(/_/g, ' ')}</span>
                             : <span className="text-surface">—</span>}
                         </td>
                         <td className="px-4 py-2.5 text-secondary whitespace-nowrap text-[11px]">

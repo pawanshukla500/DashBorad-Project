@@ -1422,7 +1422,7 @@ router.get('/orders', async (req, res) => {
         SELECT
           o.order_item_id         AS "orderItemId",
           o.order_id              AS "orderId",
-          TO_CHAR(o.order_date, 'YYYY-MM-DD') AS "orderDate",
+          TO_CHAR(COALESCE(o.order_date, ost.payment_date), 'YYYY-MM-DD') AS "orderDate",
           o.sku, o.fsn, o.category,
           o.marketplace,
           COALESCE(o.seller_account, 'default') AS "sellerAccount",
@@ -1434,15 +1434,15 @@ router.get('/orders', async (req, res) => {
           o.qty,
           o.final_invoice_amount  AS "finalInvoiceAmount",
           o.total_share_amount    AS "totalShareAmount",
-          o.my_share              AS "myShare",
-          o.commission,
-          o.fixed_fee             AS "fixedFee",
-          o.collection_fee        AS "collectionFee",
-          o.pick_pack_fee         AS "pickPackFee",
-          o.shipping_fee          AS "shippingFee",
-          o.reverse_shipping      AS "reverseShipping",
-          o.franchise             AS "franchise",
-          o.settlement_amount     AS "settlementAmount",
+          COALESCE(NULLIF(o.my_share, 0), ost.net_bank, 0) AS "myShare",
+          COALESCE(NULLIF(o.commission, 0), ost.commission, 0) AS "commission",
+          COALESCE(NULLIF(ost.fixed_fee, 0), o.fixed_fee, 0) AS "fixedFee",
+          COALESCE(NULLIF(ost.collection_fee, 0), o.collection_fee, 0) AS "collectionFee",
+          COALESCE(NULLIF(ost.pick_pack_fee, 0), o.pick_pack_fee, 0) AS "pickPackFee",
+          COALESCE(NULLIF(ost.shipping_fee, 0), o.shipping_fee, 0) AS "shippingFee",
+          COALESCE(NULLIF(ost.reverse_shipping, 0), o.reverse_shipping, 0) AS "reverseShipping",
+          COALESCE(NULLIF(ost.franchise_fee, 0), o.franchise, 0) AS "franchise",
+          COALESCE(NULLIF(o.settlement_amount, 0), ost.net_bank, 0) AS "settlementAmount",
           ret.return_status       AS "returnStatus",
           ret.return_type         AS "returnType",
           ret.return_reason       AS "returnReason",
@@ -1458,10 +1458,11 @@ router.get('/orders', async (req, res) => {
           ${COGS_UNIT_SQL} AS cogs,
           ${MASTER_SKU_SQL} AS "masterSku"
         FROM orders o
+        LEFT JOIN order_settlement_totals ost ON ost.order_item_id = o.order_item_id
         LEFT JOIN order_returns ret   ON ret.order_item_id = o.order_item_id
         ${COGS_JOINS}
         WHERE 1=1 ${where}
-        ORDER BY o.order_date DESC, o.order_item_id
+        ORDER BY o.order_date DESC NULLS LAST, o.order_item_id
         LIMIT $${values.push(pageSize)} OFFSET $${values.push(offset)}
       `, values),
       pool.query(`SELECT COUNT(*) AS total FROM orders o WHERE 1=1 ${where}`, values.slice(0, values.length - 2)),
@@ -1492,21 +1493,22 @@ router.get('/sku-orders', async (req, res) => {
       pool.query(`
         SELECT
           o.order_item_id                                        AS "orderItemId",
-          TO_CHAR(o.order_date, 'DD-Mon-YYYY')                  AS "orderDate",
+          TO_CHAR(COALESCE(o.order_date, ost.payment_date), 'DD-Mon-YYYY') AS "orderDate",
           o.category,
           o.delivery_state                                       AS "deliveryState",
           o.orders_status                                        AS "orderStatus",
           o.final_invoice_amount                                 AS "invoiceAmount",
-          COALESCE(o.my_share, 0)                               AS "myShare",
+          COALESCE(NULLIF(o.my_share, 0), ost.net_bank, 0)       AS "myShare",
           ret.return_type                                        AS "returnType",
           ret.return_reason                                      AS "returnReason",
           ret.return_status                                      AS "returnStatus",
           ret.return_completion_type                             AS "returnCompletionType",
           TO_CHAR(ret.return_requested_date, 'DD-Mon-YYYY')     AS "returnDate"
         FROM orders o
+        LEFT JOIN order_settlement_totals ost ON ost.order_item_id = o.order_item_id
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
         WHERE o.sku = $1
-        ORDER BY o.order_date DESC, o.order_item_id
+        ORDER BY o.order_date DESC NULLS LAST, o.order_item_id
         LIMIT $2 OFFSET $3
       `, [sku, pageSize, offset]),
       pool.query(`SELECT COUNT(*) AS total FROM orders o WHERE o.sku = $1`, [sku]),
@@ -1786,29 +1788,36 @@ router.get('/order/:orderItemId', async (req, res) => {
     const [orderRes, retRes, settRes] = await Promise.all([
       pool.query(`
         SELECT
-          order_item_id                              AS "orderItemId",
-          order_id                                   AS "orderId",
-          TO_CHAR(order_date, 'DD-Mon-YYYY')         AS "orderDate",
-          category, sku, marketplace,
-          fulfilment_type                            AS "fulfilmentType",
-          selling_channel                            AS "sellingChannel",
-          delivery_state                             AS "deliveryState",
-          delivery_city                              AS "deliveryCity",
-          delivery_pincode                           AS "deliveryPincode",
-          orders_status                              AS "ordersStatus",
-          qty, weight_slab AS "weightSlab", shipping_zone AS "shippingZone",
-          final_invoice_amount                       AS "finalInvoiceAmount",
-          total_share_amount                         AS "totalShareAmount",
-          my_share                                   AS "myShare",
-          commission, fixed_fee AS "fixedFee", collection_fee AS "collectionFee",
-          pick_pack_fee AS "pickPackFee", shipping_fee AS "shippingFee",
-          reverse_shipping AS "reverseShipping", franchise AS "franchise",
-          tcs, tds, gst_on_mp AS "gstOnMp",
-          COALESCE(seller_account, 'default') AS "sellerAccount",
-          order_type AS "orderType",
-          TO_CHAR(order_date, 'YYYY-MM-DD') AS "rawDate",
-          brand_name AS "brandName"
-        FROM orders WHERE order_item_id = $1
+          o.order_item_id                              AS "orderItemId",
+          o.order_id                                   AS "orderId",
+          TO_CHAR(COALESCE(o.order_date, ost.payment_date), 'DD-Mon-YYYY') AS "orderDate",
+          o.category, o.sku, o.marketplace,
+          o.fulfilment_type                            AS "fulfilmentType",
+          o.selling_channel                            AS "sellingChannel",
+          o.delivery_state                             AS "deliveryState",
+          o.delivery_city                              AS "deliveryCity",
+          o.delivery_pincode                           AS "deliveryPincode",
+          o.orders_status                              AS "ordersStatus",
+          o.qty, o.weight_slab AS "weightSlab", o.shipping_zone AS "shippingZone",
+          o.final_invoice_amount                       AS "finalInvoiceAmount",
+          o.total_share_amount                         AS "totalShareAmount",
+          COALESCE(NULLIF(o.my_share, 0), ost.net_bank, 0)        AS "myShare",
+          COALESCE(NULLIF(o.commission, 0), ost.commission, 0)    AS "commission",
+          COALESCE(NULLIF(ost.fixed_fee, 0), o.fixed_fee, 0)      AS "fixedFee",
+          COALESCE(NULLIF(ost.collection_fee, 0), o.collection_fee, 0) AS "collectionFee",
+          COALESCE(NULLIF(ost.pick_pack_fee, 0), o.pick_pack_fee, 0)   AS "pickPackFee",
+          COALESCE(NULLIF(ost.shipping_fee, 0), o.shipping_fee, 0)     AS "shippingFee",
+          COALESCE(NULLIF(ost.reverse_shipping, 0), o.reverse_shipping, 0) AS "reverseShipping",
+          COALESCE(NULLIF(ost.franchise_fee, 0), o.franchise, 0)  AS "franchise",
+          o.tcs, o.tds, o.gst_on_mp AS "gstOnMp",
+          COALESCE(NULLIF(o.settlement_amount, 0), ost.net_bank, 0) AS "settlementAmount",
+          COALESCE(o.seller_account, 'default')        AS "sellerAccount",
+          o.order_type                                 AS "orderType",
+          TO_CHAR(COALESCE(o.order_date, ost.payment_date), 'YYYY-MM-DD') AS "rawDate",
+          o.brand_name                                 AS "brandName"
+        FROM orders o
+        LEFT JOIN order_settlement_totals ost ON ost.order_item_id = o.order_item_id
+        WHERE o.order_item_id = $1
       `, [id]),
       pool.query(`
         SELECT
