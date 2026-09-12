@@ -571,7 +571,7 @@ function RecoView({ data }) {
               <tr className="bg-amber-50">
                 <td colSpan={5} className="px-4 py-1.5 text-[10px] font-bold text-amber-700 uppercase tracking-widest">Marketplace Fees</td>
               </tr>
-              {md.lines.filter(l => l.cat === 'fee').map(l => (
+              {(md.lines || []).filter(l => l.cat === 'fee').map(l => (
                 <tr key={l.key} className="hover:bg-surface-container-low/60">
                   <td className="px-4 py-2.5 text-ink pl-8">{l.label}</td>
                   <td className="px-4 py-2.5 text-right font-semibold text-rose-700">{currencyFull(l.fk)}</td>
@@ -581,12 +581,12 @@ function RecoView({ data }) {
                 </tr>
               ))}
               {/* Tax lines */}
-              {md.lines.some(l => l.cat === 'tax') && (
+              {(md.lines || []).some(l => l.cat === 'tax') && (
                 <tr className="bg-violet-50">
                   <td colSpan={5} className="px-4 py-1.5 text-[10px] font-bold text-violet-700 uppercase tracking-widest">Tax</td>
                 </tr>
               )}
-              {md.lines.filter(l => l.cat === 'tax').map(l => (
+              {(md.lines || []).filter(l => l.cat === 'tax').map(l => (
                 <tr key={l.key} className="hover:bg-surface-container-low/60">
                   <td className="px-4 py-2.5 text-ink pl-8">{l.label}</td>
                   <td className="px-4 py-2.5 text-right font-semibold text-violet-700">{currencyFull(l.fk)}</td>

@@ -3,12 +3,17 @@ import useFetch from '../hooks/useFetch';
 import PageHeader from '../components/PageHeader';
 import OrderDetailDrawer from '../components/OrderDetailDrawer';
 import { currency, formatDateShort } from '../utils/format';
+import { fetchUnifiedLinkup } from '../api/client';
 
 export default function OrderLifecyclePage() {
   const [page, setPage] = useState(1);
   const [orderDrawerId, setOrderDrawerId] = useState(null);
 
-  const { data, loading, error } = useFetch(`/reconcile/unified-linkup?page=${page}&pageSize=50`, [page]);
+  const { data, loading, error } = useFetch(
+    () => fetchUnifiedLinkup({ page, pageSize: 50 }),
+    [page]
+  );
+  const rows = data?.data || [];
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
@@ -22,7 +27,7 @@ export default function OrderLifecyclePage() {
           <div className="p-8 text-center text-secondary">Loading...</div>
         ) : error ? (
           <div className="p-8 text-center text-rose-500">{error}</div>
-        ) : data?.data?.length === 0 ? (
+        ) : rows.length === 0 ? (
           <div className="p-8 text-center text-secondary">No orders found.</div>
         ) : (
           <div className="overflow-x-auto min-h-[500px]">
@@ -39,7 +44,7 @@ export default function OrderLifecyclePage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {data?.data.map((row, i) => (
+                {rows.map((row, i) => (
                   <tr 
                     key={row.order_item_id || i} 
                     className="hover:bg-surface-container-low transition-colors cursor-pointer"

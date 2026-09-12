@@ -390,8 +390,8 @@ export const fetchUnsettledItems    = (f, page=1, pageSize=50) => {
 };
 export const fetchNonOrderDeductions = (f) => api.get('/reconcile/non-order', { params: p(f) }).then(r => r.data);
 export const fetchRateAudit          = (f) => api.get('/reconcile/rate-audit', { params: p(f) }).then(r => r.data);
-export const fetchOrderById          = (orderId) => api.get('/reconcile/by-order', { params: { orderId } }).then(r => r.data);
 export const fetchMyntraMonthlySummary = (f) => api.get('/mp-settlement/monthly-summary', { params: p(f) }).then(r => r.data);
+export const fetchUnifiedLinkup = (f = {}) => api.get('/reconcile/unified-linkup', { params: p(f) }).then(r => r.data);
 
 // Aliases
 export const fetchReconciliationSummary = fetchReconcileSummary;

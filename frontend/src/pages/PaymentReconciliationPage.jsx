@@ -53,7 +53,7 @@ function downloadInvoiceExceptions(marketplace, summary, rows) {
       {
         sheetName: 'Payment Exceptions',
         headers: ['Status', 'Invoice number', 'Invoice date', 'Seller account', 'SKU', 'Quantity', 'Invoice amount (Rs)', 'Expected payment (Rs)', 'Received (Rs)', 'Outstanding (Rs)', 'Payment reference', 'Notes'],
-        rows: rows.map(row => [
+        rows: (rows || []).map(row => [
           row.status, row.invoice_number || '', row.invoice_date || '', row.seller_account || 'default', row.sku || '', row.quantity || 1,
           Number(row.invoice_amount || 0), Number(row.net_payable || 0), Number(row.amount_received || 0), Math.max(0, Number(row.net_payable || 0) - Number(row.amount_received || 0)), row.payment_reference || '', row.notes || '',
         ]), colWidths: [14, 22, 14, 18, 22, 10, 18, 20, 16, 18, 22, 32],
@@ -78,7 +78,7 @@ function downloadLedgerExceptions(marketplace, summary, rows) {
       {
         sheetName: 'Unreconciled Entries',
         headers: ['Date', 'Reference', 'Order ID', 'Entry type', 'Description', 'Debit (Rs)', 'Credit (Rs)', 'Running balance (Rs)', 'Notes'],
-        rows: rows.map(row => [row.entry_date || '', row.reference_number || '', row.order_id || '', row.entry_type || '', row.description || '', Number(row.debit || 0), Number(row.credit || 0), Number(row.running_balance || 0), row.notes || '']),
+        rows: (rows || []).map(row => [row.entry_date || '', row.reference_number || '', row.order_id || '', row.entry_type || '', row.description || '', Number(row.debit || 0), Number(row.credit || 0), Number(row.running_balance || 0), row.notes || '']),
         colWidths: [14, 22, 22, 16, 44, 16, 16, 20, 32],
       },
     ],
@@ -258,7 +258,7 @@ function InvoicePaymentPanel({ market }) {
           </div>
         </div>
         <Link
-          to={`/rate-card?marketplace=${market.marketplace}&account=${sellerAccount || 'default'}`}
+          to={`/rate-card-config?marketplace=${market.marketplace}&account=${sellerAccount || 'default'}`}
           className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-primary transition"
         >
           <span>⚙️</span>
@@ -353,8 +353,8 @@ function Metric({ label, value, sub, tone = 'slate' }) {
   return <div className={`rounded-xl border p-4 ${tones[tone] || tones.slate}`}><p className="text-[11px] font-bold uppercase tracking-[0.1em] text-secondary">{label}</p><p className="mt-1 text-xl font-bold tabular-nums text-ink">{animatedValue}</p>{sub && <p className="mt-1 text-xs text-secondary">{sub}</p>}</div>;
 }
 
-function ExceptionTable({ rows, type }) {
-  if (!rows.length) return <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-sm text-emerald-800">No records found for the selected view.</div>;
+function ExceptionTable({ rows = [], type }) {
+  if (!rows?.length) return <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-sm text-emerald-800">No records found for the selected view.</div>;
   return (
     <div className="overflow-x-auto rounded-xl border border-border bg-surface">
       <table className="w-full min-w-[960px] text-xs">
@@ -384,7 +384,7 @@ function ExceptionTable({ rows, type }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {rows.map(row => type === 'invoice' ? (
+          {(rows || []).map(row => type === 'invoice' ? (
             <tr key={row.id} className={row.rate_card_status === 'overcharged' ? 'bg-rose-50/40 hover:bg-rose-50/70' : 'hover:bg-surface-container-low/70'}>
               <td className="px-3 py-2.5">
                 <span className={`rounded-full px-2 py-0.5 font-bold ${row.status === 'Paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
@@ -462,7 +462,7 @@ function SetupPanel({ market }) {
         <p className="mt-3 text-xs text-secondary">After the payment file is mapped, this tab will show only supported payment exceptions and the download button will create a case-ready file from the imported evidence.</p>
       </div>
       <Link
-        to={`/rate-card?marketplace=${market.marketplace}`}
+        to={`/rate-card-config?marketplace=${market.marketplace}`}
         className="inline-flex items-center gap-1.5 rounded-lg border border-primary bg-primary-container px-3 py-2 text-xs font-bold text-primary hover:bg-primary-container"
       >
         <span>⚙️</span>
@@ -570,7 +570,7 @@ export default function PaymentReconciliationPage() {
     <div className="flex flex-wrap items-center justify-between gap-4">
       <PageHeader title="Payment Check" subtitle="One place to review marketplace payments, fee discrepancies, pending payouts, and downloadable case evidence." />
       <Link
-        to={`/rate-card?marketplace=${active?.marketplace || 'flipkart'}`}
+        to={`/rate-card-config?marketplace=${active?.marketplace || 'flipkart'}`}
         className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-primary transition"
       >
         <span>⚙️</span>

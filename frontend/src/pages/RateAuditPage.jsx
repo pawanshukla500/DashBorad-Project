@@ -121,7 +121,7 @@ export function FlipkartFeeAudit({ embedded = false }) {
       {tab === 'breakdown' && (
         fl && !feeData ? <SkeletonBreakdown /> :
         fe && !feeData ? <ErrBox msg={fe} /> :
-        feeData ? <FeeSummaryView data={feeData} /> :
+        (feeData?.fees?.length || feeData?.grossSales > 0) ? <FeeSummaryView data={feeData} /> :
         <div className="p-10 text-center text-outline">No settlement data for selected filters</div>
       )}
 
@@ -184,8 +184,8 @@ export function FlipkartFeeAudit({ embedded = false }) {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {paged.map(order =>
-                      order.issues.map((issue, j) => (
+                    {(paged || []).map(order =>
+                      (order.issues || []).map((issue, j) => (
                         <tr key={`${order.orderItemId}-${j}`} className={`hover:bg-surface-container-low/60 ${issue.overcharged ? 'bg-rose-50/30' : 'bg-amber-50/30'}`}>
                           {j === 0 && (
                             <>
@@ -264,16 +264,23 @@ export default function RateAuditPage() {
 // ─── Fee Summary View (Tab 1) ─────────────────────────────────────────────────
 function FeeSummaryView({ data }) {
   const {
-    grossSales, netSettlement, saleOrders, returnOrders,
-    totalDeducted, deductionPct,
-    fees, mpFees, taxFees,
-    nonOrderFees, spfFees,
-  } = data;
+    grossSales = 0,
+    netSettlement = 0,
+    saleOrders = 0,
+    returnOrders = 0,
+    totalDeducted = 0,
+    deductionPct = 0,
+    fees = [],
+    mpFees = [],
+    taxFees = [],
+    nonOrderFees = [],
+    spfFees = [],
+  } = data || {};
 
-  const totalMp       = mpFees?.reduce((s, f) => s + f.amount, 0) || 0;
-  const totalTax      = taxFees?.reduce((s, f) => s + f.amount, 0) || 0;
-  const totalNonOrder = nonOrderFees?.reduce((s, f) => s + f.amount, 0) || 0;
-  const totalSpf      = (spfFees || []).reduce((s, f) => s + f.amount, 0);
+  const totalMp       = (mpFees || []).reduce((s, f) => s + (f.amount || 0), 0);
+  const totalTax      = (taxFees || []).reduce((s, f) => s + (f.amount || 0), 0);
+  const totalNonOrder = (nonOrderFees || []).reduce((s, f) => s + (f.amount || 0), 0);
+  const totalSpf      = (spfFees || []).reduce((s, f) => s + (f.amount || 0), 0);
 
   return (
     <div className="space-y-6">
@@ -287,35 +294,37 @@ function FeeSummaryView({ data }) {
       </div>
 
       {/* Composition Bar */}
-      <div className="bg-surface rounded-xl border border-border p-5">
-        <h3 className="text-sm font-semibold text-ink mb-1">Deduction Composition</h3>
-        <p className="text-xs text-outline mb-4">How FK splits the total amount deducted from your settlements</p>
-        <div className="flex h-8 rounded-lg overflow-hidden gap-px">
-          {fees.map((f, i) => {
-            const w = totalDeducted > 0 ? (f.amount / totalDeducted) * 100 : 0;
-            if (w < 0.5) return null;
-            const colors = GROUP_COLORS[f.group] || ['#94a3b8'];
-            return (
-              <div key={f.key} title={`${f.label}: ₹${f.amount.toFixed(0)} (${f.pctOfSales}% of sales)`}
-                className="h-full transition-all cursor-default"
-                style={{ width: `${w}%`, backgroundColor: colors[i % colors.length] }}
-              />
-            );
-          })}
+      {fees?.length > 0 && (
+        <div className="bg-surface rounded-xl border border-border p-5">
+          <h3 className="text-sm font-semibold text-ink mb-1">Deduction Composition</h3>
+          <p className="text-xs text-outline mb-4">How FK splits the total amount deducted from your settlements</p>
+          <div className="flex h-8 rounded-lg overflow-hidden gap-px">
+            {(fees || []).map((f, i) => {
+              const w = totalDeducted > 0 ? (f.amount / totalDeducted) * 100 : 0;
+              if (w < 0.5) return null;
+              const colors = GROUP_COLORS[f.group] || ['#94a3b8'];
+              return (
+                <div key={f.key || i} title={`${f.label}: ₹${f.amount?.toFixed?.(0) || f.amount} (${f.pctOfSales}% of sales)`}
+                  className="h-full transition-all cursor-default"
+                  style={{ width: `${w}%`, backgroundColor: colors[i % colors.length] }}
+                />
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3">
+            {(fees || []).map((f, i) => {
+              const colors = GROUP_COLORS[f.group] || ['#94a3b8'];
+              return (
+                <span key={f.key || i} className="flex items-center gap-1.5 text-[11px] text-secondary">
+                  <span className="w-2.5 h-2.5 rounded-sm inline-block shrink-0" style={{ backgroundColor: colors[i % colors.length] }} />
+                  {f.label}
+                  <span className="text-outline font-mono">{f.pctOfSales}%</span>
+                </span>
+              );
+            })}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3">
-          {fees.map((f, i) => {
-            const colors = GROUP_COLORS[f.group] || ['#94a3b8'];
-            return (
-              <span key={f.key} className="flex items-center gap-1.5 text-[11px] text-secondary">
-                <span className="w-2.5 h-2.5 rounded-sm inline-block shrink-0" style={{ backgroundColor: colors[i % colors.length] }} />
-                {f.label}
-                <span className="text-outline font-mono">{f.pctOfSales}%</span>
-              </span>
-            );
-          })}
-        </div>
-      </div>
+      )}
 
       {/* Marketplace Fees table */}
       <FeeTable title="Marketplace Fees" icon="🏪" fees={mpFees} totalSales={grossSales} />
@@ -387,7 +396,7 @@ function NonOrderFeesTable({ fees, spfFees, spfClaimRows, totalNonOrder, totalSp
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {fees.map(f => {
+            {(fees || []).map(f => {
               const meta = NON_ORDER_META[f.key] || {};
               const barW = grandTotal > 0 ? (f.amount / grandTotal) * 100 : 0;
               return (
@@ -530,7 +539,7 @@ function FeeTable({ title, icon, fees, totalSales, showExpected }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {fees.map(f => {
+            {(fees || []).map(f => {
               const barW = total > 0 ? (f.amount / total) * 100 : 0;
               return (
                 <tr key={f.key} className="hover:bg-surface-container-low/50 transition-colors">
@@ -648,7 +657,7 @@ function ErrBox({ msg }) {
 
 // ─── Fee Intelligence View (Tab 3) ───────────────────────────────────────────
 function FeeIntelligenceView({ data }) {
-  const { orderFees = [], nonOrderFees = [], alerts = [] } = data;
+  const { orderFees = [], nonOrderFees = [], alerts = [] } = data || {};
 
   const newAlerts  = alerts.filter(a => a.severity === 'new');
   const upAlerts   = alerts.filter(a => a.severity === 'up');
@@ -1193,7 +1202,7 @@ function RcEntryOrdersView({ feeType, rcId, marketplace, sellerAccount, onBack }
                   {paged.length === 0 && (
                     <tr><td colSpan={11} className="text-center py-8 text-outline">No orders matching this filter</td></tr>
                   )}
-                  {paged.map(r => {
+                  {(paged || []).map(r => {
                     const variance = +r.variance || 0;
                     const abv = Math.abs(variance);
                     return (
@@ -1243,8 +1252,8 @@ function RcEntryOrdersView({ feeType, rcId, marketplace, sellerAccount, onBack }
 
 function buildAuditExport(issues, summary) {
   const headers = ['Order ID','Date','Category','Price','Status','Fee Type','Expected (₹)','FK Charged (₹)','Difference (₹)','Overcharged?'];
-  const rows = issues.flatMap(o =>
-    o.issues.map(iss => [
+  const rows = (issues || []).flatMap(o =>
+    (o.issues || []).map(iss => [
       o.orderItemId, o.orderDate, o.category, o.price,
       STATUS_LABELS[o.status] || o.status,
       iss.fee, iss.expected, iss.actual, iss.diff, iss.overcharged ? 'Yes' : 'No',
