@@ -253,6 +253,226 @@ router.get('/fulfilment-pl', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
+export function buildSpfQueries(rawMp) {
+  const targetMp = rawMp && rawMp !== 'all' ? String(rawMp).trim().toLowerCase() : null;
+
+  const includeFk = !targetMp || targetMp === 'flipkart';
+  const includeAmz = !targetMp || targetMp === 'amazon';
+  const includeMynVb = !targetMp || targetMp === 'myntra' || targetMp === 'myntra_vb';
+  const includeMynEj = !targetMp || targetMp === 'myntra' || targetMp === 'myntra_ej';
+  const includeMeesho = !targetMp || targetMp === 'meesho';
+
+  const cteClaimsParts = [];
+  const cteReasonsParts = [];
+  const cteOrderSummaryParts = [];
+  const cteOrderDetailParts = [];
+
+  if (includeFk) {
+    cteClaimsParts.push(`
+      SELECT 'flipkart' AS marketplace, claim_id::text AS id, ABS(settlement_value) AS val, payment_date::text AS last_date
+      FROM fk_spf_claims
+    `);
+    cteReasonsParts.push(`
+      SELECT 'flipkart' AS marketplace, protection_reason, ABS(settlement_value) AS val
+      FROM fk_spf_claims
+    `);
+    cteOrderSummaryParts.push(`
+      SELECT 'flipkart' AS marketplace, order_item_id, protection_fund AS val, payment_date
+      FROM unified_settlements
+      WHERE protection_fund > 0 AND marketplace = 'flipkart'
+    `);
+    cteOrderDetailParts.push(`
+      SELECT
+        s.order_item_id, s.order_id,
+        TO_CHAR(s.payment_date,'YYYY-MM-DD') AS payment_date,
+        s.protection_fund AS spf_amount,
+        'flipkart' AS marketplace,
+        o.sku, o.category, o.delivery_state,
+        COALESCE(o.final_invoice_amount, 0) AS final_invoice_amount,
+        COALESCE(c.protection_reason, 'Order Protection Fund') AS claim_reason
+      FROM unified_settlements s
+      LEFT JOIN orders o ON o.order_item_id = s.order_item_id
+      LEFT JOIN fk_spf_claims c ON c.order_item_id = s.order_item_id
+      WHERE s.protection_fund > 0 AND s.marketplace = 'flipkart'
+    `);
+  }
+
+  if (includeAmz) {
+    cteClaimsParts.push(`
+      SELECT 'amazon' AS marketplace, id::text AS id, amount AS val, posted_date::text AS last_date
+      FROM amazon_settlement_lines
+      WHERE (transaction_type IN ('SAFE-T Reimbursement', 'TDS Reimbursement') OR amount_type ILIKE '%reimburse%' OR amount_description ILIKE '%reimburse%') AND amount > 0
+    `);
+    cteReasonsParts.push(`
+      SELECT 'amazon' AS marketplace, amount_description AS protection_reason, amount AS val
+      FROM amazon_settlement_lines
+      WHERE (transaction_type IN ('SAFE-T Reimbursement', 'TDS Reimbursement') OR amount_type ILIKE '%reimburse%' OR amount_description ILIKE '%reimburse%') AND amount > 0
+    `);
+    cteOrderSummaryParts.push(`
+      SELECT 'amazon' AS marketplace, order_id AS order_item_id, amount AS val, posted_date AS payment_date
+      FROM amazon_settlement_lines
+      WHERE (transaction_type IN ('SAFE-T Reimbursement', 'TDS Reimbursement') OR amount_type ILIKE '%reimburse%' OR amount_description ILIKE '%reimburse%')
+        AND order_id IS NOT NULL AND order_id != '' AND amount > 0
+    `);
+    cteOrderDetailParts.push(`
+      SELECT
+        COALESCE(l.order_item_code, l.composite_key, l.order_id) AS order_item_id,
+        l.order_id,
+        TO_CHAR(l.posted_date,'YYYY-MM-DD') AS payment_date,
+        l.amount AS spf_amount,
+        'amazon' AS marketplace,
+        l.sku, o.category, o.delivery_state,
+        COALESCE(o.final_invoice_amount, 0) AS final_invoice_amount,
+        l.amount_description AS claim_reason
+      FROM amazon_settlement_lines l
+      LEFT JOIN orders o ON o.order_id = l.order_id
+      WHERE (l.transaction_type IN ('SAFE-T Reimbursement', 'TDS Reimbursement') OR l.amount_type ILIKE '%reimburse%' OR l.amount_description ILIKE '%reimburse%')
+        AND l.order_id IS NOT NULL AND l.order_id != '' AND l.amount > 0
+    `);
+  }
+
+  if (includeMynVb) {
+    cteClaimsParts.push(`
+      SELECT 'myntra_vb' AS marketplace, id::text AS id, amount_received AS val, payment_date::text AS last_date
+      FROM mp_invoices
+      WHERE marketplace = 'myntra' AND COALESCE(seller_account, 'myntra_vb') = 'myntra_vb'
+        AND (notes ILIKE '%spf%' OR invoice_number ILIKE '%spf%' OR notes ILIKE '%rbnr%') AND amount_received > 0
+    `);
+    cteReasonsParts.push(`
+      SELECT 'myntra_vb' AS marketplace, notes AS protection_reason, amount_received AS val
+      FROM mp_invoices
+      WHERE marketplace = 'myntra' AND COALESCE(seller_account, 'myntra_vb') = 'myntra_vb'
+        AND (notes ILIKE '%spf%' OR invoice_number ILIKE '%spf%' OR notes ILIKE '%rbnr%') AND amount_received > 0
+    `);
+    cteOrderSummaryParts.push(`
+      SELECT 'myntra_vb' AS marketplace, invoice_number AS order_item_id, amount_received AS val, payment_date
+      FROM mp_invoices
+      WHERE marketplace = 'myntra' AND COALESCE(seller_account, 'myntra_vb') = 'myntra_vb'
+        AND notes = 'ForwardAutoSPF' AND amount_received > 0
+    `);
+    cteOrderDetailParts.push(`
+      SELECT
+        inv.invoice_number AS order_item_id,
+        inv.invoice_number AS order_id,
+        TO_CHAR(inv.payment_date,'YYYY-MM-DD') AS payment_date,
+        inv.amount_received AS spf_amount,
+        'myntra_vb' AS marketplace,
+        o.sku, o.category, o.delivery_state,
+        COALESCE(inv.invoice_amount, o.final_invoice_amount, 0) AS final_invoice_amount,
+        inv.notes AS claim_reason
+      FROM mp_invoices inv
+      LEFT JOIN orders o ON o.order_id = inv.invoice_number
+      WHERE inv.marketplace = 'myntra' AND COALESCE(inv.seller_account, 'myntra_vb') = 'myntra_vb'
+        AND (inv.notes ILIKE '%spf%' OR inv.invoice_number ILIKE '%spf%' OR inv.notes ILIKE '%rbnr%') AND inv.amount_received > 0
+    `);
+  }
+
+  if (includeMynEj) {
+    cteClaimsParts.push(`
+      SELECT 'myntra_ej' AS marketplace, id::text AS id, amount_received AS val, payment_date::text AS last_date
+      FROM mp_invoices
+      WHERE marketplace = 'myntra' AND seller_account = 'myntra_ej'
+        AND (notes ILIKE '%spf%' OR invoice_number ILIKE '%spf%' OR notes ILIKE '%rbnr%') AND amount_received > 0
+    `);
+    cteReasonsParts.push(`
+      SELECT 'myntra_ej' AS marketplace, notes AS protection_reason, amount_received AS val
+      FROM mp_invoices
+      WHERE marketplace = 'myntra' AND seller_account = 'myntra_ej'
+        AND (notes ILIKE '%spf%' OR invoice_number ILIKE '%spf%' OR notes ILIKE '%rbnr%') AND amount_received > 0
+    `);
+    cteOrderSummaryParts.push(`
+      SELECT 'myntra_ej' AS marketplace, invoice_number AS order_item_id, amount_received AS val, payment_date
+      FROM mp_invoices
+      WHERE marketplace = 'myntra' AND seller_account = 'myntra_ej'
+        AND notes = 'ForwardAutoSPF' AND amount_received > 0
+    `);
+    cteOrderDetailParts.push(`
+      SELECT
+        inv.invoice_number AS order_item_id,
+        inv.invoice_number AS order_id,
+        TO_CHAR(inv.payment_date,'YYYY-MM-DD') AS payment_date,
+        inv.amount_received AS spf_amount,
+        'myntra_ej' AS marketplace,
+        o.sku, o.category, o.delivery_state,
+        COALESCE(inv.invoice_amount, o.final_invoice_amount, 0) AS final_invoice_amount,
+        inv.notes AS claim_reason
+      FROM mp_invoices inv
+      LEFT JOIN orders o ON o.order_id = inv.invoice_number
+      WHERE inv.marketplace = 'myntra' AND inv.seller_account = 'myntra_ej'
+        AND (inv.notes ILIKE '%spf%' OR inv.invoice_number ILIKE '%spf%' OR inv.notes ILIKE '%rbnr%') AND inv.amount_received > 0
+    `);
+  }
+
+  if (includeMeesho) {
+    cteClaimsParts.push(`
+      SELECT 'meesho' AS marketplace, id::text AS id, claims AS val, payment_date::text AS last_date
+      FROM meesho_settlement_items
+      WHERE claims > 0
+    `);
+    cteReasonsParts.push(`
+      SELECT 'meesho' AS marketplace, 'Settlement Claim' AS protection_reason, claims AS val
+      FROM meesho_settlement_items
+      WHERE claims > 0
+    `);
+    cteOrderSummaryParts.push(`
+      SELECT 'meesho' AS marketplace, order_item_id, claims AS val, payment_date
+      FROM meesho_settlement_items
+      WHERE claims > 0 AND order_item_id IS NOT NULL AND order_item_id != ''
+    `);
+    cteOrderDetailParts.push(`
+      SELECT
+        m.order_item_id, m.order_item_id AS order_id,
+        TO_CHAR(m.payment_date,'YYYY-MM-DD') AS payment_date,
+        m.claims AS spf_amount,
+        'meesho' AS marketplace,
+        m.sku, o.category, o.delivery_state,
+        COALESCE(o.final_invoice_amount, m.sale_amount, 0) AS final_invoice_amount,
+        'Meesho Claim' AS claim_reason
+      FROM meesho_settlement_items m
+      LEFT JOIN orders o ON o.order_item_id = m.order_item_id
+      WHERE m.claims > 0
+    `);
+  }
+
+  const emptyClaim = `SELECT 'none' AS marketplace, '' AS id, 0::numeric AS val, '' AS last_date WHERE 1=0`;
+  const emptyReason = `SELECT 'none' AS marketplace, '' AS protection_reason, 0::numeric AS val WHERE 1=0`;
+  const emptyOrderSummary = `SELECT 'none' AS marketplace, '' AS order_item_id, 0::numeric AS val, CURRENT_DATE AS payment_date WHERE 1=0`;
+  const emptyOrderDetail = `SELECT '' AS order_item_id, '' AS order_id, '' AS payment_date, 0::numeric AS spf_amount, 'none' AS marketplace, '' AS sku, '' AS category, '' AS delivery_state, 0::numeric AS final_invoice_amount, '' AS claim_reason WHERE 1=0`;
+
+  const totalSql = `
+    WITH all_claims AS (
+      ${cteClaimsParts.length ? cteClaimsParts.join(' UNION ALL ') : emptyClaim}
+    )
+    SELECT marketplace, COUNT(id) AS total_claims, ROUND(SUM(val), 2) AS total_recovered, MAX(last_date) AS last_claim_date
+    FROM all_claims GROUP BY marketplace
+  `;
+
+  const reasonsSql = `
+    WITH all_reasons AS (
+      ${cteReasonsParts.length ? cteReasonsParts.join(' UNION ALL ') : emptyReason}
+    )
+    SELECT protection_reason, marketplace, COUNT(*) AS count, ROUND(SUM(val), 2) AS value
+    FROM all_reasons GROUP BY protection_reason, marketplace ORDER BY value DESC LIMIT 25
+  `;
+
+  const orderSummarySql = `
+    WITH all_order_spf AS (
+      ${cteOrderSummaryParts.length ? cteOrderSummaryParts.join(' UNION ALL ') : emptyOrderSummary}
+    )
+    SELECT marketplace, COUNT(DISTINCT order_item_id) AS total_orders, ROUND(SUM(val), 2) AS total_recovered, MAX(TO_CHAR(payment_date,'YYYY-MM-DD')) AS last_date
+    FROM all_order_spf GROUP BY marketplace
+  `;
+
+  const orderDetailSql = `
+    WITH all_order_details AS (
+      ${cteOrderDetailParts.length ? cteOrderDetailParts.join(' UNION ALL ') : emptyOrderDetail}
+    )
+    SELECT * FROM all_order_details ORDER BY spf_amount DESC LIMIT 200
+  `;
+
+  return { totalSql, reasonsSql, orderSummarySql, orderDetailSql };
+}
+
 // GET /api/insights/cash-flow
 router.get('/cash-flow', async (req, res) => {
   try {
@@ -281,6 +501,8 @@ router.get('/cash-flow', async (req, res) => {
       }
     }
 
+    const { totalSql, reasonsSql, orderSummarySql, orderDetailSql } = buildSpfQueries(rawMp);
+
     const [settRes, unsettledRes, spfTotalRes, spfReasonRes, neftRes, orderSpfSummaryRes, orderSpfDetailRes] = await Promise.all([
       pool.query(`
         SELECT
@@ -308,27 +530,8 @@ router.get('/cash-flow', async (req, res) => {
           AND o.orders_status NOT IN ('Cancelled','CANCELLED','cancelled') ${omWhere}
         GROUP BY o.marketplace
       `, mpVals),
-      pool.query(`
-        SELECT
-          marketplace,
-          COUNT(claim_id)            AS total_claims,
-          SUM(ABS(settlement_value)) AS total_recovered,
-          MAX(payment_date::text)    AS last_claim_date
-        FROM fk_spf_claims
-        WHERE 1=1 ${mpWhere}
-        GROUP BY marketplace
-      `, mpVals),
-      pool.query(`
-        SELECT
-          protection_reason, marketplace,
-          COUNT(*)                   AS count,
-          SUM(ABS(settlement_value)) AS value
-        FROM fk_spf_claims
-        WHERE 1=1 ${mpWhere}
-        GROUP BY protection_reason, marketplace
-        ORDER BY value DESC
-        LIMIT 20
-      `, mpVals),
+      pool.query(totalSql),
+      pool.query(reasonsSql),
       pool.query(`
         SELECT
           neft_id,
@@ -343,31 +546,8 @@ router.get('/cash-flow', async (req, res) => {
         ORDER BY date DESC
         LIMIT 30
       `, mpVals),
-      // Order-level SPF: protection_fund from settlement orders (received against order_item_id)
-      pool.query(`
-        SELECT
-          marketplace,
-          COUNT(DISTINCT order_item_id) AS total_orders,
-          SUM(protection_fund)          AS total_recovered,
-          MAX(TO_CHAR(payment_date,'YYYY-MM-DD')) AS last_date
-        FROM unified_settlements
-        WHERE protection_fund > 0 ${mpWhere}
-        GROUP BY marketplace
-      `, mpVals),
-      pool.query(`
-        SELECT
-          s.order_item_id, s.order_id,
-          TO_CHAR(s.payment_date,'YYYY-MM-DD') AS payment_date,
-          s.protection_fund AS spf_amount,
-          s.marketplace,
-          o.sku, o.category, o.delivery_state,
-          o.final_invoice_amount
-        FROM unified_settlements s
-        LEFT JOIN orders o ON o.order_item_id = s.order_item_id
-        WHERE s.protection_fund > 0 ${mpWhereS}
-        ORDER BY s.protection_fund DESC
-        LIMIT 200
-      `, mpVals),
+      pool.query(orderSummarySql),
+      pool.query(orderDetailSql),
     ]);
 
     res.json({

@@ -160,15 +160,72 @@ function SettlementTimeline({ history, mp }) {
   );
 }
 
-// ── SPF Recovery (tabbed: Order SPF vs Non-Order SPF) ─────────────────────────
+function matchesMp(rowMp, targetMp) {
+  if (!targetMp || targetMp === 'all') return true;
+  if (rowMp === targetMp) return true;
+  if (targetMp === 'myntra' && (rowMp === 'myntra_vb' || rowMp === 'myntra_ej' || rowMp === 'myntra')) return true;
+  return false;
+}
+
+function formatSpfReason(r) {
+  if (!r) return 'Other Claims';
+  const str = String(r).trim();
+  const map = {
+    'REVERSAL_REIMBURSEMENT': 'Reversal Reimbursement (Amazon)',
+    'Reimbursement for Lost packages': 'Lost Packages Reimbursement (Amazon)',
+    'SAFE-T Reimbursement': 'SAFE-T Claim Reimbursement (Amazon)',
+    'TDS Reimbursement': 'TDS Reimbursement (Amazon)',
+    'FREE_REPLACEMENT_REFUND_ITEMS': 'Free Replacement Refund (Amazon)',
+    'WAREHOUSE_DAMAGE': 'Warehouse Damage Claim (Amazon)',
+    'PAYMENT_RETRACTION_ITEMS': 'Payment Retraction Adjustment',
+    'ForwardAutoSPF': 'Forward Auto-SPF Protection (Myntra)',
+    'spf_rbnr': 'Return SPF Claim - RBNR (Myntra)',
+    'MainProduct_WareHouseLost': 'Warehouse Lost (Flipkart)',
+    'MainProduct_WrongProductReceived': 'Wrong Product Received (Flipkart)',
+    'MainProduct_Damaged': 'Damaged Product (Flipkart)',
+    'Order Protection Fund': 'Order Protection Fund',
+    'Settlement Claim': 'Settlement Claim',
+    'Meesho Claim': 'Settlement Claim (Meesho)',
+  };
+  if (map[str]) return map[str];
+  if (str.startsWith('PPMP') || str.startsWith('SJIT')) return `Settlement SPF Adjustment (${str})`;
+  return str.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// ── SPF Recovery (tabbed: Order SPF vs Non-Order SPF / Reimbursements) ─────────
 function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, mp }) {
   const [tab, setTab] = useState('order'); // 'order' | 'nonorder'
 
-  // ── Non-order SPF (fk_spf_claims) ──
+  const spfSubtitle = useMemo(() => {
+    if (mp === 'amazon') return 'Amazon SAFE-T Claims & FBA Inventory Reimbursements (Reversals, Lost, Damaged)';
+    if (mp === 'myntra_vb') return 'Myntra (VB - 10708) Forward Auto-SPF & Dispute Claims (RBNR)';
+    if (mp === 'myntra_ej') return 'Myntra (EJ - 45833) Forward Auto-SPF & Dispute Claims (RBNR)';
+    if (mp === 'myntra') return 'Myntra Forward Auto-SPF & Dispute Claims (RBNR)';
+    if (mp === 'flipkart') return 'Flipkart Seller Protection Fund (SPF) & Settlement Protection';
+    if (mp === 'meesho') return 'Meesho Order Claims & Return Compensations';
+    return 'Consolidated Claims & Reimbursements across Flipkart, Amazon, Myntra & Meesho';
+  }, [mp]);
+
+  const nonOrderSourceSub = useMemo(() => {
+    if (mp === 'amazon') return 'from Amazon settlement reports';
+    if (mp?.startsWith('myntra')) return 'from Myntra settlement invoices (NOD / RBNR)';
+    if (mp === 'flipkart') return 'from fk_spf_claims table';
+    if (mp === 'meesho') return 'from Meesho settlement items';
+    return 'from marketplace claims & reports';
+  }, [mp]);
+
+  const orderSourceSub = useMemo(() => {
+    if (mp === 'amazon') return 'order-level SAFE-T & FBA reimbursements';
+    if (mp?.startsWith('myntra')) return 'forward auto-SPF credited against orders';
+    if (mp === 'flipkart') return 'protection_fund credited per order item';
+    if (mp === 'meesho') return 'order claims credited per item';
+    return 'protection fund / claims per item';
+  }, [mp]);
+
+  // ── Non-order SPF / Claims ──
   const nonOrderTotals = useMemo(() => {
     if (!spfTotals?.length) return { claims: 0, recovered: 0 };
-    const mp2 = mp === 'all' ? null : mp;
-    const rows = mp2 ? spfTotals.filter(r => r.marketplace === mp2) : spfTotals;
+    const rows = spfTotals.filter(r => matchesMp(r.marketplace, mp));
     return rows.reduce((acc, r) => ({
       claims: acc.claims + +r.total_claims,
       recovered: acc.recovered + +r.total_recovered,
@@ -177,21 +234,21 @@ function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, m
 
   const nonOrderReasons = useMemo(() => {
     if (!spfReasons?.length) return [];
-    const mp2 = mp === 'all' ? null : mp;
-    const rows = mp2 ? spfReasons.filter(r => r.marketplace === mp2) : spfReasons.reduce((acc, r) => {
-      const ex = acc.find(a => a.protection_reason === r.protection_reason);
+    const rows = spfReasons.filter(r => matchesMp(r.marketplace, mp));
+    const merged = rows.reduce((acc, r) => {
+      const label = formatSpfReason(r.protection_reason);
+      const ex = acc.find(a => a.label === label);
       if (ex) { ex.count += +r.count; ex.value += +r.value; }
-      else acc.push({ ...r, count: +r.count, value: +r.value });
+      else acc.push({ ...r, label, count: +r.count, value: +r.value });
       return acc;
     }, []);
-    return rows.sort((a, b) => b.value - a.value).slice(0, 10);
+    return merged.sort((a, b) => b.value - a.value).slice(0, 15);
   }, [spfReasons, mp]);
 
-  // ── Order SPF (fk_settlement_orders.protection_fund) ──
+  // ── Order SPF / Claims ──
   const orderSpfTotals = useMemo(() => {
     if (!orderSpfSummary?.length) return { orders: 0, recovered: 0 };
-    const mp2 = mp === 'all' ? null : mp;
-    const rows = mp2 ? orderSpfSummary.filter(r => r.marketplace === mp2) : orderSpfSummary;
+    const rows = orderSpfSummary.filter(r => matchesMp(r.marketplace, mp));
     return rows.reduce((acc, r) => ({
       orders: acc.orders + +r.total_orders,
       recovered: acc.recovered + +r.total_recovered,
@@ -200,16 +257,15 @@ function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, m
 
   const orderSpfRows = useMemo(() => {
     if (!orderSpfDetail?.length) return [];
-    const mp2 = mp === 'all' ? null : mp;
-    return mp2 ? orderSpfDetail.filter(r => r.marketplace === mp2) : orderSpfDetail;
+    return orderSpfDetail.filter(r => matchesMp(r.marketplace, mp));
   }, [orderSpfDetail, mp]);
 
   const REASON_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#f59e0b', '#10b981', '#06b6d4', '#3b82f6', '#64748b'];
 
   return (
     <SectionCard
-      title="SPF (Seller Protection Fund) Recovery"
-      sub="Order SPF = protection fund against order items · Non-Order SPF = standalone claims"
+      title={mp === 'amazon' ? 'Amazon Reimbursements & SAFE-T Recovery' : 'SPF & Reimbursements Recovery'}
+      sub={spfSubtitle}
     >
       {/* Tabs */}
       <div className="flex gap-1 mb-5 p-1 bg-surface-container rounded-xl w-fit">
@@ -217,13 +273,13 @@ function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, m
           onClick={() => setTab('order')}
           className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${tab === 'order' ? 'bg-primary text-white shadow-sm' : 'text-secondary hover:text-ink hover:bg-white'}`}
         >
-          Order SPF
+          {mp === 'amazon' ? 'Order Reimbursements' : mp?.startsWith('myntra') ? 'Order Auto-SPF' : 'Order Claims / SPF'}
         </button>
         <button
           onClick={() => setTab('nonorder')}
           className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${tab === 'nonorder' ? 'bg-emerald-600 text-white shadow-sm' : 'text-secondary hover:text-ink hover:bg-white'}`}
         >
-          Non-Order SPF
+          {mp === 'amazon' ? 'FBA & Standalone Claims' : mp?.startsWith('myntra') ? 'Dispute Claims (RBNR)' : 'Non-Order / Standalone Claims'}
         </button>
       </div>
 
@@ -232,41 +288,55 @@ function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, m
         <>
           <div className="grid grid-cols-2 gap-4 mb-5">
             <div className="rounded-xl bg-primary-container border border-primary p-4">
-              <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">Total Recovered (Order SPF)</p>
+              <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">
+                {mp === 'amazon' ? 'Total Order Reimbursements' : 'Total Recovered (Order SPF)'}
+              </p>
               <p className="text-2xl font-bold text-primary">{fmtK(orderSpfTotals.recovered)}</p>
-              <p className="text-xs text-indigo-400 mt-0.5">from {fmt(orderSpfTotals.orders)} order items</p>
+              <p className="text-xs text-indigo-400 mt-0.5">from {fmt(orderSpfTotals.orders)} orders / items</p>
             </div>
             <div className="rounded-xl bg-surface-container-low border border-border p-4">
               <p className="text-[10px] font-semibold text-outline uppercase tracking-wider mb-1">Avg Per Order</p>
               <p className="text-2xl font-bold text-ink">
                 {orderSpfTotals.orders ? fmtK(orderSpfTotals.recovered / orderSpfTotals.orders) : '—'}
               </p>
-              <p className="text-xs text-outline mt-0.5">protection_fund per item</p>
+              <p className="text-xs text-outline mt-0.5">{orderSourceSub}</p>
             </div>
           </div>
-          <p className="text-xs font-semibold text-secondary mb-2">Top Items by SPF Amount</p>
+          <p className="text-xs font-semibold text-secondary mb-2">Top Items by Recovery Amount</p>
           {orderSpfRows.length === 0 ? (
-            <Empty msg="No order-level SPF found" sub="Appears when fk_settlement_orders.protection_fund > 0" />
+            <Empty msg="No order-level recoveries found" sub="Appears when order reimbursements or protection fund are credited" />
           ) : (
             <div className="overflow-auto max-h-64">
               <table className="finance-table">
                 <thead className="sticky top-0 bg-surface">
                   <tr className="text-outline border-b border-border">
                     <th className="text-left py-2 font-medium">Order Item ID</th>
+                    {mp === 'all' && <th className="text-left py-2 font-medium">Portal</th>}
+                    <th className="text-left py-2 font-medium">Claim Type / Reason</th>
                     <th className="text-left py-2 font-medium">SKU</th>
                     <th className="text-left py-2 font-medium">Category</th>
                     <th className="text-left py-2 font-medium">State</th>
                     <th className="text-left py-2 font-medium">Date</th>
                     <th className="text-right py-2 font-medium">Invoice</th>
-                    <th className="text-right py-2 font-medium">SPF</th>
+                    <th className="text-right py-2 font-medium">Recovered</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {orderSpfRows.map((r, i) => (
                     <tr key={i} className="hover:bg-surface-container-low">
-                      <td className="py-2 font-mono text-[10px] text-secondary max-w-[120px] truncate">{r.order_item_id}</td>
-                      <td className="py-2 text-secondary max-w-[80px] truncate">{r.sku || '—'}</td>
-                      <td className="py-2 text-secondary max-w-[80px] truncate">{r.category || '—'}</td>
+                      <td className="py-2 font-mono text-[10px] text-secondary max-w-[120px] truncate" title={r.order_item_id || r.order_id}>
+                        {r.order_item_id || r.order_id}
+                      </td>
+                      {mp === 'all' && (
+                        <td className="py-2 text-[10px] uppercase font-semibold text-outline">
+                          {r.marketplace?.replace('_', ' ')}
+                        </td>
+                      )}
+                      <td className="py-2 text-xs font-medium text-ink max-w-[140px] truncate" title={r.claim_reason}>
+                        {formatSpfReason(r.claim_reason)}
+                      </td>
+                      <td className="py-2 text-secondary max-w-[90px] truncate" title={r.sku}>{r.sku || '—'}</td>
+                      <td className="py-2 text-secondary max-w-[90px] truncate" title={r.category}>{r.category || '—'}</td>
                       <td className="py-2 text-outline whitespace-nowrap">{r.delivery_state || '—'}</td>
                       <td className="py-2 text-outline whitespace-nowrap">{r.payment_date || '—'}</td>
                       <td className="py-2 text-right text-secondary">{fmtK(r.final_invoice_amount)}</td>
@@ -283,34 +353,36 @@ function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, m
         <>
           <div className="grid grid-cols-2 gap-4 mb-5">
             <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4">
-              <p className="text-[10px] font-semibold text-emerald-500 uppercase tracking-wider mb-1">Total Recovered (Non-Order SPF)</p>
+              <p className="text-[10px] font-semibold text-emerald-500 uppercase tracking-wider mb-1">
+                {mp === 'amazon' ? 'Total FBA & Standalone Reimbursements' : 'Total Recovered (Non-Order / Standalone)'}
+              </p>
               <p className="text-2xl font-bold text-emerald-700">{fmtK(nonOrderTotals.recovered)}</p>
-              <p className="text-xs text-emerald-500 mt-0.5">{fmt(nonOrderTotals.claims)} standalone claims</p>
+              <p className="text-xs text-emerald-500 mt-0.5">{fmt(nonOrderTotals.claims)} claims & reimbursements</p>
             </div>
             <div className="rounded-xl bg-surface-container-low border border-border p-4">
               <p className="text-[10px] font-semibold text-outline uppercase tracking-wider mb-1">Avg Per Claim</p>
               <p className="text-2xl font-bold text-ink">
                 {nonOrderTotals.claims ? fmtK(nonOrderTotals.recovered / nonOrderTotals.claims) : '—'}
               </p>
-              <p className="text-xs text-outline mt-0.5">from fk_spf_claims table</p>
+              <p className="text-xs text-outline mt-0.5">{nonOrderSourceSub}</p>
             </div>
           </div>
           {nonOrderReasons.length === 0 ? (
-            <Empty msg="No non-order SPF claims found" sub="Upload FK SPF claims report to see data" />
+            <Empty msg="No claims or reimbursements found" sub="Reports appear when claims and dispute adjustments are uploaded" />
           ) : (
             <>
-              <p className="text-xs font-semibold text-secondary mb-3">Breakdown by Reason</p>
+              <p className="text-xs font-semibold text-secondary mb-3">Breakdown by Claim Type / Reason</p>
               <div className="space-y-2">
                 {nonOrderReasons.map((r, i) => (
                   <div key={i} className="flex items-center gap-3">
                     <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: REASON_COLORS[i % REASON_COLORS.length] }} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-xs text-ink truncate capitalize">{(r.protection_reason || 'Unknown').toLowerCase()}</span>
+                        <span className="text-xs text-ink truncate font-medium">{r.label}</span>
                         <span className="text-xs font-bold text-emerald-700 ml-2 shrink-0">{fmtK(r.value)}</span>
                       </div>
                       <div className="h-1.5 bg-surface-container rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${(r.value / nonOrderReasons[0].value) * 100}%`, background: REASON_COLORS[i % REASON_COLORS.length] }} />
+                        <div className="h-full rounded-full" style={{ width: `${(r.value / (nonOrderReasons[0]?.value || 1)) * 100}%`, background: REASON_COLORS[i % REASON_COLORS.length] }} />
                       </div>
                     </div>
                     <span className="text-[10px] text-outline shrink-0">{fmt(r.count)} claims</span>
@@ -507,21 +579,20 @@ export default function CashFlowPage() {
   const { settled30, unsettledVal, spfTotal } = useMemo(() => {
     const hist = data?.settlementHistory || [];
     const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
-    const mp2 = mp === 'all' ? null : mp;
     const s30 = hist
-      .filter(r => new Date(r.date) >= cutoff && (!mp2 || r.marketplace === mp2))
+      .filter(r => new Date(r.date) >= cutoff && matchesMp(r.marketplace, mp))
       .reduce((s, r) => s + +r.inflow, 0);
 
     const unsett = (data?.unsettled || [])
-      .filter(r => !mp2 || r.marketplace === mp2)
+      .filter(r => matchesMp(r.marketplace, mp))
       .reduce((s, r) => s + +r.value, 0);
 
     const nonOrderSpf = (data?.spfTotals || [])
-      .filter(r => !mp2 || r.marketplace === mp2)
+      .filter(r => matchesMp(r.marketplace, mp))
       .reduce((s, r) => s + +r.total_recovered, 0);
 
     const orderSpf = (data?.orderSpfSummary || [])
-      .filter(r => !mp2 || r.marketplace === mp2)
+      .filter(r => matchesMp(r.marketplace, mp))
       .reduce((s, r) => s + +r.total_recovered, 0);
 
     const spfTotal = nonOrderSpf + orderSpf;
@@ -529,9 +600,8 @@ export default function CashFlowPage() {
   }, [data, mp]);
 
   const unsettledCount = useMemo(() => {
-    const mp2 = mp === 'all' ? null : mp;
     return (data?.unsettled || [])
-      .filter(r => !mp2 || r.marketplace === mp2)
+      .filter(r => matchesMp(r.marketplace, mp))
       .reduce((s, r) => s + +r.count, 0);
   }, [data, mp]);
 
@@ -547,7 +617,18 @@ export default function CashFlowPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard label="Settled (30 Days)"   value={fmtK(settled30)}    sub="cash received"          color="emerald" icon="✓" />
         <KpiCard label="Unsettled Value"      value={fmtK(unsettledVal)} sub={`${fmt(unsettledCount)} orders pending`} color={unsettledCount > 0 ? 'amber' : 'slate'} icon="⏳" alert={unsettledCount > 100} />
-        <KpiCard label="SPF Recovered"        value={fmtK(spfTotal)}     sub="seller protection fund" color="violet"  icon="🛡" />
+        <KpiCard
+          label={mp === 'amazon' ? 'Reimbursements' : 'SPF Recovered'}
+          value={fmtK(spfTotal)}
+          sub={
+            mp === 'amazon' ? 'safe-t & fba reimbursements' :
+            mp?.startsWith('myntra') ? 'auto-spf & dispute claims' :
+            mp === 'flipkart' ? 'seller protection fund' :
+            'cross-portal claims & reimbursements'
+          }
+          color="violet"
+          icon="🛡"
+        />
         <KpiCard label="Settlement Cycle"     value={`${MP_CYCLE[mp] ?? 10}d`} sub={`avg for ${mp === 'all' ? 'all platforms' : mp}`} color="indigo" icon="🔁" />
       </div>
 
