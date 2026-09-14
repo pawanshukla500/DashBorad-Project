@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-const CHECK_INTERVAL_MS = 15_000;
+const CHECK_INTERVAL_MS = 30_000;
 
 /**
  * Keeps an outage visible and understandable without replacing any verified

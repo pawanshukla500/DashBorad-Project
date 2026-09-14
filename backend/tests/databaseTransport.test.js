@@ -29,7 +29,7 @@ describe('PostgreSQL transport policy', () => {
     delete process.env.PG_SSL_REJECT_UNAUTHORIZED;
 
     expect(resolvePgConfig().ssl).toEqual({ rejectUnauthorized: true });
-    expect(resolvePgConfig().statement_timeout).toBe(90_000);
+    expect(resolvePgConfig().statement_timeout).toBe(45_000);
   });
 
   it('rejects an unencrypted remote production database connection', () => {
@@ -94,10 +94,12 @@ describe('PostgreSQL transport policy', () => {
     process.env.NODE_ENV = 'production';
     process.env.DATABASE_URL = 'postgresql://payments:secret@postgres:5432/reconciliation';
     process.env.PG_SSL = 'false';
+    process.env.PG_READ_STATEMENT_TIMEOUT_MS = '30000';
     process.env.PG_POOL_IDLE_TIMEOUT_MS = '30000';
     process.env.PG_POOL_MAX_LIFETIME_SECONDS = '300';
 
     const config = resolvePgConfig();
+    expect(config.statement_timeout).toBe(30_000);
     expect(config.idleTimeoutMillis).toBe(30_000);
     expect(config.maxLifetimeSeconds).toBe(300);
   });

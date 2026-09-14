@@ -57,6 +57,7 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
   for (const r of rawRows) {
     const listingSku = r['Marketplace SKU'] ? String(r['Marketplace SKU']).trim() : '';
     const masterSku = (r["VB EXPORT SKU's"] || r['VB Export SKU'] || r['Master SKU']) ? String(r["VB EXPORT SKU's"] || r['VB Export SKU'] || r['Master SKU']).trim() : '';
+    const marketplace = r['Marketplace'] ? String(r['Marketplace']).trim().toLowerCase() : '';
     const category = (r['VB Export Product Category'] || r['Category']) ? String(r['VB Export Product Category'] || r['Category']).trim() : '';
 
     const rawCogs = r['COGS (₹)'] ?? r['COGS'] ?? r['cogs'] ?? r['Cost'] ?? null;
@@ -67,16 +68,17 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
 
     if (!masterSku) continue;
 
+    const isMasterRow = !listingSku || (listingSku === masterSku && marketplace === 'all');
     if (!vbMasterMap.has(masterSku)) {
       vbMasterMap.set(masterSku, { category: category || null, cogs, weightSlab });
     } else {
       const existing = vbMasterMap.get(masterSku);
-      if (category && !existing.category) existing.category = category;
-      if (cogs !== null && (!existing.cogs || existing.cogs === 0)) existing.cogs = cogs;
-      if (weightSlab !== null && !existing.weightSlab) existing.weightSlab = weightSlab;
+      if (category && (isMasterRow || !existing.category)) existing.category = category;
+      if (cogs !== null && (isMasterRow || !existing.cogs || existing.cogs === 0)) existing.cogs = cogs;
+      if (weightSlab !== null && (isMasterRow || !existing.weightSlab)) existing.weightSlab = weightSlab;
     }
 
-    if (listingSku) {
+    if (listingSku && !isMasterRow) {
       listingMap.set(listingSku, { masterSku, category: category || null, cogs, weightSlab });
     }
   }
@@ -116,9 +118,9 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
     info.masterSku,
     'all',
     listingSku,
-    info.category,
-    info.cogs,
-    info.weightSlab,
+    vbMasterMap.get(info.masterSku)?.category || info.category,
+    vbMasterMap.get(info.masterSku)?.cogs ?? info.cogs,
+    vbMasterMap.get(info.masterSku)?.weightSlab ?? info.weightSlab,
   ]);
 
   let skuMasterUpserted = 0;

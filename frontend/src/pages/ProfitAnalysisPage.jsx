@@ -288,6 +288,21 @@ function MarginCell({ value }) {
   return <Td right bold color={color}>{n.toFixed(1)}%</Td>;
 }
 
+const CATEGORY_TONES = [
+  'bg-indigo-50 text-indigo-700 border-indigo-200',
+  'bg-sky-50 text-sky-700 border-sky-200',
+  'bg-teal-50 text-teal-700 border-teal-200',
+  'bg-violet-50 text-violet-700 border-violet-200',
+  'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200',
+  'bg-cyan-50 text-cyan-700 border-cyan-200',
+];
+
+function categoryTone(category) {
+  const text = String(category || 'Uncategorized');
+  const hash = [...text].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return CATEGORY_TONES[hash % CATEGORY_TONES.length];
+}
+
 // ── Modal: Edit COGS & Weight Slab for a VB EXPORT SKU ────────────────────────
 function VbSkuEditModal({ skuItem, onClose, onSaved }) {
   const [form, setForm] = useState({
@@ -1589,8 +1604,8 @@ function CategoryTable({ data }) {
   const totMargin = tot.revenue > 0 ? ((tot.grossProfit / tot.revenue) * 100) : 0;
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="w-full text-left border-collapse">
+    <div className="overflow-x-auto rounded-xl border border-border shadow-sm">
+      <table className="w-full min-w-[920px] text-left border-collapse">
         <thead className="bg-surface-container-low border-b border-border">
           <tr>
             <Th>Category</Th>
@@ -1609,13 +1624,17 @@ function CategoryTable({ data }) {
           {data.map(r => {
             const margin = +r.revenue > 0 ? ((+r.grossProfit / +r.revenue) * 100) : 0;
             return (
-              <tr key={r.category} className="hover:bg-surface-container-low transition-colors">
-                <Td bold>{r.category}</Td>
-                <Td right>{fmt(r.orders)}</Td>
-                <Td right>{fmt(r.returns)}</Td>
+              <tr key={r.category} className="group hover:bg-primary-container/30 transition-colors">
+                <Td bold>
+                  <span className={`inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-semibold ${categoryTone(r.category)}`}>
+                    {r.category || 'Uncategorized'}
+                  </span>
+                </Td>
+                <Td right bold color="text-slate-700">{fmt(r.orders)}</Td>
+                <Td right bold color="text-rose-600">{fmt(r.returns)}</Td>
                 <Td right color={+r.returnRate > 20 ? 'text-rose-600' : 'text-secondary'}>{pct(r.returnRate)}</Td>
-                <Td right>₹{fmt(r.revenue, 0)}</Td>
-                <Td right>₹{fmt(r.bankReceived, 0)}</Td>
+                <Td right bold color="text-primary">₹{fmt(r.revenue, 0)}</Td>
+                <Td right bold color="text-emerald-700">₹{fmt(r.bankReceived, 0)}</Td>
                 <Td right color="text-amber-700">₹{fmt(r.fkTotalFees, 0)}</Td>
                 <Td right color="text-orange-600">₹{fmt(r.cogs, 0)}</Td>
                 <GpCell value={r.grossProfit} />
@@ -1626,12 +1645,12 @@ function CategoryTable({ data }) {
         </tbody>
         <tfoot className="bg-surface-container border-t-2 border-border">
           <tr>
-            <Td bold>Total</Td>
-            <Td right bold>{fmt(tot.orders)}</Td>
-            <Td right bold>{fmt(tot.returns)}</Td>
+            <Td bold><span className="text-ink">Total</span></Td>
+            <Td right bold color="text-slate-800">{fmt(tot.orders)}</Td>
+            <Td right bold color="text-rose-700">{fmt(tot.returns)}</Td>
             <Td right bold>{tot.orders > 0 ? pct((tot.returns/tot.orders)*100) : '—'}</Td>
-            <Td right bold>₹{fmt(tot.revenue, 0)}</Td>
-            <Td right bold>₹{fmt(tot.bankReceived, 0)}</Td>
+            <Td right bold color="text-primary">₹{fmt(tot.revenue, 0)}</Td>
+            <Td right bold color="text-emerald-700">₹{fmt(tot.bankReceived, 0)}</Td>
             <Td right bold color="text-amber-700">₹{fmt(tot.fkTotalFees, 0)}</Td>
             <Td right bold color="text-orange-600">₹{fmt(tot.cogs, 0)}</Td>
             <GpCell value={tot.grossProfit} />
