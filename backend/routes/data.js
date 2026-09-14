@@ -78,6 +78,8 @@ const DASHBOARD_CACHE_PATHS = new Set([
   '/category-breakdown',
   '/return-reasons',
   '/top-products',
+  '/platform/summary',
+  '/profit-loss',
 ]);
 
 function dashboardCacheKey(req) {
@@ -167,7 +169,11 @@ router.use(async (req, res, next) => {
 // ── Filter helpers ─────────────────────────────────────────────────────────────
 // Returns { where: 'AND col=$1 AND col=$2', values: [...] }
 // Array.push() returns the new length (1-based), which is exactly the $N we need.
-function buildWhere(q, alias = 'o') {
+function buildWhere(
+  q,
+  alias = 'o',
+  categoryExpr = `COALESCE(NULLIF(${alias}.vb_export_category, ''), NULLIF(${alias}.category, ''))`,
+) {
   const conds = [];
   const values = [];
   const isRetJoin = alias.includes('ret');
@@ -176,7 +182,7 @@ function buildWhere(q, alias = 'o') {
 
   if (q.startDate)   { conds.push(`${alias}.order_date >= $${values.push(q.startDate)}`); }
   if (q.endDate)     { conds.push(`${alias}.order_date <= $${values.push(q.endDate)}`); }
-  if (q.category)    { conds.push(`COALESCE(${alias}.vb_export_category, ${alias}.category) = $${values.push(q.category)}`); }
+  if (q.category)    { conds.push(`${categoryExpr} = $${values.push(q.category)}`); }
   if (q.region)      { conds.push(`${alias}.delivery_state = $${values.push(q.region)}`); }
   if (q.status)      { conds.push(`${alias}.orders_status = $${values.push(q.status)}`); }
   if (q.marketplace && q.marketplace !== 'all') {
@@ -211,14 +217,15 @@ const SETT_CTE = SHARED_SETT_CTE;
 
 const COGS_UNIT_SQL = `COALESCE(sm_mp.cogs, sm_all.cogs, vsm.cogs, cc_mp.cogs, cc_all.cogs, 0)`;
 const COGS_TOTAL_SQL = `(${COGS_UNIT_SQL} * COALESCE(o.qty,1))`;
-const MASTER_SKU_SQL = `COALESCE(o.vb_export_sku, sm_mp.master_sku, sm_all.master_sku, o.sku)`;
+const MASTER_SKU_SQL = `COALESCE(sm_mp.master_sku, sm_all.master_sku, o.vb_export_sku, o.sku)`;
 const COGS_JOINS = `
         LEFT JOIN sku_master sm_mp  ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = o.marketplace
         LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
-        LEFT JOIN vb_sku_master vsm ON vsm.vb_export_sku = COALESCE(o.vb_export_sku, sm_mp.master_sku, sm_all.master_sku)
+        LEFT JOIN vb_sku_master vsm ON vsm.vb_export_sku = COALESCE(sm_mp.master_sku, sm_all.master_sku, o.vb_export_sku)
         LEFT JOIN catalog_cogs cc_mp  ON cc_mp.catalog_id = o.fsn AND cc_mp.marketplace = o.marketplace
         LEFT JOIN catalog_cogs cc_all ON cc_all.catalog_id = o.fsn AND cc_all.marketplace = 'all'
 `;
+const CANONICAL_CATEGORY_SQL = `COALESCE(vsm.category, sm_all.category, sm_mp.category, NULLIF(o.vb_export_category, ''), NULLIF(o.category, ''), 'Uncategorized')`;
 const SETT_FEE_SQL = `
             COALESCE(s.commission,0)+COALESCE(s.fixed_fee,0)+COALESCE(s.collection_fee,0)+
             COALESCE(s.pick_pack_fee,0)+COALESCE(s.shipping_fee,0)+COALESCE(s.reverse_shipping,0)+
@@ -227,7 +234,7 @@ const SETT_FEE_SQL = `
 
 function buildDimensionWhere(q, alias = 'o') {
   const { startDate, endDate, groupBy, ...rest } = q || {};
-  return buildWhere(rest, alias);
+  return buildWhere(rest, alias, alias === 'o' ? CANONICAL_CATEGORY_SQL : undefined);
 }
 
 function asNum(v) {
@@ -453,11 +460,11 @@ router.get('/return-trend', async (req, res) => {
 router.get('/category-breakdown', async (req, res) => {
   try {
     const pool = getPool();
-    const { where, values } = buildWhere(req.query);
+    const { where, values } = buildWhere(req.query, 'o', CANONICAL_CATEGORY_SQL);
     const { rows } = await pool.query(`
       ${SETT_CTE}
       SELECT
-        COALESCE(o.vb_export_category, o.category, 'Uncategorized')             AS category,
+        ${CANONICAL_CATEGORY_SQL}                                                AS category,
         COUNT(*)                                                                  AS orders,
         COALESCE(SUM(o.final_invoice_amount), 0)                                  AS revenue,
         -- Order uploads are sales evidence, not payment evidence.  Use the
@@ -471,8 +478,9 @@ router.get('/category-breakdown', async (req, res) => {
       FROM orders o
       LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
       LEFT JOIN sett s ON s.order_item_id = o.order_item_id
+      ${COGS_JOINS}
       WHERE 1=1 ${where}
-      GROUP BY COALESCE(o.vb_export_category, o.category, 'Uncategorized')
+      GROUP BY ${CANONICAL_CATEGORY_SQL}
       ORDER BY revenue DESC
     `, values);
     res.json(rows.map(c => ({
@@ -598,7 +606,7 @@ router.get('/profit-loss', async (req, res) => {
   try {
     const pool = getPool();
     const { groupBy = 'month', ...q } = req.query;
-    const { where, values } = buildWhere(q);
+    const { where, values } = buildWhere(q, 'o', CANONICAL_CATEGORY_SQL);
     const period = periodExpr(groupBy, 'o.order_date');
 
     const [sum, trend, byCat] = await Promise.all([
@@ -625,6 +633,7 @@ router.get('/profit-loss', async (req, res) => {
         FROM orders o
         LEFT JOIN sett s      ON s.order_item_id = o.order_item_id
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
+        ${COGS_JOINS}
         WHERE 1=1 ${where}
       `, values),
       pool.query(`
@@ -637,6 +646,7 @@ router.get('/profit-loss', async (req, res) => {
           COALESCE(SUM(COALESCE(s.net_bank,0))-SUM(COALESCE(s.refund_amount,0)),0) AS net
         FROM orders o
         LEFT JOIN sett s ON s.order_item_id = o.order_item_id
+        ${COGS_JOINS}
         WHERE 1=1 ${where}
         GROUP BY ${period}
         ORDER BY period
@@ -644,7 +654,7 @@ router.get('/profit-loss', async (req, res) => {
       pool.query(`
         ${SETT_CTE}
         SELECT
-          COALESCE(o.vb_export_category, o.category, 'Uncategorized') AS category,
+          ${CANONICAL_CATEGORY_SQL} AS category,
           COUNT(*) AS orders,
           COALESCE(SUM(o.final_invoice_amount),0)                AS revenue,
           COALESCE(SUM(COALESCE(s.net_bank,0)),0)                AS "bankReceived",
@@ -656,8 +666,9 @@ router.get('/profit-loss', async (req, res) => {
         FROM orders o
         LEFT JOIN sett s      ON s.order_item_id = o.order_item_id
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
+        ${COGS_JOINS}
         WHERE 1=1 ${where}
-        GROUP BY COALESCE(o.vb_export_category, o.category, 'Uncategorized')
+        GROUP BY ${CANONICAL_CATEGORY_SQL}
         ORDER BY revenue DESC
       `, values),
     ]);
@@ -798,10 +809,11 @@ router.get('/platform/summary', async (req, res) => {
         WITH bounds AS (
           SELECT COALESCE(MAX(o.order_date), CURRENT_DATE) AS anchor
           FROM orders o
+          ${COGS_JOINS}
           WHERE 1=1 ${dimensionWhere}
         )
         SELECT
-          COALESCE(o.vb_export_category, o.category, 'Uncategorized') AS dimension,
+          ${CANONICAL_CATEGORY_SQL} AS dimension,
           COUNT(*) FILTER (
             WHERE o.order_date > b.anchor - INTERVAL '30 days' AND o.order_date <= b.anchor
           ) AS "currentOrders",
@@ -820,8 +832,9 @@ router.get('/platform/summary', async (req, res) => {
         FROM orders o
         CROSS JOIN bounds b
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
+        ${COGS_JOINS}
         WHERE 1=1 ${dimensionWhere}
-        GROUP BY COALESCE(o.vb_export_category, o.category, 'Uncategorized')
+        GROUP BY ${CANONICAL_CATEGORY_SQL}
         HAVING COUNT(*) FILTER (
           WHERE o.order_date > b.anchor - INTERVAL '30 days' AND o.order_date <= b.anchor
         ) > 0
@@ -833,12 +846,13 @@ router.get('/platform/summary', async (req, res) => {
         WITH bounds AS (
           SELECT COALESCE(MAX(o.order_date), CURRENT_DATE) AS anchor
           FROM orders o
+          ${COGS_JOINS}
           WHERE 1=1 ${dimensionWhere}
         )
         SELECT
           COALESCE(o.sku,'Unknown') AS dimension,
           MAX(o.fsn) AS "catalogId",
-          MAX(COALESCE(o.vb_export_category, o.category, 'Uncategorized')) AS category,
+          MAX(${CANONICAL_CATEGORY_SQL}) AS category,
           COUNT(*) FILTER (
             WHERE o.order_date > b.anchor - INTERVAL '30 days' AND o.order_date <= b.anchor
           ) AS "currentOrders",
@@ -857,6 +871,7 @@ router.get('/platform/summary', async (req, res) => {
         FROM orders o
         CROSS JOIN bounds b
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
+        ${COGS_JOINS}
         WHERE 1=1 ${dimensionWhere}
         GROUP BY COALESCE(o.sku,'Unknown')
         HAVING COUNT(*) FILTER (
@@ -1056,7 +1071,7 @@ router.get('/profit-analysis', async (req, res) => {
   try {
     const pool = getPool();
     const { groupBy = 'month', sellerAccount, ...q } = req.query;
-    const { where, values } = buildWhere(q);
+    const { where, values } = buildWhere(q, 'o', CANONICAL_CATEGORY_SQL);
     const period = periodExpr(groupBy, 'o.order_date');
 
     // Extra filter for seller_account (Myntra brand analysis)
@@ -1122,7 +1137,7 @@ router.get('/profit-analysis', async (req, res) => {
       pool.query(`
         ${SETT_CTE}
         SELECT
-          COALESCE(o.vb_export_category, vsm.category, sm_all.category, sm_mp.category, o.category, 'Uncategorized') AS category,
+          ${CANONICAL_CATEGORY_SQL} AS category,
           COUNT(*)                                              AS orders,
           COALESCE(SUM(o.final_invoice_amount),0)              AS revenue,
           COALESCE(SUM(COALESCE(s.net_bank,0)),0)              AS "bankReceived",
@@ -1142,7 +1157,7 @@ router.get('/profit-analysis', async (req, res) => {
         LEFT JOIN order_returns ret   ON ret.order_item_id = o.order_item_id
         ${COGS_JOINS}
         WHERE 1=1 ${where}${acctWhere}
-        GROUP BY COALESCE(o.vb_export_category, vsm.category, sm_all.category, sm_mp.category, o.category, 'Uncategorized')
+        GROUP BY ${CANONICAL_CATEGORY_SQL}
         ORDER BY revenue DESC
       `, values),
 
@@ -1152,7 +1167,7 @@ router.get('/profit-analysis', async (req, res) => {
         SELECT
           o.sku,
           ${MASTER_SKU_SQL} AS "masterSku",
-          COALESCE(o.vb_export_category, vsm.category, sm_all.category, sm_mp.category, o.category, 'Uncategorized') AS category,
+          MAX(${CANONICAL_CATEGORY_SQL}) AS category,
           COUNT(*)                                              AS orders,
           SUM(COALESCE(o.qty,1))                               AS units,
           COALESCE(SUM(o.final_invoice_amount),0)              AS revenue,
@@ -1169,7 +1184,7 @@ router.get('/profit-analysis', async (req, res) => {
         LEFT JOIN order_returns ret   ON ret.order_item_id = o.order_item_id
         ${COGS_JOINS}
         WHERE 1=1 ${where}${acctWhere}
-        GROUP BY o.sku, ${MASTER_SKU_SQL}, COALESCE(o.vb_export_category, vsm.category, sm_all.category, sm_mp.category, o.category, 'Uncategorized')
+        GROUP BY o.sku, ${MASTER_SKU_SQL}
         ORDER BY revenue DESC
         LIMIT 30
       `, values),
@@ -1227,8 +1242,8 @@ router.get('/profit-analysis', async (req, res) => {
       pool.query(`
         ${SETT_CTE}
         SELECT
-          COALESCE(o.vb_export_sku, sm_all.master_sku, sm_mp.master_sku, o.sku) AS "vbExportSku",
-          COALESCE(o.vb_export_category, vsm.category, sm_all.category, sm_mp.category, o.category, 'Uncategorized') AS category,
+          ${MASTER_SKU_SQL} AS "vbExportSku",
+          MAX(${CANONICAL_CATEGORY_SQL}) AS category,
           COALESCE(vsm.weight_slab, sm_all.weight_slab, sm_mp.weight_slab) AS "weightSlab",
           COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) AS "cogsPerUnit",
           COUNT(*)                                              AS orders,
@@ -1246,8 +1261,7 @@ router.get('/profit-analysis', async (req, res) => {
         ${COGS_JOINS}
         WHERE 1=1 ${where}${acctWhere}
         GROUP BY
-          COALESCE(o.vb_export_sku, sm_all.master_sku, sm_mp.master_sku, o.sku),
-          COALESCE(o.vb_export_category, vsm.category, sm_all.category, sm_mp.category, o.category, 'Uncategorized'),
+          ${MASTER_SKU_SQL},
           COALESCE(vsm.weight_slab, sm_all.weight_slab, sm_mp.weight_slab),
           COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0)
         ORDER BY revenue DESC
@@ -1389,12 +1403,12 @@ router.get('/profit-analysis', async (req, res) => {
 router.get('/profit-analysis/unmerged-skus', async (req, res) => {
   try {
     const pool = getPool();
-    const { where, values } = buildWhere(req.query);
+    const { where, values } = buildWhere(req.query, 'o', CANONICAL_CATEGORY_SQL);
     const { rows } = await pool.query(`
       SELECT
         o.sku,
         o.marketplace,
-        COALESCE(o.category, 'Uncategorized')    AS category,
+        MAX(${CANONICAL_CATEGORY_SQL})           AS category,
         COUNT(o.order_item_id)                   AS order_count,
         SUM(COALESCE(o.qty, 1))                  AS units,
         COALESCE(SUM(o.final_invoice_amount), 0) AS total_revenue,
@@ -1402,9 +1416,10 @@ router.get('/profit-analysis/unmerged-skus', async (req, res) => {
         MAX(o.order_date::text)                  AS last_seen
       FROM orders o
       LEFT JOIN sku_master sm ON sm.listing_sku = o.sku
+      ${COGS_JOINS}
       WHERE 1=1 ${where}
         AND (o.vb_export_sku IS NULL OR sm.listing_sku IS NULL)
-      GROUP BY o.sku, o.marketplace, o.category
+      GROUP BY o.sku, o.marketplace
       ORDER BY order_count DESC
       LIMIT 200;
     `, values);
@@ -1495,7 +1510,15 @@ router.get('/filters', async (req, res) => {
   try {
     const pool = getPool();
     const { rows } = await pool.query(`
-      SELECT DISTINCT COALESCE(vb_export_category, category) AS val,'category' AS type FROM orders WHERE COALESCE(vb_export_category, category) IS NOT NULL
+      SELECT DISTINCT category AS val, 'category' AS type FROM (
+        SELECT category FROM vb_sku_master WHERE category IS NOT NULL AND category <> ''
+        UNION
+        SELECT category FROM sku_master WHERE category IS NOT NULL AND category <> ''
+        UNION
+        SELECT vb_export_category FROM orders WHERE vb_export_category IS NOT NULL AND vb_export_category <> ''
+        UNION
+        SELECT category FROM orders WHERE category IS NOT NULL AND category <> ''
+      ) cats
       UNION ALL
       SELECT DISTINCT delivery_state  AS val,'region'         AS type FROM orders WHERE delivery_state  IS NOT NULL
       UNION ALL
@@ -1870,26 +1893,28 @@ router.get('/settlement/orders', async (req, res) => {
 router.get('/settlement/unsettled-summary', async (req, res) => {
   try {
     const pool = getPool();
-    const { where, values } = buildWhere(req.query);
+    const { where, values } = buildWhere(req.query, 'o', CANONICAL_CATEGORY_SQL);
 
     const [bycat, tot] = await Promise.all([
       pool.query(`
         SELECT
-          COALESCE(o.vb_export_category, o.category, 'Uncategorized') AS category,
+          ${CANONICAL_CATEGORY_SQL} AS category,
           COUNT(*)                             AS count,
           COALESCE(SUM(o.final_invoice_amount),0) AS "orderAmount"
         FROM orders o
+        ${COGS_JOINS}
         WHERE NOT EXISTS (SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} fs WHERE fs.order_item_id=o.order_item_id)
         AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
         AND o.return_type IS NULL
         AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.order_item_id = o.order_item_id)
         AND 1=1 ${where}
-        GROUP BY COALESCE(o.vb_export_category, o.category, 'Uncategorized')
+        GROUP BY ${CANONICAL_CATEGORY_SQL}
         ORDER BY count DESC
       `, values),
       pool.query(`
         SELECT COUNT(*) AS total, COALESCE(SUM(o.final_invoice_amount),0) AS "totalAmount"
         FROM orders o
+        ${COGS_JOINS}
         WHERE NOT EXISTS (SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} fs WHERE fs.order_item_id=o.order_item_id)
         AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
         AND o.return_type IS NULL

@@ -37,6 +37,9 @@ path.
    PG_POOL_MIN=2
    PG_POOL_IDLE_TIMEOUT_MS=55000
    PG_POOL_MAX_LIFETIME_SECONDS=900
+   # Dashboard reads fail fast enough to release pool connections under load.
+   # Import/rebuild transactions clear this session limit explicitly.
+   PG_READ_STATEMENT_TIMEOUT_MS=45000
    PG_HEALTHCHECK_INTERVAL_MS=25000
 
    # Add the existing Firebase Admin and optional notification variables here.
@@ -136,6 +139,32 @@ schema-ready PostgreSQL runtime before CI/CD passes.
 The ReconCentral compose file exposes port `3001` only to Docker networks.
 Traefik remains the public entrypoint on ports `80` and `443`; direct public
 access to `3001` should not be required.
+
+### Database resilience and report load
+
+- Keep production PostgreSQL on the private Docker network (`postgres:5432`)
+  or use TLS with certificate verification for a public database host. Do not
+  use a public direct connection with `PG_SSL_REJECT_UNAUTHORIZED=false`.
+- `PG_READ_STATEMENT_TIMEOUT_MS` defaults to `45000` for interactive reads.
+  Long imports and settlement rebuilds use an explicit transaction connection
+  and clear the session timeout, so lowering this value does not interrupt
+  those jobs.
+- The API keeps a bounded pool with TCP keepalive, retries safe reads after
+  transient socket failures, recreates stale pools in the background, and
+  returns `503` instead of empty business data while PostgreSQL is unavailable.
+- Dashboard and Profit & Loss report responses are cached briefly and
+  invalidated after successful mutations. A browser refresh bypasses the cache
+  with `_refresh`.
+- If the API reports `DATABASE_STARTING` or `DB_UNAVAILABLE`, check the API
+  logs and database health first rather than repeatedly restarting the
+  container:
+
+  ```bash
+  docker compose -f docker-compose.production.yml ps
+  docker compose -f docker-compose.production.yml logs --tail=200 api
+  docker compose -f docker-compose.production.yml exec api getent hosts postgres
+  curl -i http://127.0.0.1/health
+  ```
 
 ## Recovery commands
 

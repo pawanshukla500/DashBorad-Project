@@ -364,7 +364,7 @@ export function parseReturnsReceivedRow(row = {}) {
   };
 }
 
-function upsertSkuMasterRows(pool, records) {
+export function upsertSkuMasterRows(pool, records) {
   let inserted = 0;
   let updated = 0;
   return forEachDbBatch(records, 9, async batch => {
@@ -424,6 +424,23 @@ function upsertSkuMasterRows(pool, records) {
           OR o.vb_export_category IS DISTINCT FROM sm.category
         );
     `).catch(e => console.warn('[sku_master] backfill orders:', e.message));
+
+    // Inherit master category/COGS/weight from vb_sku_master for listing rows
+    // that were uploaded with blank values. Without this, listing-only uploads
+    // leave category/COGS/weight missing even when the master row has them.
+    await pool.query(`
+      UPDATE sku_master sm
+      SET category     = COALESCE(NULLIF(sm.category, ''), vsm.category),
+          cogs         = CASE WHEN COALESCE(sm.cogs, 0) = 0 AND vsm.cogs > 0 THEN vsm.cogs ELSE sm.cogs END,
+          weight_slab  = COALESCE(sm.weight_slab, vsm.weight_slab)
+      FROM vb_sku_master vsm
+      WHERE sm.master_sku = vsm.vb_export_sku
+        AND (
+          NULLIF(sm.category, '') IS NULL
+          OR COALESCE(sm.cogs, 0) = 0
+          OR sm.weight_slab IS NULL
+        );
+    `).catch(e => console.warn('[sku_master] inherit from vb_sku_master:', e.message));
 
     return { inserted, updated };
   });
