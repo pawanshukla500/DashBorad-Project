@@ -630,9 +630,16 @@ Ingestion of this template:
    It updates only the VB EXPORT master record; it does not create a synthetic
    marketplace listing.
 4. Listing rows inherit the master category, COGS, and weight slab before
-   `sku_master` is upserted.
+   `sku_master` is upserted. When a listing-only upload (non-VB-Export format)
+   provides blank category, COGS, or weight values, the upsert backfills them
+   from the existing `vb_sku_master` row for the same `master_sku` after the
+   master sync completes.
 5. Automatically backfills `orders.vb_export_sku` and
    `orders.vb_export_category` across all historical orders.
+6. The entire sync runs inside a single database transaction (`BEGIN/COMMIT`)
+   on a dedicated client with `statement_timeout = 0`. If any step fails, the
+   transaction rolls back and no partial catalog or order changes are
+   committed.
 
 ### 10.4 Unmerged Listings Trigger & Workflow
 Any order row where `orders.vb_export_sku` is NULL or `orders.sku` does not have a matching entry in `sku_master` triggers an alert banner in the UI:
