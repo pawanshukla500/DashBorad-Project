@@ -129,7 +129,7 @@ export default function ReturnsPage() {
                   <span className="text-sm text-outline px-2 font-medium">{page}</span>
                   <button
                     onClick={() => setPage(p => p+1)}
-                    disabled={!returns || returns.data.length < 50}
+                    disabled={!returns || returns.data.length < 50 || returns.total <= page * 50}
                     className="px-3 py-1 text-sm rounded-md font-medium text-secondary disabled:opacity-30 hover:bg-white hover:shadow-sm transition-all"
                   >Next →</button>
                 </div>
@@ -552,11 +552,11 @@ function SkuDrawer({ sku, onClose }) {
             &nbsp;·&nbsp; Page {page} of {totalPages}
           </p>
           <div className="flex items-center gap-1">
-            <button onClick={() => { setPage(1); load(1); }} disabled={page===1} className="px-2 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">«</button>
-            <button onClick={() => { setPage(p=>p-1); load(page-1); }} disabled={page===1} className="px-3 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">Prev</button>
+            <button onClick={() => setPage(1)} disabled={page===1} className="px-2 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">«</button>
+            <button onClick={() => setPage(p=>p-1)} disabled={page===1} className="px-3 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">Prev</button>
             <span className="px-3 py-1 text-sm bg-primary text-white rounded font-semibold">{page}</span>
-            <button onClick={() => { setPage(p=>p+1); load(page+1); }} disabled={!drawerData || drawerData.data.length < 50} className="px-3 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">Next</button>
-            <button onClick={() => { setPage(totalPages); load(totalPages); }} disabled={!drawerData || drawerData.data.length < 50} className="px-2 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">»</button>
+            <button onClick={() => setPage(p=>p+1)} disabled={!drawerData || drawerData.data.length < 50 || page >= totalPages} className="px-3 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">Next</button>
+            <button onClick={() => setPage(totalPages)} disabled={!drawerData || drawerData.data.length < 50 || page >= totalPages} className="px-2 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">»</button>
           </div>
         </div>
 
@@ -652,14 +652,19 @@ function StatusBadge({ status }) {
 }
 function TypeBadge({ type }) {
   if (!type) return <span className="text-outline">—</span>;
-  const isCustomer = type.toLowerCase().includes('customer') || type === 'Return';
+  const lower = type.toLowerCase();
+  const isCustomer = lower.includes('customer') || type === 'Return';
+  const isRTO = lower.includes('courier') || lower.includes('rto');
+  const label = isCustomer ? 'Customer' : isRTO ? 'RTO' : type;
   const cls = isCustomer
     ? 'bg-orange-50 text-orange-700 border-orange-100'
-    : 'bg-purple-50 text-purple-700 border-purple-100';
+    : isRTO
+    ? 'bg-purple-50 text-purple-700 border-purple-100'
+    : 'bg-slate-50 text-slate-700 border-slate-200';
   return (
     <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${cls} flex items-center gap-1 w-fit`}>
-      <span className={`w-1.5 h-1.5 rounded-full inline-block ${isCustomer ? 'bg-orange-400' : 'bg-purple-400'}`} />
-      {isCustomer ? 'Customer' : 'RTO'}
+      <span className={`w-1.5 h-1.5 rounded-full inline-block ${isCustomer ? 'bg-orange-400' : isRTO ? 'bg-purple-400' : 'bg-slate-400'}`} />
+      {label}
     </span>
   );
 }

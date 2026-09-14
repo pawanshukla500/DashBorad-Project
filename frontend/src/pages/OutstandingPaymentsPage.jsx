@@ -666,8 +666,10 @@ export default function OutstandingPaymentsPage() {
                             {formatCurrency(acc.overdue || 0)}
                           </td>
                           <td className="py-3 px-4 text-center">
-                            {(acc.total || 0) > 0 ? (
+                            {(acc.overdue || 0) > 0 ? (
                               <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-red-100 text-red-700">Overdue</span>
+                            ) : (acc.total || 0) > 0 ? (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-amber-100 text-amber-700">Pending</span>
                             ) : (
                               <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-gray-100 text-gray-600">Settled</span>
                             )}

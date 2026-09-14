@@ -203,8 +203,9 @@ export default function Dashboard() {
 
   const selectedMP = filters.marketplace;
   const mpLabel    = selectedMP ? (mpCfg(selectedMP).label) : 'All Marketplaces';
-  const recoveryRate = (+summary?.returnCount || 0) > 0
-    ? ((+summary.goodReturns || 0) / (+summary.returnCount || 0)) * 100
+  const resolvedReturns = (+summary?.goodReturns || 0) + (+summary?.badReturns || 0);
+  const recoveryRate = resolvedReturns > 0
+    ? ((+summary.goodReturns || 0) / resolvedReturns) * 100
     : 0;
 
   if (es) return <ErrorBox msg={es} />;
