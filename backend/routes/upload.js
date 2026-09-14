@@ -756,6 +756,94 @@ router.get('/fields/:type', (req, res) => {
   res.json({ fields });
 });
 
+// ── GET /api/upload/template/vb-export-prefilled ──────────────────────────────
+// Download the catalog template prefilled with the live VB Export SKUs so COGS
+// and weight slabs can be edited and re-uploaded. Must stay above
+// '/template/:type' or the generic handler swallows this path and returns 404.
+router.get('/template/vb-export-prefilled', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const pool = getPool();
+
+    const { rows: vbSkus } = await pool.query(`
+      SELECT vb_export_sku, category, cogs, weight_slab
+      FROM vb_sku_master
+      ORDER BY vb_export_sku ASC
+    `);
+
+    const { rows: listings } = await pool.query(`
+      SELECT master_sku, listing_sku, marketplace, category, cogs, weight_slab
+      FROM sku_master
+      ORDER BY master_sku, marketplace, listing_sku
+    `);
+
+    // Before the first catalog upload both master tables are empty. Fall back to
+    // the SKUs already present on orders so the sheet still lists real products.
+    // orders has no cogs column and stores weight_slab as a display label, so
+    // those two columns are left blank for the operator to fill in.
+    let orderSkus = [];
+    if (vbSkus.length === 0 && listings.length === 0) {
+      const { rows } = await pool.query(`
+        SELECT DISTINCT
+          COALESCE(NULLIF(vb_export_sku, ''), sku) AS vb_export_sku,
+          COALESCE(vb_export_category, category)   AS category
+        FROM orders
+        WHERE COALESCE(NULLIF(vb_export_sku, ''), sku) IS NOT NULL
+        ORDER BY 1 ASC
+      `);
+      orderSkus = rows;
+    }
+
+    const fields = REQUIRED_FIELDS['vb-export-catalog'];
+    const numberOrBlank = value => (value == null ? '' : Number(value));
+
+    // Master rows carry the catalog defaults; listing rows carry the per-marketplace mappings.
+    const masterRows = vbSkus.map(r => [
+      '',
+      r.vb_export_sku,
+      r.category || '',
+      numberOrBlank(r.weight_slab),
+      numberOrBlank(r.cogs),
+      'all',
+    ]);
+
+    const listingRows = listings.map(r => [
+      r.listing_sku,
+      r.master_sku,
+      r.category || '',
+      numberOrBlank(r.weight_slab),
+      numberOrBlank(r.cogs),
+      r.marketplace || 'all',
+    ]);
+
+    const orderRows = orderSkus.map(r => [
+      '',
+      r.vb_export_sku,
+      r.category || '',
+      '',
+      '',
+      'all',
+    ]);
+
+    const rows = [...masterRows, ...listingRows, ...orderRows];
+    const finalRows = rows.length > 0 ? rows : TEMPLATE_SAMPLES['vb-export-catalog'];
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([fields, ...finalRows]);
+    ws['!cols'] = fields.map(f => ({ wch: Math.max(String(f).length + 4, 22) }));
+    XLSX.utils.book_append_sheet(wb, ws, 'VB Export Catalog');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    res.setHeader('Content-Disposition', 'attachment; filename="VB_Export_Product_Catalog_Prefilled.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.send(buf);
+  } catch (e) {
+    console.error('[template/vb-export-prefilled]', e);
+    res.status(500).json({ error: 'Failed to generate prefilled catalog template' });
+  }
+});
+
 // ── GET /api/upload/template/:type ────────────────────────────────────────────
 router.get('/template/:type', (req, res) => {
   const type   = req.params.type;
@@ -778,120 +866,6 @@ router.get('/template/:type', (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.send(buf);
-});
-
-// ── GET /api/upload/template/vb-export-prefilled ──────────────────────────────
-// Download Excel template prefilled with user's actual VB Export SKUs from vb_sku_master
-// Falls back to extracting unique vb_export_sku from orders table if master catalog is empty
-router.get('/template/vb-export-prefilled', async (req, res) => {
-  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
-  try {
-    const pool = getPool();
-    
-    // Fetch all VB Export SKUs from the master catalog
-    const { rows: vbSkus } = await pool.query(`
-      SELECT
-        vb_export_sku,
-        category,
-        cogs,
-        weight_slab,
-        COALESCE(product_name, '') as product_name
-      FROM vb_sku_master
-      ORDER BY vb_export_sku ASC
-    `);
-    
-    // Fetch all marketplace listing SKUs mapped to each VB Export SKU from sku_master
-    const { rows: listings } = await pool.query(`
-      SELECT
-        master_sku,
-        listing_sku,
-        marketplace,
-        COALESCE(category, '') as category,
-        cogs,
-        weight_slab,
-        COALESCE(product_name, '') as product_name
-      FROM sku_master
-      ORDER BY master_sku, marketplace, listing_sku
-    `);
-
-    // If master catalog is empty, extract unique VB Export SKUs from orders table
-    // This gives users a template with their actual SKUs even before first catalog upload
-    let orderSkus = [];
-    if (vbSkus.length === 0) {
-      const { rows } = await pool.query(`
-        SELECT DISTINCT
-          vb_export_sku,
-          vb_export_category as category,
-          weight_slab,
-          cogs
-        FROM orders
-        WHERE vb_export_sku IS NOT NULL AND vb_export_sku != ''
-        ORDER BY vb_export_sku ASC
-      `);
-      orderSkus = rows;
-    }
-    
-    // Fields for the template
-    const fields = ['Marketplace SKU', "VB EXPORT SKU's", 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)', 'Marketplace'];
-
-    // Build rows from vb_sku_master (master catalog entries)
-    const masterRows = vbSkus.map(r => {
-      // For master catalog, we don't have a specific marketplace listing SKU
-      // We'll create a row for the master VB SKU itself
-      return [
-        r.vb_export_sku,           // Marketplace SKU - use VB SKU as reference
-        r.vb_export_sku,           // VB EXPORT SKU's
-        r.category || '',          // VB Export Product Category
-        r.weight_slab != null ? r.weight_slab : '',  // Weight Slab (kg)
-        r.cogs != null ? r.cogs : '',                 // COGS (₹)
-        'all'                       // Marketplace - master catalog applies to all
-      ];
-    });
-
-    // Build rows from sku_master (marketplace-specific listing mappings)
-    const listingRows = listings.map(r => [
-      r.listing_sku,               // Marketplace SKU - actual listing SKU
-      r.master_sku,                // VB EXPORT SKU's
-      r.category || '',            // VB Export Product Category (from sku_master)
-      r.weight_slab != null ? r.weight_slab : '',     // Weight Slab (kg)
-      r.cogs != null ? r.cogs : '',                    // COGS (₹)
-      r.marketplace || 'all'      // Marketplace
-    ]);
-
-    // Build rows from orders (fallback when master catalog is empty)
-    const orderRows = orderSkus.map(r => [
-      r.vb_export_sku,             // Marketplace SKU - use VB SKU as reference
-      r.vb_export_sku,             // VB EXPORT SKU's
-      r.category || '',            // VB Export Product Category
-      r.weight_slab != null ? r.weight_slab : '',  // Weight Slab (kg)
-      r.cogs != null ? r.cogs : '',               // COGS (₹)
-      'all'                         // Marketplace - applies to all
-    ]);
-
-    // Combine: master catalog rows first, then sku_master listings, then orders fallback
-    const allRows = [...masterRows, ...listingRows, ...orderRows];
-
-    // If still no data, add a sample row for reference
-    const finalRows = allRows.length > 0 ? allRows : [
-      ['EJ1201-16001_FK', 'EJ1201-16001', 'Kurta Set', 0.5, 450, 'flipkart'],
-      ['EJ1201-16001_M',  'EJ1201-16001', 'Kurta Set', 0.5, 450, 'myntra_ej'],
-      ['7Y-UQCI-Y51D',     'EJ1201-16001', 'Kurta Set', 0.5, 450, 'amazon'],
-    ];
-
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([fields, ...finalRows]);
-    ws['!cols'] = fields.map(f => ({ wch: Math.max(String(f).length + 4, 22) }));
-    XLSX.utils.book_append_sheet(wb, ws, 'VB Export Catalog');
-    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    
-    res.setHeader('Content-Disposition', `attachment; filename="VB_Export_Product_Catalog_Prefilled.xlsx"`);
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.send(buf);
-  } catch (e) {
-    console.error('[template/vb-export-prefilled]', e);
-    res.status(500).json({ error: e.message });
-  }
 });
 
 // ── GET /api/upload/status ─────────────────────────────────────────────────────

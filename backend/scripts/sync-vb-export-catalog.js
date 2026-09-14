@@ -65,7 +65,7 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
     const rawWeight = r['Weight Slab (kg)'] ?? r['Weight Slab'] ?? r['weight_slab'] ?? r['Weight'] ?? null;
     const weightSlab = rawWeight != null && !isNaN(rawWeight) && Number(rawWeight) > 0 ? Number(rawWeight) : null;
 
-    if (!listingSku || !masterSku) continue;
+    if (!masterSku) continue;
 
     if (!vbMasterMap.has(masterSku)) {
       vbMasterMap.set(masterSku, { category: category || null, cogs, weightSlab });
@@ -76,7 +76,9 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
       if (weightSlab !== null && !existing.weightSlab) existing.weightSlab = weightSlab;
     }
 
-    listingMap.set(listingSku, { masterSku, category: category || null, cogs, weightSlab });
+    if (listingSku) {
+      listingMap.set(listingSku, { masterSku, category: category || null, cogs, weightSlab });
+    }
   }
 
   console.log(`[syncVbExportCatalog] Parsed ${vbMasterMap.size} unique VB EXPORT SKUs and ${listingMap.size} unique Marketplace listing mappings.`);

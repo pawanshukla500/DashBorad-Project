@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mountApiRoutes } from '../routes/index.js';
+import uploadRoutes from '../routes/upload.js';
 import { mutationAccessGuard } from '../utils/authMiddleware.js';
+
+function routePathOrder(router, path) {
+  return router.stack.findIndex(layer => layer.route?.path === path);
+}
 
 describe('API route structure', () => {
   it('mounts statement routes in their frontend namespace', () => {
@@ -21,6 +26,17 @@ describe('API route structure', () => {
       expect(firstCall?.[1]).toBe(mutationAccessGuard);
     },
   );
+
+  it('registers the prefilled catalog template before the generic template route', () => {
+    // Express matches in registration order, so '/template/:type' would capture
+    // 'vb-export-prefilled' and reject it as an unknown template type.
+    const prefilled = routePathOrder(uploadRoutes, '/template/vb-export-prefilled');
+    const generic = routePathOrder(uploadRoutes, '/template/:type');
+
+    expect(prefilled).toBeGreaterThanOrEqual(0);
+    expect(generic).toBeGreaterThanOrEqual(0);
+    expect(prefilled).toBeLessThan(generic);
+  });
 
   it('keeps detailed financial exports behind the analyst-or-above boundary', () => {
     const app = { use: vi.fn() };
