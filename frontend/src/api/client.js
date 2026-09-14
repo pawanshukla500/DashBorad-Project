@@ -433,6 +433,10 @@ export const fetchBrandTopSkus  = (f) => api.get('/brand-top-skus', { params: p(
 export const fetchProfitAnalysis = (f, sellerAccount) =>
   api.get('/profit-analysis', { params: { ...p(f), ...(sellerAccount ? { sellerAccount } : {}) } }).then(r => r.data);
 
+// VB Export SKU prefilled template download
+export const downloadVbExportPrefilledTemplate = () =>
+  api.get('/upload/template/vb-export-prefilled', { responseType: 'blob' }).then(r => r.data);
+
 // Insights & Intelligence
 export const fetchInsightsMarketplaceSummary = (f = {}) => api.get('/insights/marketplace-summary', { params: { startDate: f.startDate, endDate: f.endDate, ...(f._refresh ? { _refresh: f._refresh } : {}) } }).then(r => r.data);
 export const fetchReturnHeatmap   = (f = {}, mp) => api.get('/insights/return-heatmap', { params: { startDate: f.startDate, endDate: f.endDate, marketplace: mp, ...(f._refresh ? { _refresh: f._refresh } : {}) } }).then(r => r.data);

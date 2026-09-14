@@ -10,6 +10,7 @@ import {
   uploadSkuMasterFile, addSkuMasterRow, updateSkuMasterRow,
   deleteSkuMasterRow, clearSkuMaster,
   mergeSingleSku, fetchVbExportSkus, updateVbExportSku, fetchUnmergedSkus,
+  downloadVbExportPrefilledTemplate,
 } from '../api/client';
 import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
@@ -1007,15 +1008,21 @@ function SkuMasterSection({ onUpdated, initialSubTab = 'vb_catalog', unmergedCou
     } catch (e) { alert(e?.response?.data?.error || e.message); }
   };
 
-  const downloadTemplate = () => {
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-      ['Marketplace SKU', "VB EXPORT SKU's", 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)', 'Marketplace'],
-      ['EJ1201-16001_FK', 'EJ1201-16001', 'Kurta Set', 0.5, 450, 'flipkart'],
-      ['EJ1201-16001_M',  'EJ1201-16001', 'Kurta Set', 0.5, 450, 'myntra_ej'],
-      ['7Y-UQCI-Y51D',     'EJ1201-16001', 'Kurta Set', 0.5, 450, 'amazon'],
-    ]), 'VB Export Format');
-    XLSX.writeFile(wb, 'vb_export_product_category_template.xlsx');
+  const downloadTemplate = async () => {
+    try {
+      const blob = await downloadVbExportPrefilledTemplate();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'VB_Export_Product_Catalog_Prefilled.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (e) {
+      console.error('Failed to download prefilled template:', e);
+      alert('Failed to download template. Please try again.');
+    }
   };
 
   const rows = activeSubTab === 'vb_catalog' ? (vbData?.data || []) : (skuData?.data || []);

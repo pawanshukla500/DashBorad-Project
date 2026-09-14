@@ -780,6 +780,92 @@ router.get('/template/:type', (req, res) => {
   res.send(buf);
 });
 
+// ── GET /api/upload/template/vb-export-prefilled ──────────────────────────────
+// Download Excel template prefilled with user's actual VB Export SKUs from vb_sku_master
+router.get('/template/vb-export-prefilled', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const pool = getPool();
+    
+    // Fetch all VB Export SKUs from the master catalog
+    const { rows: vbSkus } = await pool.query(`
+      SELECT
+        vb_export_sku,
+        category,
+        cogs,
+        weight_slab,
+        COALESCE(product_name, '') as product_name
+      FROM vb_sku_master
+      ORDER BY vb_export_sku ASC
+    `);
+    
+    // Fetch all marketplace listing SKUs mapped to each VB Export SKU from sku_master
+    const { rows: listings } = await pool.query(`
+      SELECT
+        master_sku,
+        listing_sku,
+        marketplace,
+        COALESCE(category, '') as category,
+        cogs,
+        weight_slab,
+        COALESCE(product_name, '') as product_name
+      FROM sku_master
+      ORDER BY master_sku, marketplace, listing_sku
+    `);
+    
+    // Fields for the template
+    const fields = ['Marketplace SKU', "VB EXPORT SKU's", 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)', 'Marketplace'];
+
+    // Build rows from vb_sku_master (master catalog entries)
+    const masterRows = vbSkus.map(r => {
+      // For master catalog, we don't have a specific marketplace listing SKU
+      // We'll create a row for the master VB SKU itself
+      return [
+        r.vb_export_sku,           // Marketplace SKU - use VB SKU as reference
+        r.vb_export_sku,           // VB EXPORT SKU's
+        r.category || '',          // VB Export Product Category
+        r.weight_slab != null ? r.weight_slab : '',  // Weight Slab (kg)
+        r.cogs != null ? r.cogs : '',                 // COGS (₹)
+        'all'                       // Marketplace - master catalog applies to all
+      ];
+    });
+
+    // Build rows from sku_master (marketplace-specific listing mappings)
+    const listingRows = listings.map(r => [
+      r.listing_sku,               // Marketplace SKU - actual listing SKU
+      r.master_sku,                // VB EXPORT SKU's
+      r.category || '',            // VB Export Product Category (from sku_master)
+      r.weight_slab != null ? r.weight_slab : '',     // Weight Slab (kg)
+      r.cogs != null ? r.cogs : '',                    // COGS (₹)
+      r.marketplace || 'all'      // Marketplace
+    ]);
+
+    // Combine master rows first, then listing rows
+    const allRows = [...masterRows, ...listingRows];
+
+    // If no data, add a sample row for reference
+    const finalRows = allRows.length > 0 ? allRows : [
+      ['EJ1201-16001_FK', 'EJ1201-16001', 'Kurta Set', 0.5, 450, 'flipkart'],
+      ['EJ1201-16001_M',  'EJ1201-16001', 'Kurta Set', 0.5, 450, 'myntra_ej'],
+      ['7Y-UQCI-Y51D',     'EJ1201-16001', 'Kurta Set', 0.5, 450, 'amazon'],
+    ];
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([fields, ...finalRows]);
+    ws['!cols'] = fields.map(f => ({ wch: Math.max(String(f).length + 4, 22) }));
+    XLSX.utils.book_append_sheet(wb, ws, 'VB Export Catalog');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    
+    res.setHeader('Content-Disposition', `attachment; filename="VB_Export_Product_Catalog_Prefilled.xlsx"`);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.send(buf);
+  } catch (e) {
+    console.error('[template/vb-export-prefilled]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/upload/status ─────────────────────────────────────────────────────
 router.get('/status', async (req, res) => {
   if (!(await isDbConfigured())) return res.json({ configured: false, logs: [], counts: {} });
