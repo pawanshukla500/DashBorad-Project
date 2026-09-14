@@ -71,6 +71,7 @@ import {
 } from '../services/amazonReconciliation.js';
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
+import { normalizeDeliveryState } from '../utils/geoNormalization.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { pagination } from '../utils/requestParams.js';
 import { optionalNumber as num, optionalString as str } from '../utils/valueParsers.js';
@@ -615,10 +616,12 @@ function looksScientific(v) {
 export function calculateAmazonZone(fromCity, fromState, toCity, toState) {
   if (!fromCity || !fromState || !toCity || !toState) return 'National';
 
+  const normFromState = normalizeDeliveryState(fromState) || fromState;
+  const normToState = normalizeDeliveryState(toState) || toState;
   const fCity = (fromCity + '').toUpperCase().trim();
-  const fState = (fromState + '').toUpperCase().trim();
+  const fState = (normFromState + '').toUpperCase().trim();
   const tCity = (toCity + '').toUpperCase().trim();
-  const tState = (toState + '').toUpperCase().trim();
+  const tState = (normToState + '').toUpperCase().trim();
 
   if (fCity === tCity && fCity !== '') return 'Local';
   if ((fCity === 'BHIWANDI' && ['MUMBAI', 'NAVI MUMBAI', 'BOMBAY', 'KALYAN'].includes(tCity)) ||
@@ -820,7 +823,7 @@ router.post('/amazon-order-reports', upload.single('file'), async (req, res) => 
           item_promotion_discount: num(getCell(row, idx, 'item-promotion-discount')),
           ship_promotion_discount: num(getCell(row, idx, 'ship-promotion-discount')),
           delivery_city:           str(getCell(row, idx, 'ship-city')),
-          delivery_state:          str(getCell(row, idx, 'ship-state')),
+          delivery_state:          normalizeDeliveryState(getCell(row, idx, 'ship-state')),
           delivery_pincode:        str(getCell(row, idx, 'ship-postal-code')),
           ship_country:            str(getCell(row, idx, 'ship-country')),
           promotion_ids:           str(getCell(row, idx, 'promotion-ids')),
@@ -1027,7 +1030,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
 
       const fcCode = str(getCell(row, idx, 'FC'))?.toUpperCase() || null;
       const deliveryCity = str(getCell(row, idx, 'Shipment To City'));
-      const deliveryState = str(getCell(row, idx, 'Shipment To State'));
+      const deliveryState = normalizeDeliveryState(getCell(row, idx, 'Shipment To State'));
       const fcInfo = fcCode ? fcMap.get(fcCode) : null;
       let fulfilmentType = fcInfo?.fc_type || (fcCode === 'QWHF' ? 'Flex' : 'FBA');
       let shippingZone = 'National';
@@ -1277,9 +1280,9 @@ router.post('/amazon-order-summary', upload.single('file'), async (req, res) => 
       const orderDate    = dt(getCell(row, idx, 'Order Date', 'order-date', 'purchase-date', 'Customer S', 'Customer Shipment Date'));
       const qty          = int(getCell(row, idx, 'QTY', 'Qty', 'quantity'));
       const shipFromCity = str(getCell(row, idx, 'Ship From City', 'ship-from-city'));
-      const shipFromSt   = str(getCell(row, idx, 'Ship From State', 'ship-from-state'));
+      const shipFromSt   = normalizeDeliveryState(str(getCell(row, idx, 'Ship From State', 'ship-from-state')));
       const deliveryCity = str(getCell(row, idx, 'Ship to City', 'ship-city', 'Shipment To City'));
-      const deliveryStat = str(getCell(row, idx, 'Ship to State', 'ship-state', 'Shipment To State'));
+      const deliveryStat = normalizeDeliveryState(str(getCell(row, idx, 'Ship to State', 'ship-state', 'Shipment To State')));
       const sellingPrice = num(getCell(row, idx, 'Selling Prices', 'Selling Price', 'item-price', 'Product Amount'));
       const sellingZone  = str(getCell(row, idx, 'Selling Zones', 'Selling Zone'));
 

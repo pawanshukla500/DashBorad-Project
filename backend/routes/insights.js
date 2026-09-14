@@ -87,7 +87,7 @@ router.get('/return-heatmap', async (req, res) => {
         LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
           AND o.category IS NOT NULL AND o.category <> ''
-          AND o.delivery_state IS NOT NULL AND o.delivery_state <> ''
+          AND o.delivery_state IS NOT NULL AND o.delivery_state <> '' AND o.delivery_state <> '-'
         GROUP BY o.category, o.delivery_state, o.marketplace
         ORDER BY return_rate DESC NULLS LAST
       `, values),
@@ -115,7 +115,7 @@ router.get('/return-heatmap', async (req, res) => {
         FROM orders o
         LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
-          AND o.delivery_state IS NOT NULL AND o.delivery_state <> ''
+          AND o.delivery_state IS NOT NULL AND o.delivery_state <> '' AND o.delivery_state <> '-'
         GROUP BY o.delivery_state, o.marketplace
         ORDER BY returns DESC NULLS LAST
         LIMIT 25
@@ -176,7 +176,7 @@ router.get('/rto-risk', async (req, res) => {
         FROM orders o
         LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
-          AND o.delivery_state IS NOT NULL AND o.delivery_state <> ''
+          AND o.delivery_state IS NOT NULL AND o.delivery_state <> '' AND o.delivery_state <> '-'
           AND o.category IS NOT NULL AND o.category <> ''
         GROUP BY o.delivery_state, o.category, o.marketplace
         HAVING COUNT(o.order_item_id) >= 5

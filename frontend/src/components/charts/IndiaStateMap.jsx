@@ -21,9 +21,17 @@ const ALIAS_TO_ID = {
   'dadra & nagar haveli':     'dn',
   'dadra and nagar haveli':   'dn',
   'dadra and nagar haveli and daman and diu': 'dn',
+  'dadra & nagar haveli & daman & diu': 'dn',
   'andaman & nicobar':        'an',
   'andaman & nicobar islands':'an',
   'andaman and nicobar islands': 'an',
+  // Code aliases for SVG package ID variants
+  'cg':                       'ct',
+  'od':                       'or',
+  'uk':                       'ut',
+  'ua':                       'ut',
+  'ts':                       'tg',
+  'dnh':                      'dn',
 };
 
 // Build id → location lookup
@@ -37,6 +45,7 @@ function normKey(s) {
 function stateToId(stateName) {
   const k = normKey(stateName);
   if (ALIAS_TO_ID[k]) return ALIAS_TO_ID[k];
+  if (ID_MAP[k]) return k;
   // Try matching package location names directly
   for (const loc of LOCATIONS) {
     if (normKey(loc.name) === k) return loc.id;

@@ -3,6 +3,7 @@ import multer   from 'multer';
 import { createRequire } from 'module';
 import { getPool, isDbConfigured, isDbOffline } from '../db/index.js';
 import { buildDateFormatMap, normalizeSqlDate, summarizeDateFormats } from '../utils/dateNormalizer.js';
+import { normalizeDeliveryState } from '../utils/geoNormalization.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { optionalQueryText, pagination } from '../utils/requestParams.js';
 import { optionalNumber as num, optionalString as str } from '../utils/valueParsers.js';
@@ -504,7 +505,7 @@ const ORDER_FIELDS = [
   ['final_invoice_amount',   g => num(g('Amount') || g('Final Invoice Amount'))],
   ['total_share_amount',     g => num(g('Total Offer Amount'))],
   ['my_share',               g => num(g('My Share'))],
-  ['delivery_state',         g => str(g("Customer's Delivery State") || g('Delivery State'))],
+  ['delivery_state',         g => normalizeDeliveryState(g("Customer's Delivery State") || g('Delivery State'))],
   ['delivery_city',          g => str(g('Delivery City'))],
   ['warehouse_id',           g => str(g('Warehouse ID'))],
   ['warehouse_city',         g => str(g('Warehouse City'))],

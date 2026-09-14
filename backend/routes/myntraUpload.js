@@ -10,6 +10,7 @@ import multer from 'multer';
 import { createRequire } from 'module';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
+import { normalizeDeliveryState } from '../utils/geoNormalization.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
@@ -284,7 +285,7 @@ function orderDetail(row, sellerAccount, batch) {
     date(value(row, 'return creation date')), money(value(row, 'final amount')), money(value(row, 'total mrp')),
     money(value(row, 'discount')), money(value(row, 'coupon discount')), money(value(row, 'shipping charge')),
     money(value(row, 'gift charge')), money(value(row, 'tax recovery')), money(value(row, 'seller price')),
-    value(row, 'city'), value(row, 'state'), value(row, 'zipcode'), JSON.stringify(row), batch,
+    value(row, 'city'), normalizeDeliveryState(value(row, 'state')), value(row, 'zipcode'), JSON.stringify(row), batch,
   ];
 }
 
@@ -294,7 +295,7 @@ function normalizedOrder(row, sellerAccount) {
     'myntra', value(row, 'order release id'), value(row, 'order line id'), value(row, 'myntra sku code'), value(row, 'seller sku code'),
     value(row, 'brand'), 'Myntra', value(row, 'article type'), null, value(row, 'po_type'), fulfillment(value(row, 'po_type')),
     date(value(row, 'created on')), 1, sellerPrice, sellerPrice,
-    sellerPrice, value(row, 'state'), value(row, 'city'), value(row, 'seller warehouse id', 'warehouse id'),
+    sellerPrice, normalizeDeliveryState(value(row, 'state')), value(row, 'city'), value(row, 'seller warehouse id', 'warehouse id'),
     null, value(row, 'zipcode'), orderLifecycle(row), orderReturnType(row), sellerAccount, value(row, 'brand'),
   ];
 }
