@@ -416,6 +416,12 @@ export const deleteSkuMasterRow  = (id) => api.delete(`/upload/sku-master/${id}`
 export const clearSkuMaster      = (marketplace) =>
   api.delete('/upload/sku-master', { params: { marketplace } }).then(r => r.data);
 
+// VB EXPORT SKU Master & Unmerged System
+export const mergeSingleSku     = (body) => api.post('/upload/sku-master/merge-single', body).then(r => r.data);
+export const fetchVbExportSkus  = (params = {}) => api.get('/upload/vb-export-skus', { params }).then(r => r.data);
+export const updateVbExportSku  = (sku, body) => api.put(`/upload/vb-export-sku/${encodeURIComponent(sku)}`, body).then(r => r.data);
+export const fetchUnmergedSkus  = (f) => api.get('/profit-analysis/unmerged-skus', { params: p(f) }).then(r => r.data);
+
 // Brand backfill — propagate sku_master.brand_name to all orders
 export const backfillBrands = (force = false) => api.post('/upload/backfill-brands', { force }).then(r => r.data);
 

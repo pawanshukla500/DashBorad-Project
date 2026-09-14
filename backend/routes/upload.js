@@ -19,6 +19,7 @@ import {
 import { refreshAmazonSettlementReportingRollups } from '../services/amazonSettlementReportingRollups.js';
 import { ORDER_SETTLEMENT_TOTALS_TABLE, refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
+import { syncVbExportCatalog } from '../scripts/sync-vb-export-catalog.js';
 
 const router = express.Router();
 const upload = multer({
@@ -272,6 +273,7 @@ export function parseSkuMasterInput(input = {}) {
     productName: textInput(input.product_name, 'Product name', { max: 500 }),
     weightSlab: parseWeightSlab(input.weight_slab),
     brandName: textInput(input.brand_name, 'Brand name', { max: 120 }),
+    category: textInput(input.category, 'Category', { max: 250 }),
   };
 }
 
@@ -349,15 +351,15 @@ export function parseReturnsReceivedRow(row = {}) {
 function upsertSkuMasterRows(pool, records) {
   let inserted = 0;
   let updated = 0;
-  return forEachDbBatch(records, 8, async batch => {
+  return forEachDbBatch(records, 9, async batch => {
     const values = [];
     const groups = batch.map((record) => {
       const start = values.length;
-      values.push(record.masterSku, record.marketplace, record.listingSku, record.cogs, record.launchDate, record.productName, record.weightSlab, record.brandName);
-      return `(${Array.from({ length: 8 }, (_, index) => `$${start + index + 1}`).join(', ')})`;
+      values.push(record.masterSku, record.marketplace, record.listingSku, record.cogs, record.launchDate, record.productName, record.weightSlab, record.brandName, record.category || null);
+      return `(${Array.from({ length: 9 }, (_, index) => `$${start + index + 1}`).join(', ')})`;
     });
     const result = await pool.query(`
-      INSERT INTO sku_master (master_sku, marketplace, listing_sku, cogs, launch_date, product_name, weight_slab, brand_name)
+      INSERT INTO sku_master (master_sku, marketplace, listing_sku, cogs, launch_date, product_name, weight_slab, brand_name, category)
       VALUES ${groups.join(', ')}
       ON CONFLICT (marketplace, listing_sku) DO UPDATE
         SET master_sku   = EXCLUDED.master_sku,
@@ -365,14 +367,50 @@ function upsertSkuMasterRows(pool, records) {
             launch_date  = COALESCE(EXCLUDED.launch_date, sku_master.launch_date),
             product_name = COALESCE(NULLIF(EXCLUDED.product_name,''), sku_master.product_name),
             weight_slab  = COALESCE(EXCLUDED.weight_slab, sku_master.weight_slab),
-            brand_name   = COALESCE(NULLIF(EXCLUDED.brand_name,''), sku_master.brand_name)
+            brand_name   = COALESCE(NULLIF(EXCLUDED.brand_name,''), sku_master.brand_name),
+            category     = COALESCE(NULLIF(EXCLUDED.category,''), sku_master.category)
       RETURNING (xmax = 0) AS inserted
     `, values);
     for (const row of result.rows) {
       if (row.inserted) inserted++;
       else updated++;
     }
-  }).then(() => ({ inserted, updated }));
+
+    // Sync into vb_sku_master
+    const vbRows = batch.map(r => [r.masterSku, r.category || null, r.cogs || 0, r.weightSlab || null, r.productName || null]);
+    await forEachDbBatch(vbRows, 5, async vbBatch => {
+      const vVals = [];
+      const vGroups = vbBatch.map(r => {
+        const s = vVals.length;
+        vVals.push(...r);
+        return `($${s+1}, $${s+2}, $${s+3}, $${s+4}, $${s+5})`;
+      });
+      await pool.query(`
+        INSERT INTO vb_sku_master (vb_export_sku, category, cogs, weight_slab, product_name)
+        VALUES ${vGroups.join(', ')}
+        ON CONFLICT (vb_export_sku) DO UPDATE
+        SET category = COALESCE(EXCLUDED.category, vb_sku_master.category),
+            cogs = CASE WHEN EXCLUDED.cogs > 0 THEN EXCLUDED.cogs ELSE vb_sku_master.cogs END,
+            weight_slab = COALESCE(EXCLUDED.weight_slab, vb_sku_master.weight_slab),
+            product_name = COALESCE(NULLIF(EXCLUDED.product_name,''), vb_sku_master.product_name),
+            updated_at = NOW();
+      `, vVals);
+    });
+  }).then(async () => {
+    await pool.query(`
+      UPDATE orders o
+      SET vb_export_sku = sm.master_sku,
+          vb_export_category = sm.category
+      FROM sku_master sm
+      WHERE o.sku = sm.listing_sku
+        AND (
+          o.vb_export_sku IS DISTINCT FROM sm.master_sku
+          OR o.vb_export_category IS DISTINCT FROM sm.category
+        );
+    `).catch(e => console.warn('[sku_master] backfill orders:', e.message));
+
+    return { inserted, updated };
+  });
 }
 
 function upsertCatalogCogsRows(pool, records) {
@@ -459,9 +497,24 @@ async function batchUpsert(pool, table, keyCol, fields, rows, marketplace, confl
       if (e.message.includes('no unique or exclusion constraint')) {
         throw new Error(`Database setup incomplete: no UNIQUE constraint on "${keyCol}" in table "${table}". Please run the database migration and restart the server.`);
       }
-      throw e;
     }
   });
+
+  if (table === 'orders' && (inserted || updated)) {
+    try {
+      await pool.query(`
+        UPDATE orders o
+        SET vb_export_sku = sm.master_sku,
+            vb_export_category = sm.category
+        FROM sku_master sm
+        WHERE o.sku = sm.listing_sku
+          AND (o.vb_export_sku IS NULL OR o.vb_export_category IS NULL);
+      `);
+    } catch (e) {
+      console.warn('[batchUpsert orders] vb_export_sku backfill skipped:', e.message);
+    }
+  }
+
   // Repeated keys within a workbook and rows rejected by a conditional update
   // are counted as skipped so upload history never claims they were inserted.
   return { inserted, updated, skipped: rows.length - inserted - updated };
@@ -1257,6 +1310,22 @@ router.post('/sku-master', upload.single('file'), async (req, res) => {
   try {
     const { headers, data } = parseFile(req.file.buffer);
 
+    // Auto-detect VB EXPORT Product Category format
+    const isVbExport = headers.some(h => /vb\s*export\s*sku/i.test(h)) ||
+                       (headers.some(h => /marketplace\s*sku/i.test(h)) && headers.some(h => /vb/i.test(h)));
+    if (isVbExport) {
+      const syncRes = await syncVbExportCatalog({ pool, buffer: req.file.buffer });
+      const logId = await logUpload(pool, 'sku_master', req.file.originalname, 'all', syncRes.uniqueVbSkus, syncRes.uniqueListings, 0, 'ok');
+      return res.json({
+        ok: true,
+        isVbExportCatalog: true,
+        uniqueVbSkus: syncRes.uniqueVbSkus,
+        uniqueListings: syncRes.uniqueListings,
+        ordersBackfilled: syncRes.ordersBackfilled,
+        logId
+      });
+    }
+
     // Flexible column name matching
     function findCol(...variants) {
       for (const v of variants) {
@@ -1267,14 +1336,15 @@ router.post('/sku-master', upload.single('file'), async (req, res) => {
       return null;
     }
 
-    const COL_MASTER  = findCol('master sku', 'mastersku', 'master');
-    const COL_LISTING = findCol('listing sku', 'listingsku', 'listing', 'sku');
-    const COL_MP      = findCol('marketplace', 'channel', 'platform');
-    const COL_COGS    = findCol('cogs', 'cost', 'cost of goods', 'cost of goods sold', 'purchase price', 'buying price');
-    const COL_LAUNCH  = findCol('launch date', 'launchdate', 'launch', 'launch_date');
-    const COL_PRODUCT = findCol('product name', 'productname', 'product', 'title', 'description');
-    const COL_WEIGHT  = findCol('weight slab', 'weightslab', 'weight', 'wt slab', 'wt_slab', 'weight_slab');
-    const COL_BRAND   = findCol('brand', 'brand name', 'brand_name', 'brandname', 'seller brand');
+    const COL_MASTER   = findCol('master sku', 'mastersku', 'master', "vb export sku's", 'vb export sku', 'vb_export_sku');
+    const COL_LISTING  = findCol('listing sku', 'listingsku', 'listing', 'sku', 'marketplace sku', 'marketplace_sku');
+    const COL_MP       = findCol('marketplace', 'channel', 'platform');
+    const COL_CATEGORY = findCol('category', 'product category', 'vb export product category', 'vb_export_category');
+    const COL_COGS     = findCol('cogs', 'cost', 'cost of goods', 'cost of goods sold', 'purchase price', 'buying price');
+    const COL_LAUNCH   = findCol('launch date', 'launchdate', 'launch', 'launch_date');
+    const COL_PRODUCT  = findCol('product name', 'productname', 'product', 'title', 'description');
+    const COL_WEIGHT   = findCol('weight slab', 'weightslab', 'weight', 'wt slab', 'wt_slab', 'weight_slab');
+    const COL_BRAND    = findCol('brand', 'brand name', 'brand_name', 'brandname', 'seller brand');
 
     // Detect positional mode: if no Listing SKU column found by name, fall back to col B (index 1)
     const usePositional = !COL_LISTING;
@@ -1294,6 +1364,7 @@ router.post('/sku-master', upload.single('file'), async (req, res) => {
               listing_sku: COL_LISTING ? toMap(data[i])[COL_LISTING] : null,
               master_sku: COL_MASTER ? toMap(data[i])[COL_MASTER] : null,
               marketplace: COL_MP ? toMap(data[i])[COL_MP] : 'all',
+              category: COL_CATEGORY ? toMap(data[i])[COL_CATEGORY] : null,
               cogs: COL_COGS ? toMap(data[i])[COL_COGS] : null,
               launch_date: COL_LAUNCH ? toMap(data[i])[COL_LAUNCH] : null,
               product_name: COL_PRODUCT ? toMap(data[i])[COL_PRODUCT] : null,
@@ -1350,17 +1421,38 @@ router.post('/sku-master/row', async (req, res) => {
     const pool = getPool();
     const record = parseSkuMasterInput(req.body);
     const { rows } = await pool.query(`
-      INSERT INTO sku_master (master_sku, marketplace, listing_sku, cogs, launch_date, product_name, weight_slab, brand_name)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO sku_master (master_sku, marketplace, listing_sku, cogs, launch_date, product_name, weight_slab, brand_name, category)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       ON CONFLICT (marketplace, listing_sku) DO UPDATE
         SET master_sku   = EXCLUDED.master_sku,
             cogs         = EXCLUDED.cogs,
             launch_date  = COALESCE(EXCLUDED.launch_date, sku_master.launch_date),
             product_name = COALESCE(NULLIF(EXCLUDED.product_name,''), sku_master.product_name),
             weight_slab  = COALESCE(EXCLUDED.weight_slab, sku_master.weight_slab),
-            brand_name   = COALESCE(NULLIF(EXCLUDED.brand_name,''), sku_master.brand_name)
+            brand_name   = COALESCE(NULLIF(EXCLUDED.brand_name,''), sku_master.brand_name),
+            category     = COALESCE(NULLIF(EXCLUDED.category,''), sku_master.category)
       RETURNING *
-    `, [record.masterSku, record.marketplace, record.listingSku, record.cogs, record.launchDate, record.productName, record.weightSlab, record.brandName]);
+    `, [record.masterSku, record.marketplace, record.listingSku, record.cogs, record.launchDate, record.productName, record.weightSlab, record.brandName, record.category || null]);
+
+    // Keep vb_sku_master and orders synced
+    await pool.query(`
+      INSERT INTO vb_sku_master (vb_export_sku, category, cogs, weight_slab, product_name)
+      VALUES ($1, $2, COALESCE($3, 0), $4, $5)
+      ON CONFLICT (vb_export_sku) DO UPDATE
+      SET category = COALESCE(EXCLUDED.category, vb_sku_master.category),
+          cogs = CASE WHEN EXCLUDED.cogs > 0 THEN EXCLUDED.cogs ELSE vb_sku_master.cogs END,
+          weight_slab = COALESCE(EXCLUDED.weight_slab, vb_sku_master.weight_slab),
+          product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), vb_sku_master.product_name),
+          updated_at = NOW();
+    `, [record.masterSku, record.category || null, record.cogs || 0, record.weightSlab || null, record.productName || null]).catch(() => {});
+
+    await pool.query(`
+      UPDATE orders
+      SET vb_export_sku = $1,
+          vb_export_category = COALESCE($2, vb_export_category)
+      WHERE sku = $3;
+    `, [record.masterSku, record.category || null, record.listingSku]).catch(() => {});
+
     res.json({ ok: true, row: rows[0] });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
@@ -1372,7 +1464,7 @@ router.put('/sku-master/:id', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   try {
     const pool = getPool();
-    const { master_sku, cogs, launch_date, product_name, weight_slab, brand_name } = req.body;
+    const { master_sku, cogs, launch_date, product_name, weight_slab, brand_name, category } = req.body;
     const id = positiveRowId(req.params.id);
     const masterSku = master_sku == null ? null : textInput(master_sku, 'Master SKU');
     const cogsValue = cogs == null ? null : nonNegativeMoney(cogs, 'COGS');
@@ -1380,6 +1472,8 @@ router.put('/sku-master/:id', async (req, res) => {
     const productName = product_name == null ? null : textInput(product_name, 'Product name', { max: 500 });
     const weightSlab = weight_slab == null ? null : parseWeightSlab(weight_slab);
     const brandName = brand_name == null ? null : textInput(brand_name, 'Brand name', { max: 120 });
+    const catVal = category == null ? null : textInput(category, 'Category', { max: 250 });
+
     const { rows } = await pool.query(`
       UPDATE sku_master
       SET master_sku   = COALESCE($1, master_sku),
@@ -1387,14 +1481,224 @@ router.put('/sku-master/:id', async (req, res) => {
           launch_date  = COALESCE($3::date, launch_date),
           product_name = COALESCE(NULLIF($4,''), product_name),
           weight_slab  = COALESCE($5, weight_slab),
-          brand_name   = COALESCE(NULLIF($7,''), brand_name)
+          brand_name   = COALESCE(NULLIF($7,''), brand_name),
+          category     = COALESCE(NULLIF($8,''), category)
       WHERE id = $6
       RETURNING *
-    `, [masterSku, cogsValue, launchDate, productName, weightSlab, id, brandName]);
+    `, [masterSku, cogsValue, launchDate, productName, weightSlab, id, brandName, catVal]);
     if (!rows.length) return res.status(404).json({ error: 'Row not found' });
-    res.json({ ok: true, row: rows[0] });
+
+    const updatedRow = rows[0];
+    if (updatedRow.master_sku) {
+      await pool.query(`
+        UPDATE orders
+        SET vb_export_sku = $1,
+            vb_export_category = COALESCE($2, vb_export_category)
+        WHERE sku = $3;
+      `, [updatedRow.master_sku, updatedRow.category, updatedRow.listing_sku]).catch(() => {});
+    }
+
+    res.json({ ok: true, row: updatedRow });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// ── POST /api/upload/sku-master/merge-single ──────────────────────────────────
+// Merges a single listing SKU into a VB EXPORT SKU, updating sku_master,
+// vb_sku_master, and backfilling all matching orders.
+router.post('/sku-master/merge-single', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const pool = getPool();
+    const {
+      listing_sku,
+      master_sku,
+      category,
+      marketplace = 'all',
+      cogs = null,
+      weight_slab = null,
+      product_name = null
+    } = req.body;
+
+    if (!listing_sku || !String(listing_sku).trim()) {
+      return res.status(400).json({ error: 'Listing SKU is required' });
+    }
+    if (!master_sku || !String(master_sku).trim()) {
+      return res.status(400).json({ error: 'Master / VB EXPORT SKU is required' });
+    }
+
+    const cleanListing = String(listing_sku).trim();
+    const cleanMaster = String(master_sku).trim();
+    const cleanCategory = category ? String(category).trim() : null;
+    const cleanMp = marketplace ? String(marketplace).trim().toLowerCase() : 'all';
+    const cogsVal = cogs != null && !isNaN(cogs) && Number(cogs) >= 0 ? Number(cogs) : null;
+    const weightVal = weight_slab != null && !isNaN(weight_slab) && Number(weight_slab) > 0 ? Number(weight_slab) : null;
+    const prodVal = product_name ? String(product_name).trim() : null;
+
+    // 1. Upsert into vb_sku_master
+    await pool.query(`
+      INSERT INTO vb_sku_master (vb_export_sku, category, cogs, weight_slab, product_name)
+      VALUES ($1, $2, COALESCE($3, 0), $4, $5)
+      ON CONFLICT (vb_export_sku) DO UPDATE
+      SET category = COALESCE(EXCLUDED.category, vb_sku_master.category),
+          cogs = CASE WHEN EXCLUDED.cogs > 0 THEN EXCLUDED.cogs ELSE vb_sku_master.cogs END,
+          weight_slab = COALESCE(EXCLUDED.weight_slab, vb_sku_master.weight_slab),
+          product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), vb_sku_master.product_name),
+          updated_at = NOW();
+    `, [cleanMaster, cleanCategory, cogsVal, weightVal, prodVal]);
+
+    // 2. Upsert into sku_master
+    const skuRes = await pool.query(`
+      INSERT INTO sku_master (master_sku, marketplace, listing_sku, category, cogs, weight_slab, product_name)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (marketplace, listing_sku) DO UPDATE
+      SET master_sku = EXCLUDED.master_sku,
+          category = COALESCE(EXCLUDED.category, sku_master.category),
+          cogs = COALESCE(EXCLUDED.cogs, sku_master.cogs),
+          weight_slab = COALESCE(EXCLUDED.weight_slab, sku_master.weight_slab),
+          product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), sku_master.product_name)
+      RETURNING *;
+    `, [cleanMaster, cleanMp, cleanListing, cleanCategory, cogsVal, weightVal, prodVal]);
+
+    // 3. Update orders
+    const orderRes = await pool.query(`
+      UPDATE orders
+      SET vb_export_sku = $1,
+          vb_export_category = COALESCE($2, vb_export_category)
+      WHERE sku = $3
+      RETURNING order_item_id;
+    `, [cleanMaster, cleanCategory, cleanListing]);
+
+    res.json({
+      ok: true,
+      skuMaster: skuRes.rows[0],
+      ordersUpdated: orderRes.rowCount || 0,
+      message: `Successfully merged "${cleanListing}" to "${cleanMaster}" (${orderRes.rowCount || 0} orders updated)`
+    });
+  } catch (e) {
+    console.error('[merge-single]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── PUT /api/upload/vb-export-sku/:sku ────────────────────────────────────────
+// Updates COGS, weight slab, category, or product name for a VB EXPORT SKU
+// Cascades COGS and weight_slab to sku_master and category to orders
+router.put('/vb-export-sku/:sku', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const pool = getPool();
+    const vbSku = decodeURIComponent(req.params.sku);
+    const { cogs, weight_slab, category, product_name } = req.body;
+
+    const cogsVal = cogs != null && !isNaN(cogs) && Number(cogs) >= 0 ? Number(cogs) : null;
+    const weightVal = weight_slab != null && !isNaN(weight_slab) && Number(weight_slab) > 0 ? Number(weight_slab) : null;
+    const catVal = category != null ? String(category).trim() : null;
+    const prodVal = product_name != null ? String(product_name).trim() : null;
+
+    let { rows } = await pool.query(`
+      UPDATE vb_sku_master
+      SET cogs = COALESCE($1, cogs),
+          weight_slab = COALESCE($2, weight_slab),
+          category = COALESCE($3, category),
+          product_name = COALESCE(NULLIF($4, ''), product_name),
+          updated_at = NOW()
+      WHERE vb_export_sku = $5
+      RETURNING *;
+    `, [cogsVal, weightVal, catVal, prodVal, vbSku]);
+
+    if (!rows.length) {
+      const insRes = await pool.query(`
+        INSERT INTO vb_sku_master (vb_export_sku, cogs, weight_slab, category, product_name)
+        VALUES ($1, COALESCE($2, 0), $3, $4, $5)
+        ON CONFLICT (vb_export_sku) DO UPDATE
+        SET cogs = COALESCE(EXCLUDED.cogs, vb_sku_master.cogs),
+            weight_slab = COALESCE(EXCLUDED.weight_slab, vb_sku_master.weight_slab),
+            category = COALESCE(EXCLUDED.category, vb_sku_master.category),
+            product_name = COALESCE(NULLIF(EXCLUDED.product_name, ''), vb_sku_master.product_name),
+            updated_at = NOW()
+        RETURNING *;
+      `, [vbSku, cogsVal, weightVal, catVal, prodVal]);
+      rows = insRes.rows;
+    }
+
+    // Cascade to sku_master where master_sku = vbSku
+    if (cogsVal !== null || weightVal !== null || catVal !== null || prodVal !== null) {
+      await pool.query(`
+        UPDATE sku_master
+        SET cogs = COALESCE($1, cogs),
+            weight_slab = COALESCE($2, weight_slab),
+            category = COALESCE($3, category),
+            product_name = COALESCE(NULLIF($4, ''), product_name)
+        WHERE master_sku = $5;
+      `, [cogsVal, weightVal, catVal, prodVal, vbSku]).catch(e => console.warn('[cascade sku_master]:', e.message));
+    }
+
+    // Cascade category to orders
+    if (catVal !== null) {
+      await pool.query(`
+        UPDATE orders
+        SET vb_export_category = $1
+        WHERE vb_export_sku = $2;
+      `, [catVal, vbSku]).catch(e => console.warn('[cascade orders category]:', e.message));
+    }
+
+    res.json({ ok: true, row: rows[0] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/upload/vb-export-skus ───────────────────────────────────────────
+// List and filter VB EXPORT SKUs with their COGS, weight slabs, category, and listing count
+router.get('/vb-export-skus', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const pool = getPool();
+    const search = optionalQueryText(req.query.search, 'Search', { maxLength: 120 });
+    const category = req.query.category || null;
+    const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 100, maxPageSize: 500 });
+
+    const conds = [];
+    const vals = [];
+    if (category && category !== 'all') conds.push(`vsm.category = $${vals.push(category)}`);
+    if (search) {
+      const p = `$${vals.push('%' + search + '%')}`;
+      conds.push(`(vsm.vb_export_sku ILIKE ${p} OR vsm.product_name ILIKE ${p})`);
+    }
+    const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+
+    const countVals = [...vals];
+    const listVals = [...vals, pageSize, offset];
+
+    const [listResult, countResult] = await Promise.all([
+      pool.query(`
+        SELECT
+          vsm.vb_export_sku,
+          vsm.category,
+          vsm.cogs,
+          vsm.weight_slab,
+          vsm.product_name,
+          vsm.created_at,
+          vsm.updated_at,
+          (SELECT COUNT(*) FROM sku_master sm WHERE sm.master_sku = vsm.vb_export_sku) AS listings_count
+        FROM vb_sku_master vsm
+        ${where}
+        ORDER BY vsm.vb_export_sku ASC
+        LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}
+      `, listVals),
+      pool.query(`SELECT COUNT(*) AS total FROM vb_sku_master vsm ${where}`, countVals)
+    ]);
+
+    res.json({
+      total: +countResult.rows[0].total,
+      page,
+      pageSize,
+      data: listResult.rows
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -1454,10 +1758,13 @@ router.get('/sku-master/unmapped', async (req, res) => {
         MIN(o.order_date::text)          AS first_order_date
       FROM orders o
       WHERE o.sku IS NOT NULL AND o.sku <> ''
-        AND NOT EXISTS (
-          SELECT 1 FROM sku_master sm
-          WHERE sm.listing_sku = o.sku
-            AND (sm.marketplace = o.marketplace OR sm.marketplace = 'all')
+        AND (
+          o.vb_export_sku IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM sku_master sm
+            WHERE sm.listing_sku = o.sku
+              AND (sm.marketplace = o.marketplace OR sm.marketplace = 'all')
+          )
         )
       GROUP BY o.sku, o.marketplace, o.category
       ORDER BY order_count DESC
@@ -1488,7 +1795,7 @@ router.get('/sku-master', async (req, res) => {
     const countVals = [...vals];
     const listVals = [...vals, pageSize, offset];
     const [rows, cnt] = await Promise.all([
-      pool.query(`SELECT id, master_sku, marketplace, listing_sku, cogs, launch_date, product_name, weight_slab, created_at FROM sku_master ${where} ORDER BY marketplace, master_sku, listing_sku LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}`, listVals),
+      pool.query(`SELECT id, master_sku, marketplace, listing_sku, category, cogs, launch_date, product_name, weight_slab, created_at FROM sku_master ${where} ORDER BY marketplace, master_sku, listing_sku LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}`, listVals),
       pool.query(`SELECT COUNT(*) AS total FROM sku_master ${where}`, countVals),
     ]);
 

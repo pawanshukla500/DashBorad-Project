@@ -209,12 +209,13 @@ function periodExpr(groupBy, col) {
 // Prefer shared SETT_CTE (single money definition)
 const SETT_CTE = SHARED_SETT_CTE;
 
-const COGS_UNIT_SQL = `COALESCE(sm_mp.cogs, sm_all.cogs, cc_mp.cogs, cc_all.cogs, 0)`;
+const COGS_UNIT_SQL = `COALESCE(sm_mp.cogs, sm_all.cogs, vsm.cogs, cc_mp.cogs, cc_all.cogs, 0)`;
 const COGS_TOTAL_SQL = `(${COGS_UNIT_SQL} * COALESCE(o.qty,1))`;
-const MASTER_SKU_SQL = `COALESCE(sm_mp.master_sku, sm_all.master_sku, o.sku)`;
+const MASTER_SKU_SQL = `COALESCE(o.vb_export_sku, sm_mp.master_sku, sm_all.master_sku, o.sku)`;
 const COGS_JOINS = `
         LEFT JOIN sku_master sm_mp  ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = o.marketplace
         LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
+        LEFT JOIN vb_sku_master vsm ON vsm.vb_export_sku = COALESCE(o.vb_export_sku, sm_mp.master_sku, sm_all.master_sku)
         LEFT JOIN catalog_cogs cc_mp  ON cc_mp.catalog_id = o.fsn AND cc_mp.marketplace = o.marketplace
         LEFT JOIN catalog_cogs cc_all ON cc_all.catalog_id = o.fsn AND cc_all.marketplace = 'all'
 `;
@@ -1064,7 +1065,7 @@ router.get('/profit-analysis', async (req, res) => {
       acctWhere = ` AND COALESCE(o.seller_account,'default') = $${values.push(sellerAccount)}`;
     }
 
-    const [sumRes, trendRes, catRes, skuRes, accountRes, zoneRes] = await Promise.all([
+    const [sumRes, trendRes, catRes, skuRes, accountRes, zoneRes, vbSkuRes, unmergedRes] = await Promise.all([
 
       // ── Overall summary ──────────────────────────────────────────────────────
       pool.query(`
@@ -1222,6 +1223,48 @@ router.get('/profit-analysis', async (req, res) => {
         GROUP BY COALESCE(o.shipping_zone,'Unknown')
         ORDER BY revenue DESC
       `, values),
+      // ── By VB EXPORT SKU (Consolidated Product Profitability) ────────────────
+      pool.query(`
+        ${SETT_CTE}
+        SELECT
+          COALESCE(o.vb_export_sku, sm_all.master_sku, sm_mp.master_sku, o.sku) AS "vbExportSku",
+          COALESCE(o.vb_export_category, vsm.category, sm_all.category, sm_mp.category, o.category, 'Uncategorized') AS category,
+          COALESCE(vsm.weight_slab, sm_all.weight_slab, sm_mp.weight_slab) AS "weightSlab",
+          COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) AS "cogsPerUnit",
+          COUNT(*)                                              AS orders,
+          SUM(COALESCE(o.qty,1))                                AS units,
+          COALESCE(SUM(o.final_invoice_amount),0)               AS revenue,
+          COALESCE(SUM(COALESCE(s.net_bank,0)),0)               AS "bankReceived",
+          COALESCE(SUM(${COGS_TOTAL_SQL}), 0)                   AS cogs,
+          COALESCE(SUM(${SETT_FEE_SQL}),0)                      AS "fkTotalFees",
+          COUNT(ret.order_item_id)                              AS returns,
+          COUNT(DISTINCT o.sku)                                 AS "listingCount",
+          ARRAY_AGG(DISTINCT o.sku) FILTER (WHERE o.sku IS NOT NULL) AS "listingSkus"
+        FROM orders o
+        LEFT JOIN sett s        ON s.order_item_id  = o.order_item_id
+        LEFT JOIN order_returns ret   ON ret.order_item_id = o.order_item_id
+        ${COGS_JOINS}
+        WHERE 1=1 ${where}${acctWhere}
+        GROUP BY
+          COALESCE(o.vb_export_sku, sm_all.master_sku, sm_mp.master_sku, o.sku),
+          COALESCE(o.vb_export_category, vsm.category, sm_all.category, sm_mp.category, o.category, 'Uncategorized'),
+          COALESCE(vsm.weight_slab, sm_all.weight_slab, sm_mp.weight_slab),
+          COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0)
+        ORDER BY revenue DESC
+        LIMIT 100
+      `, values),
+
+      // ── Unmerged marketplace listings check (Trigger Alert) ─────────────────
+      pool.query(`
+        SELECT
+          COUNT(DISTINCT o.sku)                    AS "unmergedSkuCount",
+          COUNT(o.order_item_id)                   AS "unmergedOrderCount",
+          COALESCE(SUM(o.final_invoice_amount), 0) AS "unmergedRevenue"
+        FROM orders o
+        LEFT JOIN sku_master sm ON sm.listing_sku = o.sku
+        WHERE 1=1 ${where}${acctWhere}
+          AND (o.vb_export_sku IS NULL OR sm.listing_sku IS NULL)
+      `, values),
     ]);
 
     // Build summary
@@ -1276,6 +1319,41 @@ router.get('/profit-analysis', async (req, res) => {
       return { ...r, netBank: +net.toFixed(2), grossProfit: gp, returnRate: +r.orders > 0 ? +((+r.returns/+r.orders)*100).toFixed(1) : 0 };
     });
 
+    // Enrich by VB EXPORT SKU
+    const byVbSkuTop = (vbSkuRes?.rows || []).map(r => {
+      const net = +r.bankReceived;
+      const gp = +(net - +r.cogs).toFixed(2);
+      const gpPerUnit = +r.units > 0 ? +(gp / +r.units).toFixed(2) : 0;
+      const cogsPerUnit = +r.cogsPerUnit || (+r.units > 0 ? +(+r.cogs / +r.units).toFixed(2) : 0);
+      const marginPct = +r.revenue > 0 ? +((gp / +r.revenue) * 100).toFixed(1) : 0;
+      const returnRate = +r.orders > 0 ? +((+r.returns / +r.orders) * 100).toFixed(1) : 0;
+      return {
+        ...r,
+        orders: +r.orders,
+        units: +r.units,
+        revenue: +r.revenue,
+        bankReceived: net,
+        cogs: +r.cogs,
+        fkTotalFees: +r.fkTotalFees,
+        returns: +r.returns,
+        grossProfit: gp,
+        gpPerUnit,
+        cogsPerUnit,
+        marginPct,
+        returnRate,
+        hasCogs: +r.cogs > 0,
+        listingCount: +r.listingCount || 1,
+        listingSkus: r.listingSkus || [],
+      };
+    });
+
+    const unmergedRow = unmergedRes?.rows?.[0] || {};
+    const unmergedSummary = {
+      unmergedSkuCount: +unmergedRow.unmergedSkuCount || 0,
+      unmergedOrderCount: +unmergedRow.unmergedOrderCount || 0,
+      unmergedRevenue: +unmergedRow.unmergedRevenue || 0,
+    };
+
     const cogsConfigured = grossRevenue > 0 && totalCogs > 0;
 
     res.json({
@@ -1296,11 +1374,42 @@ router.get('/profit-analysis', async (req, res) => {
       trend,
       byCategory,
       bySkuTop,
+      byVbSku: byVbSkuTop,
       byAccount,
       byZone,
+      unmergedSummary,
     });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/profit-analysis/unmerged-skus ─────────────────────────────────────
+router.get('/profit-analysis/unmerged-skus', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { where, values } = buildWhere(req.query);
+    const { rows } = await pool.query(`
+      SELECT
+        o.sku,
+        o.marketplace,
+        COALESCE(o.category, 'Uncategorized')    AS category,
+        COUNT(o.order_item_id)                   AS order_count,
+        SUM(COALESCE(o.qty, 1))                  AS units,
+        COALESCE(SUM(o.final_invoice_amount), 0) AS total_revenue,
+        MIN(o.order_date::text)                  AS first_seen,
+        MAX(o.order_date::text)                  AS last_seen
+      FROM orders o
+      LEFT JOIN sku_master sm ON sm.listing_sku = o.sku
+      WHERE 1=1 ${where}
+        AND (o.vb_export_sku IS NULL OR sm.listing_sku IS NULL)
+      GROUP BY o.sku, o.marketplace, o.category
+      ORDER BY order_count DESC
+      LIMIT 200;
+    `, values);
+    res.json({ unmerged: rows, total: rows.length });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

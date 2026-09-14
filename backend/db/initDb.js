@@ -49,6 +49,8 @@ const TABLES = [`
     warehouse_id            TEXT,
     warehouse_city          TEXT,
     delivery_pincode        TEXT,
+    vb_export_sku           TEXT,
+    vb_export_category      TEXT,
     orders_status           TEXT,
     return_type             TEXT,
     weight_slab             TEXT,
@@ -496,8 +498,20 @@ const TABLES = [`
     marketplace TEXT NOT NULL DEFAULT 'all',
     listing_sku TEXT NOT NULL,
     cogs        NUMERIC(14,2) NOT NULL DEFAULT 0,
+    category    TEXT,
     created_at  TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(marketplace, listing_sku)
+  )`,
+
+  /* ── VB Export Master SKU — parent catalog level metadata, COGS & Weight Slabs ── */
+  `CREATE TABLE IF NOT EXISTS vb_sku_master (
+    vb_export_sku TEXT PRIMARY KEY,
+    category      TEXT,
+    cogs          NUMERIC(14,2) NOT NULL DEFAULT 0,
+    weight_slab   NUMERIC(6,2),
+    product_name  TEXT,
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ DEFAULT NOW()
   )`,
 
   `CREATE TABLE IF NOT EXISTS catalog_cogs (
@@ -637,6 +651,10 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_amzn_sett_sett_id  ON amazon_settlement_items(settlement_id)`,
   `CREATE INDEX IF NOT EXISTS IX_sku_master_listing ON sku_master(marketplace, listing_sku)`,
   `CREATE INDEX IF NOT EXISTS IX_sku_master_master  ON sku_master(master_sku)`,
+  `CREATE INDEX IF NOT EXISTS IX_sku_master_category ON sku_master(category)`,
+  `CREATE INDEX IF NOT EXISTS IX_vb_sku_master_category ON vb_sku_master(category)`,
+  `CREATE INDEX IF NOT EXISTS IX_orders_vb_export_sku ON orders(vb_export_sku)`,
+  `CREATE INDEX IF NOT EXISTS IX_orders_vb_export_cat ON orders(vb_export_category)`,
   `CREATE INDEX IF NOT EXISTS IX_catalog_cogs_lookup ON catalog_cogs(marketplace, catalog_id)`,
   `CREATE INDEX IF NOT EXISTS IX_audit_created ON audit_events(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS IX_audit_actor ON audit_events(actor_user_id, created_at DESC)`,
@@ -830,6 +848,11 @@ export async function initDb() {
     await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS weight_slab NUMERIC(6,2)`).catch(() => {});
     // SKU master — brand_name: master brand column, backfills orders.brand_name automatically
     await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS brand_name TEXT`).catch(() => {});
+    await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS category TEXT`).catch(() => {});
+
+    // Orders — add vb_export_sku and vb_export_category
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_sku TEXT`).catch(() => {});
+    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_category TEXT`).catch(() => {});
 
     // Returns — add return_date column (used by Amazon returns report)
     await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_date DATE`).catch(() => {});

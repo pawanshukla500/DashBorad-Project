@@ -552,6 +552,14 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
     try {
       await backfillOrdersFromMyntraPayment(pool, sellerAccount);
       await refreshOrderSettlementTotals(pool);
+      await pool.query(`
+        UPDATE orders o
+        SET vb_export_sku = sm.master_sku,
+            vb_export_category = sm.category
+        FROM sku_master sm
+        WHERE o.sku = sm.listing_sku
+          AND (o.vb_export_sku IS NULL OR o.vb_export_category IS NULL);
+      `);
     } catch (e) {
       console.warn('[Myntra Upload] Warning: post-order backfill failed:', e.message);
     }

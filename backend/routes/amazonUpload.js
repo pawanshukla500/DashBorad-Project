@@ -923,6 +923,14 @@ router.post('/amazon-order-reports', upload.single('file'), async (req, res) => 
     } catch (e) {
       console.warn('[amazon-order-reports backfill]', e.message);
     }
+    await pool.query(`
+      UPDATE orders o
+      SET vb_export_sku = sm.master_sku,
+          vb_export_category = sm.category
+      FROM sku_master sm
+      WHERE o.sku = sm.listing_sku
+        AND (o.vb_export_sku IS NULL OR o.vb_export_category IS NULL);
+    `).catch(e => console.warn('[amazon-order-reports] vb_export_sku backfill:', e.message));
     await refreshOrderSettlementTotals(pool);
 
     const logId = await logUpload(pool, 'amazon_order_reports', req.file.originalname, marketplace,
@@ -1154,6 +1162,14 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
     } catch (error) {
       console.warn('[amazon-sale-orders] settlement backfill:', error.message);
     }
+    await pool.query(`
+      UPDATE orders o
+      SET vb_export_sku = sm.master_sku,
+          vb_export_category = sm.category
+      FROM sku_master sm
+      WHERE o.sku = sm.listing_sku
+        AND (o.vb_export_sku IS NULL OR o.vb_export_category IS NULL);
+    `).catch(e => console.warn('[amazon-sale-orders] vb_export_sku backfill:', e.message));
     await refreshOrderSettlementTotals(pool);
 
     const logId = await logUpload(
