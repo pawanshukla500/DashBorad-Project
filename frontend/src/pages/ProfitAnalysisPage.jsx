@@ -933,9 +933,9 @@ function UnmergedListingsSection({ onMerged }) {
 }
 
 // ── SKU Master & COGS — config panel (admin/owner use) ────────────────────────
-function SkuMasterSection({ onUpdated }) {
+function SkuMasterSection({ onUpdated, initialSubTab = 'vb_catalog', unmergedCount = 0 }) {
   const fileRef = useRef();
-  const [activeSubTab, setActiveSubTab] = useState('vb_catalog'); // 'vb_catalog' | 'listings'
+  const [activeSubTab, setActiveSubTab] = useState(initialSubTab); // 'vb_catalog' | 'listings' | 'unmerged'
   const [skuData, setSkuData]   = useState(null);
   const [vbData, setVbData]     = useState(null);
   const [loadingRows, setLoadingRows] = useState(false);
@@ -950,13 +950,18 @@ function SkuMasterSection({ onUpdated }) {
   const [addErr, setAddErr]     = useState(null);
   const [editingVbSku, setEditingVbSku] = useState(null);
 
+  useEffect(() => {
+    if (initialSubTab) setActiveSubTab(initialSubTab);
+  }, [initialSubTab]);
+
   const loadRows = useCallback(async () => {
+    if (activeSubTab === 'unmerged') return;
     setLoadingRows(true);
     try {
       if (activeSubTab === 'vb_catalog') {
         const res = await fetchVbExportSkus({ search: search || undefined, page });
         setVbData(res);
-      } else {
+      } else if (activeSubTab === 'listings') {
         const res = await fetchSkuMaster(undefined, search || undefined, page);
         setSkuData(res);
       }
@@ -1005,10 +1010,10 @@ function SkuMasterSection({ onUpdated }) {
   const downloadTemplate = () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-      ["VB EXPORT SKU's", 'Marketplace SKU', 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)'],
-      ['EJ1201-16001', 'EJ1201-16001_FK', 'Ethnic Jacket', '0.5', 250],
-      ['EJ1201-16001', 'EJ1201-16001_M',  'Ethnic Jacket', '0.5', 250],
-      ['EJ1201-16001', '7Y-UQCI-Y51D',     'Ethnic Jacket', '0.5', 250],
+      ['Marketplace SKU', "VB EXPORT SKU's", 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)', 'Marketplace'],
+      ['EJ1201-16001_FK', 'EJ1201-16001', 'Kurta Set', 0.5, 450, 'flipkart'],
+      ['EJ1201-16001_M',  'EJ1201-16001', 'Kurta Set', 0.5, 450, 'myntra_ej'],
+      ['7Y-UQCI-Y51D',     'EJ1201-16001', 'Kurta Set', 0.5, 450, 'amazon'],
     ]), 'VB Export Format');
     XLSX.writeFile(wb, 'vb_export_product_category_template.xlsx');
   };
@@ -1038,6 +1043,19 @@ function SkuMasterSection({ onUpdated }) {
           >
             Marketplace SKU Mappings
           </button>
+          <button
+            onClick={() => { setActiveSubTab('unmerged'); setPage(1); }}
+            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+              activeSubTab === 'unmerged' ? 'bg-surface text-ink shadow-sm' : 'text-secondary hover:text-ink'
+            }`}
+          >
+            <span>Unmerged Listings (Trigger)</span>
+            {unmergedCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-white">
+                {unmergedCount}
+              </span>
+            )}
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
@@ -1049,39 +1067,43 @@ function SkuMasterSection({ onUpdated }) {
         </div>
       </div>
 
-      {/* Upload zone */}
-      <div
-        className={`border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 py-5 cursor-pointer transition-colors ${
-          dragging ? 'border-primary bg-primary-container' : 'border-border hover:border-primary hover:bg-indigo-50/20'
-        }`}
-        onDragOver={e => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={e => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]); }}
-        onClick={() => fileRef.current?.click()}
-      >
-        <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
-          onChange={e => handleFile(e.target.files[0])} />
-        {uploading ? (
-          <><svg className="w-6 h-6 text-primary animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/></svg>
-          <p className="text-sm font-semibold text-primary">Syncing VB Export Catalog into Database…</p></>
-        ) : (
-          <><svg className="w-6 h-6 text-outline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
-          <div className="text-center">
-            <p className="text-xs text-secondary font-medium">Drop <strong>VB EXPORT Product Category.xlsx</strong> or SKU Master file here, or click to browse</p>
-            <p className="text-[11px] text-outline mt-0.5">Auto-detects VB Export catalog columns, updates master catalog, and backfills order history.</p>
-          </div></>
-        )}
-      </div>
+      {/* Upload zone (only shown on catalog & listing tabs) */}
+      {activeSubTab !== 'unmerged' && (
+        <>
+          <div
+            className={`border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 py-5 cursor-pointer transition-colors ${
+              dragging ? 'border-primary bg-primary-container' : 'border-border hover:border-primary hover:bg-indigo-50/20'
+            }`}
+            onDragOver={e => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={e => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]); }}
+            onClick={() => fileRef.current?.click()}
+          >
+            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
+              onChange={e => handleFile(e.target.files[0])} />
+            {uploading ? (
+              <><svg className="w-6 h-6 text-primary animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/></svg>
+              <p className="text-sm font-semibold text-primary">Syncing VB Export Catalog into Database…</p></>
+            ) : (
+              <><svg className="w-6 h-6 text-outline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
+              <div className="text-center">
+                <p className="text-xs text-secondary font-medium">Drop <strong>VB EXPORT Product Category.xlsx</strong> or SKU Master file here, or click to browse</p>
+                <p className="text-[11px] text-outline mt-0.5">Auto-detects VB Export catalog columns, updates master catalog, and backfills order history.</p>
+              </div></>
+            )}
+          </div>
 
-      {uploadResult && (
-        <div className="flex items-center gap-4 px-4 py-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs">
-          <span className="text-emerald-600 text-lg">✓</span>
-          <span><strong className="text-emerald-700">{uploadResult.uniqueVbSkus || uploadResult.inserted}</strong> VB SKUs</span>
-          <span><strong className="text-primary">{uploadResult.uniqueListings || uploadResult.updated}</strong> Listings Synced</span>
-          {uploadResult.ordersBackfilled > 0 && <span><strong className="text-indigo-700">{uploadResult.ordersBackfilled.toLocaleString()}</strong> Orders Backfilled</span>}
-        </div>
+          {uploadResult && (
+            <div className="flex items-center gap-4 px-4 py-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs">
+              <span className="text-emerald-600 text-lg">✓</span>
+              <span><strong className="text-emerald-700">{uploadResult.uniqueVbSkus || uploadResult.inserted}</strong> VB SKUs</span>
+              <span><strong className="text-primary">{uploadResult.uniqueListings || uploadResult.updated}</strong> Listings Synced</span>
+              {uploadResult.ordersBackfilled > 0 && <span><strong className="text-indigo-700">{uploadResult.ordersBackfilled.toLocaleString()}</strong> Orders Backfilled</span>}
+            </div>
+          )}
+          {uploadError && <p className="text-xs text-rose-600 font-medium">✗ {uploadError}</p>}
+        </>
       )}
-      {uploadError && <p className="text-xs text-rose-600 font-medium">✗ {uploadError}</p>}
 
       {/* ── Sub-tab 1: VB EXPORT SKUs Catalog ── */}
       {activeSubTab === 'vb_catalog' && (
@@ -1251,6 +1273,14 @@ function SkuMasterSection({ onUpdated }) {
         </div>
       )}
 
+      {/* ── Sub-tab 3: Unmerged Listings (Trigger) ── */}
+      {activeSubTab === 'unmerged' && (
+        <UnmergedListingsSection onMerged={() => {
+          loadRows();
+          if (onUpdated) onUpdated();
+        }} />
+      )}
+
       {/* Edit VB SKU Modal */}
       {editingVbSku && (
         <VbSkuEditModal
@@ -1269,7 +1299,9 @@ function SkuMasterSection({ onUpdated }) {
 // ── MAIN PROFIT ANALYSIS PAGE ──────────────────────────────────────────────────
 export default function ProfitAnalysisPage() {
   const { filters, refreshKey } = useFilters();
-  const [tab,           setTab]           = useState('vbsku'); // Default to VB EXPORT SKU!
+  const [tab,           setTab]           = useState('overview');
+  const [skuViewMode,   setSkuViewMode]   = useState('vb_master'); // 'vb_master' | 'listing_sku'
+  const [cogsSubTab,    setCogsSubTab]    = useState('vb_catalog'); // 'vb_catalog' | 'listings' | 'unmerged'
   const [sellerAccount, setSellerAccount] = useState('all');
   const [editingVbSku,  setEditingVbSku]  = useState(null);
 
@@ -1298,14 +1330,12 @@ export default function ProfitAnalysisPage() {
   const showAccountFilter = accounts.length > 1;
 
   const tabs = [
-    { key: 'vbsku',      label: '⭐ By VB EXPORT SKU' },
     { key: 'overview',   label: 'Overview' },
     { key: 'category',   label: 'By Category' },
-    { key: 'sku',        label: 'Top Listing SKUs' },
-    { key: 'unmerged',   label: 'Unmerged Listings (Trigger)', badge: unmergedCount },
+    { key: 'sku',        label: 'By SKU' },
     { key: 'account',    label: 'By Account' },
     { key: 'zone',       label: 'By Zone' },
-    { key: 'cogsconfig', label: '🔒 COGS & Weight Slabs' },
+    { key: 'cogsconfig', label: 'COGS & Weight Slabs', badge: unmergedCount > 0 ? unmergedCount : undefined },
   ];
 
   return (
@@ -1351,7 +1381,10 @@ export default function ProfitAnalysisPage() {
             </div>
           </div>
           <button
-            onClick={() => setTab('unmerged')}
+            onClick={() => {
+              setTab('cogsconfig');
+              setCogsSubTab('unmerged');
+            }}
             className="px-4 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-sm transition-all shrink-0"
           >
             Review & Merge Listings ({unmergedCount}) →
@@ -1406,25 +1439,7 @@ export default function ProfitAnalysisPage() {
             </div>
           ) : (
             <>
-              {/* ── 1. ⭐ By VB EXPORT SKU ── */}
-              {tab === 'vbsku' && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-base font-bold text-ink">Master Product Profitability (VB EXPORT SKU)</h2>
-                      <p className="text-xs text-secondary mt-0.5">
-                        Consolidated revenue, fees, COGS, and gross profit by master SKU. Click any row to expand merged marketplace listings.
-                      </p>
-                    </div>
-                  </div>
-                  <VbSkuTable
-                    data={data?.byVbSku || []}
-                    onEditSku={(skuItem) => setEditingVbSku(skuItem)}
-                  />
-                </div>
-              )}
-
-              {/* ── 2. Overview ── */}
+              {/* ── 1. Overview ── */}
               {tab === 'overview' && (
                 <div className="space-y-8">
                   <div>
@@ -1450,28 +1465,68 @@ export default function ProfitAnalysisPage() {
                 </div>
               )}
 
-              {/* ── 3. By Category ── */}
+              {/* ── 2. By Category (Consolidated by VB Export Category) ── */}
               {tab === 'category' && (
                 <div className="space-y-4">
-                  <p className="text-sm font-semibold text-ink">Category-wise Profit Breakdown</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-base font-bold text-ink">Category-wise Profit Breakdown</h2>
+                      <p className="text-xs text-secondary mt-0.5">
+                        Consolidated by VB Export Product Category across all sales channels and marketplaces.
+                      </p>
+                    </div>
+                  </div>
                   <CategoryTable data={data?.byCategory} />
                 </div>
               )}
 
-              {/* ── 4. Top Listing SKUs ── */}
+              {/* ── 3. By SKU (Defaults to Master VB EXPORT SKU with Listing SKU toggle) ── */}
               {tab === 'sku' && (
                 <div className="space-y-4">
-                  <p className="text-sm font-semibold text-ink">Top 30 Marketplace Listing SKUs by Revenue</p>
-                  <SkuTable data={data?.bySkuTop} />
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-bold text-ink">
+                        {skuViewMode === 'vb_master' ? 'Master Product Profitability (VB EXPORT SKU)' : 'Top 30 Marketplace Listing SKUs by Revenue'}
+                      </h2>
+                      <p className="text-xs text-secondary mt-0.5">
+                        {skuViewMode === 'vb_master'
+                          ? 'Consolidated revenue, fees, COGS, and gross profit by master VB EXPORT SKU. Click any row to expand merged marketplace listings.'
+                          : 'Individual marketplace listing SKUs ranked by revenue with fees and unit economics.'}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1 p-1 bg-surface-container rounded-xl shrink-0">
+                      <button
+                        onClick={() => setSkuViewMode('vb_master')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                          skuViewMode === 'vb_master' ? 'bg-surface text-ink shadow-sm' : 'text-secondary hover:text-ink'
+                        }`}
+                      >
+                        <span>⭐ Master SKU (VB EXPORT)</span>
+                      </button>
+                      <button
+                        onClick={() => setSkuViewMode('listing_sku')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                          skuViewMode === 'listing_sku' ? 'bg-surface text-ink shadow-sm' : 'text-secondary hover:text-ink'
+                        }`}
+                      >
+                        <span>Listing SKUs</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {skuViewMode === 'vb_master' ? (
+                    <VbSkuTable
+                      data={data?.byVbSku || []}
+                      onEditSku={(skuItem) => setEditingVbSku(skuItem)}
+                    />
+                  ) : (
+                    <SkuTable data={data?.bySkuTop} />
+                  )}
                 </div>
               )}
 
-              {/* ── 5. Unmerged Listings (Trigger Tab) ── */}
-              {tab === 'unmerged' && (
-                <UnmergedListingsSection onMerged={refetch} />
-              )}
-
-              {/* ── 6. By Account ── */}
+              {/* ── 4. By Account ── */}
               {tab === 'account' && (
                 <div className="space-y-4">
                   <p className="text-sm font-semibold text-ink">Account / Brand Comparison</p>
@@ -1479,7 +1534,7 @@ export default function ProfitAnalysisPage() {
                 </div>
               )}
 
-              {/* ── 7. By Zone ── */}
+              {/* ── 5. By Zone ── */}
               {tab === 'zone' && (
                 <div className="space-y-4">
                   <p className="text-sm font-semibold text-ink">Zone-wise Profit Breakdown</p>
@@ -1487,9 +1542,13 @@ export default function ProfitAnalysisPage() {
                 </div>
               )}
 
-              {/* ── 8. COGS & Weight Slabs Master Config ── */}
+              {/* ── 6. COGS & Weight Slabs Master Config ── */}
               {tab === 'cogsconfig' && (
-                <SkuMasterSection onUpdated={refetch} />
+                <SkuMasterSection
+                  onUpdated={refetch}
+                  initialSubTab={cogsSubTab}
+                  unmergedCount={unmergedCount}
+                />
               )}
             </>
           )}

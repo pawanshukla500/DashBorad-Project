@@ -84,6 +84,12 @@ export const REQUIRED_FIELDS = {
     'amount','fulfillment-id','posted-date','posted-date-time','order-item-code',
     'merchant-order-item-id','sku','quantity-purchased','promotion-id',
   ],
+  'sku-master': [
+    'Marketplace SKU', "VB EXPORT SKU's", 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)', 'Marketplace'
+  ],
+  'vb-export-catalog': [
+    'Marketplace SKU', "VB EXPORT SKU's", 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)', 'Marketplace'
+  ],
 };
 
 /** Sample rows for template downloads — 2–3 realistic examples per type */
@@ -117,6 +123,16 @@ const TEMPLATE_SAMPLES = {
   'amazon-settlement': [
     ['12345678901','2026-04-01','2026-04-15','2026-04-16','12500.00','INR','Order','402-1234567-8901234','','','','Amazon.in','ItemPrice','Principal','899.00','AFN','2026-04-06','2026-04-06T10:00:00+00:00','999888777','','SKU-TEE-BLK-M','1',''],
     ['12345678901','2026-04-01','2026-04-15','2026-04-16','12500.00','INR','Order','402-1234567-8901234','','','','Amazon.in','ItemFees','FBAPerUnitFulfillmentFee','-45.00','AFN','2026-04-06','2026-04-06T10:00:00+00:00','999888777','','SKU-TEE-BLK-M','1',''],
+  ],
+  'sku-master': [
+    ['EJ1201-16001_FK', 'EJ1201-16001', 'Kurta Set', 0.5, 450, 'flipkart'],
+    ['EJ1201-16001_M',  'EJ1201-16001', 'Kurta Set', 0.5, 450, 'myntra_ej'],
+    ['7Y-UQCI-Y51D',     'EJ1201-16001', 'Kurta Set', 0.5, 450, 'amazon'],
+  ],
+  'vb-export-catalog': [
+    ['EJ1201-16001_FK', 'EJ1201-16001', 'Kurta Set', 0.5, 450, 'flipkart'],
+    ['EJ1201-16001_M',  'EJ1201-16001', 'Kurta Set', 0.5, 450, 'myntra_ej'],
+    ['7Y-UQCI-Y51D',     'EJ1201-16001', 'Kurta Set', 0.5, 450, 'amazon'],
   ],
 };
 
@@ -1328,18 +1344,22 @@ router.post('/sku-master', upload.single('file'), async (req, res) => {
 
     // Flexible column name matching
     function findCol(...variants) {
+      const clean = s => (s || '').toLowerCase().replace(/[\s_()₹.,/\\-]/g, '');
       for (const v of variants) {
-        const norm = v.toLowerCase().replace(/[\s_-]/g, '');
-        const found = headers.find(h => h.toLowerCase().replace(/[\s_-]/g, '') === norm);
+        const norm = clean(v);
+        const found = headers.find(h => {
+          const hn = clean(h);
+          return hn === norm || hn.startsWith(norm);
+        });
         if (found) return found;
       }
       return null;
     }
 
     const COL_MASTER   = findCol('master sku', 'mastersku', 'master', "vb export sku's", 'vb export sku', 'vb_export_sku');
-    const COL_LISTING  = findCol('listing sku', 'listingsku', 'listing', 'sku', 'marketplace sku', 'marketplace_sku');
+    const COL_LISTING  = findCol('marketplace sku', 'marketplace_sku', 'listing sku', 'listingsku', 'listing', 'sku');
     const COL_MP       = findCol('marketplace', 'channel', 'platform');
-    const COL_CATEGORY = findCol('category', 'product category', 'vb export product category', 'vb_export_category');
+    const COL_CATEGORY = findCol('vb export product category', 'product category', 'vb_export_category', 'category');
     const COL_COGS     = findCol('cogs', 'cost', 'cost of goods', 'cost of goods sold', 'purchase price', 'buying price');
     const COL_LAUNCH   = findCol('launch date', 'launchdate', 'launch', 'launch_date');
     const COL_PRODUCT  = findCol('product name', 'productname', 'product', 'title', 'description');

@@ -578,3 +578,56 @@ To introduce a new marketplace (e.g. `ajio` or `meesho`):
    - The channel appears in the marketplace filter tabs across **Reconciliation**, **Sales**, and **Profit & Loss**.
    - The channel is included in consolidated Excel exports and order drilldown drawers.
 
+---
+
+## 10. VB EXPORT SKU & Product Category Normalization Architecture
+
+### 10.1 Master Hierarchy Invariant
+In multi-channel e-commerce, every marketplace uses its own arbitrary SKU strings, listings, and category names (e.g. Flipkart uses `FSN` + custom listing SKU and categories like "Women Kurtas"; Myntra uses style IDs and categories like "Kurta Sets"; Amazon uses `Merchant SKU`, `ASIN`, `FNSKU`, and category "Apparel").
+To track true unit economics, profitability, COGS, and weight slabs across all portals, the system establishes a master catalog anchored to the internal **VB EXPORT SKU** (`vb_sku_master`).
+
+| Field | Database Column | Purpose |
+| :--- | :--- | :--- |
+| **VB EXPORT SKU** | `vb_sku_master.vb_export_sku` / `orders.vb_export_sku` | Master product identifier (e.g. `EJ1201-16001`). All marketplace listing SKUs map to this master key. |
+| **VB Export Product Category** | `vb_sku_master.category` / `orders.vb_export_category` | Consolidated internal product category (e.g. `Kurta Set`, `Kurti`, `Top`, `Saree`). |
+| **COGS (₹)** | `vb_sku_master.cogs` / `sku_master.cogs` | Cost of goods sold per unit, configured on the master SKU. |
+| **Weight Slab (kg)** | `vb_sku_master.weight_slab` / `sku_master.weight_slab` | Shipping weight tier (e.g. `0.5`, `1.0`, `1.5`, `2.0`), configured on the master SKU. |
+| **Marketplace Listing SKU** | `sku_master.listing_sku` / `orders.sku` | Marketplace-specific listing code from order files. |
+
+### 10.2 Category Normalization Everywhere
+All queries, dashboards, and reports across the application must select, group, and filter by:
+```sql
+COALESCE(o.vb_export_category, o.category, 'Uncategorized')
+```
+This ensures that fragmented marketplace category strings never pollute the dashboard.
+
+### 10.3 Master Catalog Upload Template
+The official upload template (`vb_export_product_category_template.xlsx` and `GET /api/upload/template/sku-master`) contains the following columns:
+1. `Marketplace SKU`
+2. `VB EXPORT SKU's`
+3. `VB Export Product Category`
+4. `Weight Slab (kg)`
+5. `COGS (₹)`
+6. `Marketplace` (defaults to 'all' if omitted)
+
+Ingestion of this template:
+1. Upserts `vb_sku_master` (`vb_export_sku`, `category`, `cogs`, `weight_slab`).
+2. Upserts `sku_master` (`listing_sku`, `master_sku`, `category`, `cogs`, `weight_slab`, `marketplace`).
+3. Automatically backfills `orders.vb_export_sku` and `orders.vb_export_category` across all historical orders.
+
+### 10.4 Unmerged Listings Trigger & Workflow
+Any order row where `orders.vb_export_sku` is NULL or `orders.sku` does not have a matching entry in `sku_master` triggers an alert banner in the UI:
+- Visual notification with count of unmerged SKUs, affected orders, and gross revenue.
+- 1-click navigation into the Unmerged Listings queue inside the `COGS & Weight Slabs` tab.
+- Inline modal with auto-suggested VB EXPORT SKU based on prefix/suffix stripping to merge the listing SKU into the master catalog in 1 click.
+
+### 10.5 UI Layout & Anti-Clutter Invariant
+Profit Analysis strictly maintains 6 top-level tabs:
+1. `Overview`: P&L trend, profit waterfall, marketplace fee pie chart, and fee summary.
+2. `By Category`: Breakdown grouped by consolidated VB Export Category.
+3. `By SKU`: Master product profitability with in-tab toggle between `⭐ Master SKU (VB EXPORT)` and `Marketplace Listing SKU`.
+4. `By Account`: Brand and seller account comparison (e.g. Myntra VB vs Myntra EJ).
+5. `By Zone`: Shipping zone profitability.
+6. `COGS & Weight Slabs`: Master Catalog configuration, Listing Mappings, and Unmerged Listings trigger.
+
+

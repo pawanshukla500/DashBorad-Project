@@ -51,42 +51,58 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
   `);
 
   // Parse and deduplicate
-  const vbMasterMap = new Map(); // vb_export_sku -> category
-  const listingMap = new Map();  // listing_sku -> { master_sku, category }
+  const vbMasterMap = new Map(); // vb_export_sku -> { category, cogs, weightSlab }
+  const listingMap = new Map();  // listing_sku -> { master_sku, category, cogs, weightSlab }
 
   for (const r of rawRows) {
     const listingSku = r['Marketplace SKU'] ? String(r['Marketplace SKU']).trim() : '';
     const masterSku = (r["VB EXPORT SKU's"] || r['VB Export SKU'] || r['Master SKU']) ? String(r["VB EXPORT SKU's"] || r['VB Export SKU'] || r['Master SKU']).trim() : '';
     const category = (r['VB Export Product Category'] || r['Category']) ? String(r['VB Export Product Category'] || r['Category']).trim() : '';
 
+    const rawCogs = r['COGS (₹)'] ?? r['COGS'] ?? r['cogs'] ?? r['Cost'] ?? null;
+    const cogs = rawCogs != null && !isNaN(rawCogs) && Number(rawCogs) >= 0 ? Number(rawCogs) : null;
+
+    const rawWeight = r['Weight Slab (kg)'] ?? r['Weight Slab'] ?? r['weight_slab'] ?? r['Weight'] ?? null;
+    const weightSlab = rawWeight != null && !isNaN(rawWeight) && Number(rawWeight) > 0 ? Number(rawWeight) : null;
+
     if (!listingSku || !masterSku) continue;
 
     if (!vbMasterMap.has(masterSku)) {
-      vbMasterMap.set(masterSku, category || null);
-    } else if (category && !vbMasterMap.get(masterSku)) {
-      vbMasterMap.set(masterSku, category);
+      vbMasterMap.set(masterSku, { category: category || null, cogs, weightSlab });
+    } else {
+      const existing = vbMasterMap.get(masterSku);
+      if (category && !existing.category) existing.category = category;
+      if (cogs !== null && (!existing.cogs || existing.cogs === 0)) existing.cogs = cogs;
+      if (weightSlab !== null && !existing.weightSlab) existing.weightSlab = weightSlab;
     }
 
-    listingMap.set(listingSku, { masterSku, category: category || null });
+    listingMap.set(listingSku, { masterSku, category: category || null, cogs, weightSlab });
   }
 
   console.log(`[syncVbExportCatalog] Parsed ${vbMasterMap.size} unique VB EXPORT SKUs and ${listingMap.size} unique Marketplace listing mappings.`);
 
   // 1. Upsert into vb_sku_master
-  const vbRows = Array.from(vbMasterMap.entries()).map(([vbSku, cat]) => [vbSku, cat]);
+  const vbRows = Array.from(vbMasterMap.entries()).map(([vbSku, info]) => [
+    vbSku,
+    info.category,
+    info.cogs || 0,
+    info.weightSlab || null
+  ]);
   let vbUpserted = 0;
-  await forEachDbBatch(vbRows, 2, async batch => {
+  await forEachDbBatch(vbRows, 4, async batch => {
     const values = [];
     const groups = batch.map(row => {
       const start = values.length;
-      values.push(row[0], row[1]);
-      return `($${start + 1}, $${start + 2})`;
+      values.push(row[0], row[1], row[2], row[3]);
+      return `($${start + 1}, $${start + 2}, $${start + 3}, $${start + 4})`;
     });
     const res = await db.query(`
-      INSERT INTO vb_sku_master (vb_export_sku, category)
+      INSERT INTO vb_sku_master (vb_export_sku, category, cogs, weight_slab)
       VALUES ${groups.join(', ')}
       ON CONFLICT (vb_export_sku) DO UPDATE
       SET category = COALESCE(EXCLUDED.category, vb_sku_master.category),
+          cogs = CASE WHEN EXCLUDED.cogs > 0 THEN EXCLUDED.cogs ELSE vb_sku_master.cogs END,
+          weight_slab = COALESCE(EXCLUDED.weight_slab, vb_sku_master.weight_slab),
           updated_at = NOW()
     `, values);
     vbUpserted += res.rowCount;
@@ -99,22 +115,26 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
     'all',
     listingSku,
     info.category,
+    info.cogs,
+    info.weightSlab,
   ]);
 
   let skuMasterUpserted = 0;
-  await forEachDbBatch(listingRows, 4, async batch => {
+  await forEachDbBatch(listingRows, 6, async batch => {
     const values = [];
     const groups = batch.map(row => {
       const start = values.length;
-      values.push(row[0], row[1], row[2], row[3]);
-      return `($${start + 1}, $${start + 2}, $${start + 3}, $${start + 4})`;
+      values.push(row[0], row[1], row[2], row[3], row[4], row[5]);
+      return `($${start + 1}, $${start + 2}, $${start + 3}, $${start + 4}, $${start + 5}, $${start + 6})`;
     });
     const res = await db.query(`
-      INSERT INTO sku_master (master_sku, marketplace, listing_sku, category)
+      INSERT INTO sku_master (master_sku, marketplace, listing_sku, category, cogs, weight_slab)
       VALUES ${groups.join(', ')}
       ON CONFLICT (marketplace, listing_sku) DO UPDATE
       SET master_sku = EXCLUDED.master_sku,
-          category = COALESCE(EXCLUDED.category, sku_master.category)
+          category = COALESCE(EXCLUDED.category, sku_master.category),
+          cogs = CASE WHEN EXCLUDED.cogs > 0 THEN EXCLUDED.cogs ELSE sku_master.cogs END,
+          weight_slab = COALESCE(EXCLUDED.weight_slab, sku_master.weight_slab)
     `, values);
     skuMasterUpserted += res.rowCount;
   });
