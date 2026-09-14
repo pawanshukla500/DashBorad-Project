@@ -2,6 +2,12 @@ import pg from 'pg';
 
 const { Pool } = pg;
 
+// Parse PostgreSQL DATE (OID 1082) directly as string 'YYYY-MM-DD'
+// rather than instantiating JavaScript Date objects which shift timezones and serialize with ISO timestamps.
+if (pg.types?.setTypeParser) {
+  pg.types.setTypeParser(1082, (val) => val);
+}
+
 // The application must never pretend that business data is empty when the
 // database is unavailable. Instead, reads retry briefly and the pool keeps
 // recovering in the background until the configured database is reachable again.

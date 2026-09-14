@@ -382,6 +382,7 @@ router.get('/outstanding/orders', async (req, res) => {
     const search = (req.query.search || '').trim();
     const startDate = req.query.startDate || null;
     const endDate = req.query.endDate || null;
+    const type = (req.query.type || req.query.tab || 'unsettled').toLowerCase();
 
     let filterSql = '';
     const vals = [];
@@ -390,7 +391,14 @@ router.get('/outstanding/orders', async (req, res) => {
     if (sellerAcc && sellerAcc !== 'all') filterSql += ` AND o.seller_account = $${vals.push(sellerAcc)}`;
     if (startDate) filterSql += ` AND o.order_date >= $${vals.push(startDate)}`;
     if (endDate) filterSql += ` AND o.order_date <= $${vals.push(endDate)}`;
-    if (status && status !== 'all') filterSql += ` AND o.orders_status = $${vals.push(status)}`;
+
+    if (type === 'returns') {
+      filterSql += ` AND (o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') OR o.return_type IS NOT NULL OR rt.order_item_id IS NOT NULL)`;
+      if (status && status !== 'all') filterSql += ` AND o.orders_status = $${vals.push(status)}`;
+    } else {
+      filterSql += ` AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND rt.order_item_id IS NULL`;
+      if (status && status !== 'all') filterSql += ` AND o.orders_status = $${vals.push(status)}`;
+    }
 
     if (agingBucket && agingBucket !== 'all') {
       const b = String(agingBucket).toLowerCase().replace(/\s+/g, '').replace(/days/g, '');
@@ -414,7 +422,8 @@ router.get('/outstanding/orders', async (req, res) => {
     const [data, cnt] = await Promise.all([
       pool.query(`
         SELECT
-          o.order_item_id, o.order_id, o.order_date,
+          o.order_item_id, o.order_id,
+          TO_CHAR(o.order_date, 'YYYY-MM-DD') AS order_date,
           COALESCE(CURRENT_DATE - o.order_date::date, 999) AS days_outstanding,
           CASE
             WHEN CURRENT_DATE - o.order_date::date <= 15 THEN '0-15 days'
@@ -425,7 +434,9 @@ router.get('/outstanding/orders', async (req, res) => {
           o.sku, o.category, o.fulfilment_type,
           o.orders_status, o.final_invoice_amount,
           o.qty, o.weight_slab, o.shipping_zone, o.marketplace, o.seller_account,
-          rt.return_status, rt.return_type AS ret_type, rt.return_reason
+          rt.return_status,
+          COALESCE(rt.return_type, o.return_type) AS ret_type,
+          rt.return_reason
         FROM orders o
         LEFT JOIN order_returns rt ON rt.order_item_id = o.order_item_id
         WHERE NOT EXISTS (
@@ -439,6 +450,7 @@ router.get('/outstanding/orders', async (req, res) => {
           COUNT(*) AS total,
           ROUND(COALESCE(SUM(o.final_invoice_amount), 0), 2) AS total_amount
         FROM orders o
+        LEFT JOIN order_returns rt ON rt.order_item_id = o.order_item_id
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
         ) ${filterSql}
@@ -451,6 +463,7 @@ router.get('/outstanding/orders', async (req, res) => {
       total_amount: Number(cnt.rows[0].total_amount || 0),
       page,
       pageSize,
+      type,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

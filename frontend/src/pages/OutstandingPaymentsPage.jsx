@@ -175,8 +175,9 @@ export default function OutstandingPaymentsPage() {
     }
   };
 
-  // 3. Fetch Orders Drilldown
+  // 3. Fetch Orders / Returns Drilldown
   const loadOrders = useCallback(async (page = 1) => {
+    if (activeDrilldownTab === 'invoices') return;
     setOrdersLoading(true);
     try {
       const res = await fetchOutstandingOrders({
@@ -185,6 +186,7 @@ export default function OutstandingPaymentsPage() {
         aging_bucket: agingFilter || undefined,
         status: statusFilter || undefined,
         search: orderSearch ? orderSearch.trim() : undefined,
+        type: activeDrilldownTab === 'returns' ? 'returns' : 'unsettled',
         page,
         pageSize: ordersPagination.limit,
       });
@@ -200,11 +202,13 @@ export default function OutstandingPaymentsPage() {
     } finally {
       setOrdersLoading(false);
     }
-  }, [selectedChannel, selectedAccount, agingFilter, statusFilter, orderSearch, ordersPagination.limit]);
+  }, [selectedChannel, selectedAccount, agingFilter, statusFilter, orderSearch, activeDrilldownTab, ordersPagination.limit]);
 
   useEffect(() => {
-    loadOrders(1);
-  }, [selectedChannel, selectedAccount, agingFilter, statusFilter]);
+    if (activeDrilldownTab === 'orders' || activeDrilldownTab === 'returns') {
+      loadOrders(1);
+    }
+  }, [selectedChannel, selectedAccount, agingFilter, statusFilter, activeDrilldownTab]);
 
   // Debounced search
   useEffect(() => {
@@ -582,7 +586,12 @@ export default function OutstandingPaymentsPage() {
                         )}
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-slate-900">
-                        {formatCurrency(channel.returns_amount || 0)}
+                        <div>{formatCurrency(channel.returns_amount || 0)}</div>
+                        {(channel.returns_orders_count || 0) > 0 && (
+                          <div className="text-[10px] text-slate-400 font-normal">
+                            {channel.returns_orders_count.toLocaleString('en-IN')} returns
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-slate-700">
                         {formatCurrency(channel.marketplace_fees || 0)}
@@ -637,7 +646,12 @@ export default function OutstandingPaymentsPage() {
                             )}
                           </td>
                           <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
-                            {formatCurrency(acc.returns_amount || 0)}
+                            <div>{formatCurrency(acc.returns_amount || 0)}</div>
+                            {(acc.returns_orders_count || 0) > 0 && (
+                              <div className="text-[10px] text-slate-400 font-normal">
+                                {acc.returns_orders_count.toLocaleString('en-IN')} returns
+                              </div>
+                            )}
                           </td>
                           <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
                             {formatCurrency(acc.marketplace_fees || 0)}
@@ -676,7 +690,14 @@ export default function OutstandingPaymentsPage() {
                     </div>
                   )}
                 </td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.returns_amount || 0)}</td>
+                <td className="py-3 px-4 text-right font-mono">
+                  <div>{formatCurrency(b2cTotal.returns_amount || 0)}</div>
+                  {(b2cTotal.returns_orders_count || 0) > 0 && (
+                    <div className="text-[10px] text-slate-500 font-normal">
+                      {b2cTotal.returns_orders_count.toLocaleString('en-IN')} returns
+                    </div>
+                  )}
+                </td>
                 <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.marketplace_fees || 0)}</td>
                 <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.payment_received || 0)}</td>
                 <td className="py-3 px-4 text-right font-mono font-extrabold">{formatCurrency(b2cTotal.total || 0)}</td>
@@ -809,7 +830,12 @@ export default function OutstandingPaymentsPage() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setActiveDrilldownTab('orders')}
+              onClick={() => {
+                setActiveDrilldownTab('orders');
+                setStatusFilter('');
+                setAgingFilter('');
+                setOrdersPagination(p => ({ ...p, page: 1 }));
+              }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
                 activeDrilldownTab === 'orders'
                   ? 'bg-primary text-white shadow-xs'
@@ -817,11 +843,32 @@ export default function OutstandingPaymentsPage() {
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">receipt</span>
-              Unsettled Orders ({num(ordersPagination.total)})
+              Unsettled Orders {activeDrilldownTab === 'orders' ? `(${num(ordersPagination.total)})` : ''}
             </button>
             <button
               type="button"
-              onClick={() => setActiveDrilldownTab('invoices')}
+              onClick={() => {
+                setActiveDrilldownTab('returns');
+                setStatusFilter('');
+                setAgingFilter('');
+                setOrdersPagination(p => ({ ...p, page: 1 }));
+              }}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                activeDrilldownTab === 'returns'
+                  ? 'bg-rose-600 text-white shadow-xs'
+                  : 'text-secondary hover:text-rose-700 hover:bg-rose-50'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">assignment_return</span>
+              Returns & Cancellations {activeDrilldownTab === 'returns' ? `(${num(ordersPagination.total)})` : ''}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveDrilldownTab('invoices');
+                setStatusFilter('');
+                setAgingFilter('');
+              }}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
                 activeDrilldownTab === 'invoices'
                   ? 'bg-primary text-white shadow-xs'
@@ -868,7 +915,7 @@ export default function OutstandingPaymentsPage() {
 
         {/* Filter controls row */}
         <div className="p-4 border-b border-slate-200 bg-white flex items-center justify-between flex-wrap gap-3">
-          {activeDrilldownTab === 'orders' ? (
+          {activeDrilldownTab !== 'invoices' ? (
             <>
               <div className="relative flex-1 min-w-[240px] max-w-md">
                 <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
@@ -893,32 +940,46 @@ export default function OutstandingPaymentsPage() {
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
-                {/* Aging Bucket Dropdown */}
-                <select
-                  value={agingFilter}
-                  onChange={e => setAgingFilter(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                >
-                  <option value="">All Aging Tiers</option>
-                  <option value="0-15">0 – 15 Days (Normal)</option>
-                  <option value="16-30">16 – 30 Days (Due Soon)</option>
-                  <option value="31-60">31 – 60 Days (Overdue)</option>
-                  <option value="60+">60+ Days (High Risk)</option>
-                </select>
+                {/* Aging Bucket Dropdown (Unsettled Orders only) */}
+                {activeDrilldownTab === 'orders' && (
+                  <select
+                    value={agingFilter}
+                    onChange={e => setAgingFilter(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  >
+                    <option value="">All Aging Tiers</option>
+                    <option value="0-15">0 – 15 Days (Normal)</option>
+                    <option value="16-30">16 – 30 Days (Due Soon)</option>
+                    <option value="31-60">31 – 60 Days (Overdue)</option>
+                    <option value="60+">60+ Days (High Risk)</option>
+                  </select>
+                )}
 
                 {/* Status Dropdown */}
-                <select
-                  value={statusFilter}
-                  onChange={e => setStatusFilter(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                >
-                  <option value="">All Statuses</option>
-                  <option value="Delivered">Delivered</option>
-                  <option value="Shipped">Shipped</option>
-                  <option value="Cancelled">Cancelled</option>
-                  <option value="Returned">Returned</option>
-                  <option value="RTO">RTO</option>
-                </select>
+                {activeDrilldownTab === 'returns' ? (
+                  <select
+                    value={statusFilter}
+                    onChange={e => setStatusFilter(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  >
+                    <option value="">All Return Statuses</option>
+                    <option value="Cancelled">Cancelled</option>
+                    <option value="RTO">RTO</option>
+                    <option value="Return Initiated">Return Initiated</option>
+                    <option value="Return Orders">Return Orders</option>
+                  </select>
+                ) : (
+                  <select
+                    value={statusFilter}
+                    onChange={e => setStatusFilter(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  >
+                    <option value="">All Active Statuses</option>
+                    <option value="Delivered">Delivered</option>
+                    <option value="SH">Shipped (SH)</option>
+                    <option value="PK">Packed (PK)</option>
+                  </select>
+                )}
 
                 {/* Page Size */}
                 <select
@@ -953,21 +1014,43 @@ export default function OutstandingPaymentsPage() {
           )}
         </div>
 
-        {/* Tab 1: Unsettled Orders Table */}
-        {activeDrilldownTab === 'orders' && (
+        {/* Tab 1 & 2: Orders / Returns Drilldown Table */}
+        {(activeDrilldownTab === 'orders' || activeDrilldownTab === 'returns') && (
           <div>
+            {/* Info callout clarifying accounting treatment */}
+            <div className={`mx-4 mt-3 p-3 rounded-lg border flex items-center gap-2.5 text-xs ${
+              activeDrilldownTab === 'returns'
+                ? 'bg-rose-50/70 border-rose-200 text-rose-800'
+                : 'bg-blue-50/70 border-blue-200 text-blue-800'
+            }`}>
+              <span className="material-symbols-outlined text-[18px]">
+                {activeDrilldownTab === 'returns' ? 'assignment_return' : 'info'}
+              </span>
+              <span>
+                {activeDrilldownTab === 'returns' ? (
+                  <>
+                    <strong>Returns & Cancellations:</strong> These orders were cancelled or returned (including Courier Returns marked as <em>Cancel Before Dispached</em>). <strong>No payment will be received</strong> for these orders. They are accounted for under Returns and deducted from gross revenue (Net Outstanding = ₹0).
+                  </>
+                ) : (
+                  <>
+                    <strong>Unsettled Delivered Orders:</strong> Active orders dispatched and delivered that are awaiting payment settlement from marketplaces. All cancelled orders and returns are strictly excluded.
+                  </>
+                )}
+              </span>
+            </div>
+
             {ordersLoading ? (
               <div className="flex min-h-[220px] items-center justify-center">
                 <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold text-secondary">
                   <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-primary" />
-                  Loading orders...
+                  Loading {activeDrilldownTab === 'returns' ? 'returns' : 'orders'}...
                 </div>
               </div>
             ) : orders.length === 0 ? (
               <EmptyState
                 icon="check_circle"
-                title="No Outstanding Orders"
-                description={orderSearch || agingFilter || statusFilter ? "No orders match your filter criteria." : "All orders for this selection are settled."}
+                title={activeDrilldownTab === 'returns' ? "No Returns or Cancellations" : "No Outstanding Orders"}
+                description={orderSearch || agingFilter || statusFilter ? "No orders match your filter criteria." : (activeDrilldownTab === 'returns' ? "No return records found for this selection." : "All delivered orders for this selection are settled.")}
               />
             ) : (
               <div className="overflow-x-auto">
@@ -981,8 +1064,16 @@ export default function OutstandingPaymentsPage() {
                       <th className="py-2.5 px-4">Account</th>
                       <th className="py-2.5 px-4">SKU / Category</th>
                       <th className="py-2.5 px-4">Status</th>
+                      {activeDrilldownTab === 'returns' && (
+                        <>
+                          <th className="py-2.5 px-4">Return Type</th>
+                          <th className="py-2.5 px-4">Return Reason</th>
+                        </>
+                      )}
                       <th className="py-2.5 px-4 text-right">Invoice Amount</th>
-                      <th className="py-2.5 px-4 text-center">Aging Tier</th>
+                      <th className="py-2.5 px-4 text-center">
+                        {activeDrilldownTab === 'returns' ? 'Payment Expected' : 'Aging Tier'}
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 text-slate-800">
@@ -995,7 +1086,7 @@ export default function OutstandingPaymentsPage() {
                           {o.order_id}
                         </td>
                         <td className="py-2.5 px-4 whitespace-nowrap">
-                          <p className="font-medium text-slate-900">{o.order_date || '—'}</p>
+                          <p className="font-medium text-slate-900">{o.order_date ? String(o.order_date).slice(0, 10) : '—'}</p>
                           <p className="text-[10px] text-slate-400">{o.days_outstanding}d ago</p>
                         </td>
                         <td className="py-2.5 px-4 whitespace-nowrap">
@@ -1012,17 +1103,39 @@ export default function OutstandingPaymentsPage() {
                           <p className="text-[10px] text-slate-400 truncate">{o.category || '—'}</p>
                         </td>
                         <td className="py-2.5 px-4 whitespace-nowrap">
-                          <span className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold border bg-slate-50 border-slate-200 capitalize text-slate-700">
+                          <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold border capitalize ${
+                            o.orders_status === 'Cancelled' ? 'bg-rose-50 border-rose-200 text-rose-700' :
+                            o.orders_status === 'RTO' ? 'bg-amber-50 border-amber-200 text-amber-700' :
+                            'bg-slate-50 border-slate-200 text-slate-700'
+                          }`}>
                             {o.orders_status || 'Unknown'}
                           </span>
                         </td>
+                        {activeDrilldownTab === 'returns' && (
+                          <>
+                            <td className="py-2.5 px-4 whitespace-nowrap">
+                              <span className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium bg-slate-100 text-slate-800">
+                                {o.ret_type || '—'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-4 max-w-[220px] truncate text-slate-600" title={o.return_reason || ''}>
+                              {o.return_reason || '—'}
+                            </td>
+                          </>
+                        )}
                         <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-900">
                           {formatCurrency(o.final_invoice_amount)}
                         </td>
                         <td className="py-2.5 px-4 text-center whitespace-nowrap font-mono text-[11px]">
-                          <span className="inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium border bg-slate-50 border-slate-200">
-                            {o.aging_bucket}
-                          </span>
+                          {activeDrilldownTab === 'returns' ? (
+                            <span className="inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold border bg-emerald-50 border-emerald-200 text-emerald-700">
+                              ₹0 Due (Returned)
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium border bg-slate-50 border-slate-200">
+                              {o.aging_bucket}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}

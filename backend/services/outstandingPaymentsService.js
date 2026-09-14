@@ -122,7 +122,19 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       COALESCE(o.seller_account, 'default') AS seller_account,
       COUNT(DISTINCT o.order_item_id) AS total_orders_count,
       ROUND(COALESCE(SUM(o.final_invoice_amount), 0), 2) AS total_orders_amount,
-      ROUND(COALESCE(SUM(ost.refund_amount), 0), 2) AS returns_amount,
+
+      -- Returns Amount: settled refund amount from settlement + un-settled return invoice amounts from orders/returns
+      ROUND(COALESCE(SUM(
+        CASE 
+          WHEN COALESCE(ost.refund_amount, 0) > 0 THEN ost.refund_amount
+          WHEN o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') 
+               OR o.return_type IS NOT NULL 
+               OR rt.order_item_id IS NOT NULL 
+            THEN o.final_invoice_amount
+          ELSE 0
+        END
+      ), 0), 2) AS returns_amount,
+
       ROUND(COALESCE(SUM(ost.net_bank), 0), 2) AS payment_received,
       ROUND(COALESCE(SUM(
         COALESCE(ost.commission, 0) + 
@@ -136,14 +148,89 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
         COALESCE(ost.tds, 0) + 
         COALESCE(ost.gst_on_mp_fees, 0)
       ), 0), 2) AS marketplace_fees,
-      COUNT(CASE WHEN ost.order_item_id IS NULL THEN 1 END) AS unsettled_orders_count,
-      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS unsettled_order_amount,
-      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL AND (CURRENT_DATE - o.order_date::date) > 60 THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS aging_60_plus,
-      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL AND (CURRENT_DATE - o.order_date::date) BETWEEN 31 AND 60 THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS aging_31_60,
-      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL AND (CURRENT_DATE - o.order_date::date) BETWEEN 16 AND 30 THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS aging_16_30,
-      ROUND(COALESCE(SUM(CASE WHEN ost.order_item_id IS NULL AND (CURRENT_DATE - o.order_date::date) <= 15 THEN o.final_invoice_amount ELSE 0 END), 0), 2) AS aging_0_15
+
+      -- Delivered Unsettled Orders: active orders pending settlement (excluding returns & cancellations)
+      COUNT(CASE 
+        WHEN ost.order_item_id IS NULL 
+         AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+         AND o.return_type IS NULL 
+         AND rt.order_item_id IS NULL 
+        THEN 1 
+      END) AS unsettled_orders_count,
+
+      ROUND(COALESCE(SUM(
+        CASE 
+          WHEN ost.order_item_id IS NULL 
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.return_type IS NULL 
+           AND rt.order_item_id IS NULL 
+          THEN o.final_invoice_amount 
+          ELSE 0 
+        END
+      ), 0), 2) AS unsettled_order_amount,
+
+      ROUND(COALESCE(SUM(
+        CASE 
+          WHEN ost.order_item_id IS NULL 
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.return_type IS NULL 
+           AND rt.order_item_id IS NULL 
+           AND (CURRENT_DATE - o.order_date::date) > 60 
+          THEN o.final_invoice_amount 
+          ELSE 0 
+        END
+      ), 0), 2) AS aging_60_plus,
+
+      ROUND(COALESCE(SUM(
+        CASE 
+          WHEN ost.order_item_id IS NULL 
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.return_type IS NULL 
+           AND rt.order_item_id IS NULL 
+           AND (CURRENT_DATE - o.order_date::date) BETWEEN 31 AND 60 
+          THEN o.final_invoice_amount 
+          ELSE 0 
+        END
+      ), 0), 2) AS aging_31_60,
+
+      ROUND(COALESCE(SUM(
+        CASE 
+          WHEN ost.order_item_id IS NULL 
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.return_type IS NULL 
+           AND rt.order_item_id IS NULL 
+           AND (CURRENT_DATE - o.order_date::date) BETWEEN 16 AND 30 
+          THEN o.final_invoice_amount 
+          ELSE 0 
+        END
+      ), 0), 2) AS aging_16_30,
+
+      ROUND(COALESCE(SUM(
+        CASE 
+          WHEN ost.order_item_id IS NULL 
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.return_type IS NULL 
+           AND rt.order_item_id IS NULL 
+           AND (CURRENT_DATE - o.order_date::date) <= 15 
+          THEN o.final_invoice_amount 
+          ELSE 0 
+        END
+      ), 0), 2) AS aging_0_15,
+
+      COUNT(CASE 
+        WHEN COALESCE(ost.refund_amount, 0) > 0 
+          OR o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') 
+          OR o.return_type IS NOT NULL 
+          OR rt.order_item_id IS NOT NULL 
+        THEN 1 
+      END) AS returns_orders_count
+
     FROM orders o
     LEFT JOIN ${ORDER_SETTLEMENT_TOTALS_TABLE} ost ON ost.order_item_id = o.order_item_id
+    LEFT JOIN (
+      SELECT DISTINCT ON (order_item_id) order_item_id, return_type, return_reason
+      FROM order_returns
+    ) rt ON rt.order_item_id = o.order_item_id
     GROUP BY LOWER(o.marketplace), COALESCE(o.seller_account, 'default')
     ORDER BY LOWER(o.marketplace), seller_account
   `);
@@ -217,6 +304,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
 
       const ejOrdersCount = Number(ejRow?.total_orders_count || 0);
       const ejOrdersAmt = Number(ejRow?.total_orders_amount || 0);
+      const ejReturnsCount = Number(ejRow?.returns_orders_count || 0);
       const ejReturns = Number(ejRow?.returns_amount || 0);
       const ejPaid = Number(ejRow?.payment_received || 0);
       const ejFees = Number(ejRow?.marketplace_fees || 0);
@@ -228,6 +316,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
 
       const vbOrdersCount = Number(vbRow?.total_orders_count || 0);
       const vbOrdersAmt = Number(vbRow?.total_orders_amount || 0);
+      const vbReturnsCount = Number(vbRow?.returns_orders_count || 0);
       const vbReturns = Number(vbRow?.returns_amount || 0);
       const vbPaid = Number(vbRow?.payment_received || 0);
       const vbFees = Number(vbRow?.marketplace_fees || 0);
@@ -239,6 +328,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
 
       const totalOrdersCount = ejOrdersCount + vbOrdersCount;
       const totalOrdersAmt = ejOrdersAmt + vbOrdersAmt;
+      const totalReturnsCount = ejReturnsCount + vbReturnsCount;
       const totalReturns = ejReturns + vbReturns;
       const totalPaid = ejPaid + vbPaid;
       const totalFees = ejFees + vbFees;
@@ -253,6 +343,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
         icon: 'myntra',
         total_orders_count: totalOrdersCount,
         total_orders_amount: totalOrdersAmt,
+        returns_orders_count: totalReturnsCount,
         returns_amount: totalReturns,
         marketplace_fees: totalFees,
         payment_received: totalPaid,
@@ -273,6 +364,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
             seller_id: '45833',
             total_orders_count: ejOrdersCount,
             total_orders_amount: ejOrdersAmt,
+            returns_orders_count: ejReturnsCount,
             returns_amount: ejReturns,
             marketplace_fees: ejFees,
             payment_received: ejPaid,
@@ -293,6 +385,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
             seller_id: '10708',
             total_orders_count: vbOrdersCount,
             total_orders_amount: vbOrdersAmt,
+            returns_orders_count: vbReturnsCount,
             returns_amount: vbReturns,
             marketplace_fees: vbFees,
             payment_received: vbPaid,
@@ -315,6 +408,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     // Generic channel aggregation from live DB
     let chOrdersCount = 0;
     let chOrdersAmt = 0;
+    let chReturnsCount = 0;
     let chReturns = 0;
     let chPaid = 0;
     let chFees = 0;
@@ -328,6 +422,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     for (const r of rows) {
       const oc = Number(r.total_orders_count || 0);
       const oa = Number(r.total_orders_amount || 0);
+      const rc = Number(r.returns_orders_count || 0);
       const ret = Number(r.returns_amount || 0);
       const pd = Number(r.payment_received || 0);
       const fee = Number(r.marketplace_fees || 0);
@@ -339,6 +434,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
 
       chOrdersCount += oc;
       chOrdersAmt += oa;
+      chReturnsCount += rc;
       chReturns += ret;
       chPaid += pd;
       chFees += fee;
@@ -354,6 +450,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
           account_name: `${channelName} (${r.seller_account})`,
           total_orders_count: oc,
           total_orders_amount: oa,
+          returns_orders_count: rc,
           returns_amount: ret,
           marketplace_fees: fee,
           payment_received: pd,
@@ -383,6 +480,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       icon: chKey,
       total_orders_count: chOrdersCount,
       total_orders_amount: chOrdersAmt,
+      returns_orders_count: chReturnsCount,
       returns_amount: chReturns,
       marketplace_fees: chFees,
       payment_received: chPaid,
@@ -405,6 +503,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
   const b2cTotal = {
     total_orders_count: 0,
     total_orders_amount: 0,
+    returns_orders_count: 0,
     returns_amount: 0,
     marketplace_fees: 0,
     payment_received: 0,
@@ -422,6 +521,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
   for (const c of b2cChannels) {
     b2cTotal.total_orders_count += (c.total_orders_count || 0);
     b2cTotal.total_orders_amount += (c.total_orders_amount || 0);
+    b2cTotal.returns_orders_count += (c.returns_orders_count || 0);
     b2cTotal.returns_amount += (c.returns_amount || 0);
     b2cTotal.marketplace_fees += (c.marketplace_fees || 0);
     b2cTotal.payment_received += (c.payment_received || 0);
