@@ -9,7 +9,7 @@ import {
 } from '../api/client';
 import OrderDetailDrawer, { OrderIdCell } from '../components/OrderDetailDrawer';
 import EmptyState from '../components/EmptyState';
-import { currencyFull, currencyCompact, num } from '../utils/format';
+import { num } from '../utils/format';
 import { exportXlsx } from '../utils/exportXlsx';
 
 // Currency formatter for standard Indian Rupees
@@ -374,7 +374,7 @@ export default function OutstandingPaymentsPage() {
         {/* TOTAL ORDERS */}
         <div className="rounded-xl border-2 border-[#38bdf8] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
+            <span className="text-sm font-semibold uppercase tracking-wider text-secondary">
               TOTAL ORDERS
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#bae6fd] bg-sky-50 text-sky-600">
@@ -382,17 +382,17 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[22px] font-bold tracking-tight text-ink tabular-nums">
+            <span className="font-sans text-2xl font-bold tracking-tight text-ink tabular-nums">
               {formatCurrency(kpis.total_orders || kpis.unsettled || 0)}
             </span>
-            <div className="text-[10px] text-slate-400 mt-0.5">Gross order value</div>
+            <div className="text-xs text-gray-500 mt-0.5">Gross order value</div>
           </div>
         </div>
 
         {/* RETURNS */}
         <div className="rounded-xl border-2 border-[#f87171] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
+            <span className="text-sm font-semibold uppercase tracking-wider text-secondary">
               RETURNS
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#fecaca] bg-rose-50 text-rose-500">
@@ -400,17 +400,17 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[22px] font-bold tracking-tight text-ink tabular-nums">
+            <span className="font-sans text-2xl font-bold tracking-tight text-ink tabular-nums">
               {formatCurrency(kpis.returns || 0)}
             </span>
-            <div className="text-[10px] text-slate-400 mt-0.5">Customer & RTO refunds</div>
+            <div className="text-xs text-gray-500 mt-0.5">Customer & RTO refunds</div>
           </div>
         </div>
 
         {/* MARKETPLACE FEES */}
         <div className="rounded-xl border-2 border-[#c084fc] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
+            <span className="text-sm font-semibold uppercase tracking-wider text-secondary">
               MARKETPLACE FEES
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#f3e8ff] bg-purple-50 text-purple-600">
@@ -418,17 +418,17 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[22px] font-bold tracking-tight text-ink tabular-nums">
+            <span className="font-sans text-2xl font-bold tracking-tight text-ink tabular-nums">
               {formatCurrency(kpis.marketplace_fees || 0)}
             </span>
-            <div className="text-[10px] text-slate-400 mt-0.5">Commissions & taxes</div>
+            <div className="text-xs text-gray-500 mt-0.5">Commissions & taxes</div>
           </div>
         </div>
 
         {/* PAYMENT RECEIVED */}
         <div className="rounded-xl border-2 border-[#4ade80] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-secondary">
+            <span className="text-sm font-semibold uppercase tracking-wider text-secondary">
               PAYMENT RECEIVED
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#dcfce7] bg-emerald-50 text-emerald-600">
@@ -436,17 +436,17 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[22px] font-bold tracking-tight text-ink tabular-nums">
+            <span className="font-sans text-2xl font-bold tracking-tight text-ink tabular-nums">
               {formatCurrency(kpis.payment_received || 0)}
             </span>
-            <div className="text-[10px] text-slate-400 mt-0.5">Bank payouts settled</div>
+            <div className="text-xs text-gray-500 mt-0.5">Bank payouts settled</div>
           </div>
         </div>
 
         {/* TOTAL OUTSTANDING */}
         <div className="rounded-xl bg-[#0f2744] p-4 flex flex-col justify-between shadow-sm transition-shadow hover:shadow-md text-white">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
+            <span className="text-sm font-semibold uppercase tracking-wider text-slate-300">
               TOTAL OUTSTANDING
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded bg-white/10 text-white">
@@ -454,10 +454,10 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-[22px] font-bold tracking-tight text-white tabular-nums">
+            <span className="font-sans text-2xl font-bold tracking-tight text-white tabular-nums">
               {formatCurrency(kpis.total_outstanding || 0)}
             </span>
-            <div className="text-[10px] text-slate-300 mt-0.5">Net pending to receive</div>
+            <div className="text-xs text-gray-500 mt-0.5">Net pending to receive</div>
           </div>
         </div>
       </div>
@@ -504,9 +504,9 @@ export default function OutstandingPaymentsPage() {
 
         {/* Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse font-sans">
+          <table className="w-full text-left text-sm border-collapse font-sans">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 font-bold text-[11px]">
+              <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 text-xs font-semibold uppercase tracking-wider">
                 <th className="py-3 px-4 min-w-[200px]">Channels</th>
                 <th className="py-3 px-4 text-right">Total Orders</th>
                 <th className="py-3 px-4 text-right">Returns</th>
@@ -527,11 +527,11 @@ export default function OutstandingPaymentsPage() {
                 if ((channel.total_orders_amount || 0) === 0) {
                   statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500">No Orders</span>;
                 } else if ((channel.total || 0) === 0) {
-                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">Settled</span>;
+                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-600">Settled</span>;
                 } else if ((channel.overdue || 0) > 0) {
-                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800">Overdue</span>;
+                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700">Overdue</span>;
                 } else {
-                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700">Current</span>;
+                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-100 text-green-700">Current</span>;
                 }
 
                 return (
@@ -617,18 +617,18 @@ export default function OutstandingPaymentsPage() {
                       return (
                         <tr
                           key={acc.account_key}
-                          className={`bg-slate-50/50 hover:bg-slate-100/70 transition-colors border-l-4 ${
+                          className={`bg-slate-50 hover:bg-slate-100/70 transition-colors border-l-4 ${
                             isAccSelected ? 'border-primary bg-indigo-50/60 font-medium' : 'border-slate-300'
                           }`}
                         >
-                          <td className="py-2.5 px-4 pl-12">
+                          <td className="py-3 px-4 pl-12">
                             <button
                               type="button"
                               onClick={() => {
                                 setSelectedChannel(channel.channel_key);
                                 setSelectedAccount(selectedAccount === acc.account_key ? null : acc.account_key);
                               }}
-                              className="flex items-center gap-2 text-left text-xs text-slate-700 hover:text-primary font-medium transition-colors"
+                              className="flex items-center gap-2 text-left text-sm text-slate-700 hover:text-primary font-medium transition-colors"
                             >
                               <span className="material-symbols-outlined text-[14px] text-slate-400">subdirectory_arrow_right</span>
                               <span>{acc.account_name}</span>
@@ -637,7 +637,7 @@ export default function OutstandingPaymentsPage() {
                               </span>
                             </button>
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
+                          <td className="py-3 px-4 text-right font-mono text-slate-700 text-sm">
                             <div>{formatCurrency(acc.total_orders_amount || 0)}</div>
                             {(acc.total_orders_count || 0) > 0 && (
                               <div className="text-[10px] text-slate-400 font-normal">
@@ -645,7 +645,7 @@ export default function OutstandingPaymentsPage() {
                               </div>
                             )}
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
+                          <td className="py-3 px-4 text-right font-mono text-slate-700 text-sm">
                             <div>{formatCurrency(acc.returns_amount || 0)}</div>
                             {(acc.returns_orders_count || 0) > 0 && (
                               <div className="text-[10px] text-slate-400 font-normal">
@@ -653,23 +653,23 @@ export default function OutstandingPaymentsPage() {
                               </div>
                             )}
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
+                          <td className="py-3 px-4 text-right font-mono text-slate-700 text-sm">
                             {formatCurrency(acc.marketplace_fees || 0)}
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-slate-800 text-[11px]">
+                          <td className="py-3 px-4 text-right font-mono text-slate-800 text-sm">
                             {formatCurrency(acc.payment_received || 0)}
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-900 text-[11px]">
+                          <td className="py-3 px-4 text-right font-mono font-bold text-slate-900 text-sm">
                             {formatCurrency(acc.total || 0)}
                           </td>
-                          <td className="py-2.5 px-4 text-right font-mono text-slate-700 text-[11px]">
+                          <td className="py-3 px-4 text-right font-mono text-slate-700 text-sm">
                             {formatCurrency(acc.overdue || 0)}
                           </td>
-                          <td className="py-2.5 px-4 text-center">
+                          <td className="py-3 px-4 text-center">
                             {(acc.total || 0) > 0 ? (
-                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-amber-100 text-amber-800">Overdue</span>
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-red-100 text-red-700">Overdue</span>
                             ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-emerald-100 text-emerald-700">Settled</span>
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-gray-100 text-gray-600">Settled</span>
                             )}
                           </td>
                         </tr>
@@ -753,9 +753,11 @@ export default function OutstandingPaymentsPage() {
             >
               info
             </span>
-            <span className="text-xs text-slate-500 ml-2">
-              Last Payment Date: {data?.d2c?.last_payment_date || '23.02.26'}
-            </span>
+            {data?.d2c?.last_payment_date && data.d2c.last_payment_date !== '-' && (
+              <span className="text-xs text-slate-500 ml-2">
+                Last Payment Date: {data.d2c.last_payment_date}
+              </span>
+            )}
           </div>
           <button
             type="button"
@@ -769,9 +771,9 @@ export default function OutstandingPaymentsPage() {
 
         {/* Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse font-sans">
+          <table className="w-full text-left text-sm border-collapse font-sans">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 font-bold text-[11px]">
+              <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 text-xs font-semibold uppercase tracking-wider">
                 <th className="py-3 px-4 min-w-[200px]">Vendors</th>
                 <th className="py-3 px-4 text-right">Settled Not Paid</th>
                 <th className="py-3 px-4 text-right">Settled Adjusted</th>
@@ -948,10 +950,10 @@ export default function OutstandingPaymentsPage() {
                     className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
                   >
                     <option value="">All Aging Tiers</option>
-                    <option value="0-15">0 – 15 Days (Normal)</option>
-                    <option value="16-30">16 – 30 Days (Due Soon)</option>
-                    <option value="31-60">31 – 60 Days (Overdue)</option>
-                    <option value="60+">60+ Days (High Risk)</option>
+                    <option value="0-15">0-15</option>
+                    <option value="16-30">16-30</option>
+                    <option value="31-60">31-60</option>
+                    <option value="60+">60+</option>
                   </select>
                 )}
 

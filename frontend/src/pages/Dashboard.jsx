@@ -84,23 +84,23 @@ function OrderSearch() {
               {/* Orders section */}
               {results.orders?.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold text-outline uppercase tracking-wider px-4 pt-3 pb-1.5">Orders ({results.orders.length})</p>
+                  <p className="text-xs font-semibold text-outline uppercase tracking-wider px-4 pt-3 pb-1.5">Orders ({results.orders.length})</p>
                   {results.orders.map((o, i) => (
                     <div key={i} className="px-4 py-3 hover:bg-surface-container-low transition-colors">
                       <div className="flex items-start justify-between gap-2 mb-1">
                         <div className="min-w-0">
                           <span className="font-mono text-[12px] text-primary font-medium">{o.order_item_id}</span>
                           {o.order_id && o.order_id !== o.order_item_id && (
-                            <span className="text-[10px] text-outline ml-1.5">order: {o.order_id}</span>
+                            <span className="text-xs text-outline ml-1.5">order: {o.order_id}</span>
                           )}
                         </div>
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full shrink-0 ${
                           (o.orders_status || '').toLowerCase().includes('deliver') ? 'bg-emerald-100 text-emerald-700' :
                           (o.orders_status || '').toLowerCase().includes('cancel') ? 'bg-rose-100 text-rose-700' :
                           'bg-surface-container text-secondary'
                         }`}>{o.orders_status || '—'}</span>
                       </div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-secondary">
+                      <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-secondary">
                         <span>{o.sku || '—'}</span>
                         <span className="text-outline">·</span>
                         <span>{o.category || '—'}</span>
@@ -119,7 +119,7 @@ function OrderSearch() {
               {/* Settlement rows */}
               {results.settlements?.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold text-outline uppercase tracking-wider px-4 pt-3 pb-1.5">Settlement Rows ({results.settlements.length})</p>
+                  <p className="text-xs font-semibold text-outline uppercase tracking-wider px-4 pt-3 pb-1.5">Settlement Rows ({results.settlements.length})</p>
                   <div className="overflow-x-auto">
                     <table className="finance-table">
                       <thead>
@@ -150,7 +150,7 @@ function OrderSearch() {
               {/* Returns section */}
               {results.returns?.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold text-outline uppercase tracking-wider px-4 pt-3 pb-1.5">Returns ({results.returns.length})</p>
+                  <p className="text-xs font-semibold text-outline uppercase tracking-wider px-4 pt-3 pb-1.5">Returns ({results.returns.length})</p>
                   {results.returns.map((r, i) => (
                     <div key={i} className="px-4 py-2.5 hover:bg-surface-container-low flex items-center gap-3">
                       <span className="h-2 w-2 rounded-full bg-rose-400 shrink-0" />
@@ -159,7 +159,7 @@ function OrderSearch() {
                         <span className="text-outline ml-2">{r.return_type}</span>
                         {r.return_reason && <span className="text-outline ml-2">· {r.return_reason}</span>}
                       </div>
-                      <span className="text-[10px] text-outline shrink-0">{r.return_date?.slice(0, 10) || '—'}</span>
+                      <span className="text-xs text-outline shrink-0">{r.return_date?.slice(0, 10) || '—'}</span>
                     </div>
                   ))}
                 </div>
@@ -168,7 +168,7 @@ function OrderSearch() {
           )}
           {/* Close strip */}
           <div className="border-t border-border px-4 py-2 flex justify-end">
-            <button onClick={() => setOpen(false)} className="text-[11px] text-outline hover:text-secondary">Close</button>
+            <button onClick={() => setOpen(false)} className="text-xs text-outline hover:text-secondary">Close</button>
           </div>
         </div>
       )}
@@ -203,6 +203,9 @@ export default function Dashboard() {
 
   const selectedMP = filters.marketplace;
   const mpLabel    = selectedMP ? (mpCfg(selectedMP).label) : 'All Marketplaces';
+  const recoveryRate = (+summary?.returnCount || 0) > 0
+    ? ((+summary.goodReturns || 0) / (+summary.returnCount || 0)) * 100
+    : 0;
 
   if (es) return <ErrorBox msg={es} />;
 
@@ -219,9 +222,9 @@ export default function Dashboard() {
       </PageHeader>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 xl:grid-cols-6 gap-4">
         {ls ? (
-          Array.from({ length: 5 }).map((_, i) => (
+          Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="bg-surface rounded-xl border border-border p-4 h-[112px] skeleton-pulse" />
           ))
         ) : (
@@ -250,9 +253,21 @@ export default function Dashboard() {
         <KPICard
           title="Return Rate"
           value={pct(summary?.returnRate)}
-          sub={`${num(summary?.customerReturns || 0)} customer · ${num(summary?.courierReturns || 0)} courier`}
+          sub={
+            <>
+              <span>{num(summary?.customerReturns || 0)} customer · {num(summary?.courierReturns || 0)} courier</span>
+              <span className="block text-xs text-gray-400">{currency(summary?.totalRefunds)} refunded</span>
+            </>
+          }
           color="rose"
           icon={<ReturnIcon />}
+        />
+        <KPICard
+          title="Recovery Rate"
+          value={`${recoveryRate.toFixed(1)}%`}
+          sub={`${num(summary?.goodReturns || 0)} good · ${num(summary?.badReturns || 0)} bad`}
+          color={recoveryRate > 70 ? 'emerald' : recoveryRate >= 50 ? 'amber' : 'rose'}
+          icon={<TrendingUpIcon />}
         />
         <KPICard
           title="Fees Paid"
@@ -299,4 +314,5 @@ function OrderIcon()      { return <svg className="w-5 h-5" fill="none" viewBox=
 function RevenueIcon()    { return <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>; }
 function ShareIcon()      { return <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>; }
 function ReturnIcon()     { return <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>; }
+function TrendingUpIcon()  { return <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 17l6-6 4 4 8-8M15 7h6v6" /></svg>; }
 function SettlementIcon() { return <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z" /></svg>; }
