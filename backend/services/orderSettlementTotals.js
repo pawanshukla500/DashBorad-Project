@@ -98,15 +98,8 @@ export async function ensureOrderSettlementTotals(pool) {
         AND o.marketplace = 'amazon'
         AND (o.order_item_id IS NULL OR o.order_item_id = '')
       RETURNING o.id
-    ),
-    healed_remaining AS (
-      UPDATE orders o
-      SET order_item_id = 'AMZ:' || o.order_id || ':' || o.sku
-      WHERE o.marketplace = 'amazon'
-        AND (o.order_item_id IS NULL OR o.order_item_id = '')
-      RETURNING o.id
     )
-    SELECT (SELECT COUNT(*) FROM healed_from_settlement) + (SELECT COUNT(*) FROM healed_remaining) AS healed_count;
+    SELECT COUNT(*) AS healed_count FROM healed_from_settlement;
   `);
   const healedCount = Number(healRes.rows[0]?.healed_count || 0);
 

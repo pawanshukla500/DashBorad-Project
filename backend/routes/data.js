@@ -244,6 +244,7 @@ function pct(part, total) {
 
 const STATUS_EXPR = `
   CASE
+    WHEN s.order_item_id IS NULL AND (o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') OR o.return_type IS NOT NULL) THEN 'Returned / Cancelled'
     WHEN s.order_item_id IS NULL                                   THEN 'Unsettled'
     WHEN COALESCE(s.net_bank,0) < 0                                THEN 'Clawback'
     WHEN COALESCE(s.net_bank,0)=0 AND s.refund_count > 0           THEN 'Fully Returned'
@@ -258,9 +259,10 @@ function settStatusFilter(ss) {
     case 'Partial Return': return `AND s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)>0 AND s.refund_count>0`;
     case 'Fully Returned': return `AND s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)=0 AND s.refund_count>0`;
     case 'Clawback':       return `AND s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)<0`;
-    case 'Unsettled':      return `AND s.order_item_id IS NULL`;
-    // Refund = Fully Returned + Partial Return + Clawback combined
-    case 'Refund':         return `AND s.order_item_id IS NOT NULL AND (COALESCE(s.net_bank,0)<0 OR s.refund_count>0)`;
+    case 'Unsettled':      return `AND s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL`;
+    case 'Returned / Cancelled': return `AND s.order_item_id IS NULL AND (o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') OR o.return_type IS NOT NULL)`;
+    // Refund = Fully Returned + Partial Return + Clawback + Returned/Cancelled combined
+    case 'Refund':         return `AND (s.order_item_id IS NOT NULL AND (COALESCE(s.net_bank,0)<0 OR s.refund_count>0) OR (s.order_item_id IS NULL AND (o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') OR o.return_type IS NOT NULL)))`;
     default:               return '';
   }
 }
@@ -300,8 +302,8 @@ router.get('/summary', async (req, res) => {
                      COALESCE(s.pick_pack_fee,0)+COALESCE(s.shipping_fee,0)+
                      COALESCE(s.reverse_shipping,0)+COALESCE(s.franchise_fee,0)+
                      COALESCE(s.tcs,0)+COALESCE(s.tds,0)+COALESCE(s.gst_on_mp_fees,0)), 0) AS "totalFees",
-        COUNT(*) FILTER (WHERE s.order_item_id IS NULL)                           AS "unsettledCount",
-        COALESCE(SUM(o.final_invoice_amount) FILTER (WHERE s.order_item_id IS NULL), 0) AS "unsettledAmount",
+        COUNT(*) FILTER (WHERE s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL) AS "unsettledCount",
+        COALESCE(SUM(o.final_invoice_amount) FILTER (WHERE s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL), 0) AS "unsettledAmount",
         COUNT(ret.order_item_id)                                                   AS "returnCount",
         SUM(CASE WHEN ret.return_type ILIKE '%customer%' OR ret.return_type = 'Return' THEN 1 ELSE 0 END) AS "customerReturns",
         SUM(CASE WHEN ret.return_type ILIKE '%courier%' OR ret.return_type ILIKE '%rto%' THEN 1 ELSE 0 END) AS "courierReturns",
@@ -607,8 +609,8 @@ router.get('/profit-loss', async (req, res) => {
           COALESCE(SUM(COALESCE(s.net_bank,0)),0)                AS "bankReceived",
           COALESCE(SUM(COALESCE(s.refund_amount,0)),0)           AS "refundDebited",
           COUNT(ret.order_item_id)                               AS "returnCount",
-          SUM(CASE WHEN s.order_item_id IS NULL THEN o.final_invoice_amount ELSE 0 END) AS "unsettledAmount",
-          SUM(CASE WHEN s.order_item_id IS NULL THEN 1 ELSE 0 END)              AS "unsettledCount",
+          SUM(CASE WHEN s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN o.final_invoice_amount ELSE 0 END) AS "unsettledAmount",
+          SUM(CASE WHEN s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END)              AS "unsettledCount",
           COALESCE(SUM(COALESCE(s.commission,0)),0)              AS commission,
           COALESCE(SUM(COALESCE(s.fixed_fee,0)),0)               AS "fixedFee",
           COALESCE(SUM(COALESCE(s.collection_fee,0)),0)          AS "collectionFee",
@@ -781,8 +783,13 @@ router.get('/platform/summary', async (req, res) => {
           COALESCE(SUM(o.final_invoice_amount),0) AS "unsettledAmount"
         FROM orders o
         WHERE 1=1 ${where}
+          AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+          AND o.return_type IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} fs WHERE fs.order_item_id = o.order_item_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM returns r WHERE r.order_item_id = o.order_item_id
           )
       `, values),
 
@@ -1607,7 +1614,7 @@ router.get('/settlement/summary', async (req, res) => {
         SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)>0 AND s.refund_count>0 THEN 1 ELSE 0 END) AS "partialReturnCount",
         SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)=0 AND s.refund_count>0 THEN 1 ELSE 0 END) AS "fullyReturnedCount",
         SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)<0                       THEN 1 ELSE 0 END) AS "clawbackCount",
-        SUM(CASE WHEN s.order_item_id IS NULL THEN 1 ELSE 0 END)                                      AS "unsettledCount",
+        SUM(CASE WHEN s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END) AS "unsettledCount",
         COALESCE(SUM(CASE WHEN COALESCE(s.net_bank,0)>0 THEN s.net_bank ELSE 0 END),0)       AS "totalBankReceived",
         COALESCE(SUM(CASE WHEN COALESCE(s.net_bank,0)<0 THEN ABS(s.net_bank) ELSE 0 END),0)  AS "totalDeducted",
         COALESCE(SUM(COALESCE(s.net_bank,0)),0)                                               AS "netBank",
@@ -1617,6 +1624,7 @@ router.get('/settlement/summary', async (req, res) => {
           ELSE 0 END AS "settlementRate"
       FROM orders o
       LEFT JOIN sett s ON s.order_item_id = o.order_item_id
+      LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
       WHERE 1=1 ${where}
     `, values);
     res.json(rows[0]);
@@ -1716,9 +1724,10 @@ router.get('/settlement/orders', async (req, res) => {
           SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)>0 AND s.refund_count>0 THEN 1 ELSE 0 END) AS "partialReturn",
           SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)=0 AND s.refund_count>0 THEN 1 ELSE 0 END) AS "fullyReturned",
           SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)<0                       THEN 1 ELSE 0 END) AS clawback,
-          SUM(CASE WHEN s.order_item_id IS NULL THEN 1 ELSE 0 END) AS unsettled
+          SUM(CASE WHEN s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END) AS unsettled
         FROM orders o
         LEFT JOIN sett s ON s.order_item_id = o.order_item_id
+        LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
       `, values.slice(0, values.length - 2)),
     ]);
@@ -1762,6 +1771,9 @@ router.get('/settlement/unsettled-summary', async (req, res) => {
           COALESCE(SUM(o.final_invoice_amount),0) AS "orderAmount"
         FROM orders o
         WHERE NOT EXISTS (SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} fs WHERE fs.order_item_id=o.order_item_id)
+        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+        AND o.return_type IS NULL
+        AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.order_item_id = o.order_item_id)
         AND 1=1 ${where}
         GROUP BY COALESCE(o.category,'Uncategorized')
         ORDER BY count DESC
@@ -1770,6 +1782,9 @@ router.get('/settlement/unsettled-summary', async (req, res) => {
         SELECT COUNT(*) AS total, COALESCE(SUM(o.final_invoice_amount),0) AS "totalAmount"
         FROM orders o
         WHERE NOT EXISTS (SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} fs WHERE fs.order_item_id=o.order_item_id)
+        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+        AND o.return_type IS NULL
+        AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.order_item_id = o.order_item_id)
         AND 1=1 ${where}
       `, values),
     ]);

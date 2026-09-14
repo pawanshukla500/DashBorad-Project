@@ -152,7 +152,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       -- Delivered Unsettled Orders: active orders pending settlement (excluding returns & cancellations)
       COUNT(CASE 
         WHEN ost.order_item_id IS NULL 
-         AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+         AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
          AND o.return_type IS NULL 
          AND rt.order_item_id IS NULL 
         THEN 1 
@@ -161,7 +161,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
           THEN o.final_invoice_amount 
@@ -172,7 +172,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
            AND (CURRENT_DATE - o.order_date::date) > 60 
@@ -184,7 +184,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
            AND (CURRENT_DATE - o.order_date::date) BETWEEN 31 AND 60 
@@ -196,7 +196,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
            AND (CURRENT_DATE - o.order_date::date) BETWEEN 16 AND 30 
@@ -208,7 +208,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
            AND (CURRENT_DATE - o.order_date::date) <= 15 
@@ -219,7 +219,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
 
       COUNT(CASE 
         WHEN COALESCE(ost.refund_amount, 0) > 0 
-          OR o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') 
+          OR o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') 
           OR o.return_type IS NOT NULL 
           OR rt.order_item_id IS NOT NULL 
         THEN 1 
@@ -337,6 +337,13 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       const totalInGrace = ejInGrace + vbInGrace;
       const totalUpcoming = ejUpcoming + vbUpcoming;
 
+      const ejInvPending = invRows.filter(r => r.seller_account === 'myntra_ej' || r.seller_account === '45833').reduce((s, r) => s + Number(r.pending_amount || 0), 0);
+      const vbInvPending = invRows.filter(r => r.seller_account === 'myntra_vb' || r.seller_account === '10708').reduce((s, r) => s + Number(r.pending_amount || 0), 0);
+      const totalInvPending = ejInvPending + vbInvPending;
+      const totalOutstanding = totalUnsettled + totalInvPending;
+      const ejTotalOutstanding = ejUnsettled + ejInvPending;
+      const vbTotalOutstanding = vbUnsettled + vbInvPending;
+
       b2cChannels.push({
         channel_key: 'myntra',
         channel_name: 'Myntra',
@@ -348,13 +355,13 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
         marketplace_fees: totalFees,
         payment_received: totalPaid,
         unsettled: totalUnsettled,
-        settled_not_paid: 0,
+        settled_not_paid: totalInvPending,
         settled_adjusted: 0,
-        total: totalUnsettled,
+        total: totalOutstanding,
         overdue: totalOverdue,
         due_in_grace: totalInGrace,
         upcoming: totalUpcoming,
-        due_total: totalUnsettled,
+        due_total: totalOutstanding,
         cashback_outstanding: 0,
         has_accounts: true,
         accounts: [
@@ -369,13 +376,13 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
             marketplace_fees: ejFees,
             payment_received: ejPaid,
             unsettled: ejUnsettled,
-            settled_not_paid: 0,
+            settled_not_paid: ejInvPending,
             settled_adjusted: 0,
-            total: ejUnsettled,
+            total: ejTotalOutstanding,
             overdue: ejOverdue,
             due_in_grace: ejInGrace,
             upcoming: ejUpcoming,
-            due_total: ejUnsettled,
+            due_total: ejTotalOutstanding,
             cashback_outstanding: 0,
             orders_count: ejUnsettledCount,
           },
@@ -390,13 +397,13 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
             marketplace_fees: vbFees,
             payment_received: vbPaid,
             unsettled: vbUnsettled,
-            settled_not_paid: 0,
+            settled_not_paid: vbInvPending,
             settled_adjusted: 0,
-            total: vbUnsettled,
+            total: vbTotalOutstanding,
             overdue: vbOverdue,
             due_in_grace: vbInGrace,
             upcoming: vbUpcoming,
-            due_total: vbUnsettled,
+            due_total: vbTotalOutstanding,
             cashback_outstanding: 0,
             orders_count: vbUnsettledCount,
           },
@@ -445,6 +452,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       chUpcoming += up;
 
       if (r.seller_account && r.seller_account !== 'default') {
+        const accInvPending = invRows.filter(ir => ir.seller_account === r.seller_account).reduce((s, ir) => s + Number(ir.pending_amount || 0), 0);
         channelAccounts.push({
           account_key: r.seller_account,
           account_name: `${channelName} (${r.seller_account})`,
@@ -455,13 +463,13 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
           marketplace_fees: fee,
           payment_received: pd,
           unsettled: un,
-          settled_not_paid: 0,
+          settled_not_paid: accInvPending,
           settled_adjusted: 0,
-          total: un,
+          total: un + accInvPending,
           overdue: od,
           due_in_grace: ig,
           upcoming: up,
-          due_total: un,
+          due_total: un + accInvPending,
           cashback_outstanding: 0,
           orders_count: uc,
         });

@@ -26,7 +26,9 @@ export async function attachRcFees(orders) {
 
     const fees = calculateFees(rc, {
       category:      o.category,
-      price:         mp === 'myntra' ? (parseFloat(o.totalShareAmount || o.total_share_amount) || 0) : (parseFloat(o.finalInvoiceAmount || o.invoiceAmount || o.final_invoice_amount) || 0),
+      price:         mp === 'myntra'
+        ? (parseFloat(o.sellerPrice || o.seller_price || o.totalShareAmount || o.total_share_amount || o.finalInvoiceAmount || o.invoiceAmount || o.final_invoice_amount) || 0)
+        : (parseFloat(o.finalInvoiceAmount || o.invoiceAmount || o.final_invoice_amount) || 0),
       fulfilmentType:o.fulfilmentType || o.fulfilment_type,
       zone:          o.shippingZone   || o.shipping_zone || 'national',
       paymentType:   o.orderType      || o.order_type || 'prepaid',

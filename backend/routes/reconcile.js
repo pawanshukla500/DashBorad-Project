@@ -206,7 +206,13 @@ router.get('/summary', async (req, res) => {
         FROM orders o
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
-        ) ${unsettleWhere}
+        )
+        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+        AND o.return_type IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM order_returns ret WHERE ret.order_item_id = o.order_item_id
+        )
+        ${unsettleWhere}
       `, unsettleVals),
       nonOrdQuery,
     ]);
@@ -301,7 +307,8 @@ router.get('/unsettled', async (req, res) => {
     const [data, cnt] = await Promise.all([
       pool.query(`
         SELECT
-          o.order_item_id, o.order_id, o.order_date,
+          o.order_item_id, o.order_id,
+          TO_CHAR(o.order_date, 'YYYY-MM-DD') AS order_date,
           o.sku, o.category, o.fulfilment_type,
           o.orders_status, o.final_invoice_amount,
           o.weight_slab, o.shipping_zone, o.marketplace, o.seller_account,
@@ -310,16 +317,25 @@ router.get('/unsettled', async (req, res) => {
         LEFT JOIN order_returns rt ON rt.order_item_id = o.order_item_id
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
-        ) ${filterSql}
-        ORDER BY o.order_date DESC
+        )
+        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+        AND o.return_type IS NULL
+        AND rt.order_item_id IS NULL
+        ${filterSql}
+        ORDER BY o.order_date DESC NULLS LAST
         LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}
       `, dataVals),
       pool.query(`
         SELECT COUNT(*) AS total
         FROM orders o
+        LEFT JOIN order_returns rt ON rt.order_item_id = o.order_item_id
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
-        ) ${filterSql}
+        )
+        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+        AND o.return_type IS NULL
+        AND rt.order_item_id IS NULL
+        ${filterSql}
       `, vals),
     ]);
 

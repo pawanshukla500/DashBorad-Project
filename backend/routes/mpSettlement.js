@@ -1055,6 +1055,11 @@ const handleMonthlySummary = async (req, res) => {
         FROM orders o
         WHERE marketplace = $1
           ${accountWhere}
+          AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+          AND o.return_type IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM returns r WHERE r.order_item_id = o.order_item_id
+          )
           AND NOT EXISTS (
             SELECT 1 FROM mp_invoices i
             WHERE i.marketplace = o.marketplace

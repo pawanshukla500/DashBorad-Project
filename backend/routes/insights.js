@@ -522,12 +522,15 @@ router.get('/cash-flow', async (req, res) => {
           o.marketplace,
           COUNT(o.order_item_id)            AS count,
           COALESCE(SUM(o.final_invoice_amount),0) AS value,
-          MIN(o.order_date::text)           AS oldest,
-          MAX(o.order_date::text)           AS newest
+          MIN(TO_CHAR(o.order_date, 'YYYY-MM-DD')) AS oldest,
+          MAX(TO_CHAR(o.order_date, 'YYYY-MM-DD')) AS newest
         FROM orders o
         LEFT JOIN ${ORDER_SETTLEMENT_TOTALS_TABLE} fk ON fk.order_item_id = o.order_item_id
+        LEFT JOIN returns ret ON ret.order_item_id = o.order_item_id
         WHERE fk.order_item_id IS NULL
-          AND o.orders_status NOT IN ('Cancelled','CANCELLED','cancelled') ${omWhere}
+          AND o.orders_status NOT IN ('Cancelled','CANCELLED','cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+          AND o.return_type IS NULL
+          AND ret.order_item_id IS NULL ${omWhere}
         GROUP BY o.marketplace
       `, mpVals),
       pool.query(totalSql),
