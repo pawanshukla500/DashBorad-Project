@@ -840,7 +840,7 @@ router.get('/template/vb-export-prefilled', async (req, res) => {
     res.send(buf);
   } catch (e) {
     console.error('[template/vb-export-prefilled]', e);
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Failed to generate prefilled catalog template' });
   }
 });
 
