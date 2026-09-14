@@ -69,7 +69,7 @@ export default function ReturnsPage() {
               <ReturnTrendChart data={trend || []} />
             </div>
             <div className="bg-surface rounded-2xl border border-border/80 p-5 shadow-sm">
-              <h3 className="text-sm font-semibold text-ink mb-0.5">Return Types</h3>
+              <h3 className="text-base font-bold text-ink mb-0.5">Return Types</h3>
               <p className="text-xs text-outline mb-5">How returns were initiated</p>
               {(types || []).length === 0 ? (
                 <div className="h-48 flex items-center justify-center text-outline text-sm">No data</div>
@@ -84,8 +84,8 @@ export default function ReturnsPage() {
                     return (
                       <div key={t.type}>
                         <div className="flex items-center justify-between gap-3 mb-1.5">
-                          <span className="text-xs font-medium text-ink capitalize">{label}</span>
-                          <span className="text-xs font-bold text-ink tabular-nums">
+                          <span className="text-sm font-medium text-ink capitalize">{label}</span>
+                          <span className="text-sm font-bold text-ink tabular-nums">
                             {num(count)} <span className="font-medium text-outline">({share.toFixed(1)}%)</span>
                           </span>
                         </div>
@@ -109,7 +109,7 @@ export default function ReturnsPage() {
           <div className="bg-surface rounded-xl border border-border overflow-hidden shadow-sm">
             <div className="px-5 py-4 border-b border-border flex items-center justify-between flex-wrap gap-3">
               <div>
-                <h3 className="text-sm font-semibold text-ink">Returns Detail</h3>
+                <h3 className="text-base font-bold text-ink">Returns Detail</h3>
                 <p className="text-xs text-outline mt-0.5">
                   <span className="font-semibold text-primary">{num(returns?.total)}</span> total returns
                   &nbsp;·&nbsp; Page {page} of {Math.ceil((returns?.total || 1) / 50)}
@@ -124,13 +124,13 @@ export default function ReturnsPage() {
                   <button
                     onClick={() => setPage(p => Math.max(1, p-1))}
                     disabled={page === 1}
-                    className="px-3 py-1 text-xs rounded-md font-medium text-secondary disabled:opacity-30 hover:bg-white hover:shadow-sm transition-all"
+                    className="px-3 py-1 text-sm rounded-md font-medium text-secondary disabled:opacity-30 hover:bg-white hover:shadow-sm transition-all"
                   >← Prev</button>
-                  <span className="text-xs text-outline px-2 font-medium">{page}</span>
+                  <span className="text-sm text-outline px-2 font-medium">{page}</span>
                   <button
                     onClick={() => setPage(p => p+1)}
-                    disabled={!returns || returns.data.length < 50}
-                    className="px-3 py-1 text-xs rounded-md font-medium text-secondary disabled:opacity-30 hover:bg-white hover:shadow-sm transition-all"
+                    disabled={!returns || returns.data.length < 50 || returns.total <= page * 50}
+                    className="px-3 py-1 text-sm rounded-md font-medium text-secondary disabled:opacity-30 hover:bg-white hover:shadow-sm transition-all"
                   >Next →</button>
                 </div>
               </div>
@@ -145,38 +145,38 @@ export default function ReturnsPage() {
                         'Return Type','Return Status','Return Reason','Sub Reason',
                         'Completion','Condition','My Share'
                       ].map(h => (
-                        <th key={h} className="text-left px-4 py-3 text-[11px] font-semibold whitespace-nowrap tracking-wide opacity-90">{h}</th>
+                        <th key={h} className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider whitespace-nowrap opacity-90">{h}</th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="text-sm">
                     {(returns?.data || []).map((o, i) => (
                       <tr
                         key={i}
                         className={`border-b border-slate-50 hover:bg-indigo-50/40 transition-colors ${i % 2 === 0 ? 'bg-surface' : 'bg-surface-container-low/30'}`}
                       >
-                        <td className="px-4 py-2.5 text-secondary whitespace-nowrap font-mono text-[10px]">
+                        <td className="px-4 py-3 text-secondary whitespace-nowrap font-mono text-xs">
                           {o.returnDate || <span className="text-surface">—</span>}
                         </td>
-                        <td className="px-4 py-2.5 text-secondary whitespace-nowrap font-mono text-[10px]">
+                        <td className="px-4 py-3 text-secondary whitespace-nowrap font-mono text-xs">
                           {o.orderDate || <span className="text-surface">—</span>}
                         </td>
-                        <td className="px-4 py-2.5">
+                        <td className="px-4 py-3">
                           {o.orderItemId
                             ? <OrderIdCell id={o.orderItemId} onOpen={setSelectedId} />
                             : <span className="text-surface">—</span>}
                         </td>
-                        <td className="px-4 py-2.5">
+                        <td className="px-4 py-3">
                           {o.category
-                            ? <span className="bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize whitespace-nowrap">{o.category.replace(/_/g, ' ')}</span>
+                            ? <span className="bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-2.5 py-1 rounded-full text-xs font-semibold capitalize whitespace-nowrap">{o.category.replace(/_/g, ' ')}</span>
                             : <span className="text-surface">—</span>}
                         </td>
-                        <td className="px-4 py-2.5 text-secondary whitespace-nowrap text-[11px]">
+                        <td className="px-4 py-3 text-secondary whitespace-nowrap text-sm">
                           {o.deliveryState || <span className="text-surface">—</span>}
                         </td>
-                        <td className="px-4 py-2.5">
+                        <td className="px-4 py-3">
                           {o.shippingZone ? (
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium ${
+                            <span className={`inline-flex items-center px-2.5 py-1 rounded text-xs font-medium ${
                               o.shippingZone === 'Local' ? 'bg-emerald-50 text-emerald-700' :
                               o.shippingZone === 'Regional' ? 'bg-blue-50 text-blue-700' :
                               'bg-surface-container text-secondary'
@@ -185,18 +185,18 @@ export default function ReturnsPage() {
                             </span>
                           ) : <span className="text-outline">—</span>}
                         </td>
-                        <td className="px-4 py-2.5"><TypeBadge type={o.returnType} /></td>
-                        <td className="px-4 py-2.5"><StatusBadge status={o.returnStatus} /></td>
-                        <td className="px-4 py-2.5 max-w-[160px]" title={o.returnReason}>
+                        <td className="px-4 py-3"><TypeBadge type={o.returnType} /></td>
+                        <td className="px-4 py-3"><StatusBadge status={o.returnStatus} /></td>
+                        <td className="px-4 py-3 max-w-[160px]" title={o.returnReason}>
                           {o.returnReason
                             ? <span className="text-ink leading-tight block truncate">{(o.returnReason || '').replace(/_/g, ' ')}</span>
                             : <span className="text-surface">—</span>}
                         </td>
-                        <td className="px-4 py-2.5 max-w-[140px] text-secondary" title={o.returnSubReason}>
+                        <td className="px-4 py-3 max-w-[140px] text-secondary" title={o.returnSubReason}>
                           <span className="block truncate">{(o.returnSubReason || '').replace(/_/g, ' ') || <span className="text-surface">—</span>}</span>
                         </td>
-                        <td className="px-4 py-2.5"><CompletionBadge type={o.returnCompletionType} /></td>
-                        <td className="px-4 py-2.5">
+                        <td className="px-4 py-3"><CompletionBadge type={o.returnCompletionType} /></td>
+                        <td className="px-4 py-3">
                           {o.finalCondition ? (() => {
                             const cond = o.finalCondition.toLowerCase();
                             const isGood = cond.includes('good') || cond.includes('sellable') || cond.includes('pass') || cond.includes('new');
@@ -207,13 +207,13 @@ export default function ReturnsPage() {
                               ? 'bg-rose-50 text-rose-700 border-rose-100'
                               : 'bg-surface-container-low text-secondary border-border';
                             return (
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${cls}`}>
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${cls}`}>
                                 {o.finalCondition.replace(/_/g, ' ')}
                               </span>
                             );
                           })() : <span className="text-surface">—</span>}
                         </td>
-                        <td className="px-4 py-2.5">
+                        <td className="px-4 py-3">
                           <span className={`font-semibold ${+o.myShare > 0 ? 'text-emerald-700' : 'text-outline'}`}>
                             ₹{(+(o.myShare ?? 0)).toFixed(0)}
                           </span>
@@ -230,15 +230,15 @@ export default function ReturnsPage() {
             {/* Bottom pagination */}
             {returns?.total > 50 && (
               <div className="px-5 py-3 border-t border-border flex items-center justify-between bg-surface-container-low/50">
-                <span className="text-xs text-outline">
+                <span className="text-sm text-outline">
                   Showing {((page-1)*50)+1}–{Math.min(page*50, returns.total)} of {num(returns.total)} returns
                 </span>
                 <div className="flex items-center gap-1">
-                  <button onClick={() => setPage(1)} disabled={page===1} className="px-2 py-1 text-xs rounded border border-border text-secondary disabled:opacity-30 hover:bg-white">«</button>
-                  <button onClick={() => setPage(p=>Math.max(1,p-1))} disabled={page===1} className="px-3 py-1 text-xs rounded border border-border text-secondary disabled:opacity-30 hover:bg-white">Prev</button>
-                  <span className="px-3 py-1 text-xs bg-primary text-white rounded font-semibold">{page}</span>
-                  <button onClick={() => setPage(p=>p+1)} disabled={returns.data.length<50} className="px-3 py-1 text-xs rounded border border-border text-secondary disabled:opacity-30 hover:bg-white">Next</button>
-                  <button onClick={() => setPage(Math.ceil(returns.total/50))} disabled={returns.data.length<50} className="px-2 py-1 text-xs rounded border border-border text-secondary disabled:opacity-30 hover:bg-white">»</button>
+                  <button onClick={() => setPage(1)} disabled={page===1} className="px-2 py-1 text-sm rounded border border-border text-secondary disabled:opacity-30 hover:bg-white">«</button>
+                  <button onClick={() => setPage(p=>Math.max(1,p-1))} disabled={page===1} className="px-3 py-1 text-sm rounded border border-border text-secondary disabled:opacity-30 hover:bg-white">Prev</button>
+                  <span className="px-3 py-1 text-sm bg-primary text-white rounded font-semibold">{page}</span>
+                  <button onClick={() => setPage(p=>p+1)} disabled={returns.data.length<50} className="px-3 py-1 text-sm rounded border border-border text-secondary disabled:opacity-30 hover:bg-white">Next</button>
+                  <button onClick={() => setPage(Math.ceil(returns.total/50))} disabled={returns.data.length<50} className="px-2 py-1 text-sm rounded border border-border text-secondary disabled:opacity-30 hover:bg-white">»</button>
                 </div>
               </div>
             )}
@@ -366,51 +366,51 @@ function SkuSummaryView({ filters, dep }) {
       {/* Pivot Table */}
       <div className="bg-surface rounded-xl border border-border overflow-hidden">
         <div className="overflow-x-auto max-h-[70vh] overflow-y-auto">
-          <table className="text-xs border-collapse" style={{ minWidth: `${220 + months.length * 340}px` }}>
+          <table className="text-xs border-collapse min-w-full">
             <thead className="sticky top-0 z-10">
               {/* Row 1: Month headers */}
               <tr className="bg-primary text-white">
-                <th className="sticky left-0 z-20 bg-primary text-left px-4 py-2.5 font-semibold whitespace-nowrap min-w-[220px] border-r border-primary">
+                <th className="sticky left-0 z-20 bg-primary text-left px-3 py-2.5 font-semibold whitespace-nowrap min-w-[220px] border-r border-primary">
                   {skuView === 'master' ? 'Master SKU' : skuView === 'both' ? 'Master SKU / Listing SKU' : 'Listing SKU'}
                 </th>
                 {months.map(m => (
-                  <th key={m} colSpan={5} className="text-center py-2.5 px-2 font-semibold border-l border-primary whitespace-nowrap">
+                  <th key={m} colSpan={5} className="text-center px-3 py-2.5 font-semibold border-l border-primary whitespace-nowrap">
                     {m}
                   </th>
                 ))}
               </tr>
               {/* Row 2: Totals */}
               <tr className="bg-primary text-surface border-b border-primary">
-                <td className="sticky left-0 z-20 bg-primary px-4 py-2 font-semibold border-r border-primary whitespace-nowrap text-surface">
+                <td className="sticky left-0 z-20 bg-primary px-3 py-2.5 font-semibold border-r border-primary whitespace-nowrap text-surface">
                   TOTAL
                 </td>
                 {months.flatMap(m => {
                   const t = monthTotals[m];
                   return [
-                    <td key={m+'g'} className="text-center px-3 py-2 border-l border-primary font-semibold text-indigo-200">{t.gross.toLocaleString()}</td>,
-                    <td key={m+'r'} className="text-center px-3 py-2 font-semibold text-orange-200">{t.returns.toLocaleString()}</td>,
-                    <td key={m+'t'} className="text-center px-3 py-2 font-semibold text-purple-200">{t.rto.toLocaleString()}</td>,
-                    <td key={m+'n'} className="text-center px-3 py-2 font-semibold text-emerald-200">{t.net.toLocaleString()}</td>,
-                    <td key={m+'p'} className="text-center px-3 py-2 font-semibold text-rose-200">{t.returnPct}%</td>,
+                    <td key={m+'g'} className="text-center px-3 py-2.5 border-l border-primary font-semibold text-indigo-200">{t.gross.toLocaleString()}</td>,
+                    <td key={m+'r'} className="text-center px-3 py-2.5 font-semibold text-orange-200">{t.returns.toLocaleString()}</td>,
+                    <td key={m+'t'} className="text-center px-3 py-2.5 font-semibold text-purple-200">{t.rto.toLocaleString()}</td>,
+                    <td key={m+'n'} className="text-center px-3 py-2.5 font-semibold text-emerald-200">{t.net.toLocaleString()}</td>,
+                    <td key={m+'p'} className="text-center px-3 py-2.5 font-semibold text-rose-200">{t.returnPct}%</td>,
                   ];
                 })}
               </tr>
               {/* Row 3: Sub-headers */}
               <tr className="bg-surface-container border-b border-border">
-                <th className="sticky left-0 z-20 bg-surface-container px-4 py-2 border-r border-border" />
+                <th className="sticky left-0 z-20 bg-surface-container px-3 py-2.5 border-r border-border" />
                 {months.flatMap(m => [
-                  <th key={m+'gh'} className="px-3 py-2 text-center text-secondary font-medium whitespace-nowrap border-l border-border bg-indigo-50/60">Gross</th>,
-                  <th key={m+'rh'} className="px-3 py-2 text-center text-secondary font-medium whitespace-nowrap bg-orange-50/40">Return</th>,
-                  <th key={m+'th'} className="px-3 py-2 text-center text-secondary font-medium whitespace-nowrap bg-purple-50/40">RTO</th>,
-                  <th key={m+'nh'} className="px-3 py-2 text-center text-secondary font-medium whitespace-nowrap bg-emerald-50/40">Net Sales</th>,
-                  <th key={m+'ph'} className="px-3 py-2 text-center text-secondary font-medium whitespace-nowrap bg-rose-50/40">Return%</th>,
+                  <th key={m+'gh'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap border-l border-border bg-indigo-50/60">Gross</th>,
+                  <th key={m+'rh'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap bg-orange-50/40">Return</th>,
+                  <th key={m+'th'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap bg-purple-50/40">RTO</th>,
+                  <th key={m+'nh'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap bg-emerald-50/40">Net Sales</th>,
+                  <th key={m+'ph'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap bg-rose-50/40">Return%</th>,
                 ])}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {skuRows.map((row, ri) => (
                 <tr key={row.sku} className={`hover:bg-indigo-50/30 ${ri % 2 === 0 ? '' : 'bg-surface-container-low/40'}`}>
-                  <td className="sticky left-0 z-10 bg-inherit px-2 py-2 border-r border-border whitespace-nowrap max-w-[240px]">
+                  <td className="sticky left-0 z-10 bg-inherit px-3 py-2.5 border-r border-border whitespace-nowrap max-w-[240px]">
                     <button
                       onClick={() => setSelectedSku(row.sku)}
                       title={`View all orders for ${row.sku}`}
@@ -418,7 +418,7 @@ function SkuSummaryView({ filters, dep }) {
                     >
                       <div className="min-w-0">
                         {skuView === 'both' && row.masterSku && row.masterSku !== row.sku && (
-                          <span className="block text-[10px] text-outline font-mono truncate leading-tight">
+                          <span className="block text-xs text-outline font-mono truncate leading-tight">
                             {row.masterSku}
                           </span>
                         )}
@@ -434,22 +434,22 @@ function SkuSummaryView({ filters, dep }) {
                   {months.flatMap(m => {
                     const cell = row[m];
                     if (!cell) return [
-                      <td key={m+'g'} className="text-center px-3 py-2 text-surface border-l border-border">—</td>,
-                      <td key={m+'r'} className="text-center px-3 py-2 text-surface">—</td>,
-                      <td key={m+'t'} className="text-center px-3 py-2 text-surface">—</td>,
-                      <td key={m+'n'} className="text-center px-3 py-2 text-surface">—</td>,
-                      <td key={m+'p'} className="text-center px-3 py-2 text-surface">—</td>,
+                      <td key={m+'g'} className="text-center px-3 py-2.5 text-surface border-l border-border">—</td>,
+                      <td key={m+'r'} className="text-center px-3 py-2.5 text-surface">—</td>,
+                      <td key={m+'t'} className="text-center px-3 py-2.5 text-surface">—</td>,
+                      <td key={m+'n'} className="text-center px-3 py-2.5 text-surface">—</td>,
+                      <td key={m+'p'} className="text-center px-3 py-2.5 text-surface">—</td>,
                     ];
                     const pctColor = cell.returnPct > 25 ? 'text-rose-700 font-bold'
                       : cell.returnPct > 15 ? 'text-orange-600 font-semibold'
                       : cell.returnPct > 8  ? 'text-amber-600'
                       : 'text-emerald-600';
                     return [
-                      <td key={m+'g'} className="text-center px-3 py-2 text-primary font-medium border-l border-border">{cell.gross.toLocaleString()}</td>,
-                      <td key={m+'r'} className="text-center px-3 py-2 text-orange-600">{cell.returns || '—'}</td>,
-                      <td key={m+'t'} className="text-center px-3 py-2 text-purple-600">{cell.rto || '—'}</td>,
-                      <td key={m+'n'} className="text-center px-3 py-2 text-emerald-700 font-medium">{cell.net.toLocaleString()}</td>,
-                      <td key={m+'p'} className={`text-center px-3 py-2 ${pctColor}`}>{cell.returnPct.toFixed(1)}%</td>,
+                      <td key={m+'g'} className="text-center px-3 py-2.5 text-primary font-medium border-l border-border">{cell.gross.toLocaleString()}</td>,
+                      <td key={m+'r'} className="text-center px-3 py-2.5 text-orange-600">{cell.returns || '—'}</td>,
+                      <td key={m+'t'} className="text-center px-3 py-2.5 text-purple-600">{cell.rto || '—'}</td>,
+                      <td key={m+'n'} className="text-center px-3 py-2.5 text-emerald-700 font-medium">{cell.net.toLocaleString()}</td>,
+                      <td key={m+'p'} className={`text-center px-3 py-2.5 ${pctColor}`}>{cell.returnPct.toFixed(1)}%</td>,
                     ];
                   })}
                 </tr>
@@ -460,7 +460,7 @@ function SkuSummaryView({ filters, dep }) {
       </div>
 
       {/* Legend */}
-      <div className="flex gap-4 text-[11px] text-outline flex-wrap">
+      <div className="flex gap-4 text-xs text-outline flex-wrap">
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-primary-container inline-block"/>Gross Sale In Units</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-orange-400 inline-block"/>Customer Return</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-purple-400 inline-block"/>RTO (Courier Return)</span>
@@ -517,7 +517,7 @@ function SkuDrawer({ sku, onClose }) {
         <div className="shrink-0 bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4">
           <div className="flex items-start justify-between">
             <div>
-              <p className="text-[11px] text-outline uppercase tracking-widest font-semibold mb-1">SKU Detail</p>
+            <p className="text-xs text-outline uppercase tracking-widest font-semibold mb-1">SKU Detail</p>
               <h2 className="text-white font-bold text-base font-mono leading-tight">{sku}</h2>
             </div>
             <button onClick={onClose} className="text-outline hover:text-white transition-colors p-1 rounded-lg hover:bg-secondary mt-0.5">
@@ -537,7 +537,7 @@ function SkuDrawer({ sku, onClose }) {
                 { label: 'Return Rate',  value: `${returnRate}%`, color: rateColor.replace('text-', 'text-') },
               ].map(k => (
                 <div key={k.label} className="bg-white/10 rounded-lg px-3 py-2">
-                  <p className="text-[10px] text-outline uppercase tracking-wide">{k.label}</p>
+                  <p className="text-xs text-outline uppercase tracking-wide">{k.label}</p>
                   <p className={`text-lg font-bold mt-0.5 ${k.color === rateColor ? rateColor : k.color}`}>{k.value}</p>
                 </div>
               ))}
@@ -547,16 +547,16 @@ function SkuDrawer({ sku, onClose }) {
 
         {/* Sub-header with pagination */}
         <div className="shrink-0 px-5 py-3 border-b border-border flex items-center justify-between bg-surface-container-low">
-          <p className="text-xs text-secondary">
+          <p className="text-sm text-secondary">
             <span className="font-semibold text-ink">{drawerData?.total?.toLocaleString('en-IN') || '—'}</span> orders total
             &nbsp;·&nbsp; Page {page} of {totalPages}
           </p>
           <div className="flex items-center gap-1">
-            <button onClick={() => { setPage(1); load(1); }} disabled={page===1} className="px-2 py-1 text-xs border border-border rounded disabled:opacity-30 hover:bg-white">«</button>
-            <button onClick={() => { setPage(p=>p-1); load(page-1); }} disabled={page===1} className="px-3 py-1 text-xs border border-border rounded disabled:opacity-30 hover:bg-white">Prev</button>
-            <span className="px-3 py-1 text-xs bg-primary text-white rounded font-semibold">{page}</span>
-            <button onClick={() => { setPage(p=>p+1); load(page+1); }} disabled={!drawerData || drawerData.data.length < 50} className="px-3 py-1 text-xs border border-border rounded disabled:opacity-30 hover:bg-white">Next</button>
-            <button onClick={() => { setPage(totalPages); load(totalPages); }} disabled={!drawerData || drawerData.data.length < 50} className="px-2 py-1 text-xs border border-border rounded disabled:opacity-30 hover:bg-white">»</button>
+            <button onClick={() => setPage(1)} disabled={page===1} className="px-2 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">«</button>
+            <button onClick={() => setPage(p=>p-1)} disabled={page===1} className="px-3 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">Prev</button>
+            <span className="px-3 py-1 text-sm bg-primary text-white rounded font-semibold">{page}</span>
+            <button onClick={() => setPage(p=>p+1)} disabled={!drawerData || drawerData.data.length < 50 || page >= totalPages} className="px-3 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">Next</button>
+            <button onClick={() => setPage(totalPages)} disabled={!drawerData || drawerData.data.length < 50 || page >= totalPages} className="px-2 py-1 text-sm border border-border rounded disabled:opacity-30 hover:bg-white">»</button>
           </div>
         </div>
 
@@ -579,22 +579,22 @@ function SkuDrawer({ sku, onClose }) {
                   ))}
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="text-sm">
                 {(drawerData?.data || []).map((o, i) => (
                   <tr key={i} className={`border-b border-slate-50 hover:bg-indigo-50/40 transition-colors ${i%2===0?'bg-surface':'bg-surface-container-low/30'}`}>
-                    <td className="px-3 py-2.5 text-secondary font-mono text-[10px] whitespace-nowrap">{o.orderDate || '—'}</td>
+                    <td className="px-3 py-2.5 text-secondary font-mono text-xs whitespace-nowrap">{o.orderDate || '—'}</td>
                     <td className="px-3 py-2.5">
                       <button
                         onClick={() => setSelectedOrderId(o.orderItemId)}
-                        className="font-mono text-[10px] text-primary hover:text-primary hover:underline text-left"
+                        className="font-mono text-xs text-primary hover:text-primary hover:underline text-left"
                       >
                         {o.orderItemId}
                       </button>
                     </td>
-                    <td className="px-3 py-2.5 text-secondary text-[11px] whitespace-nowrap">{o.deliveryState || '—'}</td>
+                    <td className="px-3 py-2.5 text-secondary text-sm whitespace-nowrap">{o.deliveryState || '—'}</td>
                     <td className="px-3 py-2.5">
                       {o.orderStatus
-                        ? <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                        ? <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${
                             o.orderStatus.toLowerCase().includes('cancel') ? 'bg-rose-50 text-rose-700 border-rose-100'
                             : o.orderStatus.toLowerCase().includes('deliver') ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
                             : 'bg-surface-container-low text-secondary border-border'}`}>
@@ -648,18 +648,23 @@ function StatusBadge({ status }) {
     rejected:   'bg-rose-50 text-rose-700 border-rose-100',
   };
   const cls = map[status?.toLowerCase()] || 'bg-surface-container-low text-secondary border-border';
-  return <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${cls} capitalize`}>{status}</span>;
+  return <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${cls} capitalize`}>{status}</span>;
 }
 function TypeBadge({ type }) {
   if (!type) return <span className="text-outline">—</span>;
-  const isCustomer = type.toLowerCase().includes('customer') || type === 'Return';
+  const lower = type.toLowerCase();
+  const isCustomer = lower.includes('customer') || type === 'Return';
+  const isRTO = lower.includes('courier') || lower.includes('rto');
+  const label = isCustomer ? 'Customer' : isRTO ? 'RTO' : type;
   const cls = isCustomer
     ? 'bg-orange-50 text-orange-700 border-orange-100'
-    : 'bg-purple-50 text-purple-700 border-purple-100';
+    : isRTO
+    ? 'bg-purple-50 text-purple-700 border-purple-100'
+    : 'bg-slate-50 text-slate-700 border-slate-200';
   return (
-    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${cls} flex items-center gap-1 w-fit`}>
-      <span className={`w-1.5 h-1.5 rounded-full inline-block ${isCustomer ? 'bg-orange-400' : 'bg-purple-400'}`} />
-      {isCustomer ? 'Customer' : 'RTO'}
+    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${cls} flex items-center gap-1 w-fit`}>
+      <span className={`w-1.5 h-1.5 rounded-full inline-block ${isCustomer ? 'bg-orange-400' : isRTO ? 'bg-purple-400' : 'bg-slate-400'}`} />
+      {label}
     </span>
   );
 }
@@ -672,7 +677,7 @@ function CompletionBadge({ type }) {
     reject:   'bg-surface-container-low text-secondary border-border',
   };
   const key = Object.keys(map).find(k => type.toLowerCase().includes(k));
-  return <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${map[key] || 'bg-surface-container-low text-secondary border-border'} capitalize`}>{type.replace(/_/g, ' ')}</span>;
+  return <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${map[key] || 'bg-surface-container-low text-secondary border-border'} capitalize`}>{type.replace(/_/g, ' ')}</span>;
 }
 function Skeleton() {
   return <div className="p-6 space-y-3">{Array.from({length:8}).map((_,i) => <div key={i} className="h-8 bg-surface-container rounded animate-pulse" />)}</div>;
