@@ -782,6 +782,7 @@ router.get('/template/:type', (req, res) => {
 
 // ── GET /api/upload/template/vb-export-prefilled ──────────────────────────────
 // Download Excel template prefilled with user's actual VB Export SKUs from vb_sku_master
+// Falls back to extracting unique vb_export_sku from orders table if master catalog is empty
 router.get('/template/vb-export-prefilled', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   try {
@@ -812,6 +813,23 @@ router.get('/template/vb-export-prefilled', async (req, res) => {
       FROM sku_master
       ORDER BY master_sku, marketplace, listing_sku
     `);
+
+    // If master catalog is empty, extract unique VB Export SKUs from orders table
+    // This gives users a template with their actual SKUs even before first catalog upload
+    let orderSkus = [];
+    if (vbSkus.length === 0) {
+      const { rows } = await pool.query(`
+        SELECT DISTINCT
+          vb_export_sku,
+          vb_export_category as category,
+          weight_slab,
+          cogs
+        FROM orders
+        WHERE vb_export_sku IS NOT NULL AND vb_export_sku != ''
+        ORDER BY vb_export_sku ASC
+      `);
+      orderSkus = rows;
+    }
     
     // Fields for the template
     const fields = ['Marketplace SKU', "VB EXPORT SKU's", 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)', 'Marketplace'];
@@ -840,10 +858,20 @@ router.get('/template/vb-export-prefilled', async (req, res) => {
       r.marketplace || 'all'      // Marketplace
     ]);
 
-    // Combine master rows first, then listing rows
-    const allRows = [...masterRows, ...listingRows];
+    // Build rows from orders (fallback when master catalog is empty)
+    const orderRows = orderSkus.map(r => [
+      r.vb_export_sku,             // Marketplace SKU - use VB SKU as reference
+      r.vb_export_sku,             // VB EXPORT SKU's
+      r.category || '',            // VB Export Product Category
+      r.weight_slab != null ? r.weight_slab : '',  // Weight Slab (kg)
+      r.cogs != null ? r.cogs : '',               // COGS (₹)
+      'all'                         // Marketplace - applies to all
+    ]);
 
-    // If no data, add a sample row for reference
+    // Combine: master catalog rows first, then sku_master listings, then orders fallback
+    const allRows = [...masterRows, ...listingRows, ...orderRows];
+
+    // If still no data, add a sample row for reference
     const finalRows = allRows.length > 0 ? allRows : [
       ['EJ1201-16001_FK', 'EJ1201-16001', 'Kurta Set', 0.5, 450, 'flipkart'],
       ['EJ1201-16001_M',  'EJ1201-16001', 'Kurta Set', 0.5, 450, 'myntra_ej'],
