@@ -799,7 +799,7 @@ router.get('/template/vb-export-prefilled', async (req, res) => {
 
     // Master rows carry the catalog defaults; listing rows carry the per-marketplace mappings.
     const masterRows = vbSkus.map(r => [
-      r.vb_export_sku,
+      '',
       r.vb_export_sku,
       r.category || '',
       numberOrBlank(r.weight_slab),
@@ -817,7 +817,7 @@ router.get('/template/vb-export-prefilled', async (req, res) => {
     ]);
 
     const orderRows = orderSkus.map(r => [
-      r.vb_export_sku,
+      '',
       r.vb_export_sku,
       r.category || '',
       '',
