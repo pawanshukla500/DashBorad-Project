@@ -39,9 +39,9 @@ export function SkeletonKpiGrid({ count = 4 }) {
   );
 }
 
-export function SkeletonChart({ height = 'h-64' }) {
+export function SkeletonChart({ height = 'h-64', className = '' }) {
   return (
-    <div className={`rounded-xl border border-border bg-surface ${height} p-4 shadow-sm`}>
+    <div className={`rounded-xl border border-border bg-surface ${height} p-4 shadow-sm ${className}`}>
       <SkeletonText width="w-1/4" height="h-3" />
       <SkeletonBlock className={`mt-4 h-[calc(100%-2rem)] ${height.replace('h-','')} bg-surface-container-low`} />
     </div>

@@ -7,6 +7,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import FeeAlertBanner from './components/FeeAlertBanner';
 import ServiceStatusBanner from './components/ServiceStatusBanner';
 import { SkeletonChart, SkeletonKpiGrid, SkeletonTable } from './components/Skeleton';
+import RefreshingBanner from './components/RefreshingBanner';
 import { FilterProvider } from './context/FilterContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { OPS_ROLES, workspaceForPath } from './navigation';
@@ -229,6 +230,7 @@ function AppContent() {
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-on-primary">
         Skip to content
       </a>
+      <RefreshingBanner />
       <Sidebar open={sidebarOpen} onClose={closeSidebar} />
 
       <div className="flex-1 flex flex-col min-h-0 relative w-full lg:w-[calc(100%-16rem)]">
