@@ -732,7 +732,7 @@ export default function OutstandingPaymentsPage() {
             )}
           </div>
           <div className="flex items-center gap-1 text-secondary font-medium">
-            <span>1-5 of 5</span>
+            <span>1-{b2cChannels.length} of {b2cChannels.length}</span>
             <button type="button" disabled className="px-1 text-outline">‹</button>
             <span className="flex h-5 w-5 items-center justify-center rounded bg-primary text-[11px] font-bold text-white">1</span>
             <button type="button" disabled className="px-1 text-outline">›</button>
