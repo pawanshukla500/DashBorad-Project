@@ -26,7 +26,7 @@ export default function OrderDetailDrawer({ orderItemId, onClose }) {
 
   return (
     <>
-      <button type="button" aria-label="Close order detail drawer" className="fixed inset-0 z-40 bg-primary/50 backdrop-blur-sm" onClick={onClose} />
+      <button type="button" aria-label="Close order detail drawer" className="fixed inset-0 z-40 modal-backdrop" onClick={onClose} />
       <div className="fixed right-0 top-0 z-50 flex h-full w-full max-w-3xl flex-col overflow-hidden bg-surface shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="order-detail-title">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-surface-container-low shrink-0">

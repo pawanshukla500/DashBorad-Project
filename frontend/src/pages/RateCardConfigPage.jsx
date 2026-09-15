@@ -1284,7 +1284,7 @@ function RatePeriodDrawer({
 
   return (
     <>
-      <div className="fixed inset-0 bg-primary/60 z-40 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-0 modal-backdrop z-40" onClick={onClose} />
 
       {/* Modal dialog — centered, scrollable */}
       <div

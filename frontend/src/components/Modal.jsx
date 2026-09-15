@@ -138,11 +138,15 @@ export default function Modal({
       className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6"
       role="presentation"
     >
-      {/* Backdrop */}
+      {/* Backdrop — soft neutral wash so the page stays visible behind the
+          panel. Uses ink (deep neutral) at low alpha with a gentle blur;
+          keeps the brand palette uncluttered and avoids the heavy blue cast
+          that a saturated slate backdrop produces against the dashboard's
+          indigo/burgundy theme. */}
       <div
         aria-hidden="true"
         onClick={handleBackdropClick}
-        className="absolute inset-0 bg-slate-900/45 backdrop-blur-[3px] animate-[modal-fade-in_180ms_ease-out]"
+        className="absolute inset-0 modal-backdrop animate-[modal-fade-in_180ms_ease-out]"
       />
       {/* Panel */}
       <div

@@ -152,3 +152,16 @@ textarea:focus:not(:focus-visible) {
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid #E2E8F0;
 }
+
+/* ── ReconCentral — shared modal backdrop ────────────────────────────────────
+   Single source of truth for the dim layer behind any modal / drawer.
+   Soft ink wash + light blur keeps the page visible without competing
+   with the panel or producing a heavy blue cast against the brand theme. */
+.modal-backdrop {
+  background-color: rgba(15, 23, 42, 0.18); /* ink at 18% */
+  backdrop-filter: blur(4px) saturate(120%);
+  -webkit-backdrop-filter: blur(4px) saturate(120%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
