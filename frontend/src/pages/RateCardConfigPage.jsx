@@ -361,10 +361,13 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
 
   return (
     <div className="bg-surface rounded-xl border border-border/80 shadow-[0_2px_16px_-4px_rgba(15,23,42,0.06)] overflow-hidden hover:shadow-md transition-shadow">
-      {/* Card header */}
-      <div className="px-5 py-4 flex items-center justify-between gap-3 border-b border-border bg-gradient-to-r from-slate-50/80 to-white">
-        <div>
-          <h3 className="font-bold text-ink text-sm">{category}</h3>
+      {/* Card header — clean white surface with a thin burgundy accent bar
+          on the left so the category name reads as a strong, dark heading
+          instead of being washed out against a pastel gradient. */}
+      <div className="relative px-5 py-4 flex items-center justify-between gap-3 border-b border-border bg-surface">
+        <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-primary/85 rounded-r-sm" />
+        <div className="pl-3">
+          <h3 className="font-bold text-ink text-base">{category}</h3>
           {activePeriodStart ? (
             <p className="text-xs text-emerald-600 mt-0.5 flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
@@ -389,7 +392,7 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
           {sortedPeriods.length > 0 && (
             <button
               onClick={() => setShowHistory(v => !v)}
-              className="text-xs px-3 py-1.5 border border-border text-secondary rounded-lg hover:bg-surface-container flex items-center gap-1.5 transition-colors"
+              className="text-xs px-3 py-1.5 border border-border text-secondary rounded-lg hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 transition-colors"
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -399,7 +402,7 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
           )}
           <button
             onClick={() => onEdit(category, activeRows)}
-            className="text-xs px-4 py-1.5 bg-primary text-white rounded-lg hover:bg-primary flex items-center gap-1.5 font-medium shadow-sm transition-colors"
+            className="text-xs px-4 py-1.5 bg-primary text-white rounded-lg hover:bg-primary/90 active:bg-primary focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 flex items-center gap-1.5 font-semibold shadow-sm transition-colors"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
