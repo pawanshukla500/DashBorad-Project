@@ -7,6 +7,7 @@ const ENV_KEYS = [
   'PG_SSL_REJECT_UNAUTHORIZED', 'POSTGRES_PG_SSL_REJECT_UNAUTHORIZED',
   'PG_SSL_CA', 'POSTGRES_PG_SSL_CA',
   'PG_READ_STATEMENT_TIMEOUT_MS',
+  'PG_CONNECT_TIMEOUT_MS',
   'PG_POOL_IDLE_TIMEOUT_MS',
   'PG_POOL_MAX_LIFETIME_SECONDS',
 ];
@@ -84,7 +85,7 @@ describe('PostgreSQL transport policy', () => {
     const config = resolvePgConfig();
     expect(config.keepAlive).toBe(true);
     expect(config.keepAliveInitialDelayMillis).toBe(10_000);
-    expect(config.idleTimeoutMillis).toBe(55_000);
+    expect(config.idleTimeoutMillis).toBe(120_000);
     expect(config.maxLifetimeSeconds).toBe(900);
     expect(config.min).toBeGreaterThanOrEqual(2);
     expect(config.max).toBe(20);

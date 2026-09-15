@@ -11,13 +11,14 @@ if (pg.types?.setTypeParser) {
 // The application must never pretend that business data is empty when the
 // database is unavailable. Instead, reads retry briefly and the pool keeps
 // recovering in the background until the configured database is reachable again.
-const CONNECT_TIMEOUT_MS = 12_000;
+const CONNECT_TIMEOUT_MS = positiveInteger(process.env.PG_CONNECT_TIMEOUT_MS, 30_000, { min: 5_000, max: 120_000 });
 const RECOVERY_INTERVAL_MS = 5_000;
-const READ_RETRY_DELAYS_MS = [0, 400, 1_200];
-const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 25_000;
+const MAX_RECOVERY_INTERVAL_MS = 60_000;
+const READ_RETRY_DELAYS_MS = [0, 500, 1_500, 4_000];
+const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 20_000;
 const MIN_HEALTH_CHECK_INTERVAL_MS = 5_000;
 const DEFAULT_READ_STATEMENT_TIMEOUT_MS = 45_000;
-const DEFAULT_POOL_IDLE_TIMEOUT_MS = 55_000;
+const DEFAULT_POOL_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_POOL_MAX_LIFETIME_SECONDS = 15 * 60;
 
 let _pool = null;
@@ -34,6 +35,7 @@ let lastDbRecoveryAt = null;
 let consecutiveDbFailures = 0;
 let poolRecreateRequested = false;
 let lastPoolRecreatedAt = null;
+let currentRecoveryDelay = RECOVERY_INTERVAL_MS;
 
 function positiveInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
   const parsed = Number.parseInt(value, 10);
@@ -268,6 +270,7 @@ function markDatabaseOnline() {
   lastDbSuccessAt = new Date().toISOString();
   if (wasOffline) lastDbRecoveryAt = lastDbSuccessAt;
   consecutiveDbFailures = 0;
+  currentRecoveryDelay = RECOVERY_INTERVAL_MS; // reset backoff
   if (recoveryTimer) {
     clearTimeout(recoveryTimer);
     recoveryTimer = null;
@@ -312,11 +315,17 @@ async function pingDatabase(timeoutMs = 5_000) {
 
 function scheduleRecovery() {
   if (recoveryTimer || recoveryInFlight || !_realPool) return;
+  // Exponential backoff: start at 5s, double each failure, cap at 60s.
+  // This prevents aggressive pool recreation churn during prolonged outages
+  // while still recovering quickly from short network blips.
+  const delay = currentRecoveryDelay;
   recoveryTimer = setTimeout(() => {
     recoveryTimer = null;
     void recoverDatabaseConnection();
-  }, RECOVERY_INTERVAL_MS);
+  }, delay);
   recoveryTimer.unref?.();
+  // Increase backoff for the next cycle (capped at MAX_RECOVERY_INTERVAL_MS).
+  currentRecoveryDelay = Math.min(currentRecoveryDelay * 2, MAX_RECOVERY_INTERVAL_MS);
 }
 
 export async function recoverDatabaseConnection() {
@@ -417,6 +426,31 @@ function createRealPool() {
   }
 
   const realPool = new Pool(config);
+
+  // Tune TCP keepalive on every new client connection so idle sockets send
+  // keepalive probes well within typical NAT/firewall timeout windows
+  // (often 60-300s). Without this, OS defaults (Linux: 2h) let sockets die
+  // silently behind Hostinger's NAT, causing frequent "connection terminated"
+  // errors that trigger pool recreation storms.
+  realPool.on('connect', (client) => {
+    const stream = client?.connection?.stream;
+    if (stream && typeof stream.setKeepAlive === 'function') {
+      stream.setKeepAlive(true, 10_000);
+      // On Linux, also tighten TCP_KEEPIDLE (seconds before first probe),
+      // TCP_KEEPINTVL (seconds between probes), and TCP_KEEPCNT (probes
+      // before giving up) so dead connections are detected in ~30s.
+      if (typeof stream.setKeepAliveInitialDelay === 'function') {
+        stream.setKeepAliveInitialDelay(10_000);
+      }
+      // ipc.net.Socket exposes setKeepAliveTimeval on Node 19+ / Linux.
+      // Fall back silently when not available (e.g., Windows dev machines).
+      const sock = stream;
+      if (typeof sock.setKeepAliveTimeval === 'function') {
+        sock.setKeepAliveTimeval(10); // TCP_KEEPIDLE = 10s
+      }
+    }
+  });
+
   realPool.on('error', error => {
     // Idle client errors are a normal symptom of container restarts, NAT state
     // expiry, or server socket drops. pg-pool discards the failed client, then

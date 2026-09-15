@@ -338,12 +338,12 @@ export default function OutstandingPaymentsPage() {
   const d2cTotal = data?.d2c?.total || {};
 
   return (
-    <div className="space-y-6 pb-16 font-sans">
+    <div className="space-y-6 pb-16">
       {/* 1. Header with Title, Config Outstanding button, User Profile */}
       <div className="flex items-center justify-between flex-wrap gap-4 pt-1">
         <div>
-          <h1 className="text-2xl font-bold text-ink tracking-tight">Outstanding Payments</h1>
-          <p className="text-xs text-secondary mt-0.5">Live marketplace order reconciliation & payment status</p>
+          <h1 className="text-headline-lg text-ink">Outstanding Payments</h1>
+          <p className="text-body-sm text-secondary mt-0.5">Live marketplace order reconciliation & payment status</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -374,7 +374,7 @@ export default function OutstandingPaymentsPage() {
         {/* TOTAL ORDERS */}
         <div className="rounded-xl border-2 border-[#38bdf8] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold uppercase tracking-wider text-secondary">
+            <span className="text-label-md uppercase text-secondary">
               TOTAL ORDERS
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#bae6fd] bg-sky-50 text-sky-600">
@@ -382,17 +382,17 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-2xl font-bold tracking-tight text-ink tabular-nums">
+            <span className="text-financial-lg text-ink tabular-nums">
               {formatCurrency(kpis.total_orders || kpis.unsettled || 0)}
             </span>
-            <div className="text-xs text-gray-500 mt-0.5">Gross order value</div>
+            <div className="text-body-sm text-outline mt-0.5">Gross order value</div>
           </div>
         </div>
 
         {/* RETURNS */}
         <div className="rounded-xl border-2 border-[#f87171] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold uppercase tracking-wider text-secondary">
+            <span className="text-label-md uppercase text-secondary">
               RETURNS
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#fecaca] bg-rose-50 text-rose-500">
@@ -400,17 +400,17 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-2xl font-bold tracking-tight text-ink tabular-nums">
+            <span className="text-financial-lg text-ink tabular-nums">
               {formatCurrency(kpis.returns || 0)}
             </span>
-            <div className="text-xs text-gray-500 mt-0.5">Customer & RTO refunds</div>
+            <div className="text-body-sm text-outline mt-0.5">Customer & RTO refunds</div>
           </div>
         </div>
 
         {/* MARKETPLACE FEES */}
         <div className="rounded-xl border-2 border-[#c084fc] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold uppercase tracking-wider text-secondary">
+            <span className="text-label-md uppercase text-secondary">
               MARKETPLACE FEES
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#f3e8ff] bg-purple-50 text-purple-600">
@@ -418,17 +418,17 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-2xl font-bold tracking-tight text-ink tabular-nums">
+            <span className="text-financial-lg text-ink tabular-nums">
               {formatCurrency(kpis.marketplace_fees || 0)}
             </span>
-            <div className="text-xs text-gray-500 mt-0.5">Commissions & taxes</div>
+            <div className="text-body-sm text-outline mt-0.5">Commissions & taxes</div>
           </div>
         </div>
 
         {/* PAYMENT RECEIVED */}
         <div className="rounded-xl border-2 border-[#4ade80] bg-surface p-4 flex flex-col justify-between shadow-xs transition-shadow hover:shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold uppercase tracking-wider text-secondary">
+            <span className="text-label-md uppercase text-secondary">
               PAYMENT RECEIVED
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded-full border border-[#dcfce7] bg-emerald-50 text-emerald-600">
@@ -436,17 +436,17 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-2xl font-bold tracking-tight text-ink tabular-nums">
+            <span className="text-financial-lg text-ink tabular-nums">
               {formatCurrency(kpis.payment_received || 0)}
             </span>
-            <div className="text-xs text-gray-500 mt-0.5">Bank payouts settled</div>
+            <div className="text-body-sm text-outline mt-0.5">Bank payouts settled</div>
           </div>
         </div>
 
         {/* TOTAL OUTSTANDING */}
-        <div className="rounded-xl bg-[#0f2744] p-4 flex flex-col justify-between shadow-sm transition-shadow hover:shadow-md text-white">
+        <div className="rounded-xl bg-ink p-4 flex flex-col justify-between shadow-sm transition-shadow hover:shadow-md text-white">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+            <span className="text-label-md uppercase text-white/70">
               TOTAL OUTSTANDING
             </span>
             <div className="flex h-6 w-6 items-center justify-center rounded bg-white/10 text-white">
@@ -454,10 +454,10 @@ export default function OutstandingPaymentsPage() {
             </div>
           </div>
           <div className="mt-2">
-            <span className="font-sans text-2xl font-bold tracking-tight text-white tabular-nums">
+            <span className="text-financial-lg text-white tabular-nums">
               {formatCurrency(kpis.total_outstanding || 0)}
             </span>
-            <div className="text-xs text-gray-500 mt-0.5">Net pending to receive</div>
+            <div className="text-body-sm text-white/60 mt-0.5">Net pending to receive</div>
           </div>
         </div>
       </div>
@@ -482,42 +482,42 @@ export default function OutstandingPaymentsPage() {
       </div>
 
       {/* 3. Section 1: B2C Channels Table */}
-      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+      <div className="rounded-xl border border-border bg-surface overflow-hidden shadow-xs">
         {/* Section Header */}
-        <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
+        <div className="px-5 py-3 border-b border-border flex items-center justify-between bg-surface-container-low">
           <div className="flex items-center gap-2">
             <div className="flex h-7 w-7 items-center justify-center rounded bg-blue-100 text-blue-700">
               <span className="material-symbols-outlined text-[16px]">storefront</span>
             </div>
-            <h2 className="text-sm font-bold text-slate-900">B2C Marketplaces</h2>
+            <h2 className="text-sm font-bold text-ink">B2C Marketplaces</h2>
             <span
-              className="material-symbols-outlined text-slate-400 text-[16px] cursor-help"
+              className="material-symbols-outlined text-outline text-[16px] cursor-help"
               title="Consolidated marketplace channels. Click any row or account to filter unsettled orders."
             >
               info
             </span>
           </div>
-          <div className="text-xs text-slate-500 font-medium">
+          <div className="text-xs text-outline font-medium">
             {b2cChannels.length} Channels Integrated
           </div>
         </div>
 
         {/* Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm border-collapse font-sans">
+          <table className="w-full text-left text-sm border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 text-xs font-semibold uppercase tracking-wider">
+              <tr className="border-b border-border bg-surface-container-low text-secondary text-label-md uppercase font-semibold">
                 <th className="py-3 px-4 min-w-[200px]">Channels</th>
                 <th className="py-3 px-4 text-right">Total Orders</th>
                 <th className="py-3 px-4 text-right">Returns</th>
                 <th className="py-3 px-4 text-right">Marketplace Fees</th>
                 <th className="py-3 px-4 text-right">Payment Received</th>
-                <th className="py-3 px-4 text-right font-extrabold text-slate-900">Outstanding</th>
+                <th className="py-3 px-4 text-right font-bold text-ink">Outstanding</th>
                 <th className="py-3 px-4 text-right">{'OverDue (>60d)'}</th>
                 <th className="py-3 px-4 text-center">Status</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200/80 text-slate-800">
+            <tbody className="divide-y divide-border text-ink">
               {b2cChannels.map(channel => {
                 const isExpanded = expandedChannels[channel.channel_key];
                 const isChannelSelected = selectedChannel === channel.channel_key && !selectedAccount;
@@ -525,7 +525,7 @@ export default function OutstandingPaymentsPage() {
                 // Status calculation
                 let statusBadge = null;
                 if ((channel.total_orders_amount || 0) === 0) {
-                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500">No Orders</span>;
+                  statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-surface-container text-outline">No Orders</span>;
                 } else if ((channel.total || 0) === 0) {
                   statusBadge = <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-600">Settled</span>;
                 } else if ((channel.overdue || 0) > 0) {
@@ -541,7 +541,7 @@ export default function OutstandingPaymentsPage() {
                       className={`group transition-colors ${
                         isChannelSelected
                           ? 'bg-indigo-50/80 font-medium'
-                          : 'hover:bg-slate-50/70'
+                          : 'hover:bg-surface-container-low'
                       }`}
                     >
                       <td className="py-3 px-4">
@@ -553,7 +553,7 @@ export default function OutstandingPaymentsPage() {
                                 e.stopPropagation();
                                 toggleExpand(channel.channel_key);
                               }}
-                              className="flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+                              className="flex h-5 w-5 items-center justify-center rounded text-outline hover:text-secondary hover:bg-surface-container transition-colors"
                               title={isExpanded ? 'Collapse Accounts' : 'Expand Accounts'}
                             >
                               <span className="material-symbols-outlined text-[16px]">
@@ -570,39 +570,39 @@ export default function OutstandingPaymentsPage() {
                               setSelectedChannel(selectedChannel === channel.channel_key ? null : channel.channel_key);
                               setSelectedAccount(null);
                             }}
-                            className="flex items-center gap-2 text-left font-semibold text-slate-900 hover:text-primary transition-colors"
+                            className="flex items-center gap-2 text-left font-semibold text-ink hover:text-primary transition-colors"
                           >
                             <ChannelIcon channelKey={channel.icon || channel.channel_key} />
                             <span>{channel.channel_name}</span>
                           </button>
                         </div>
                       </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-900">
+                      <td className="py-3 px-4 text-right tabular-nums text-ink">
                         <div>{formatCurrency(channel.total_orders_amount || 0)}</div>
                         {(channel.total_orders_count || 0) > 0 && (
-                          <div className="text-[10px] text-slate-400 font-normal">
+                          <div className="text-[10px] text-outline font-normal">
                             {channel.total_orders_count.toLocaleString('en-IN')} orders
                           </div>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-900">
+                      <td className="py-3 px-4 text-right tabular-nums text-ink">
                         <div>{formatCurrency(channel.returns_amount || 0)}</div>
                         {(channel.returns_orders_count || 0) > 0 && (
-                          <div className="text-[10px] text-slate-400 font-normal">
+                          <div className="text-[10px] text-outline font-normal">
                             {channel.returns_orders_count.toLocaleString('en-IN')} returns
                           </div>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-700">
+                      <td className="py-3 px-4 text-right tabular-nums text-secondary">
                         {formatCurrency(channel.marketplace_fees || 0)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-900 font-medium">
+                      <td className="py-3 px-4 text-right tabular-nums text-ink font-medium">
                         {formatCurrency(channel.payment_received || 0)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">
+                      <td className="py-3 px-4 text-right tabular-nums font-bold text-ink">
                         {formatCurrency(channel.total || 0)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono text-slate-800">
+                      <td className="py-3 px-4 text-right tabular-nums text-ink">
                         {formatCurrency(channel.overdue || 0)}
                       </td>
                       <td className="py-3 px-4 text-center">
@@ -617,8 +617,8 @@ export default function OutstandingPaymentsPage() {
                       return (
                         <tr
                           key={acc.account_key}
-                          className={`bg-slate-50 hover:bg-slate-100/70 transition-colors border-l-4 ${
-                            isAccSelected ? 'border-primary bg-indigo-50/60 font-medium' : 'border-slate-300'
+                          className={`bg-surface-container-low hover:bg-surface-container transition-colors border-l-4 ${
+                            isAccSelected ? 'border-primary bg-indigo-50/60 font-medium' : 'border-outline-variant'
                           }`}
                         >
                           <td className="py-3 px-4 pl-12">
@@ -628,50 +628,50 @@ export default function OutstandingPaymentsPage() {
                                 setSelectedChannel(channel.channel_key);
                                 setSelectedAccount(selectedAccount === acc.account_key ? null : acc.account_key);
                               }}
-                              className="flex items-center gap-2 text-left text-sm text-slate-700 hover:text-primary font-medium transition-colors"
+                              className="flex items-center gap-2 text-left text-sm text-secondary hover:text-primary font-medium transition-colors"
                             >
-                              <span className="material-symbols-outlined text-[14px] text-slate-400">subdirectory_arrow_right</span>
+                              <span className="material-symbols-outlined text-[14px] text-outline">subdirectory_arrow_right</span>
                               <span>{acc.account_name}</span>
-                              <span className="rounded bg-slate-200/80 px-1.5 py-0.2 text-[10px] font-mono text-slate-600">
+                              <span className="rounded bg-surface-container px-1.5 py-0.2 text-[10px] font-mono text-secondary">
                                 ID: {acc.seller_id}
                               </span>
                             </button>
                           </td>
-                          <td className="py-3 px-4 text-right font-mono text-slate-700 text-sm">
+                          <td className="py-3 px-4 text-right tabular-nums text-secondary text-sm">
                             <div>{formatCurrency(acc.total_orders_amount || 0)}</div>
                             {(acc.total_orders_count || 0) > 0 && (
-                              <div className="text-[10px] text-slate-400 font-normal">
+                              <div className="text-[10px] text-outline font-normal">
                                 {acc.total_orders_count.toLocaleString('en-IN')} orders
                               </div>
                             )}
                           </td>
-                          <td className="py-3 px-4 text-right font-mono text-slate-700 text-sm">
+                          <td className="py-3 px-4 text-right tabular-nums text-secondary text-sm">
                             <div>{formatCurrency(acc.returns_amount || 0)}</div>
                             {(acc.returns_orders_count || 0) > 0 && (
-                              <div className="text-[10px] text-slate-400 font-normal">
+                              <div className="text-[10px] text-outline font-normal">
                                 {acc.returns_orders_count.toLocaleString('en-IN')} returns
                               </div>
                             )}
                           </td>
-                          <td className="py-3 px-4 text-right font-mono text-slate-700 text-sm">
+                          <td className="py-3 px-4 text-right tabular-nums text-secondary text-sm">
                             {formatCurrency(acc.marketplace_fees || 0)}
                           </td>
-                          <td className="py-3 px-4 text-right font-mono text-slate-800 text-sm">
+                          <td className="py-3 px-4 text-right tabular-nums text-ink text-sm">
                             {formatCurrency(acc.payment_received || 0)}
                           </td>
-                          <td className="py-3 px-4 text-right font-mono font-bold text-slate-900 text-sm">
+                          <td className="py-3 px-4 text-right tabular-nums font-bold text-ink text-sm">
                             {formatCurrency(acc.total || 0)}
                           </td>
-                          <td className="py-3 px-4 text-right font-mono text-slate-700 text-sm">
+                          <td className="py-3 px-4 text-right tabular-nums text-secondary text-sm">
                             {formatCurrency(acc.overdue || 0)}
                           </td>
                           <td className="py-3 px-4 text-center">
                             {(acc.overdue || 0) > 0 ? (
-                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-red-100 text-red-700">Overdue</span>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700">Overdue</span>
                             ) : (acc.total || 0) > 0 ? (
-                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-amber-100 text-amber-700">Pending</span>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700">Pending</span>
                             ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-gray-100 text-gray-600">Settled</span>
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-600">Settled</span>
                             )}
                           </td>
                         </tr>
@@ -682,28 +682,28 @@ export default function OutstandingPaymentsPage() {
               })}
 
               {/* B2C Summary Row */}
-              <tr className="border-t-2 border-slate-300 bg-slate-100/90 font-bold text-slate-900">
+              <tr className="border-t-2 border-outline-variant bg-surface-container font-bold text-ink">
                 <td className="py-3 px-4 font-bold">Total</td>
-                <td className="py-3 px-4 text-right font-mono">
+                <td className="py-3 px-4 text-right tabular-nums">
                   <div>{formatCurrency(b2cTotal.total_orders_amount || 0)}</div>
                   {(b2cTotal.total_orders_count || 0) > 0 && (
-                    <div className="text-[10px] text-slate-500 font-normal">
+                    <div className="text-[10px] text-outline font-normal">
                       {b2cTotal.total_orders_count.toLocaleString('en-IN')} orders
                     </div>
                   )}
                 </td>
-                <td className="py-3 px-4 text-right font-mono">
+                <td className="py-3 px-4 text-right tabular-nums">
                   <div>{formatCurrency(b2cTotal.returns_amount || 0)}</div>
                   {(b2cTotal.returns_orders_count || 0) > 0 && (
-                    <div className="text-[10px] text-slate-500 font-normal">
+                    <div className="text-[10px] text-outline font-normal">
                       {b2cTotal.returns_orders_count.toLocaleString('en-IN')} returns
                     </div>
                   )}
                 </td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.marketplace_fees || 0)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.payment_received || 0)}</td>
-                <td className="py-3 px-4 text-right font-mono font-extrabold">{formatCurrency(b2cTotal.total || 0)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(b2cTotal.overdue || 0)}</td>
+                <td className="py-3 px-4 text-right tabular-nums">{formatCurrency(b2cTotal.marketplace_fees || 0)}</td>
+                <td className="py-3 px-4 text-right tabular-nums">{formatCurrency(b2cTotal.payment_received || 0)}</td>
+                <td className="py-3 px-4 text-right tabular-nums font-extrabold">{formatCurrency(b2cTotal.total || 0)}</td>
+                <td className="py-3 px-4 text-right tabular-nums">{formatCurrency(b2cTotal.overdue || 0)}</td>
                 <td className="py-3 px-4 text-center">
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-primary/10 text-primary">Consolidated</span>
                 </td>
@@ -713,7 +713,7 @@ export default function OutstandingPaymentsPage() {
         </div>
 
         {/* Table Footer */}
-        <div className="px-5 py-2.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500">
+        <div className="px-5 py-2.5 border-t border-border bg-surface-container-low flex items-center justify-between text-xs text-outline">
           <div>
             {selectedChannel ? (
               <span className="inline-flex items-center gap-1.5 font-medium text-primary">
@@ -722,7 +722,7 @@ export default function OutstandingPaymentsPage() {
                 <button
                   type="button"
                   onClick={() => { setSelectedChannel(null); setSelectedAccount(null); }}
-                  className="ml-1 text-slate-400 hover:text-slate-700 underline"
+                  className="ml-1 text-outline hover:text-secondary underline"
                 >
                   Clear
                 </button>
@@ -731,32 +731,32 @@ export default function OutstandingPaymentsPage() {
               <span>Showing all {b2cChannels.length} channels</span>
             )}
           </div>
-          <div className="flex items-center gap-1 text-slate-600 font-medium">
+          <div className="flex items-center gap-1 text-secondary font-medium">
             <span>1-5 of 5</span>
-            <button type="button" disabled className="px-1 text-slate-300">‹</button>
+            <button type="button" disabled className="px-1 text-outline">‹</button>
             <span className="flex h-5 w-5 items-center justify-center rounded bg-primary text-[11px] font-bold text-white">1</span>
-            <button type="button" disabled className="px-1 text-slate-300">›</button>
+            <button type="button" disabled className="px-1 text-outline">›</button>
           </div>
         </div>
       </div>
 
       {/* 4. Section 2: D2C Vendors Table */}
-      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+      <div className="rounded-xl border border-border bg-surface overflow-hidden shadow-xs">
         {/* Section Header */}
-        <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between bg-slate-50/70">
+        <div className="px-5 py-3 border-b border-border flex items-center justify-between bg-surface-container-low">
           <div className="flex items-center gap-2">
             <div className="flex h-7 w-7 items-center justify-center rounded bg-purple-100 text-purple-700">
               <span className="material-symbols-outlined text-[16px]">public</span>
             </div>
-            <h2 className="text-sm font-bold text-slate-900">D2C</h2>
+            <h2 className="text-sm font-bold text-ink">D2C</h2>
             <span
-              className="material-symbols-outlined text-slate-400 text-[16px] cursor-help"
+              className="material-symbols-outlined text-outline text-[16px] cursor-help"
               title="D2C Payment gateways and logistics partners"
             >
               info
             </span>
             {data?.d2c?.last_payment_date && data.d2c.last_payment_date !== '-' && (
-              <span className="text-xs text-slate-500 ml-2">
+              <span className="text-xs text-outline ml-2">
                 Last Payment Date: {data.d2c.last_payment_date}
               </span>
             )}
@@ -764,7 +764,7 @@ export default function OutstandingPaymentsPage() {
           <button
             type="button"
             onClick={handleExportD2C}
-            className="flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:text-slate-900 hover:bg-slate-200 transition-colors"
+            className="flex h-7 w-7 items-center justify-center rounded text-outline hover:text-ink hover:bg-surface-container transition-colors"
             title="Download D2C Report"
           >
             <span className="material-symbols-outlined text-[18px]">download</span>
@@ -773,54 +773,54 @@ export default function OutstandingPaymentsPage() {
 
         {/* Table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm border-collapse font-sans">
+          <table className="w-full text-left text-sm border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 text-xs font-semibold uppercase tracking-wider">
+              <tr className="border-b border-border bg-surface-container-low text-secondary text-label-md uppercase font-semibold">
                 <th className="py-3 px-4 min-w-[200px]">Vendors</th>
                 <th className="py-3 px-4 text-right">Settled Not Paid</th>
                 <th className="py-3 px-4 text-right">Settled Adjusted</th>
-                <th className="py-3 px-4 text-right font-extrabold text-slate-900">Total</th>
+                <th className="py-3 px-4 text-right font-extrabold text-ink">Total</th>
                 <th className="py-3 px-4 text-right">OverDue</th>
                 <th className="py-3 px-4 text-right">Due (In Grace)</th>
                 <th className="py-3 px-4 text-right">Upcoming</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200/80 text-slate-800">
+            <tbody className="divide-y divide-border text-ink">
               {d2cVendors.map(vendor => (
-                <tr key={vendor.vendor_key} className="hover:bg-slate-50/70 transition-colors">
-                  <td className="py-3 px-4 font-semibold text-slate-900">
+                <tr key={vendor.vendor_key} className="hover:bg-surface-container-low transition-colors">
+                  <td className="py-3 px-4 font-semibold text-ink">
                     {vendor.vendor_name}
                   </td>
-                  <td className="py-3 px-4 text-right font-mono text-slate-900">
+                  <td className="py-3 px-4 text-right tabular-nums text-ink">
                     {formatCurrency(vendor.settled_not_paid)}
                   </td>
-                  <td className="py-3 px-4 text-right font-mono text-slate-700">
+                  <td className="py-3 px-4 text-right tabular-nums text-secondary">
                     {formatCurrency(vendor.settled_adjusted)}
                   </td>
-                  <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">
+                  <td className="py-3 px-4 text-right tabular-nums font-bold text-ink">
                     {formatCurrency(vendor.total)}
                   </td>
-                  <td className="py-3 px-4 text-right font-mono text-slate-800">
+                  <td className="py-3 px-4 text-right tabular-nums text-ink">
                     {formatCurrency(vendor.overdue)}
                   </td>
-                  <td className="py-3 px-4 text-right font-mono text-slate-800">
+                  <td className="py-3 px-4 text-right tabular-nums text-ink">
                     {formatCurrency(vendor.due_in_grace)}
                   </td>
-                  <td className="py-3 px-4 text-right font-mono text-slate-800">
+                  <td className="py-3 px-4 text-right tabular-nums text-ink">
                     {formatCurrency(vendor.upcoming)}
                   </td>
                 </tr>
               ))}
 
               {/* D2C Total Row */}
-              <tr className="border-t-2 border-slate-300 bg-slate-100/90 font-bold text-slate-900">
+              <tr className="border-t-2 border-outline-variant bg-surface-container font-bold text-ink">
                 <td className="py-3 px-4 font-bold">Total</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(d2cTotal.settled_not_paid)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(d2cTotal.settled_adjusted)}</td>
-                <td className="py-3 px-4 text-right font-mono font-extrabold">{formatCurrency(d2cTotal.total)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(d2cTotal.overdue)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(d2cTotal.due_in_grace)}</td>
-                <td className="py-3 px-4 text-right font-mono">{formatCurrency(d2cTotal.upcoming)}</td>
+                <td className="py-3 px-4 text-right tabular-nums">{formatCurrency(d2cTotal.settled_not_paid)}</td>
+                <td className="py-3 px-4 text-right tabular-nums">{formatCurrency(d2cTotal.settled_adjusted)}</td>
+                <td className="py-3 px-4 text-right tabular-nums font-extrabold">{formatCurrency(d2cTotal.total)}</td>
+                <td className="py-3 px-4 text-right tabular-nums">{formatCurrency(d2cTotal.overdue)}</td>
+                <td className="py-3 px-4 text-right tabular-nums">{formatCurrency(d2cTotal.due_in_grace)}</td>
+                <td className="py-3 px-4 text-right tabular-nums">{formatCurrency(d2cTotal.upcoming)}</td>
               </tr>
             </tbody>
           </table>
@@ -828,9 +828,9 @@ export default function OutstandingPaymentsPage() {
       </div>
 
       {/* 5. Detailed Drilldown Section */}
-      <div id="outstanding-drilldown-section" className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+      <div id="outstanding-drilldown-section" className="rounded-xl border border-border bg-surface overflow-hidden shadow-xs">
         {/* Tab Selection */}
-        <div className="px-5 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between flex-wrap gap-3">
+        <div className="px-5 py-3 border-b border-border bg-surface-container-low flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -843,7 +843,7 @@ export default function OutstandingPaymentsPage() {
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
                 activeDrilldownTab === 'orders'
                   ? 'bg-primary text-white shadow-xs'
-                  : 'text-secondary hover:text-ink hover:bg-slate-200/60'
+                  : 'text-secondary hover:text-ink hover:bg-surface-container'
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">receipt</span>
@@ -876,7 +876,7 @@ export default function OutstandingPaymentsPage() {
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
                 activeDrilldownTab === 'invoices'
                   ? 'bg-primary text-white shadow-xs'
-                  : 'text-secondary hover:text-ink hover:bg-slate-200/60'
+                  : 'text-secondary hover:text-ink hover:bg-surface-container'
               }`}
             >
               <span className="material-symbols-outlined text-[16px]">description</span>
@@ -884,7 +884,7 @@ export default function OutstandingPaymentsPage() {
             </button>
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-slate-500">
+          <div className="flex items-center gap-2 text-xs text-outline">
             {selectedChannel && (
               <span className="inline-flex items-center gap-1.5 rounded-md bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-indigo-700 font-semibold capitalize">
                 <span>{selectedChannel} {selectedAccount ? `· ${selectedAccount}` : ''}</span>
@@ -918,11 +918,11 @@ export default function OutstandingPaymentsPage() {
         </div>
 
         {/* Filter controls row */}
-        <div className="p-4 border-b border-slate-200 bg-white flex items-center justify-between flex-wrap gap-3">
+        <div className="p-4 border-b border-border bg-surface flex items-center justify-between flex-wrap gap-3">
           {activeDrilldownTab !== 'invoices' ? (
             <>
               <div className="relative flex-1 min-w-[240px] max-w-md">
-                <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+                <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-outline text-[18px]">
                   search
                 </span>
                 <input
@@ -930,13 +930,13 @@ export default function OutstandingPaymentsPage() {
                   value={orderSearch}
                   onChange={e => setOrderSearch(e.target.value)}
                   placeholder="Search Order ID, Item ID, or SKU..."
-                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-border bg-surface text-ink placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary/40"
                 />
                 {orderSearch && (
                   <button
                     type="button"
                     onClick={() => setOrderSearch('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-outline hover:text-secondary"
                   >
                     <span className="material-symbols-outlined text-[14px]">close</span>
                   </button>
@@ -949,7 +949,7 @@ export default function OutstandingPaymentsPage() {
                   <select
                     value={agingFilter}
                     onChange={e => setAgingFilter(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                    className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-secondary focus:outline-none focus:ring-2 focus:ring-primary/40"
                   >
                     <option value="">All Aging Tiers</option>
                     <option value="0-15">0-15</option>
@@ -964,7 +964,7 @@ export default function OutstandingPaymentsPage() {
                   <select
                     value={statusFilter}
                     onChange={e => setStatusFilter(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                    className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-secondary focus:outline-none focus:ring-2 focus:ring-primary/40"
                   >
                     <option value="">All Return Statuses</option>
                     <option value="Cancelled">Cancelled</option>
@@ -976,7 +976,7 @@ export default function OutstandingPaymentsPage() {
                   <select
                     value={statusFilter}
                     onChange={e => setStatusFilter(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                    className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-secondary focus:outline-none focus:ring-2 focus:ring-primary/40"
                   >
                     <option value="">All Active Statuses</option>
                     <option value="Delivered">Delivered</option>
@@ -992,7 +992,7 @@ export default function OutstandingPaymentsPage() {
                     const limit = Number(e.target.value);
                     setOrdersPagination(p => ({ ...p, limit, page: 1 }));
                   }}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-secondary focus:outline-none focus:ring-2 focus:ring-primary/40"
                 >
                   <option value={25}>25 / page</option>
                   <option value={50}>50 / page</option>
@@ -1003,7 +1003,7 @@ export default function OutstandingPaymentsPage() {
           ) : (
             <>
               <div className="relative flex-1 min-w-[240px] max-w-md">
-                <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
+                <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-outline text-[18px]">
                   search
                 </span>
                 <input
@@ -1011,7 +1011,7 @@ export default function OutstandingPaymentsPage() {
                   value={invoiceSearch}
                   onChange={e => setInvoiceSearch(e.target.value)}
                   placeholder="Search invoice number, SKU, or notes..."
-                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-border bg-surface text-ink placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary/40"
                 />
               </div>
             </>
@@ -1045,8 +1045,8 @@ export default function OutstandingPaymentsPage() {
 
             {ordersLoading ? (
               <div className="flex min-h-[220px] items-center justify-center">
-                <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold text-secondary">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-primary" />
+                <div className="flex items-center gap-3 rounded-xl border border-border bg-surface-container-low px-4 py-3 text-xs font-semibold text-secondary">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
                   Loading {activeDrilldownTab === 'returns' ? 'returns' : 'orders'}...
                 </div>
               </div>
@@ -1058,9 +1058,9 @@ export default function OutstandingPaymentsPage() {
               />
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse font-sans">
+                <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
+                    <tr className="border-b border-border bg-surface-container-low text-secondary text-label-md uppercase font-semibold">
                       <th className="py-2.5 px-4">Order Item ID</th>
                       <th className="py-2.5 px-4">Order ID</th>
                       <th className="py-2.5 px-4">Order Date</th>
@@ -1080,37 +1080,37 @@ export default function OutstandingPaymentsPage() {
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200 text-slate-800">
+                  <tbody className="divide-y divide-border text-ink">
                     {orders.map(o => (
-                      <tr key={o.order_item_id} className="hover:bg-slate-50/70 transition-colors">
+                      <tr key={o.order_item_id} className="hover:bg-surface-container-low transition-colors">
                         <td className="py-2.5 px-4 font-mono font-medium text-primary">
                           <OrderIdCell id={o.order_item_id} onOpen={setSelectedOrderItemId} />
                         </td>
-                        <td className="py-2.5 px-4 font-mono text-slate-500 select-all">
+                        <td className="py-2.5 px-4 font-mono text-outline select-all">
                           {o.order_id}
                         </td>
                         <td className="py-2.5 px-4 whitespace-nowrap">
-                          <p className="font-medium text-slate-900">{o.order_date ? String(o.order_date).slice(0, 10) : '—'}</p>
-                          <p className="text-[10px] text-slate-400">{o.days_outstanding}d ago</p>
+                          <p className="font-medium text-ink">{o.order_date ? String(o.order_date).slice(0, 10) : '—'}</p>
+                          <p className="text-[10px] text-outline">{o.days_outstanding}d ago</p>
                         </td>
                         <td className="py-2.5 px-4 whitespace-nowrap">
                           <div className="flex items-center gap-1.5">
-                            <ChannelIcon channelKey={o.marketplace} className="w-4 h-4 text-[9px]" />
+                            <ChannelIcon channelKey={o.marketplace} className="w-4 h-4 text-[10px]" />
                             <span className="capitalize">{o.marketplace}</span>
                           </div>
                         </td>
-                        <td className="py-2.5 px-4 text-slate-600 font-mono text-[11px]">
+                        <td className="py-2.5 px-4 text-secondary font-mono text-[11px]">
                           {o.seller_account || 'default'}
                         </td>
                         <td className="py-2.5 px-4 max-w-[200px] truncate" title={`${o.sku} · ${o.category}`}>
-                          <p className="font-semibold text-slate-900 truncate">{o.sku || '—'}</p>
-                          <p className="text-[10px] text-slate-400 truncate">{o.category || '—'}</p>
+                          <p className="font-semibold text-ink truncate">{o.sku || '—'}</p>
+                          <p className="text-[10px] text-outline truncate">{o.category || '—'}</p>
                         </td>
                         <td className="py-2.5 px-4 whitespace-nowrap">
                           <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold border capitalize ${
                             o.orders_status === 'Cancelled' ? 'bg-rose-50 border-rose-200 text-rose-700' :
                             o.orders_status === 'RTO' ? 'bg-amber-50 border-amber-200 text-amber-700' :
-                            'bg-slate-50 border-slate-200 text-slate-700'
+                            'bg-surface-container-low border-border text-secondary'
                           }`}>
                             {o.orders_status || 'Unknown'}
                           </span>
@@ -1118,25 +1118,25 @@ export default function OutstandingPaymentsPage() {
                         {activeDrilldownTab === 'returns' && (
                           <>
                             <td className="py-2.5 px-4 whitespace-nowrap">
-                              <span className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium bg-slate-100 text-slate-800">
+                              <span className="inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium bg-surface-container text-ink">
                                 {o.ret_type || '—'}
                               </span>
                             </td>
-                            <td className="py-2.5 px-4 max-w-[220px] truncate text-slate-600" title={o.return_reason || ''}>
+                            <td className="py-2.5 px-4 max-w-[220px] truncate text-secondary" title={o.return_reason || ''}>
                               {o.return_reason || '—'}
                             </td>
                           </>
                         )}
-                        <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-900">
+                        <td className="py-2.5 px-4 text-right tabular-nums font-bold text-ink">
                           {formatCurrency(o.final_invoice_amount)}
                         </td>
-                        <td className="py-2.5 px-4 text-center whitespace-nowrap font-mono text-[11px]">
+                        <td className="py-2.5 px-4 text-center whitespace-nowrap tabular-nums text-[11px]">
                           {activeDrilldownTab === 'returns' ? (
                             <span className="inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold border bg-emerald-50 border-emerald-200 text-emerald-700">
                               ₹0 Due (Returned)
                             </span>
                           ) : (
-                            <span className="inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium border bg-slate-50 border-slate-200">
+                            <span className="inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium border bg-surface-container-low border-border">
                               {o.aging_bucket}
                             </span>
                           )}
@@ -1150,7 +1150,7 @@ export default function OutstandingPaymentsPage() {
 
             {/* Pagination Controls */}
             {ordersPagination.pages > 1 && (
-              <div className="flex items-center justify-between border-t border-slate-200 px-4 py-2.5 bg-slate-50 text-xs text-slate-600">
+              <div className="flex items-center justify-between border-t border-border px-4 py-2.5 bg-surface-container-low text-xs text-secondary">
                 <span>
                   Page {ordersPagination.page} of {ordersPagination.pages} ({num(ordersPagination.total)} total orders)
                 </span>
@@ -1159,18 +1159,18 @@ export default function OutstandingPaymentsPage() {
                     type="button"
                     disabled={ordersPagination.page <= 1 || ordersLoading}
                     onClick={() => loadOrders(ordersPagination.page - 1)}
-                    className="rounded px-2.5 py-1 text-slate-700 hover:bg-slate-200 disabled:opacity-40"
+                    className="rounded px-2.5 py-1 text-secondary hover:bg-surface-container disabled:opacity-40"
                   >
                     Previous
                   </button>
-                  <span className="px-2 font-semibold text-slate-900">
+                  <span className="px-2 font-semibold text-ink">
                     {ordersPagination.page} / {ordersPagination.pages}
                   </span>
                   <button
                     type="button"
                     disabled={ordersPagination.page >= ordersPagination.pages || ordersLoading}
                     onClick={() => loadOrders(ordersPagination.page + 1)}
-                    className="rounded px-2.5 py-1 text-slate-700 hover:bg-slate-200 disabled:opacity-40"
+                    className="rounded px-2.5 py-1 text-secondary hover:bg-surface-container disabled:opacity-40"
                   >
                     Next
                   </button>
@@ -1185,8 +1185,8 @@ export default function OutstandingPaymentsPage() {
           <div>
             {invoicesLoading ? (
               <div className="flex min-h-[220px] items-center justify-center">
-                <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold text-secondary">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-primary" />
+                <div className="flex items-center gap-3 rounded-xl border border-border bg-surface-container-low px-4 py-3 text-xs font-semibold text-secondary">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
                   Loading invoices...
                 </div>
               </div>
@@ -1198,9 +1198,9 @@ export default function OutstandingPaymentsPage() {
               />
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse font-sans">
+                <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50 text-slate-700 font-semibold">
+                    <tr className="border-b border-border bg-surface-container-low text-secondary text-label-md uppercase font-semibold">
                       <th className="py-2.5 px-4">Invoice #</th>
                       <th className="py-2.5 px-4">Date</th>
                       <th className="py-2.5 px-4">Channel</th>
@@ -1212,34 +1212,34 @@ export default function OutstandingPaymentsPage() {
                       <th className="py-2.5 px-4 text-right">Balance Due</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200 text-slate-800">
+                  <tbody className="divide-y divide-border text-ink">
                     {invoices.map(inv => (
-                      <tr key={inv.id || inv.invoice_number} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="py-2.5 px-4 font-mono font-semibold text-slate-900 select-all">
+                      <tr key={inv.id || inv.invoice_number} className="hover:bg-surface-container-low transition-colors">
+                        <td className="py-2.5 px-4 font-mono font-semibold text-ink select-all">
                           {inv.invoice_number}
                         </td>
-                        <td className="py-2.5 px-4 whitespace-nowrap text-slate-700">
+                        <td className="py-2.5 px-4 whitespace-nowrap text-secondary">
                           {inv.invoice_date || '—'}
                         </td>
                         <td className="py-2.5 px-4 capitalize">
                           {inv.marketplace}
                         </td>
-                        <td className="py-2.5 px-4 font-mono text-slate-600">
+                        <td className="py-2.5 px-4 font-mono text-secondary">
                           {inv.seller_account || 'default'}
                         </td>
                         <td className="py-2.5 px-4 font-mono">
                           {inv.sku}
                         </td>
-                        <td className="py-2.5 px-4 text-right font-mono">
+                        <td className="py-2.5 px-4 text-right tabular-nums">
                           {formatCurrency(inv.invoice_amount)}
                         </td>
-                        <td className="py-2.5 px-4 text-right font-mono">
+                        <td className="py-2.5 px-4 text-right tabular-nums">
                           {formatCurrency(inv.net_payable)}
                         </td>
-                        <td className="py-2.5 px-4 text-right font-mono text-emerald-700">
+                        <td className="py-2.5 px-4 text-right tabular-nums text-emerald-700">
                           {formatCurrency(inv.amount_received)}
                         </td>
-                        <td className="py-2.5 px-4 text-right font-mono font-bold text-rose-700">
+                        <td className="py-2.5 px-4 text-right tabular-nums font-bold text-rose-700">
                           {formatCurrency(Number(inv.net_payable || 0) - Number(inv.amount_received || 0))}
                         </td>
                       </tr>
@@ -1255,18 +1255,18 @@ export default function OutstandingPaymentsPage() {
       {/* 6. Config Outstanding Modal */}
       {configOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-backdrop">
-          <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-6 py-4">
+          <div className="w-full max-w-2xl rounded-xl border border-border bg-surface shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-border bg-surface-container-low px-6 py-4">
               <div>
-                <h3 className="font-bold text-slate-900 text-sm">Config Outstanding Payments</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
+                <h3 className="font-semibold text-ink text-base">Config Outstanding Payments</h3>
+                <p className="text-xs text-outline mt-0.5">
                   Configure settlement cycle days and grace period thresholds per channel
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setConfigOpen(false)}
-                className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+                className="rounded-lg p-1.5 text-outline hover:text-secondary hover:bg-surface-container transition-colors"
               >
                 <span className="material-symbols-outlined text-[18px]">close</span>
               </button>
@@ -1274,20 +1274,20 @@ export default function OutstandingPaymentsPage() {
 
             <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4">
               {configLoading ? (
-                <div className="py-8 text-center text-xs text-slate-500">Loading configuration...</div>
+                <div className="py-8 text-center text-xs text-outline">Loading configuration...</div>
               ) : (
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-200 text-slate-700 font-bold">
+                    <tr className="border-b border-border text-secondary text-label-md uppercase font-semibold">
                       <th className="py-2 px-3">Type</th>
                       <th className="py-2 px-3">Channel / Vendor</th>
                       <th className="py-2 px-3 text-center">Grace Period (Days)</th>
                       <th className="py-2 px-3 text-center">Payment Cycle (Days)</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200">
+                  <tbody className="divide-y divide-border">
                     {configs.map(c => (
-                      <tr key={c.channel_key} className="hover:bg-slate-50">
+                      <tr key={c.channel_key} className="hover:bg-surface-container-low">
                         <td className="py-2.5 px-3">
                           <span className={`inline-flex rounded px-2 py-0.5 text-[10px] font-bold ${
                             c.channel_type === 'B2C' ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-purple-50 text-purple-700 border border-purple-200'
@@ -1295,7 +1295,7 @@ export default function OutstandingPaymentsPage() {
                             {c.channel_type}
                           </span>
                         </td>
-                        <td className="py-2.5 px-3 font-semibold text-slate-900">
+                        <td className="py-2.5 px-3 font-semibold text-ink">
                           {c.channel_name}
                         </td>
                         <td className="py-2.5 px-3 text-center">
@@ -1303,7 +1303,7 @@ export default function OutstandingPaymentsPage() {
                             type="number"
                             defaultValue={c.grace_period_days}
                             onBlur={(e) => handleUpdateConfig(c.channel_key, 'grace_period_days', e.target.value)}
-                            className="w-16 text-center border border-slate-200 rounded px-1.5 py-1 text-xs font-mono focus:ring-1 focus:ring-primary"
+                            className="w-16 text-center border border-border rounded px-1.5 py-1 text-xs font-mono focus:ring-1 focus:ring-primary"
                           />
                         </td>
                         <td className="py-2.5 px-3 text-center">
@@ -1311,7 +1311,7 @@ export default function OutstandingPaymentsPage() {
                             type="number"
                             defaultValue={c.payment_cycle_days}
                             onBlur={(e) => handleUpdateConfig(c.channel_key, 'payment_cycle_days', e.target.value)}
-                            className="w-16 text-center border border-slate-200 rounded px-1.5 py-1 text-xs font-mono focus:ring-1 focus:ring-primary"
+                            className="w-16 text-center border border-border rounded px-1.5 py-1 text-xs font-mono focus:ring-1 focus:ring-primary"
                           />
                         </td>
                       </tr>
@@ -1321,7 +1321,7 @@ export default function OutstandingPaymentsPage() {
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-3">
+            <div className="flex items-center justify-end gap-2 border-t border-border bg-surface-container-low px-6 py-3">
               <button
                 type="button"
                 onClick={() => setConfigOpen(false)}

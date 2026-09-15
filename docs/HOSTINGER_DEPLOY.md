@@ -178,5 +178,5 @@ docker compose --env-file .env -f docker-compose.production.yml up -d --build
 
 For a database outage, do not restart the API repeatedly. Restore database
 reachability and TLS/private-network settings first. The running API health
-monitor reconnects every 30 seconds, and browser read requests retry short
+monitor reconnects every 20 seconds, and browser read requests retry short
 interruptions automatically.
