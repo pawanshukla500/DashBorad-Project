@@ -454,10 +454,16 @@ router.post('/config/:type/save-period', async (req, res) => {
     const resolved = resolveMarketplaceAndAccount(req.body.marketplace, req.body.seller_account);
     const marketplace = resolved.marketplace;
     const seller_account = resolved.sellerAccount;
-    const { rows: slabRows, start_date, end_date, category } = req.body;
+    const { rows: slabRows, start_date, end_date, category, replaceIds } = req.body;
 
     if (!Array.isArray(slabRows) || !slabRows.length) {
       return res.status(400).json({ error: 'No rate rows provided' });
+    }
+
+    // Validate dates server-side too — defence-in-depth so a UI bypass can't
+    // poison the table with inverted ranges.
+    if (start_date && end_date && end_date < start_date) {
+      return res.status(400).json({ error: 'end_date must be on or after start_date' });
     }
 
     // Validate all rows
@@ -473,12 +479,24 @@ router.post('/config/:type/save-period', async (req, res) => {
     try {
       await client.query('BEGIN');
 
-      // Delete existing rows for this category + marketplace + seller_account + date range
-      await client.query(
-        `DELETE FROM ${table} WHERE category = $1 AND marketplace = $2 AND seller_account = $3
-         AND start_date = $4 AND end_date = $5`,
-        [category || 'ALL', marketplace, seller_account, start_date || null, end_date || null],
-      );
+      // Two delete paths:
+      //  (a) replaceIds — surgical IN-list delete. Use this for edit mode so
+      //      we only touch the exact rows the user was editing.
+      //  (b) fallback — match by category + date triple. Use for new periods
+      //      and for edits where the page didn't track IDs.
+      const idList = Array.isArray(replaceIds) ? replaceIds.filter(n => Number.isFinite(+n)).map(Number) : null;
+      if (idList && idList.length > 0) {
+        await client.query(
+          `DELETE FROM ${table} WHERE id = ANY($1::int[])`,
+          [idList],
+        );
+      } else {
+        await client.query(
+          `DELETE FROM ${table} WHERE category = $1 AND marketplace = $2 AND seller_account = $3
+           AND start_date IS NOT DISTINCT FROM $4 AND end_date IS NOT DISTINCT FROM $5`,
+          [category || 'ALL', marketplace, seller_account, start_date || null, end_date || null],
+        );
+      }
 
       const extraCols = TABLE_EXTRA_COLUMNS[type];
       const allCols = ['category', 'start_date', 'end_date', 'marketplace', 'seller_account', ...extraCols];
@@ -509,7 +527,7 @@ router.post('/config/:type/save-period', async (req, res) => {
 
       await client.query('COMMIT');
       clearRateCardCache();
-      res.json({ ok: true, inserted: slabRows.length });
+      res.json({ ok: true, inserted: slabRows.length, deleted: idList ? idList.length : null });
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       throw error;

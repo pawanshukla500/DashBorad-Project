@@ -299,7 +299,8 @@ export const sendSkuSettlementBenchmarkNotification = (marketplace, month) =>
 // Marketplace account management
 export const fetchMarketplaceAccounts = (marketplace) => api.get('/rate-card/accounts', { params: { marketplace } }).then(r => r.data);
 export const createMarketplaceAccount = (body)        => api.post('/rate-card/accounts', body).then(r => r.data);
-export const deleteMarketplaceAccount = (id)          => api.delete(`/rate-card/accounts/${id}`).then(r => r.data);
+export const deleteMarketplaceAccount = (accountId, marketplace) =>
+  api.delete(`/rate-card/accounts/${encodeURIComponent(accountId)}`, { params: { marketplace } }).then(r => r.data);
 
 // Rate Card Config CRUD (seller_account scoped)
 export const fetchRateCardConfig       = (type, marketplace = 'flipkart', sellerAccount = 'default') =>

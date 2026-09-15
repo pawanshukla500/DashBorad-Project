@@ -35,11 +35,15 @@ function toDateStr(d) {
   return `${y}-${m}-${dy}`;
 }
 
-const TODAY = new Date().toISOString().slice(0, 10);
+// `toDateStr` formats in the user's local timezone, which is what every form
+// date input and `rowStatus` check expects. `new Date().toISOString().slice(0,10)`
+// is UTC-truncated and can be off by a day for IST users at midnight.
+const TODAY = toDateStr(new Date());
 
 function getTomorrow() {
-  const d = new Date(); d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return toDateStr(d);
 }
 function dateMinus1(s) {
   const [y, m, dy] = s.split('-').map(Number);
@@ -1233,8 +1237,11 @@ function RatePeriodDrawer({
         setSaveProgress('Saving revised period…');
         await saveRateCardPeriod(type, {
           category: category.trim(), marketplace, seller_account: sellerAccount,
-          effectiveFrom, endDate: endDate || null,
-          autoClose: false,
+          // Backend reads `start_date` / `end_date`. Renaming on the client
+          // keeps the API contract consistent and stops every "edit" from
+          // recording NULL dates (which is what previously wiped unrelated
+          // historical rows that happened to share start_date IS NULL).
+          start_date: effectiveFrom, end_date: endDate || null,
           replaceIds: editPeriodIds,
           rows: expandedSlabs,
         });
@@ -1245,8 +1252,7 @@ function RatePeriodDrawer({
           setSaveProgress(allCats.length > 1 ? `Saving ${i + 1} / ${allCats.length}: ${allCats[i]}…` : '');
           await saveRateCardPeriod(type, {
             category: allCats[i], marketplace, seller_account: sellerAccount,
-            effectiveFrom, endDate: endDate || null,
-            autoClose: showAutoClose ? autoClose : false,
+            start_date: effectiveFrom, end_date: endDate || null,
             rows: expandedSlabs,
           });
         }
@@ -1800,6 +1806,7 @@ function RatePeriodDrawer({
         feeType={type}
         coverage={coverage}
         marketplace={marketplace}
+        sellerAccount={sellerAccount}
         onConfigureCategory={(cat) => setDrawer({
           category: cat,
           rows: [],
@@ -1941,7 +1948,12 @@ function AccountStrip({ marketplace, value, onChange }) {
     if (account.account_id === 'default' || account.account_id === 'myntra_vb' || account.account_id === 'myntra_ej') return;
     if (!window.confirm(`Remove ${accountLabel} "${account.display_name}" from ${mpMeta.label}?\n\nNote: rate card data for this account is NOT deleted.`)) return;
     try {
-      await deleteMarketplaceAccount(account.id);
+      // The /accounts GET returns { account_id, display_name } only. There
+      // is no `id` field, so passing account.id would hit the backend as
+      // /accounts/undefined and silently no-op. Pass account_id (the
+      // business key) and the marketplace so the server can scope the
+      // DELETE correctly when the user is on a non-default marketplace.
+      await deleteMarketplaceAccount(account.account_id, marketplace);
       if (value === account.account_id) onChange('default');
       await load();
     } catch (e) { alert(e.response?.data?.error || e.message); }
@@ -2015,7 +2027,7 @@ function AccountStrip({ marketplace, value, onChange }) {
 }
 
 /* ─── Per-fee-type coverage panel (shown inside each tab only) ─── */
-function FeeTypeCoveragePanel({ feeType, coverage, marketplace, onConfigureCategory }) {
+function FeeTypeCoveragePanel({ feeType, coverage, marketplace, sellerAccount, onConfigureCategory }) {
   const [open, setOpen] = useState(true);
 
   if (coverage === undefined) {
@@ -2039,7 +2051,7 @@ function FeeTypeCoveragePanel({ feeType, coverage, marketplace, onConfigureCateg
         </svg>
         <span>
           <strong>{cfg.title}</strong> fully configured for <strong>{mpMeta.label}</strong>
-          {coverage.allCats?.length > 0 && <> · all {coverage.allCats.length} categories covered</>}
+          {coverage.allCategories?.length > 0 && <> · all {coverage.allCategories.length} categories covered</>}
         </span>
       </div>
     );
@@ -2084,7 +2096,7 @@ function FeeTypeCoveragePanel({ feeType, coverage, marketplace, onConfigureCateg
                 onClick={async () => {
                   try {
                     const { downloadRateCardTemplate } = await import('../api/client');
-                    const blob = await downloadRateCardTemplate(marketplace, 'default');
+                    const blob = await downloadRateCardTemplate(marketplace, sellerAccount);
                     const url = window.URL.createObjectURL(blob);
                     const link = document.createElement('a');
                     link.href = url;
@@ -2161,7 +2173,7 @@ function MarketplaceCoverageSummary({ coverage, marketplace }) {
     return (
       <div className="flex items-center gap-2 px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-700 font-medium">
         <span className="text-base">{mpMeta.emoji}</span>
-        <span><strong>{mpMeta.label}</strong> — all fee types configured across {coverage.allCats?.length || 0} categories</span>
+        <span><strong>{mpMeta.label}</strong> — all fee types configured across {coverage.allCategories?.length || 0} categories</span>
       </div>
     );
   }
@@ -2436,14 +2448,23 @@ export default function RateCardConfigPage() {
       if (cancelled) return;
       const allCats = (catData.categories || []).filter(Boolean).sort();
       const gaps    = {};
-      const brandGaps = catData.brandGaps || {};
+      // Compute "active for today" from start_date / end_date rather than a
+      // non-existent `is_active` column. rowStatus(r) does the right thing
+      // for legacy rows that have NULL start_date (they stay active).
       TABS.forEach((type, i) => {
         const rows = configs[i]?.rows || configs[i] || [];
         const activeCats = new Set(
-          rows.filter(r => r.is_active && !r.brand_name).map(r => r.category)
+          rows.filter(r => rowStatus(r) === 'active' && !r.brand_name).map(r => r.category)
         );
         gaps[type] = allCats.filter(c => !activeCats.has(c));
       });
+      // The /config/categories endpoint returns brand names as a flat
+      // `brands` array (because it doesn't know which category each brand
+      // belongs to from this query). The page consumes `brandGaps`, so we
+      // surface a global brand list under a synthetic `*` key. Each
+      // category card can then decide whether to show the chip row.
+      const brandList = catData.brands || [];
+      const brandGaps = brandList.length > 0 ? { '*': brandList } : {};
       setCoverage({ allCategories: allCats, gaps, brandGaps });
     }).catch(err => {
       console.error('Failed to load coverage', err);
