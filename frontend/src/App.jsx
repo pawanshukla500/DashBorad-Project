@@ -6,6 +6,7 @@ import WorkspaceNav from './components/WorkspaceNav';
 import ErrorBoundary from './components/ErrorBoundary';
 import FeeAlertBanner from './components/FeeAlertBanner';
 import ServiceStatusBanner from './components/ServiceStatusBanner';
+import { SkeletonChart, SkeletonKpiGrid, SkeletonTable } from './components/Skeleton';
 import { FilterProvider } from './context/FilterContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { OPS_ROLES, workspaceForPath } from './navigation';
@@ -48,12 +49,22 @@ function FullScreenLoader() {
 }
 
 function PageLoader() {
+  // A token-driven skeleton that mirrors the layout of the heaviest pages
+  // (Dashboard, ProfitAnalysis, OutstandingPayments). Showing a real-shaped
+  // placeholder removes the "blank screen then big content shift" feel on the
+  // first paint after the JS chunk is fetched.
   return (
-    <div className="flex min-h-[45vh] items-center justify-center">
-      <div className="flex items-center gap-3 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-3 text-xs font-semibold text-secondary shadow-sm" role="status" aria-live="polite" aria-busy="true">
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-outline-variant border-t-primary" aria-hidden="true" />
-        Loading workspace...
+    <div className="space-y-5" role="status" aria-live="polite" aria-busy="true">
+      <div className="space-y-2">
+        <div className="h-6 w-48 animate-pulse rounded-md bg-surface-container-low" />
+        <div className="h-3 w-72 animate-pulse rounded-md bg-surface-container-low" />
       </div>
+      <SkeletonKpiGrid count={4} />
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+        <SkeletonChart height="h-72" className="xl:col-span-2" />
+        <SkeletonChart height="h-72" />
+      </div>
+      <SkeletonTable rows={6} />
     </div>
   );
 }

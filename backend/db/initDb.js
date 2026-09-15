@@ -678,6 +678,28 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_storage_neft_id    ON fk_storage_recall(neft_id)`,
   `CREATE INDEX IF NOT EXISTS IX_ads_neft_id        ON fk_ads(neft_id)`,
   `CREATE INDEX IF NOT EXISTS IX_gadss_neft_id      ON fk_google_ads(neft_id)`,
+  // ── Performance indexes added for the dashboard/report hot paths ────────────
+  // /api/platform/summary runs a "find unsettled" query that filters orders by
+  // status + return_type IS NULL + date range. The existing IX_orders_market_date
+  // helps the marketplace + date part but the status / return_type filter is
+  // applied as a heap filter without a covering index.
+  `CREATE INDEX IF NOT EXISTS IX_orders_status_return_type_date ON orders(orders_status, return_type, order_date DESC)`,
+  // /api/platform/summary coverage query counts distinct fsn values, which is a
+  // full scan without an index on fsn. Many marketplaces share the same catalog
+  // id (fsn), so a partial index on non-empty values keeps it tight.
+  `CREATE INDEX IF NOT EXISTS IX_orders_fsn ON orders(fsn) WHERE fsn IS NOT NULL AND fsn <> ''`,
+  // /api/profit-analysis and /api/cash-flow repeatedly join
+  // order_settlement_totals on order_item_id (the primary key) but also group /
+  // filter by payment_date. Add it so aggregates can range-scan without sorting.
+  `CREATE INDEX IF NOT EXISTS IX_order_settlement_totals_payment_date ON order_settlement_totals(payment_date DESC) WHERE payment_date IS NOT NULL`,
+  // Myntra-specific seller_account queries can dominate when running with both
+  // vb and ej accounts; the existing ix_orders_myntra_account_date is partial
+  // on marketplace='myntra' but the brand-level filter still needs a fallback.
+  `CREATE INDEX IF NOT EXISTS IX_orders_seller_account_date ON orders(seller_account, order_date DESC) WHERE seller_account IS NOT NULL`,
+  // Filter sidebar pulls distinct marketplace/account pairs; the existing
+  // IX_orders_market_account_date covers (marketplace, seller_account) but a
+  // seller_account-only index helps filter-only requests.
+  `CREATE INDEX IF NOT EXISTS IX_returns_market_account_requested ON returns(marketplace, seller_account, return_requested_date DESC)`,
 ];
 
 export async function initDb() {

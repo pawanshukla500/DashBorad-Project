@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
@@ -91,7 +93,55 @@ app.use(cors({
   allowedHeaders: ['Authorization', 'Content-Type'],
   maxAge: 86_400,
 }));
+
+// gzip / deflate responses. Dashboard and ProfitAnalysis JSONs are several
+// hundred KB; without compression the browser parses 5-10x more bytes than
+// needed on every tab navigation and focus re-fetch. We skip already-compressed
+// image / font responses and tiny payloads below ~1 KB where the CPU cost of
+// compressing outweighs the bandwidth saved.
+app.use(compression({
+  threshold: 1024,
+  level: 6,
+  filter(req, res) {
+    if (req.headers['x-no-compression']) return false;
+    const type = res.getHeader('Content-Type') || '';
+    if (typeof type === 'string' && /(image|video|font)\//i.test(type)) return false;
+    return compression.filter(req, res);
+  },
+}));
+
 app.use(express.json({ limit: '50mb' }));
+
+// Weak ETag for GET /api/* responses that did not set their own. The body is
+// hashed once after the handler runs; the next request sends If-None-Match and
+// a 304 short-circuits the database read entirely. This is especially valuable
+// for dashboard aggregates that browsers re-issue on tab focus.
+app.set('etag', 'weak');
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  // Static asset middleware already sets strong ETags from file mtimes.
+  if (req.path.startsWith('/assets/') || req.path.startsWith('/static/')) return next();
+  // Routes opt out by setting res.noEtag = true before flushing.
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (res.noEtag) return originalJson(body);
+    try {
+      const json = JSON.stringify(body);
+      const etag = `W/"${crypto.createHash('sha1').update(json).digest('base64').slice(0, 22)}"`;
+      res.setHeader('ETag', etag);
+      res.setHeader('Vary', 'Accept-Encoding');
+      const inm = req.headers['if-none-match'];
+      if (typeof inm === 'string' && inm === etag) {
+        res.status(304);
+        return res.end();
+      }
+    } catch {
+      // Fall back to the default behaviour if hashing/serialisation fails.
+    }
+    return originalJson(body);
+  };
+  next();
+});
 
 async function healthCheckHandler(_, res) {
   const configured = await isDbConfigured();

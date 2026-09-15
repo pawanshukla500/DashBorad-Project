@@ -75,10 +75,13 @@ const dashboardReadVersions = new Map();
 const DASHBOARD_CACHE_PATHS = new Set([
   '/summary',
   '/sales-trend',
+  '/return-trend',
   '/category-breakdown',
   '/return-reasons',
+  '/return-types',
   '/top-products',
   '/platform/summary',
+  '/marketplace-summary',
   '/profit-loss',
 ]);
 
