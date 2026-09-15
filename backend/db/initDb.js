@@ -758,6 +758,7 @@ export async function initDb() {
       await ensureAmazonSettlementReportingRollups(pool);
       await ensureUnifiedSettlementsView(pool);
       await ensureOrderSettlementTotals(pool);
+      await ensureOrderItemsSummaryView(pool);
       console.log(`[db] Schema ${CURRENT_SCHEMA_VERSION} already ready; skipping startup DDL.`);
       return;
     }

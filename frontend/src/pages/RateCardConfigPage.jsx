@@ -691,7 +691,7 @@ function FormHintTip({ hint }) {
         </button>
         {show && (
           <div className="absolute bottom-full right-0 mb-2 w-64 bg-primary text-white text-[11px] rounded-xl px-3 py-2.5 shadow-xl leading-relaxed z-50 pointer-events-none">
-            <div className="absolute bottom-0 right-3 translate-y-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-ink" />
+            <div className="absolute bottom-0 right-3 translate-y-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-primary" />
             {hint}
           </div>
         )}
