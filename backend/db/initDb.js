@@ -906,6 +906,71 @@ export async function initDb() {
     // RC commission — brand-specific rates: brand_name NULL = applies to all brands (fallback)
     await pool.query(`ALTER TABLE rc_commission ADD COLUMN IF NOT EXISTS brand_name TEXT DEFAULT NULL`).catch(() => {});
 
+    // ── Rate Card schema hardening ────────────────────────────────────────────
+    // Add CHECK constraints, UNIQUE constraints, and covering indexes for the
+    // six rc_* rate tables. These were missing historically:
+    //   * no CHECK on (end_date >= start_date)
+    //   * no UNIQUE constraint (double-saves could insert duplicates)
+    //   * only the PK index (every "active rule for today" lookup was a seq scan)
+    //
+    // All migrations are idempotent (`IF NOT EXISTS`) and degrade gracefully
+    // (`.catch(() => {})`) so older Postgres versions or partial state can't
+    // block startup.
+    const RC_TABLES = ['rc_commission', 'rc_fixed_fee', 'rc_collection_fee', 'rc_pick_pack', 'rc_reverse_shipping'];
+    for (const tbl of RC_TABLES) {
+      // Date-range sanity
+      await pool.query(
+        `DO $$ BEGIN
+          ALTER TABLE ${tbl}
+            ADD CONSTRAINT ${tbl}_dates_ok
+            CHECK (start_date IS NULL OR end_date IS NULL OR end_date >= start_date);
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;`
+      ).catch(() => {});
+      // Prevent accidental duplicate rules per marketplace+account+category+brand+date+price-band
+      await pool.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS ${tbl}_uniq_period
+         ON ${tbl} (marketplace, seller_account, category, COALESCE(brand_name, ''),
+                    start_date, end_date, price_min, price_max)`
+      ).catch(() => {});
+      // Covering index for the dominant query shape: active rules per
+      // marketplace + account + category, sorted by recency.
+      await pool.query(
+        `CREATE INDEX IF NOT EXISTS ${tbl}_match
+         ON ${tbl} (marketplace, seller_account, category, start_date DESC NULLS LAST, end_date DESC NULLS LAST)`
+      ).catch(() => {});
+      // Partial index for the "currently active" subset (end_date IS NULL).
+      await pool.query(
+        `CREATE INDEX IF NOT EXISTS ${tbl}_active_null_end
+         ON ${tbl} (marketplace, seller_account, category)
+         WHERE end_date IS NULL`
+      ).catch(() => {});
+    }
+    // franchise fee has the same shape (not in RC_TABLES because of different
+    // declaration order, but identical hot-path query)
+    await pool.query(
+      `DO $$ BEGIN
+        ALTER TABLE rc_franchise_fee
+          ADD CONSTRAINT rc_franchise_fee_dates_ok
+          CHECK (start_date IS NULL OR end_date IS NULL OR end_date >= start_date);
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$;`
+    ).catch(() => {});
+    await pool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS rc_franchise_fee_uniq_period
+       ON rc_franchise_fee (marketplace, seller_account, category, COALESCE(brand_name, ''),
+                            start_date, end_date, price_min, price_max)`
+    ).catch(() => {});
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS rc_franchise_fee_match
+       ON rc_franchise_fee (marketplace, seller_account, category, start_date DESC NULLS LAST, end_date DESC NULLS LAST)`
+    ).catch(() => {});
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS rc_franchise_fee_active_null_end
+       ON rc_franchise_fee (marketplace, seller_account, category)
+       WHERE end_date IS NULL`
+    ).catch(() => {});
+
     // Franchise fee rate card table (FK charges flat ₹/order for certain brands/categories)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS rc_franchise_fee (
