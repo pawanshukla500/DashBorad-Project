@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 import { calculateRateCardFees, compareMarketplaceFees, fetchRateCardCategories, refreshRateCard } from '../api/client';
 import { currencyFull, pct } from '../utils/format';
 
@@ -107,23 +107,23 @@ export default function CalculatorPage() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-5">
-        {/* ── Inputs ── */}
-        <div className="xl:col-span-2 bg-surface rounded-2xl border border-border p-5 space-y-4">
+        {/* â”€â”€ Inputs â”€â”€ */}
+        <div className="xl:col-span-2 bg-surface rounded-xl border border-border p-5 space-y-4">
           <h2 className="text-sm font-bold text-ink uppercase tracking-wide">Order Parameters</h2>
 
           {/* Category */}
           <Field label="Category">
             <select value={form.category} onChange={e => set('category', e.target.value)}
               className="w-full text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary bg-surface">
-              {categories.length === 0 && <option value="">Loading…</option>}
+              {categories.length === 0 && <option value="">Loadingâ€¦</option>}
               {categories.map(c => <option key={c} value={c}>{c.replace(/_/g, ' ')}</option>)}
             </select>
           </Field>
 
           {/* Price */}
-          <Field label="Sale Price (₹)">
+          <Field label="Sale Price (â‚¹)">
             <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-outline text-sm font-medium">₹</span>
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-outline text-sm font-medium">â‚¹</span>
               <input
                 type="number" min="0" step="1" value={form.price}
                 onChange={e => set('price', e.target.value)}
@@ -206,7 +206,7 @@ export default function CalculatorPage() {
           </Field>
         </div>
 
-        {/* ── Results ── */}
+        {/* â”€â”€ Results â”€â”€ */}
         <div className="xl:col-span-3">
           {mode === 'single' ? (
             <FeeResult result={result} loading={loading} price={parseFloat(form.price) || 0} />
@@ -219,12 +219,12 @@ export default function CalculatorPage() {
   );
 }
 
-// ─── Single Result ────────────────────────────────────────────────────────────
+// â”€â”€â”€ Single Result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function FeeResult({ result, loading, price }) {
   if (!price) return (
-    <div className="bg-surface rounded-2xl border border-border p-10 text-center h-full flex items-center justify-center">
+    <div className="bg-surface rounded-xl border border-border p-10 text-center h-full flex items-center justify-center">
       <div>
-        <div className="text-4xl mb-3">🧮</div>
+        <div className="text-4xl mb-3">ðŸ§®</div>
         <p className="text-secondary font-medium">Enter a sale price to calculate fees</p>
         <p className="text-outline text-sm mt-1">Select category and fill in parameters on the left</p>
       </div>
@@ -232,13 +232,13 @@ function FeeResult({ result, loading, price }) {
   );
 
   if (loading && !result) return (
-    <div className="bg-surface rounded-2xl border border-border p-8 flex items-center justify-center h-full">
+    <div className="bg-surface rounded-xl border border-border p-8 flex items-center justify-center h-full">
       <div className="flex items-center gap-3 text-primary">
         <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
         </svg>
-        <span className="text-sm font-medium">Calculating…</span>
+        <span className="text-sm font-medium">Calculatingâ€¦</span>
       </div>
     </div>
   );
@@ -257,7 +257,7 @@ function FeeResult({ result, loading, price }) {
   const net       = result.netToSeller || 0;
 
   return (
-    <div className="bg-surface rounded-2xl border border-border overflow-hidden">
+    <div className="bg-surface rounded-xl border border-border overflow-hidden">
       {/* Header bar */}
       <div className="bg-gradient-to-r from-indigo-600 to-indigo-500 px-6 py-5 text-white">
         <div className="flex items-start justify-between">
@@ -294,7 +294,7 @@ function FeeResult({ result, loading, price }) {
             <span className="text-sm font-bold text-rose-700">Total Flipkart Fees</span>
             <div className="text-right">
               <span className="text-lg font-bold text-rose-700">{currencyFull(totalFees)}</span>
-              <span className="text-xs text-rose-500 ml-2">{price > 0 ? pct(totalFees / price * 100) : '—'}</span>
+              <span className="text-xs text-rose-500 ml-2">{price > 0 ? pct(totalFees / price * 100) : 'â€”'}</span>
             </div>
           </div>
         </div>
@@ -303,10 +303,10 @@ function FeeResult({ result, loading, price }) {
         <div className="bg-emerald-50 rounded-xl p-4 flex items-center justify-between border border-emerald-100">
           <div>
             <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wide">Net to You</p>
-            <p className="text-xs text-emerald-500 mt-0.5">Sale Price − Total Fees</p>
+            <p className="text-xs text-emerald-500 mt-0.5">Sale Price âˆ’ Total Fees</p>
           </div>
           <div className="text-right">
-            <p className="text-2xl font-bold text-emerald-700">{currencyFull(net)}</p>
+            <p className="text-financial-lg font-semibold text-emerald-700">{currencyFull(net)}</p>
             <p className="text-xs text-emerald-500">{result.marginPct?.toFixed(1)}% margin</p>
           </div>
         </div>
@@ -314,7 +314,7 @@ function FeeResult({ result, loading, price }) {
         {/* TCS note */}
         {result.tcs > 0 && (
           <p className="text-[11px] text-outline bg-surface-container-low rounded-lg px-3 py-2">
-            <span className="font-semibold">TCS ₹{result.tcs.toFixed(2)}</span> (1% e-commerce tax) — deducted from bank settlement but refunded when filing GST returns.
+            <span className="font-semibold">TCS â‚¹{result.tcs.toFixed(2)}</span> (1% e-commerce tax) â€” deducted from bank settlement but refunded when filing GST returns.
           </p>
         )}
 
@@ -328,19 +328,19 @@ function FeeResult({ result, loading, price }) {
   );
 }
 
-// ─── Compare Result ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Compare Result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function CompareResult({ result, loading, price, category }) {
   if (!price) return (
-    <div className="bg-surface rounded-2xl border border-border p-10 text-center h-full flex items-center justify-center">
+    <div className="bg-surface rounded-xl border border-border p-10 text-center h-full flex items-center justify-center">
       <div>
-        <div className="text-4xl mb-3">⚖️</div>
+        <div className="text-4xl mb-3">âš–ï¸</div>
         <p className="text-secondary font-medium">Enter a sale price to compare</p>
       </div>
     </div>
   );
 
   if (loading && !result) return (
-    <div className="bg-surface rounded-2xl border border-border p-8 flex items-center justify-center">
+    <div className="bg-surface rounded-xl border border-border p-8 flex items-center justify-center">
       <svg className="w-5 h-5 animate-spin text-primary" fill="none" viewBox="0 0 24 24">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
@@ -363,7 +363,7 @@ function CompareResult({ result, loading, price, category }) {
   const saving = sh && fk ? (sh.netToSeller || 0) - (fk?.netToSeller || 0) : 0;
 
   return (
-    <div className="bg-surface rounded-2xl border border-border overflow-hidden">
+    <div className="bg-surface rounded-xl border border-border overflow-hidden">
       <div className="grid grid-cols-3 bg-surface-container-low border-b border-border">
         <div className="px-5 py-4 text-xs font-semibold text-secondary uppercase tracking-wide">Fee Type</div>
         <div className="px-5 py-4 text-center">
@@ -389,8 +389,8 @@ function CompareResult({ result, loading, price, category }) {
       {saving !== 0 && (
         <div className={`px-5 py-4 text-center text-sm font-semibold ${saving > 0 ? 'bg-orange-50 text-orange-700' : 'bg-primary-container text-primary'}`}>
           {saving > 0
-            ? `Shopsy earns you ₹${Math.abs(saving).toFixed(2)} more per order`
-            : `Flipkart earns you ₹${Math.abs(saving).toFixed(2)} more per order`}
+            ? `Shopsy earns you â‚¹${Math.abs(saving).toFixed(2)} more per order`
+            : `Flipkart earns you â‚¹${Math.abs(saving).toFixed(2)} more per order`}
         </div>
       )}
     </div>
@@ -415,7 +415,7 @@ function CmpCell({ value, bold, isMarg, extra, color, price }) {
   );
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function fmtRateDate(v) {
   if (!v && v !== 0) return null;
   const d = typeof v === 'number'
@@ -430,7 +430,7 @@ function rateDateRange(meta) {
   const from = fmtRateDate(meta.startDate);
   const to   = meta.endDate ? fmtRateDate(meta.endDate) : 'Current';
   if (!from) return null;
-  return `${from} → ${to}`;
+  return `${from} â†’ ${to}`;
 }
 
 function FeeRow({ label, value, price, colorKey, extra, meta }) {
@@ -447,7 +447,7 @@ function FeeRow({ label, value, price, colorKey, extra, meta }) {
           </div>
           <div className="flex items-center gap-2">
             <span className="font-semibold text-ink">{currencyFull(Math.abs(value))}</span>
-            <span className="text-[10px] text-outline w-10 text-right">{price > 0 ? pct(Math.abs(value) / price * 100) : '—'}</span>
+            <span className="text-[10px] text-outline w-10 text-right">{price > 0 ? pct(Math.abs(value) / price * 100) : 'â€”'}</span>
           </div>
         </div>
         <div className="h-2 bg-surface-container rounded-full overflow-hidden">

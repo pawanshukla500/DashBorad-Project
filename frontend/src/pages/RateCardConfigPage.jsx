@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import PageHeader from '../components/PageHeader';
 import {
@@ -342,7 +342,7 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
     : null;
 
   return (
-    <div className="bg-surface rounded-2xl border border-border/80 shadow-[0_2px_16px_-4px_rgba(15,23,42,0.06)] overflow-hidden hover:shadow-md transition-shadow">
+    <div className="bg-surface rounded-xl border border-border/80 shadow-[0_2px_16px_-4px_rgba(15,23,42,0.06)] overflow-hidden hover:shadow-md transition-shadow">
       {/* Card header */}
       <div className="px-5 py-4 flex items-center justify-between gap-3 border-b border-border bg-gradient-to-r from-slate-50/80 to-white">
         <div>
@@ -2223,7 +2223,7 @@ function RateCardVersionPanel({ marketplace, sellerAccount, onRestored }) {
   };
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-sm">
+    <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
       <div className="flex flex-col gap-3 border-b border-border px-5 py-4 md:flex-row md:items-center">
         <div className="flex-1">
           <p className="text-sm font-bold text-ink">Rate-card versions</p>
@@ -2334,7 +2334,7 @@ function RateCardNotificationPanel() {
   }[status] || 'bg-surface-container text-secondary');
 
   return (
-    <div className="bg-surface rounded-2xl border border-border/80 shadow-sm overflow-hidden">
+    <div className="bg-surface rounded-xl border border-border/80 shadow-sm overflow-hidden">
       <div className="px-5 py-4 border-b border-border flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm font-bold text-ink">Rate-card change email</p>
@@ -2443,7 +2443,7 @@ export default function RateCardConfigPage() {
 
       <div className="flex flex-col md:flex-row gap-6">
         <div className="w-full md:w-64 shrink-0 space-y-6">
-          <div className="bg-surface rounded-2xl border border-border/80 shadow-sm overflow-hidden">
+          <div className="bg-surface rounded-xl border border-border/80 shadow-sm overflow-hidden">
             <div className="px-5 py-4 border-b border-border">
               <p className="text-[10px] font-bold text-outline uppercase tracking-widest mb-3">Marketplace</p>
               <div className="flex gap-2 flex-wrap">
@@ -2508,7 +2508,7 @@ export default function RateCardConfigPage() {
                 <MarketplaceCoverageSummary coverage={coverage} marketplace={marketplace} />
               )}
 
-              <div id="fee-type-tabs" className="bg-surface rounded-2xl border border-border/80 shadow-sm overflow-hidden">
+              <div id="fee-type-tabs" className="bg-surface rounded-xl border border-border/80 shadow-sm overflow-hidden">
                 <div className="border-b border-border px-3 pt-3 flex gap-1 flex-wrap bg-surface-container-low/40">
                   {TABS.map(key => {
                     const cfg    = FEE_CONFIGS[key];

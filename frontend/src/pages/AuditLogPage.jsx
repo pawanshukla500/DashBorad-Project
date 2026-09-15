@@ -17,18 +17,18 @@ export default function AuditLogPage() {
     <div className="mx-auto max-w-6xl space-y-5">
       <PageHeader title="Audit History" subtitle="Trace configuration, upload, user, and financial changes" />
 
-      <div className="flex flex-wrap gap-3 rounded-2xl border border-border bg-surface p-4">
+      <div className="flex flex-wrap gap-3 rounded-xl border border-border bg-surface p-4">
         <input
           value={action}
           onChange={event => { setPage(1); setAction(event.target.value); }}
           placeholder="Filter by action"
-          className="rounded-lg border border-border px-3 py-2 text-sm outline-none focus:border-[#902A4A]"
+          className="rounded-lg border border-border px-3 py-2 text-sm outline-none focus:border-[#902A4A] placeholder-outline-variant"
         />
         <input
           value={actor}
           onChange={event => { setPage(1); setActor(event.target.value); }}
           placeholder="Filter by user or role"
-          className="rounded-lg border border-border px-3 py-2 text-sm outline-none focus:border-[#902A4A]"
+          className="rounded-lg border border-border px-3 py-2 text-sm outline-none focus:border-[#902A4A] placeholder-outline-variant"
         />
         <span className="ml-auto self-center text-xs font-semibold text-outline">{total} events</span>
       </div>
@@ -40,7 +40,7 @@ export default function AuditLogPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-2xl border border-border bg-surface">
+      <div className="overflow-hidden rounded-xl border border-border bg-surface">
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-xs">
             <thead className="border-b border-border bg-surface-container-low text-[10px] uppercase tracking-wider text-outline">

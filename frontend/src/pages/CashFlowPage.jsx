@@ -44,13 +44,13 @@ function KpiCard({ label, value, sub, color = 'slate', icon, alert }) {
   const valColor = { slate: 'text-ink', indigo: 'text-primary', emerald: 'text-emerald-700', rose: 'text-rose-600', amber: 'text-amber-700', violet: 'text-violet-700', orange: 'text-orange-700' };
   const animatedValue = useAnimatedDisplayValue(value);
   return (
-    <div className={`rounded-2xl border px-5 py-4 shadow-sm ${colorMap[color]} relative`}>
+    <div className={`rounded-xl border px-5 py-4 shadow-sm ${colorMap[color]} relative`}>
       {alert && <span className="absolute top-3 right-3 h-2 w-2 rounded-full bg-red-400 animate-ping" />}
       <div className="flex items-start justify-between mb-1.5">
         <p className="text-[10px] font-semibold uppercase tracking-widest text-outline">{label}</p>
         {icon && <span className="text-lg opacity-50">{icon}</span>}
       </div>
-      <p className={`text-2xl font-bold leading-tight tabular-nums ${valColor[color]}`}>{animatedValue}</p>
+      <p className={`text-financial-lg font-semibold leading-tight tabular-nums ${valColor[color]}`}>{animatedValue}</p>
       {sub && <p className="text-xs text-outline mt-0.5">{sub}</p>}
     </div>
   );
@@ -58,7 +58,7 @@ function KpiCard({ label, value, sub, color = 'slate', icon, alert }) {
 
 function SectionCard({ title, sub, children, className = '' }) {
   return (
-    <div className={`bg-surface rounded-2xl border border-border shadow-sm p-5 ${className}`}>
+    <div className={`bg-surface rounded-xl border border-border shadow-sm p-5 ${className}`}>
       {title && (
         <div className="mb-4">
           <h3 className="text-sm font-bold text-ink">{title}</h3>
@@ -291,12 +291,12 @@ function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, m
               <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">
                 {mp === 'amazon' ? 'Total Order Reimbursements' : 'Total Recovered (Order SPF)'}
               </p>
-              <p className="text-2xl font-bold text-primary">{fmtK(orderSpfTotals.recovered)}</p>
+              <p className="text-financial-lg font-semibold text-primary tabular-nums">{fmtK(orderSpfTotals.recovered)}</p>
               <p className="text-xs text-indigo-400 mt-0.5">from {fmt(orderSpfTotals.orders)} orders / items</p>
             </div>
             <div className="rounded-xl bg-surface-container-low border border-border p-4">
               <p className="text-[10px] font-semibold text-outline uppercase tracking-wider mb-1">Avg Per Order</p>
-              <p className="text-2xl font-bold text-ink">
+              <p className="text-financial-lg font-semibold text-ink tabular-nums">
                 {orderSpfTotals.orders ? fmtK(orderSpfTotals.recovered / orderSpfTotals.orders) : '—'}
               </p>
               <p className="text-xs text-outline mt-0.5">{orderSourceSub}</p>
@@ -361,7 +361,7 @@ function SpfRecovery({ spfTotals, spfReasons, orderSpfSummary, orderSpfDetail, m
             </div>
             <div className="rounded-xl bg-surface-container-low border border-border p-4">
               <p className="text-[10px] font-semibold text-outline uppercase tracking-wider mb-1">Avg Per Claim</p>
-              <p className="text-2xl font-bold text-ink">
+              <p className="text-financial-lg font-semibold text-ink tabular-nums">
                 {nonOrderTotals.claims ? fmtK(nonOrderTotals.recovered / nonOrderTotals.claims) : '—'}
               </p>
               <p className="text-xs text-outline mt-0.5">{nonOrderSourceSub}</p>
@@ -424,7 +424,7 @@ function UnsettledOrders({ unsettled, mp }) {
             </div>
             <div className="rounded-xl bg-surface-container-low border border-border p-3 text-center">
               <p className="text-[10px] font-semibold text-outline uppercase tracking-wider mb-1">Order Count</p>
-              <p className="text-xl font-bold text-ink">{fmt(totalCnt)}</p>
+              <p className="text-financial-md font-semibold text-ink tabular-nums">{fmt(totalCnt)}</p>
             </div>
           </div>
           <div className="space-y-2">

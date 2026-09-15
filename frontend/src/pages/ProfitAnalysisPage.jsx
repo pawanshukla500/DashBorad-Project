@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+﻿import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Legend,
@@ -75,12 +75,12 @@ function KpiCard({ label, value, sub, color = 'slate', icon, trend }) {
   const animatedValue = useAnimatedDisplayValue(value);
 
   return (
-    <div className={`rounded-2xl border px-5 py-4 shadow-sm ${colors[color]}`}>
+    <div className={`rounded-xl border px-5 py-4 shadow-sm ${colors[color]}`}>
       <div className="flex items-start justify-between mb-2">
         <p className="text-[11px] font-semibold uppercase tracking-widest text-secondary">{label}</p>
         {icon && <span className="text-lg opacity-60">{icon}</span>}
       </div>
-      <p className={`text-2xl font-bold leading-tight tabular-nums ${color !== 'slate' ? '' : 'text-ink'}`}>{animatedValue}</p>
+      <p className={`text-financial-lg font-semibold leading-tight tabular-nums ${color !== 'slate' ? '' : 'text-ink'}`}>{animatedValue}</p>
       {sub && <p className="text-xs text-outline mt-0.5">{sub}</p>}
       {trend != null && (
         <p className={`text-xs font-medium mt-1 ${trendColor}`}>
@@ -1432,7 +1432,7 @@ export default function ProfitAnalysisPage() {
       {loading && !data ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
           {Array(6).fill(0).map((_, i) => (
-            <div key={i} className="rounded-2xl border border-border px-5 py-4 animate-pulse bg-surface-container h-24" />
+            <div key={i} className="rounded-xl border border-border px-5 py-4 animate-pulse bg-surface-container h-24" />
           ))}
         </div>
       ) : s && (
@@ -1447,7 +1447,7 @@ export default function ProfitAnalysisPage() {
       )}
 
       {/* Main Container with Tabs */}
-      <div className="bg-surface rounded-2xl border border-border shadow-sm">
+      <div className="bg-surface rounded-xl border border-border shadow-sm">
         <div className="flex items-center gap-1 px-4 pt-4 pb-0 border-b border-border overflow-x-auto">
           {tabs.map(t => (
             <Tab key={t.key} label={t.label} active={tab === t.key} onClick={() => setTab(t.key)} badge={t.badge} />
