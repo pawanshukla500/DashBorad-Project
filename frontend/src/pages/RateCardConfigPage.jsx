@@ -959,12 +959,17 @@ function MultiBrandSelect({ value = [], onChange, brandList, onRefreshBrands, pl
         onClick={() => { setOpen(true); setTimeout(() => inputRef.current?.focus(), 0); }}
       >
         {value.map(b => (
-          <span key={b} className="flex items-center gap-1 px-1.5 py-0.5 bg-primary-container text-primary rounded-md text-[10px] font-semibold whitespace-nowrap max-w-[100px]">
+          // Brand chip — burgundy tint via primary-container. The max-w
+          // was 100px which clipped brand names like "Ethnic Junction" at
+          // ~10 chars; 200px is enough for any brand label the marketplace
+          // produces while still keeping the input usable on narrow rows.
+          <span key={b} className="flex items-center gap-1 px-2 py-0.5 bg-primary-container text-primary rounded-md text-[11px] font-semibold whitespace-nowrap max-w-[200px] border border-primary/15">
             <span className="truncate">{b}</span>
             <button type="button"
               onMouseDown={e => e.preventDefault()}
               onClick={e => removeChip(b, e)}
-              className="text-indigo-400 hover:text-primary leading-none shrink-0 ml-0.5"
+              aria-label={`Remove ${b}`}
+              className="text-primary/50 hover:text-primary leading-none shrink-0 ml-0.5 transition-colors"
             >×</button>
           </span>
         ))}
