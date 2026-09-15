@@ -700,6 +700,19 @@ const INDEXES = [
   // IX_orders_market_account_date covers (marketplace, seller_account) but a
   // seller_account-only index helps filter-only requests.
   `CREATE INDEX IF NOT EXISTS IX_returns_market_account_requested ON returns(marketplace, seller_account, return_requested_date DESC)`,
+  // ── Round 2 — bundle-side and tail query coverage ───────────────────────────
+  // vb_export_sku is used in the COGS_JOINS COALESCE and in the master-catalog
+  // join that backs /api/orders, /api/summary, /api/profit-analysis. Without an
+  // index the lookup degrades to a heap scan for every filtered row.
+  `CREATE INDEX IF NOT EXISTS IX_orders_vb_export_sku ON orders(vb_export_sku) WHERE vb_export_sku IS NOT NULL AND vb_export_sku <> ''`,
+  // order_returns is a UNION ALL view whose Amazon branch joins orders on
+  // (order_id, sku, marketplace) and whose non-Amazon branch is `returns`
+  // filtered by order_item_id. The marketplace-agnostic order_item_id lookup
+  // is on the critical path of nearly every report endpoint; cover it.
+  `CREATE INDEX IF NOT EXISTS IX_returns_order_item_id ON returns(order_item_id) WHERE order_item_id IS NOT NULL`,
+  // Faster sidebar filter for the Returns tab and the Returns tab's source
+  // drill-down on (marketplace, return_status, return_requested_date).
+  `CREATE INDEX IF NOT EXISTS IX_returns_market_status_requested ON returns(marketplace, return_status, return_requested_date DESC) WHERE return_status IS NOT NULL`,
 ];
 
 export async function initDb() {
