@@ -656,4 +656,31 @@ Profit Analysis strictly maintains 6 top-level tabs:
 5. `By Zone`: Shipping zone profitability.
 6. `COGS & Weight Slabs`: Master Catalog configuration, Listing Mappings, and Unmerged Listings trigger.
 
+### 10.6 Unified Order Items Summary View
+
+A `order_items_summary` database view provides a single-row-per-order-item
+lifecycle view that joins orders, returns, settlements, COGS, and VB Export
+master mapping:
+
+- `order_id`, `order_item_id`, `marketplace`, `seller_account`
+- `sku`, `vb_export_sku`, `canonical_category`, `cogs_per_unit`, `cogs_total`
+- `orders_status`, `return_type`, `return_reason`, `return_date`
+- `net_bank`, `commission`, `fixed_fee`, `shipping_fee`, `net_profit`
+- Queryable via `GET /api/order-items-summary` with filtering by marketplace,
+  date range, category, seller account, and order_id.
+
+### 10.7 Returns `order_id` Linkage
+
+Returns uploads now populate `returns.order_id` (in addition to
+`order_item_id`) for all marketplaces, enabling direct parent-order tracing.
+The column was previously only populated for Amazon and Myntra returns;
+Flipkart returns now also carry the parent order ID.
+
+### 10.8 Deprecated Generic Settlements Upload
+
+`POST /api/upload/settlements` is deprecated. The legacy `settlements` table
+is not connected to dashboard reporting (`unified_settlements` /
+`order_settlement_totals`). Flipkart settlements must be uploaded via the
+dedicated workbook uploader (`POST /api/flipkart-settlement`).
+
 

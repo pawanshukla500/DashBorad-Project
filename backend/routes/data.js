@@ -4160,4 +4160,52 @@ router.get('/settlement/order-fee-detail', async (req, res) => {
   }
 });
 
+// ── GET /api/order-items-summary ──────────────────────────────────────────────
+// Unified order lifecycle view: one row per order item with order metadata,
+// return status, settlement totals, COGS, and VB Export master mapping.
+router.get('/order-items-summary', async (req, res) => {
+  try {
+    const pool = getPool();
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const pageSize = Math.min(200, Math.max(10, parseInt(req.query.pageSize, 10) || 50));
+    const offset = (page - 1) * pageSize;
+
+    const conds = [];
+    const values = [];
+    if (req.query.marketplace && req.query.marketplace !== 'all') {
+      values.push(req.query.marketplace);
+      conds.push(`marketplace = $${values.length}`);
+    }
+    if (req.query.startDate) { values.push(req.query.startDate); conds.push(`order_date >= $${values.length}`); }
+    if (req.query.endDate)   { values.push(req.query.endDate);   conds.push(`order_date <= $${values.length}`); }
+    if (req.query.category)  { values.push(req.query.category);  conds.push(`canonical_category = $${values.length}`); }
+    if (req.query.sellerAccount && req.query.sellerAccount !== 'all') {
+      values.push(req.query.sellerAccount);
+      conds.push(`seller_account = $${values.length}`);
+    }
+    if (req.query.orderId) {
+      values.push(req.query.orderId);
+      conds.push(`order_id = $${values.length}`);
+    }
+    const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+
+    const [dataRes, countRes] = await Promise.all([
+      pool.query(`SELECT * FROM order_items_summary ${where} ORDER BY order_date DESC, order_item_id LIMIT $${values.length + 1} OFFSET $${values.length + 2}`, [...values, pageSize, offset]),
+      pool.query(`SELECT COUNT(*) AS total FROM order_items_summary ${where}`, values),
+    ]);
+
+    const total = +countRes.rows[0]?.total || 0;
+    res.json({
+      rows: dataRes.rows,
+      total,
+      page,
+      pageSize,
+      pages: Math.max(1, Math.ceil(total / pageSize)),
+    });
+  } catch (err) {
+    console.error('[order-items-summary]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

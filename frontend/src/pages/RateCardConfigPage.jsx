@@ -310,7 +310,7 @@ function RateSlabTable({ rows, config, compact = false }) {
         {rows.map((r, i) => {
           const cols = config.renderRow(r);
           return (
-            <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-surface-container-low/50 transition-colors">
+            <tr key={i} className="border-b border-border last:border-0 hover:bg-surface-container-low/50 transition-colors">
               {cols.map((c, j) => (
                 <td key={j} className={`pr-6 ${compact ? 'py-1' : 'py-2'} ${j === cols.length - 1 ? 'font-bold text-ink' : 'text-secondary'}`}>
                   {c}
@@ -367,7 +367,7 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
       <div className="relative px-5 py-4 flex items-center justify-between gap-3 border-b border-border bg-surface">
         <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-primary/85 rounded-r-sm" />
         <div className="pl-3">
-          <h3 className="font-bold text-ink text-base">{category}</h3>
+          <h3 className="font-bold text-ink text-body-lg font-semibold">{category}</h3>
           {activePeriodStart ? (
             <p className="text-xs text-emerald-600 mt-0.5 flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
@@ -425,7 +425,7 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
 
       {/* Rate history */}
       {showHistory && (
-        <div className="border-t border-border divide-y divide-slate-100 bg-surface-container-low/60">
+        <div className="border-t border-border divide-y divide-border bg-surface-container-low/60">
           {sortedPeriods.map(periodKey => {
             const pRows  = periodMap[periodKey];
             const st     = rowStatus(pRows[0]);
@@ -607,7 +607,7 @@ function AdditionalCategoriesSelector({ marketplace, sellerAccount = 'default', 
   }
 
   return (
-    <div className="mt-2 rounded-xl border-2 border-primary bg-indigo-50/40 p-3">
+    <div className="mt-2 rounded-xl border-2 border-primary bg-primary-container/40 p-3">
       <div className="flex items-center justify-between mb-2.5">
         <span className="text-xs font-bold text-primary flex items-center gap-1.5">
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -633,7 +633,7 @@ function AdditionalCategoriesSelector({ marketplace, sellerAccount = 'default', 
           {available.map(cat => {
             const checked = value.includes(cat);
             return (
-              <label key={cat} className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-colors border-b border-slate-50 last:border-0 ${checked ? 'bg-primary-container' : 'hover:bg-surface-container-low'}`}>
+              <label key={cat} className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer transition-colors border-b border-border last:border-0 ${checked ? 'bg-primary-container' : 'hover:bg-surface-container-low'}`}>
                 <input
                   type="checkbox"
                   checked={checked}
@@ -691,7 +691,7 @@ function FormHintTip({ hint }) {
         </button>
         {show && (
           <div className="absolute bottom-full right-0 mb-2 w-64 bg-primary text-white text-[11px] rounded-xl px-3 py-2.5 shadow-xl leading-relaxed z-50 pointer-events-none">
-            <div className="absolute bottom-0 right-3 translate-y-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-slate-800" />
+            <div className="absolute bottom-0 right-3 translate-y-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-primary" />
             {hint}
           </div>
         )}
@@ -794,7 +794,7 @@ function BrandCombobox({ value, onChange, brandList, onRefreshBrands, placeholde
         <button type="button"
           onMouseDown={e => e.preventDefault()}
           onClick={() => { setOpen(o => !o); setTimeout(() => inputRef.current?.focus(), 0); }}
-          className="px-2 py-2 border-l border-primary text-indigo-300 hover:text-primary transition-colors shrink-0"
+          className="px-2 py-2 border-l border-primary text-primary/40 hover:text-primary transition-colors shrink-0"
         >
           <svg className={`w-3 h-3 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -819,7 +819,7 @@ function BrandCombobox({ value, onChange, brandList, onRefreshBrands, placeholde
           >
             <span className="w-5 h-5 rounded-full bg-surface-container-high flex items-center justify-center text-[10px] shrink-0 font-bold text-secondary">∀</span>
             <span>All brands (generic rate)</span>
-            {!value && <svg className="w-3.5 h-3.5 text-indigo-400 ml-auto shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            {!value && <svg className="w-3.5 h-3.5 text-primary ml-auto shrink-0" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
             </svg>}
           </button>
@@ -840,7 +840,7 @@ function BrandCombobox({ value, onChange, brandList, onRefreshBrands, placeholde
                 className={`w-full text-left px-3 py-2.5 text-xs transition-colors flex items-center gap-2.5 ${
                   value === b
                     ? 'bg-primary-container text-primary font-bold'
-                    : 'text-ink hover:bg-indigo-50 hover:text-primary'
+                    : 'text-ink hover:bg-primary-container hover:text-primary'
                 }`}
               >
                 <span className={`w-5 h-5 rounded-full text-[10px] flex items-center justify-center shrink-0 font-bold ${
@@ -988,7 +988,7 @@ function MultiBrandSelect({ value = [], onChange, brandList, onRefreshBrands, pl
         <button type="button"
           onMouseDown={e => e.preventDefault()}
           onClick={e => { e.stopPropagation(); setOpen(o => !o); setTimeout(() => inputRef.current?.focus(), 0); }}
-          className="text-indigo-300 hover:text-primary transition-colors shrink-0 pl-1"
+          className="text-primary/40 hover:text-primary transition-colors shrink-0 pl-1"
         >
           <svg className={`w-3 h-3 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1013,7 +1013,7 @@ function MultiBrandSelect({ value = [], onChange, brandList, onRefreshBrands, pl
           >
             <span className="w-5 h-5 rounded-full bg-surface-container-high flex items-center justify-center text-[10px] shrink-0 font-bold text-secondary">∀</span>
             <span className="flex-1">All brands (generic rate)</span>
-            {value.length === 0 && <svg className="w-3.5 h-3.5 text-indigo-400 ml-auto shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            {value.length === 0 && <svg className="w-3.5 h-3.5 text-primary ml-auto shrink-0" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/>
             </svg>}
           </button>
@@ -1034,7 +1034,7 @@ function MultiBrandSelect({ value = [], onChange, brandList, onRefreshBrands, pl
                   onMouseDown={e => e.preventDefault()}
                   onClick={() => toggle(b)}
                   className={`w-full text-left px-3 py-2.5 text-xs transition-colors flex items-center gap-2.5 ${
-                    sel ? 'bg-primary-container text-primary font-bold' : 'text-ink hover:bg-indigo-50 hover:text-primary'
+                    sel ? 'bg-primary-container text-primary font-bold' : 'text-ink hover:bg-primary-container hover:text-primary'
                   }`}
                 >
                   <span className={`w-5 h-5 rounded-full text-[10px] flex items-center justify-center shrink-0 font-bold ${
@@ -1195,6 +1195,13 @@ function RatePeriodDrawer({
         type,
       });
 
+      // Guard against empty/undefined response from backend
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        setAiMsg({ ok: false, text: 'No slabs detected in the screenshot. Try a clearer image or enter slabs manually.' });
+        setAiParsing(false);
+        return;
+      }
+
       let existingBrand = null;
       if (slabs.length > 0 && slabs[0].brand_name && slabs[0].brand_name.length > 0) {
         existingBrand = slabs[0].brand_name;
@@ -1302,7 +1309,7 @@ function RatePeriodDrawer({
         <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-[800px] max-h-[92vh] flex flex-col overflow-hidden border border-border/80 ring-1 ring-border/5">
 
           {/* ── Gradient Header ── */}
-          <div className={`px-6 py-4 border-b border-border shrink-0 ${isEditPeriod ? 'bg-gradient-to-r from-amber-50 to-orange-50' : isCopy ? 'bg-gradient-to-r from-teal-50 to-emerald-50' : 'bg-gradient-to-r from-indigo-50 via-white to-blue-50'}`}>
+          <div className={`px-5 sm:px-6 py-4 border-b border-border shrink-0 ${isEditPeriod ? 'bg-gradient-to-r from-amber-50 to-orange-50' : isCopy ? 'bg-gradient-to-r from-teal-50 to-emerald-50' : 'bg-gradient-to-r from-primary-container via-white to-blue-50'}`}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg shadow-sm ${
@@ -1311,7 +1318,7 @@ function RatePeriodDrawer({
                   {isEditPeriod ? '✏️' : isCopy ? '📋' : '💰'}
                 </div>
                 <div>
-                  <h2 className="font-bold text-ink text-lg">{drawerTitle}</h2>
+                  <h2 className="font-bold text-ink text-headline-md">{drawerTitle}</h2>
                   <p className="text-xs text-secondary mt-0.5">{drawerSubtitle}</p>
                 </div>
               </div>
@@ -1350,7 +1357,7 @@ function RatePeriodDrawer({
                   (i === 0 && category) || (i === 1 && effectiveFrom) || (i === 2 && slabs.length > 0)
                     ? 'text-primary' : 'text-outline'
                 }`}>
-                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] shrink-0 ${
+                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
                     (i === 0 && category) || (i === 1 && effectiveFrom) || (i === 2 && slabs.length > 0)
                       ? 'bg-primary text-white' : 'bg-surface-container-high text-secondary'
                   }`}>{i + 1}</span>
@@ -1462,7 +1469,7 @@ function RatePeriodDrawer({
               <div className="flex items-center gap-2">
                 <span className="text-base">✨</span>
                 <span className="text-sm font-bold text-ink">Auto-fill from Screenshot</span>
-                <span className="text-[9px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-bold uppercase">AI · Kimi (NVIDIA)</span>
+                <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-bold uppercase">AI · Gemini Vision</span>
                 {aiImage && <span className="text-[10px] text-emerald-600 font-semibold">· Image loaded</span>}
               </div>
               <svg className={`w-4 h-4 text-outline transition-transform ${aiOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1485,7 +1492,7 @@ function RatePeriodDrawer({
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-secondary font-semibold mb-1">Screenshot loaded</p>
                         <p className="text-[11px] text-outline mb-3">
-                          Kimi reads every row from the table and fills slabs below. Edit before saving.
+                          Gemini reads every row from your screenshot and maps the slabs automatically.
                         </p>
                         <div className="flex gap-2 flex-wrap">
                           <button
@@ -1603,7 +1610,7 @@ function RatePeriodDrawer({
                           <label className="text-[10px] font-semibold text-secondary mb-1.5 uppercase tracking-wide flex items-center gap-1">
                             {field.label}
                             {badge && (
-                              <span className={`px-1 py-0.5 rounded text-[9px] font-bold ${badge === '%' ? 'bg-primary-container text-primary' : 'bg-emerald-100 text-emerald-700'}`}>
+                              <span className={`px-1 py-0.5 rounded text-[10px] font-bold ${badge === '%' ? 'bg-primary-container text-primary' : 'bg-emerald-100 text-emerald-700'}`}>
                                 {badge}
                               </span>
                             )}
@@ -1644,7 +1651,7 @@ function RatePeriodDrawer({
                             />
                           )}
                           {field.help && (
-                            <p className="text-[9px] text-outline mt-1 leading-tight">{field.help}</p>
+                            <p className="text-[10px] text-outline mt-1 leading-tight">{field.help}</p>
                           )}
                         </div>
                       );
@@ -1657,7 +1664,7 @@ function RatePeriodDrawer({
             {/* ── Add slab button — at the bottom ── */}
             <button
               onClick={addSlab}
-              className="w-full mt-2 py-3 border-2 border-dashed border-primary text-primary hover:border-primary hover:bg-indigo-50/60 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-colors group"
+              className="w-full mt-2 py-3 border-2 border-dashed border-primary text-primary hover:border-primary hover:bg-primary-container/60 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-colors group"
             >
               <svg className="w-4 h-4 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -2080,7 +2087,7 @@ function AccountStrip({ marketplace, value, onChange }) {
           {a.account_id !== 'default' && a.account_id !== 'myntra_vb' && a.account_id !== 'myntra_ej' && (
             <button
               onClick={() => handleRemove(a)}
-              className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white rounded-full text-[9px] hidden group-hover:flex items-center justify-center leading-none hover:bg-rose-600"
+              className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white rounded-full text-[10px] hidden group-hover:flex items-center justify-center leading-none hover:bg-rose-600"
               title={`Remove ${accountLabel}`}
             >×</button>
           )}
@@ -2250,7 +2257,7 @@ function FeeTypeCoveragePanel({ feeType, coverage, marketplace, sellerAccount, o
                       {bGaps.map(brand => (
                         <span
                           key={brand}
-                          className="px-1.5 py-0.5 bg-rose-50 border border-rose-200 text-rose-600 text-[9px] rounded font-semibold"
+                          className="px-1.5 py-0.5 bg-rose-50 border border-rose-200 text-rose-600 text-[10px] rounded font-semibold"
                           title={`${brand} has no commission rate for ${cat}`}
                         >
                           {brand}
@@ -2307,7 +2314,7 @@ function MarketplaceCoverageSummary({ coverage, marketplace }) {
           >
             <span>{cfg.icon}</span>
             {cfg.title}
-            <span className={`min-w-[18px] h-[18px] px-1 rounded-full text-[9px] flex items-center justify-center ${
+            <span className={`min-w-[18px] h-[18px] px-1 rounded-full text-[10px] flex items-center justify-center ${
               count > 0 ? 'bg-orange-500 text-white' : 'bg-emerald-500 text-white'
             }`}>
               {count > 0 ? count : '✓'}
@@ -2382,19 +2389,19 @@ function RateCardVersionPanel({ marketplace, sellerAccount, onRestored }) {
             value={name}
             onChange={event => setName(event.target.value)}
             placeholder="Version name"
-            className="min-w-0 rounded-lg border border-border px-3 py-2 text-xs outline-none focus:border-[#902A4A]"
+            className="min-w-0 rounded-lg border border-border px-3 py-2 text-xs outline-none focus:border-primary"
           />
           <button
             onClick={createVersion}
             disabled={busy === 'create'}
-            className="shrink-0 rounded-lg bg-[#902A4A] px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
+            className="shrink-0 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
           >
             Save snapshot
           </button>
         </div>
       </div>
       {error && <p className="border-b border-rose-100 bg-rose-50 px-5 py-2 text-xs font-semibold text-rose-700">{error}</p>}
-      <div className="divide-y divide-slate-100">
+      <div className="divide-y divide-border">
         {versions.slice(0, 6).map(version => (
           <div key={version.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
             <div className="min-w-0 flex-1">
@@ -2404,7 +2411,7 @@ function RateCardVersionPanel({ marketplace, sellerAccount, onRestored }) {
                 {version.effective_from ? ` · Effective ${String(version.effective_from).slice(0, 10)}` : ''}
               </p>
             </div>
-            <span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase ${
+            <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase ${
               version.status === 'published'
                 ? 'bg-emerald-50 text-emerald-700'
                 : version.status === 'archived'
@@ -2512,7 +2519,7 @@ function RateCardNotificationPanel() {
             </thead>
             <tbody>
               {data.events.slice(0, 5).map(event => (
-                <tr key={event.id} className="border-b border-slate-50 last:border-0">
+                <tr key={event.id} className="border-b border-border last:border-0">
                   <td className="px-5 py-2 text-secondary whitespace-nowrap">{event.created_at ? new Date(event.created_at).toLocaleString('en-IN') : '—'}</td>
                   <td className="px-3 py-2 text-ink">{event.event_type.replace(/_/g, ' ')}</td>
                   <td className="px-3 py-2"><span className={`inline-flex px-2 py-0.5 rounded-full font-bold ${statusStyle(event.status)}`}>{event.status}</span></td>
@@ -2641,7 +2648,7 @@ export default function RateCardConfigPage() {
                 <button
                   type="button"
                   onClick={() => setShowHelp(v => !v)}
-                  className="w-full px-5 py-3 flex items-center justify-between gap-3 bg-indigo-50/60 hover:bg-indigo-50 transition-colors text-left"
+                  className="w-full px-5 py-3 flex items-center justify-between gap-3 bg-primary-container/60 hover:bg-primary-container transition-colors text-left"
                 >
                   <div className="flex items-center gap-2">
                     <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2682,7 +2689,7 @@ export default function RateCardConfigPage() {
                         <span>{cfg.icon}</span>
                         {cfg.title}
                         {gapCnt > 0 && (
-                          <span className={`ml-0.5 min-w-[18px] h-[18px] px-1 text-[9px] font-bold rounded-full leading-none flex items-center justify-center ${
+                          <span className={`ml-0.5 min-w-[18px] h-[18px] px-1 text-[10px] font-bold rounded-full leading-none flex items-center justify-center ${
                             isAct ? 'bg-white/25 text-white' : 'bg-orange-500 text-white'
                           }`}>
                             {gapCnt}
