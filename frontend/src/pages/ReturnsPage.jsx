@@ -509,7 +509,7 @@ function SkuDrawer({ sku, onClose }) {
   return (
     <>
       {/* Overlay */}
-      <div className="fixed inset-0 bg-primary/50 backdrop-blur-sm z-40" onClick={() => { if (!selectedOrderId) onClose(); }} />
+      <div className="fixed inset-0 modal-backdrop z-40" onClick={() => { if (!selectedOrderId) onClose(); }} />
 
       {/* Drawer */}
       <div className="fixed right-0 top-0 h-full w-full max-w-3xl bg-surface shadow-2xl z-50 flex flex-col overflow-hidden">

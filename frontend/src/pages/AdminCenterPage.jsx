@@ -518,7 +518,7 @@ export default function AdminCenterPage() {
 
       {/* Invite User Modal */}
       {showInviteModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/50 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-backdrop">
           <div className="bg-surface rounded-xl border border-border shadow-lg w-full max-w-lg overflow-hidden animate-fade-in">
             <div className="p-6 border-b border-border flex items-center justify-between">
               <div>
