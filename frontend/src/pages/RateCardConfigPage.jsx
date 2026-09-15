@@ -18,11 +18,16 @@ import {
 ──────────────────────────────────────────────────────────────────── */
 function toDateStr(d) {
   if (!d) return null;
-  const s = String(d);
+  const s = String(d).trim();
+  if (!s) return null;
   // Already a plain YYYY-MM-DD — use as-is, no timezone math needed
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   const dt = new Date(s);
-  if (isNaN(dt)) return s.slice(0, 10);
+  // Any input the JS Date parser cannot interpret (e.g. the literal
+  // 'no-date' fallback key, malformed strings, or non-date placeholders)
+  // must surface as null so callers can decide on a label instead of
+  // getting a partial / unparseable string back.
+  if (isNaN(dt)) return null;
   // Format in LOCAL timezone (getFullYear/Month/Date, not UTC equivalents)
   const y  = dt.getFullYear();
   const m  = String(dt.getMonth() + 1).padStart(2, '0');
@@ -42,12 +47,20 @@ function dateMinus1(s) {
   d.setDate(d.getDate() - 1);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
-function fmtDate(d) {
-  if (!d) return 'Ongoing';
+// `unknownText` — shown when a value is provided but unparseable, e.g. a
+// legacy row that was created before start_date became mandatory. This is
+// distinct from `null` (which historically means "ongoing / no end").
+function fmtDate(d, { unknownText = '—' } = {}) {
+  if (d == null || d === '') return 'Ongoing';
   const s = toDateStr(d);
-  if (!s) return 'Ongoing';
+  if (!s) return unknownText;
   const [y, mo, dy] = s.split('-').map(Number);
-  return new Date(y, mo - 1, dy).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  // Guard against partial / non-numeric slices leaking through `toDateStr`
+  // (defence-in-depth — the regex above should already catch them).
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(dy)) return unknownText;
+  const dt = new Date(y, mo - 1, dy);
+  if (isNaN(dt)) return unknownText;
+  return dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
 /* ─── Value display helpers ───────────────────────────────────── */
@@ -352,6 +365,14 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
               <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
               Active from {fmtDate(activePeriodStart)}
             </p>
+          ) : activeRows.length > 0 ? (
+            // Active rules exist but none of them carry a parseable start_date
+            // (legacy data). Be honest about it instead of telling the user to
+            // "add a rate".
+            <p className="text-xs text-amber-600 mt-0.5 flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
+              Active period has no start date on file — backfill it for cleaner history
+            </p>
           ) : (
             <p className="text-xs text-amber-600 mt-0.5 flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-amber-400 inline-block" />
@@ -401,13 +422,16 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
             const pRows  = periodMap[periodKey];
             const st     = rowStatus(pRows[0]);
             const endStr = toDateStr(pRows[0].end_date);
+            const startLabel = periodKey === 'no-date'
+              ? 'No start date'
+              : fmtDate(pRows[0].start_date);
             return (
               <div key={periodKey} className={`transition-colors ${st === 'active' ? 'bg-emerald-50/50' : ''}`}>
                 <div className="px-5 py-3 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <StatusBadge status={st} />
                     <span className="text-xs text-secondary font-semibold">
-                      {fmtDate(periodKey)}
+                      {startLabel}
                       <span className="text-outline font-normal mx-1">→</span>
                       {fmtDate(endStr)}
                     </span>
