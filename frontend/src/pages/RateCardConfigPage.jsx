@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import PageHeader from '../components/PageHeader';
+import Modal, { ConfirmDialog } from '../components/Modal';
 import {
   fetchRateCardConfig, fetchRateCardCategoryList, saveRateCardPeriod,
   deleteRateCardRow, seedRateCard, parseRateCardImage,
@@ -1723,6 +1724,12 @@ function RatePeriodDrawer({
     const [err, setErr]           = useState(null);
     const [viewMode, setViewMode] = useState('active');
     const [drawer, setDrawer]     = useState(null);
+    // Toast-style banner for ephemeral success / error feedback, replacing
+    // window.alert / window.confirm.
+    const [banner, setBanner]     = useState(null); // { tone: 'success' | 'error', text }
+    // Confirm dialog state for destructive flows.
+    const [confirm, setConfirm]   = useState(null); // { title, description, action, variant }
+    const [confirmBusy, setConfirmBusy] = useState(false);
 
     const load = useCallback(async () => {
       setLoading(true); setErr(null);
@@ -1751,17 +1758,37 @@ function RatePeriodDrawer({
   async function handleDeletePeriod(ids) {
     if (!ids?.length) return;
     const mpLabel = MARKETPLACES.find(m => m.id === marketplace)?.label || marketplace;
-    if (!window.confirm(
-      `Delete ${ids.length} rate row${ids.length > 1 ? 's' : ''} for this period?\n\n` +
-      `Marketplace: ${mpLabel}  |  Account: ${sellerAccount}  |  Fee: ${config.title}\n\n` +
-      `This permanently removes them from PostgreSQL.`
-    )) return;
-    try {
-      for (const id of ids) await deleteRateCardRow(type, id, marketplace, sellerAccount);
-      await load();
-    } catch (e) {
-      alert('Delete failed: ' + (e.response?.data?.error || e.message));
-    }
+    setConfirm({
+      title: `Delete ${ids.length} rate row${ids.length > 1 ? 's' : ''}?`,
+      description: `Marketplace: ${mpLabel} · Account: ${sellerAccount} · Fee: ${config.title}\n\nThis permanently removes them from PostgreSQL.`,
+      variant: 'danger',
+      confirmLabel: 'Delete',
+      action: async () => {
+        setConfirmBusy(true);
+        try {
+          // Sequential delete with per-row failure capture so the user sees
+          // exactly which rows could not be removed (instead of half-deleting
+          // silently and reporting nothing).
+          const failed = [];
+          for (const id of ids) {
+            try { await deleteRateCardRow(type, id, marketplace, sellerAccount); }
+            catch (err) { failed.push({ id, message: err.response?.data?.error || err.message }); }
+          }
+          await load();
+          setConfirm(null);
+          if (failed.length === 0) {
+            setBanner({ tone: 'success', text: `Deleted ${ids.length} row${ids.length > 1 ? 's' : ''}.` });
+          } else {
+            setBanner({
+              tone: 'error',
+              text: `Deleted ${ids.length - failed.length} of ${ids.length} — ${failed.length} failed: ${failed[0].message}`,
+            });
+          }
+        } finally {
+          setConfirmBusy(false);
+        }
+      },
+    });
   }
 
   function handleEditPeriod(category, pRows) {
@@ -1791,6 +1818,16 @@ function RatePeriodDrawer({
   const colorBgMap = { indigo: 'bg-primary', violet: 'bg-violet-600', blue: 'bg-blue-600', cyan: 'bg-cyan-600', rose: 'bg-rose-600', amber: 'bg-amber-600' };
   const mpMeta = MARKETPLACES.find(m => m.id === marketplace) || MARKETPLACES[0];
 
+  // Auto-dismiss the toast banner after a few seconds. We track via ref so
+  // the timeout id is cancelled if a new banner arrives mid-display.
+  const bannerTimerRef = useRef(null);
+  useEffect(() => {
+    if (!banner) return undefined;
+    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+    bannerTimerRef.current = setTimeout(() => setBanner(null), 4500);
+    return () => { if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current); };
+  }, [banner]);
+
   if (loading) return (
     <div className="animate-pulse space-y-4">
       {[1, 2, 3].map(i => <div key={i} className="h-32 bg-surface-container rounded-xl" />)}
@@ -1800,8 +1837,36 @@ function RatePeriodDrawer({
     <div className="bg-rose-50 border border-rose-200 rounded-xl p-5 text-rose-700 text-sm">Failed to load: {err}</div>
   );
 
+  const bannerPalette = banner?.tone === 'success'
+    ? { ring: 'border-emerald-200', bg: 'bg-emerald-50', text: 'text-emerald-800', icon: 'text-emerald-600' }
+    : { ring: 'border-rose-200',   bg: 'bg-rose-50',   text: 'text-rose-800',   icon: 'text-rose-600' };
+
   return (
     <div className="space-y-4">
+      {banner && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`flex items-start gap-3 rounded-xl border ${bannerPalette.ring} ${bannerPalette.bg} px-4 py-3 ${bannerPalette.text} shadow-sm animate-[modal-fade-in_200ms_ease-out]`}
+        >
+          <svg className={`w-4 h-4 mt-0.5 shrink-0 ${bannerPalette.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            {banner.tone === 'success'
+              ? <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              : <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75M12 17.25h.008v.008H12v-.008zM10.29 3.86l-8.18 14.18A2 2 0 003.84 21h16.32a2 2 0 001.73-2.96L13.71 3.86a2 2 0 00-3.42 0z" />}
+          </svg>
+          <p className="text-sm flex-1 whitespace-pre-line">{banner.text}</p>
+          <button
+            type="button"
+            onClick={() => setBanner(null)}
+            className="text-current opacity-60 hover:opacity-100 transition-opacity"
+            aria-label="Dismiss notification"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M6 18L18 6" />
+            </svg>
+          </button>
+        </div>
+      )}
       <FeeTypeCoveragePanel
         feeType={type}
         coverage={coverage}
@@ -1896,6 +1961,17 @@ function RatePeriodDrawer({
           onSaved={() => { setDrawer(null); load(); if (onCoverageDirty) onCoverageDirty(); }}
         />
       )}
+
+      <ConfirmDialog
+        open={!!confirm}
+        busy={confirmBusy}
+        title={confirm?.title}
+        description={confirm?.description}
+        confirmLabel={confirm?.confirmLabel}
+        variant={confirm?.variant}
+        onClose={() => { if (!confirmBusy) setConfirm(null); }}
+        onConfirm={async () => { await confirm?.action?.(); }}
+      />
     </div>
   );
 }
@@ -1908,6 +1984,9 @@ function AccountStrip({ marketplace, value, onChange }) {
   const [newName, setNewName]     = useState('');
   const [adding, setAdding]       = useState(false);
   const [addErr, setAddErr]       = useState(null);
+  // Styled confirm dialog state for destructive flows.
+  const [confirm, setConfirm]     = useState(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const mpMeta    = MARKETPLACES.find(m => m.id === marketplace) || MARKETPLACES[0];
   const isMyntra  = marketplace === 'myntra' || marketplace === 'myntra_vb' || marketplace === 'myntra_ej';
@@ -1946,17 +2025,31 @@ function AccountStrip({ marketplace, value, onChange }) {
 
   async function handleRemove(account) {
     if (account.account_id === 'default' || account.account_id === 'myntra_vb' || account.account_id === 'myntra_ej') return;
-    if (!window.confirm(`Remove ${accountLabel} "${account.display_name}" from ${mpMeta.label}?\n\nNote: rate card data for this account is NOT deleted.`)) return;
-    try {
-      // The /accounts GET returns { account_id, display_name } only. There
-      // is no `id` field, so passing account.id would hit the backend as
-      // /accounts/undefined and silently no-op. Pass account_id (the
-      // business key) and the marketplace so the server can scope the
-      // DELETE correctly when the user is on a non-default marketplace.
-      await deleteMarketplaceAccount(account.account_id, marketplace);
-      if (value === account.account_id) onChange('default');
-      await load();
-    } catch (e) { alert(e.response?.data?.error || e.message); }
+    setConfirm({
+      title: `Remove ${accountLabel}?`,
+      description: `Remove "${account.display_name}" from ${mpMeta.label}.\n\nRate card data for this account is NOT deleted — only the account label is removed.`,
+      variant: 'danger',
+      confirmLabel: 'Remove account',
+      action: async () => {
+        setConfirmBusy(true);
+        try {
+          // The /accounts GET returns { account_id, display_name } only.
+          // There is no `id` field, so passing account.id would hit the
+          // backend as /accounts/undefined and silently no-op. Pass
+          // account_id (the business key) and the marketplace so the
+          // server can scope the DELETE correctly when the user is on a
+          // non-default marketplace.
+          await deleteMarketplaceAccount(account.account_id, marketplace);
+          if (value === account.account_id) onChange('default');
+          await load();
+          setConfirm(null);
+        } catch (e) {
+          setAddErr(e.response?.data?.error || e.message);
+        } finally {
+          setConfirmBusy(false);
+        }
+      },
+    });
   }
 
   if (loading) return <div className="h-8 bg-surface-container rounded-full animate-pulse w-40" />;
@@ -2022,6 +2115,17 @@ function AccountStrip({ marketplace, value, onChange }) {
           </button>
         )
       )}
+
+      <ConfirmDialog
+        open={!!confirm}
+        busy={confirmBusy}
+        title={confirm?.title}
+        description={confirm?.description}
+        confirmLabel={confirm?.confirmLabel}
+        variant={confirm?.variant}
+        onClose={() => { if (!confirmBusy) setConfirm(null); }}
+        onConfirm={async () => { await confirm?.action?.(); }}
+      />
     </div>
   );
 }
