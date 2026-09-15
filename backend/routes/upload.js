@@ -620,6 +620,7 @@ const ORDER_FIELDS = [
 const RETURN_FIELDS = [
   ['return_id',                     g => { const v = str(g('return_id')); return v ? v.replace(/^RI:/i, '') || null : null; }],
   ['order_item_id',                 g => { const v = str(g('order_item_id')); return v ? v.replace(/^OI:/i, '') || null : null; }],
+  ['order_id',                      g => { const v = str(g('order_id') || g('Order ID')); return v ? v.replace(/^OD:/i, '') || null : null; }],
   ['fulfilment_type',               g => str(g('fulfilment_type'))],
   ['return_requested_date',         g => dt(g('return_requested_date'), g.dateFormat('return_requested_date'))],
   ['return_approval_date',          g => dt(g('return_approval_date'), g.dateFormat('return_approval_date'))],
@@ -1334,54 +1335,16 @@ router.post('/returns', upload.single('file'), async (req, res) => {
 });
 
 // ── POST /api/upload/settlements ───────────────────────────────────────────────
+// DEPRECATED: The legacy `settlements` table is not queried by any dashboard
+// route. Flipkart settlements should be uploaded via the dedicated workbook
+// uploader (POST /api/flipkart-settlement) which writes to fk_settlement_orders
+// and feeds unified_settlements / order_settlement_totals. This endpoint is
+// kept for backward compatibility but rejects new uploads with a clear message.
 router.post('/settlements', upload.single('file'), async (req, res) => {
-  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
-  if (!req.file) return res.status(400).json({ error: 'No file provided' });
-
-  let inserted = 0, skipped = 0;
-  let marketplace = 'flipkart';
-
-  try {
-    const colMap = parseColumnMap(req.body.columnMap);
-    marketplace = genericMarketplace(req.body.marketplace);
-    const pool = getPool();
-    const { headers, data } = parseFile(req.file.buffer);
-    await resolveColumnMap(colMap, REQUIRED_FIELDS.settlements, headers);
-    requireUploadRows(data);
-    requireMappedFields('settlements', colMap, headers);
-    const toRow   = rowMapper(headers);
-    const rawRows = data.map(toRow);
-    const dateFormats = await getDateFormats(rawRows, SETTLEMENT_DATE_FIELDS, colMap);
-
-    const parsedRows = [];
-    const skippedRows = [];
-    rawRows.forEach((rawRow, idx) => {
-      const g = (f) => getField(rawRow, f, colMap);
-      g.dateFormat = (f) => dateFormats[f];
-      const vals = SETTLEMENT_FIELDS.map(([, get]) => get(g));
-      const rawBankSettlement = g('Bank Settlement');
-      let reason = null;
-      if (!vals[7]) reason = 'order_item_id is empty';
-      else if (!vals[2]) reason = 'payment_date is empty or invalid';
-      else if (hasInvalidNumber(rawBankSettlement, vals[3]) || vals[3] == null) reason = 'Bank Settlement is empty or invalid';
-      if (reason) {
-        skipped++;
-        skippedRows.push({ rowNum: idx + 2, reason, data: rowData(rawRow) });
-        return;
-      }
-      parsedRows.push(vals);
-    });
-
-    inserted = await batchInsert(pool, 'settlements', SETTLEMENT_FIELDS, parsedRows, marketplace);
-    skipped += (parsedRows.length - inserted);
-
-    const logId = await logUpload(pool, 'settlements', req.file.originalname, marketplace, inserted, 0, skipped, 'ok');
-    try { await saveSkippedRows(pool, logId, skippedRows); } catch {}
-    res.json({ ok: true, inserted, skipped, total: data.length, dateFormats: summarizeDateFormats(dateFormats), logId });
-  } catch (e) {
-    try { await logUpload(getPool(), 'settlements', req.file.originalname, marketplace, inserted, 0, skipped, 'error', e.message); } catch {}
-    res.status(e.status || 500).json({ error: e.message });
-  }
+  res.status(400).json({
+    error: 'Generic settlements upload is deprecated. Use the Flipkart Settlement Workbook uploader for Flipkart settlements, or the marketplace-specific settlement upload for Amazon/Myntra/Meesho. The legacy settlements table is not connected to dashboard reporting.',
+    deprecated: true,
+  });
 });
 
 // ── GET /api/upload/log/:id/skipped ───────────────────────────────────────────

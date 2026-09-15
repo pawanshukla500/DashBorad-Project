@@ -1426,6 +1426,9 @@ export async function initDb() {
     await ensureUnifiedSettlementsView(pool);
     await ensureOrderSettlementTotals(pool);
 
+    // ── order_items_summary view (unified order lifecycle: order + return + settlement + COGS) ──
+    await ensureOrderItemsSummaryView(pool);
+
     await ensureMyntraUploadSchema(pool);
     await ensureMyntraSellerIdSchema(pool);
     await ensureUploadAuditRetentionSchema(pool);
@@ -1982,6 +1985,7 @@ async function ensureMyntraUploadSchema(pool) {
   // Rebuild once after the returns account column is available. The view is
   // consumed by the dashboard and must carry the account with each return.
   await ensureOrderReturnsView(pool);
+  await ensureOrderItemsSummaryView(pool);
   await pool.query(
     `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
     [MYNTRA_UPLOAD_SCHEMA_VERSION],
@@ -2483,5 +2487,80 @@ ${meeshoSettlementUnifiedSelect()}
     console.log('[db] unified_settlements view ensured (with mp_other_fee)');
   } catch (e) {
     console.warn('[db] unified_settlements view:', e.message);
+  }
+}
+
+/**
+ * Unified order_items_summary view — one row per order item with its full
+ * lifecycle: order metadata, return status, settlement totals, COGS, and
+ * VB Export master SKU/category mapping. Mirrors the OMS Guru "one row =
+ * full order lifecycle" model using our own existing identifiers.
+ */
+async function ensureOrderItemsSummaryView(pool) {
+  const sql = `
+CREATE OR REPLACE VIEW order_items_summary AS
+SELECT
+  o.order_id,
+  o.order_item_id,
+  o.marketplace,
+  COALESCE(o.seller_account, 'default') AS seller_account,
+  o.order_date,
+  o.orders_status,
+  o.return_type,
+  o.fulfilment_type,
+  o.selling_channel,
+  o.sku,
+  o.fsn,
+  o.qty,
+  o.final_invoice_amount,
+  o.delivery_state,
+  o.shipping_zone,
+  -- VB Export master mapping
+  o.vb_export_sku,
+  o.vb_export_category,
+  COALESCE(vsm.category, sm_all.category, sm_mp.category, NULLIF(o.vb_export_category, ''), NULLIF(o.category, ''), 'Uncategorized') AS canonical_category,
+  COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) AS cogs_per_unit,
+  COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) * COALESCE(o.qty, 1) AS cogs_total,
+  COALESCE(vsm.weight_slab, sm_all.weight_slab, sm_mp.weight_slab, o.weight_slab) AS weight_slab,
+  -- Return data (via order_returns view which normalizes Amazon returns)
+  ret.return_id,
+  ret.return_status,
+  ret.return_reason,
+  ret.return_sub_reason,
+  ret.return_type AS return_type_detail,
+  ret.return_date,
+  ret.quantity AS return_quantity,
+  ret.is_received AS return_received,
+  ret.received_date AS return_received_date,
+  -- Settlement totals
+  s.net_bank,
+  s.refund_amount,
+  s.payment_date AS settlement_date,
+  s.commission,
+  s.fixed_fee,
+  s.collection_fee,
+  s.pick_pack_fee,
+  s.shipping_fee,
+  s.reverse_shipping,
+  s.franchise_fee,
+  s.tcs,
+  s.tds,
+  s.gst_on_mp_fees,
+  -- Net profit (revenue - COGS - fees + bank received)
+  o.final_invoice_amount - COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) * COALESCE(o.qty, 1) - COALESCE(s.commission, 0) - COALESCE(s.fixed_fee, 0) - COALESCE(s.collection_fee, 0) - COALESCE(s.pick_pack_fee, 0) - COALESCE(s.shipping_fee, 0) - COALESCE(s.reverse_shipping, 0) - COALESCE(s.franchise_fee, 0) - COALESCE(s.tcs, 0) - COALESCE(s.tds, 0) - COALESCE(s.gst_on_mp_fees, 0) + COALESCE(s.net_bank, 0) - COALESCE(s.refund_amount, 0) AS net_profit,
+  o.uploaded_at
+FROM orders o
+LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
+LEFT JOIN order_settlement_totals s ON s.order_item_id = o.order_item_id
+LEFT JOIN sku_master sm_mp ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = o.marketplace
+LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
+LEFT JOIN vb_sku_master vsm ON vsm.vb_export_sku = COALESCE(sm_mp.master_sku, sm_all.master_sku, o.vb_export_sku)
+`;
+  try {
+    await pool.query('DROP VIEW IF EXISTS order_items_summary');
+    await pool.query(sql);
+    console.log('[db] order_items_summary view ensured');
+  } catch (e) {
+    console.warn('[db] order_items_summary view:', e.message);
   }
 }

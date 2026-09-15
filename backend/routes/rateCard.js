@@ -6,12 +6,14 @@
  *   rc_reverse_shipping, rc_franchise_fee, rate_card_versions
  */
 import express from 'express';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { normalizeCategory } from '../services/rateCard.js';
 import { scrapeRateCard } from '../services/rateCardScraper.js';
 import { clearRateCardCache } from '../services/rateCard.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
+import { forEachDbBatch } from '../utils/dbBatch.js';
 
 const router = express.Router();
 
@@ -501,29 +503,31 @@ router.post('/config/:type/save-period', async (req, res) => {
       const extraCols = TABLE_EXTRA_COLUMNS[type];
       const allCols = ['category', 'start_date', 'end_date', 'marketplace', 'seller_account', ...extraCols];
 
-      // Batch insert: build a single INSERT with multiple value rows
-      const valueSets = [];
-      const allValues = [];
-      let paramIdx = 1;
+      // Batch insert using forEachDbBatch to stay under PostgreSQL's 65,535
+      // parameter limit when a rate period has many slabs.
+      const slabData = slabRows.map(slab => [
+        slab.category || category || 'ALL',
+        start_date || null,
+        end_date || null,
+        marketplace,
+        seller_account,
+        ...extraCols.map(col => slab[col] ?? null),
+      ]);
 
-      for (const slab of slabRows) {
-        const vals = [
-          slab.category || category || 'ALL',
-          start_date || null,
-          end_date || null,
-          marketplace,
-          seller_account,
-          ...extraCols.map(col => slab[col] ?? null),
-        ];
-        const placeholders = allCols.map(() => `$${paramIdx++}`);
-        valueSets.push(`(${placeholders.join(', ')})`);
-        allValues.push(...vals);
-      }
-
-      await client.query(
-        `INSERT INTO ${table} (${allCols.join(', ')}) VALUES ${valueSets.join(', ')}`,
-        allValues,
-      );
+      await forEachDbBatch(slabData, allCols.length, async batch => {
+        const valueSets = [];
+        const allValues = [];
+        let paramIdx = 1;
+        for (const vals of batch) {
+          const placeholders = allCols.map(() => `$${paramIdx++}`);
+          valueSets.push(`(${placeholders.join(', ')})`);
+          allValues.push(...vals);
+        }
+        await client.query(
+          `INSERT INTO ${table} (${allCols.join(', ')}) VALUES ${valueSets.join(', ')}`,
+          allValues,
+        );
+      });
 
       await client.query('COMMIT');
       clearRateCardCache();
@@ -646,24 +650,26 @@ router.post('/versions/:id/rollback', async (req, res) => {
         // Delete current rows for this marketplace/seller_account
         await client.query(`DELETE FROM ${table} WHERE marketplace = $1 AND seller_account = $2`, [mp, sa]);
 
-        // Batch insert: build a single INSERT with multiple value rows
+        // Batch insert using forEachDbBatch to stay under PostgreSQL's
+        // 65,535 parameter limit when a snapshot has many rows.
         const firstRow = rows[0];
         const cols = Object.keys(firstRow).filter(k => k !== 'id' && k !== 'updated_at');
-        const valueSets = [];
-        const allValues = [];
-        let paramIdx = 1;
+        const rowData = rows.map(row => cols.map(c => row[c]));
 
-        for (const row of rows) {
-          const vals = cols.map(c => row[c]);
-          const placeholders = cols.map(() => `$${paramIdx++}`);
-          valueSets.push(`(${placeholders.join(', ')})`);
-          allValues.push(...vals);
-        }
-
-        await client.query(
-          `INSERT INTO ${table} (${cols.join(', ')}) VALUES ${valueSets.join(', ')}`,
-          allValues,
-        );
+        await forEachDbBatch(rowData, cols.length, async batch => {
+          const valueSets = [];
+          const allValues = [];
+          let paramIdx = 1;
+          for (const vals of batch) {
+            const placeholders = cols.map(() => `$${paramIdx++}`);
+            valueSets.push(`(${placeholders.join(', ')})`);
+            allValues.push(...vals);
+          }
+          await client.query(
+            `INSERT INTO ${table} (${cols.join(', ')}) VALUES ${valueSets.join(', ')}`,
+            allValues,
+          );
+        });
       }
 
       await client.query('COMMIT');
@@ -1112,7 +1118,86 @@ router.get('/fee-summary', async (req, res) => {
 
 router.post('/refresh', (req, res) => res.json({ ok: true }));
 router.get('/intelligence', (req, res) => res.json({ orderFees: [], nonOrderFees: [], alerts: [] }));
-router.post('/parse-image', (req, res) => res.json({ data: [] }));
+
+// ── AI Screenshot Parser (Gemini Vision) ─────────────────────────────────────
+// Accepts a base64-encoded screenshot of a marketplace rate card page and
+// extracts structured slab data using Google Gemini's vision model.
+const GEMINI_VISION_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-1.5-pro'];
+
+const FEE_TYPE_PROMPTS = {
+  commission: `Extract commission rate slabs. Each slab has: brand_name (string, null if "All brands" or generic), price_min (number, from price range start), price_max (number, null if no upper limit), rate (decimal: 0.14 = 14%, 0.05 = 5%).`,
+  fixed_fee: `Extract fixed fee slabs. Each slab has: fulfilment_type (string: Bronze/Silver/Gold/Diamond/All), price_min (number), price_max (number, null if infinite), rate (flat rupee amount, e.g. 6).`,
+  collection_fee: `Extract collection fee slabs. Each slab has: fulfilment_type (string: All/FBF/Non-FBF/Self-Ship), price_min (number), price_max (number, null if infinite), prepaid (number), prepaid_type ("pct" or "flat"), postpaid (number), postpaid_type ("pct" or "flat"). For percentage values, use decimal (0.003 = 0.3%).`,
+  pick_pack: `Extract pick & pack fee slabs. Each slab has: fulfilment_type (string: FBF/Non-FBF/Flex/ALL), price_min (number), price_max (number, null if infinite), rate (flat rupee amount).`,
+  reverse_shipping: `Extract reverse shipping fee slabs. Each slab has: price_min (number), price_max (number, null if infinite), weight_slab (number in kg), local_fee (rupee amount), zonal_fee (rupee amount), national_fee (rupee amount).`,
+  franchise_fee: `Extract franchise fee slabs. Each slab has: brand_name (string, null if generic), price_min (number), price_max (number, null if infinite), rate (decimal: 0.02 = 2%).`,
+};
+
+router.post('/parse-image', async (req, res) => {
+  try {
+    const { imageBase64, mimeType, type } = req.body;
+    if (!imageBase64) return res.status(400).json({ error: 'No image provided' });
+    if (!mimeType) return res.status(400).json({ error: 'Image MIME type is required' });
+
+    const feeType = Object.keys(FEE_TYPE_PROMPTS).includes(type) ? type : 'commission';
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'AI parser is not configured. Set GEMINI_API_KEY to enable screenshot extraction.' });
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const extractionGuide = FEE_TYPE_PROMPTS[feeType];
+
+    const prompt = `You are a rate card data extraction assistant. Analyze this screenshot of a marketplace seller rate card page and extract ALL rate slab rows visible in the image.
+
+${extractionGuide}
+
+Return ONLY valid JSON (no markdown, no explanation):
+{
+  "slabs": [
+    { "brand_name": null, "price_min": 0, "price_max": 300, "rate": 0.14 }
+  ]
+}
+
+Rules:
+1. Extract every visible row from the rate card table in the screenshot.
+2. Use null for empty/unlimited values (e.g. price_max with no upper bound).
+3. For percentage rates, use decimals: 14% = 0.14, 5% = 0.05, 0.3% = 0.003.
+4. For flat rupee amounts, use the number directly: ₹6 = 6.
+5. If the table is not visible or unreadable, return { "slabs": [] }.
+6. Do not include any text outside the JSON.`;
+
+    let lastErr;
+    let modelUsed = null;
+    for (const modelName of GEMINI_VISION_MODELS) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent([
+          { text: prompt },
+          { inlineData: { data: imageBase64, mimeType } },
+        ]);
+        const raw = result.response.text().trim();
+        const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/i, '').trim();
+        const parsed = JSON.parse(jsonStr.startsWith('{') ? jsonStr : (jsonStr.match(/\{[\s\S]*\}/)?.[0] ?? '{"slabs":[]}'));
+        const slabs = Array.isArray(parsed.slabs) ? parsed.slabs : [];
+        modelUsed = modelName;
+        console.log(`[rate-card/parse-image] extracted ${slabs.length} slabs with model: ${modelName}`);
+        return res.json({ slabs, count: slabs.length, modelUsed });
+      } catch (err) {
+        const is404 = err.message?.includes('404') || err.message?.includes('not found') || err.message?.includes('no longer available');
+        if (is404) {
+          console.warn(`[rate-card/parse-image] model ${modelName} unavailable, trying next...`);
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error(`All Gemini models unavailable. Last error: ${lastErr?.message}`);
+  } catch (err) {
+    console.error('[rate-card/parse-image]', err.message);
+    res.status(500).json({ error: err.message, slabs: [], count: 0 });
+  }
+});
+
 router.get('/rc-entry-reco', (req, res) => res.json({ commission: [], fixed_fee: [], pick_pack: [], franchise_fee: [] }));
 router.get('/rc-entry-orders', (req, res) => res.json({ orders: [], total: 0 }));
 
