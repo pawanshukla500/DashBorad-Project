@@ -1,13 +1,21 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { 
-  fetchReturnsTracker, 
-  downloadReturnsTemplate, 
-  uploadReturnsReceived, 
-  fetchReturnsReceivedSummary 
+import {
+  fetchReturnsTracker,
+  downloadReturnsTemplate,
+  uploadReturnsReceived,
+  fetchReturnsReceivedSummary
 } from '../api/client';
 import KPICard from '../components/KPICard';
 import useFetch from '../hooks/useFetch';
-import * as XLSX from 'xlsx';
+
+// `xlsx` is ~430 kB. We only need it when the user clicks "Upload received".
+// Loading it on demand keeps the ReturnTrackingPage chunk under 30 kB and
+// trims the network cost of opening the page in the first place.
+let xlsxModulePromise = null;
+function loadXlsx() {
+  if (!xlsxModulePromise) xlsxModulePromise = import('xlsx');
+  return xlsxModulePromise;
+}
 
 export default function ReturnTrackingPage() {
   const [filter, setFilter]       = useState('all');
@@ -53,6 +61,7 @@ export default function ReturnTrackingPage() {
     setUploading(true);
     setUploadMsg(null);
     try {
+      const XLSX = await loadXlsx();
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });
       const sheetName = wb.SheetNames[0];
