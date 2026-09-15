@@ -73,12 +73,12 @@ export default {
         "full": "9999px"
       },
       letterSpacing: {
-        tighter: "0",
-        tight: "0",
+        tighter: "-0.02em",
+        tight: "-0.01em",
         normal: "0",
-        wide: "0",
-        wider: "0",
-        widest: "0",
+        wide: "0.025em",
+        wider: "0.05em",
+        widest: "0.1em",
       },
       spacing: {
         "sm": "8px",

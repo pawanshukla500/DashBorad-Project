@@ -19,9 +19,10 @@ services:
       PG_SSL: ${PG_SSL:-false}
       PG_POOL_MAX: ${PG_POOL_MAX:-20}
       PG_POOL_MIN: ${PG_POOL_MIN:-2}
-      PG_POOL_IDLE_TIMEOUT_MS: ${PG_POOL_IDLE_TIMEOUT_MS:-55000}
+      PG_POOL_IDLE_TIMEOUT_MS: ${PG_POOL_IDLE_TIMEOUT_MS:-120000}
       PG_POOL_MAX_LIFETIME_SECONDS: ${PG_POOL_MAX_LIFETIME_SECONDS:-900}
-      PG_HEALTHCHECK_INTERVAL_MS: ${PG_HEALTHCHECK_INTERVAL_MS:-25000}
+      PG_CONNECT_TIMEOUT_MS: ${PG_CONNECT_TIMEOUT_MS:-30000}
+      PG_HEALTHCHECK_INTERVAL_MS: ${PG_HEALTHCHECK_INTERVAL_MS:-20000}
       PG_READ_STATEMENT_TIMEOUT_MS: ${PG_READ_STATEMENT_TIMEOUT_MS:-45000}
       PG_APPLICATION_NAME: ${PG_APPLICATION_NAME:-reconcentral-api}
     extra_hosts:
@@ -48,6 +49,15 @@ services:
       timeout: 8s
       retries: 3
       start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
 networks:
   shared_infra:
