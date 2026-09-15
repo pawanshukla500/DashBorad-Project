@@ -35,7 +35,7 @@ function SummaryCard({ label, value, detail, tone = 'slate' }) {
   return (
     <div className={`rounded-xl border p-4 ${tones[tone] || tones.slate}`}>
       <p className="text-[11px] font-bold uppercase tracking-[0.11em] opacity-60">{label}</p>
-      <p className="mt-1 text-xl font-bold tabular-nums">{animatedValue}</p>
+      <p className="mt-1 text-financial-lg font-semibold tabular-nums">{animatedValue}</p>
       {detail && <p className="mt-1 text-xs opacity-70">{detail}</p>}
     </div>
   );
@@ -289,7 +289,7 @@ export function AmazonReconciliationPanel({ embedded = false }) {
           <SummaryCard label="Needs a rate" value={data.summary.unconfiguredCharges.toLocaleString()} detail={`${data.summary.fbaLines} FBA · ${data.summary.flexLines} Flex · ${data.summary.refundLines} return lines`} />
         </div>
 
-        <section className="space-y-3"><div><h2 className="text-base font-bold text-ink">Fee parameter analysis</h2><p className="mt-1 text-xs text-secondary">Actual amounts include GST. Credits are kept separate so refund behaviour stays auditable.</p></div><FeeSummary rows={data.feeBreakdown.filter(row => nonZeroFeeCodes.has(row.code))} /></section>
+        <section className="space-y-3"><div><h2 className="font-display text-headline-sm font-semibold text-ink">Fee parameter analysis</h2><p className="mt-1 text-xs text-secondary">Actual amounts include GST. Credits are kept separate so refund behaviour stays auditable.</p></div><FeeSummary rows={data.feeBreakdown.filter(row => nonZeroFeeCodes.has(row.code))} /></section>
 
         
 

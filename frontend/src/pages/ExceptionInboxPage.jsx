@@ -65,14 +65,14 @@ export default function ExceptionInboxPage() {
           ['Warnings', data.summary.warning || 0, 'text-amber-600'],
           ['Rate gaps', data.summary.missing_rate_card || 0, 'text-primary'],
         ].map(([label, value, color]) => (
-          <div key={label} className="rounded-2xl border border-border bg-surface p-4 shadow-sm">
+          <div key={label} className="rounded-xl border border-border bg-surface p-4 shadow-sm">
             <p className="text-[10px] font-bold uppercase tracking-wider text-outline">{label}</p>
-            <p className={`mt-2 text-2xl font-bold ${color}`}>{value}</p>
+            <p className={`mt-2 text-financial-lg font-semibold tabular-nums ${color}`}>{value}</p>
           </div>
         ))}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-surface p-3">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface p-3">
         <button
           onClick={() => setType('all')}
           className={`rounded-lg px-3 py-1.5 text-xs font-bold ${type === 'all' ? 'bg-primary text-white' : 'text-secondary hover:bg-surface-container-low'}`}
@@ -101,7 +101,7 @@ export default function ExceptionInboxPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-2xl border border-border bg-surface">
+      <div className="overflow-hidden rounded-xl border border-border bg-surface">
         {loading && !response ? (
           <div className="p-10 text-center text-sm text-outline">Loading exceptions…</div>
         ) : items.length === 0 ? (

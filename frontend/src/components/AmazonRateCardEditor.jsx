@@ -157,8 +157,8 @@ function RuleTable({ rules, onEdit, onDelete, deleting }) {
                 {rule.start_date ? rule.start_date.slice(0,10) : 'Always'}
               </td>
               <td className="px-4 py-3 text-right">
-                <button type="button" onClick={() => onEdit(rule)} className="mr-2 rounded px-3 py-1.5 text-xs font-bold text-primary transition-colors hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary/40">Edit</button>
-                <button type="button" onClick={() => onDelete(rule)} disabled={deleting === rule.id} className="rounded px-3 py-1.5 text-xs font-bold text-rose-600 transition-colors hover:bg-rose-50 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-rose-400">Del</button>
+                <button type="button" onClick={() => onEdit(rule)} className="mr-2 rounded px-3 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary/40">Edit</button>
+                <button type="button" onClick={() => onDelete(rule)} disabled={deleting === rule.id} className="rounded px-3 py-1.5 text-xs font-semibold text-rose-600 transition-colors hover:bg-rose-50 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-rose-400">Del</button>
               </td>
             </tr>
           ))}

@@ -68,8 +68,8 @@ export default function ReturnsPage() {
             <div className="xl:col-span-2">
               <ReturnTrendChart data={trend || []} />
             </div>
-            <div className="bg-surface rounded-2xl border border-border/80 p-5 shadow-sm">
-              <h3 className="text-base font-bold text-ink mb-0.5">Return Types</h3>
+            <div className="bg-surface rounded-xl border border-border/80 p-5 shadow-sm">
+              <h3 className="font-display text-headline-sm font-semibold text-ink mb-0.5">Return Types</h3>
               <p className="text-xs text-outline mb-5">How returns were initiated</p>
               {(types || []).length === 0 ? (
                 <div className="h-48 flex items-center justify-center text-outline text-sm">No data</div>

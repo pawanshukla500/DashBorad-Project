@@ -69,13 +69,13 @@ function OrderSearch() {
           onKeyDown={handleKeyDown}
           onFocus={() => hasResults && setOpen(true)}
           placeholder="Search order ID or item ID…"
-          className="w-full pl-9 pr-9 py-2 text-sm rounded-xl border border-border bg-surface shadow-sm focus:outline-none focus:ring-2 focus:ring-primary placeholder-slate-300"
+          className="w-full pl-9 pr-9 py-2 text-sm rounded-xl border border-border bg-surface shadow-sm focus:outline-none focus:ring-2 focus:ring-primary placeholder-outline-variant"
         />
       </div>
 
       {/* Results dropdown */}
       {open && (
-        <div className="absolute z-[100] top-full mt-2 left-0 right-0 bg-surface rounded-2xl shadow-2xl border border-border overflow-hidden max-h-[500px] overflow-y-auto">
+        <div className="absolute z-[100] top-full mt-2 left-0 right-0 bg-surface rounded-xl shadow-2xl border border-border overflow-hidden max-h-[500px] overflow-y-auto">
           {!hasResults ? (
             <p className="text-xs text-outline text-center py-6">No results for "{query}"</p>
           ) : (

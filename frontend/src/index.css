@@ -152,3 +152,29 @@ textarea:focus:not(:focus-visible) {
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid #E2E8F0;
 }
+
+/* ── ReconCentral Design Tokens — surface helpers ──────────────────────────── */
+/* Standardized card surface — used across Dashboard, Returns, CashFlow,
+   ProfitAnalysis, etc. to keep radius / border / shadow consistent. */
+.card-surface {
+  @apply bg-surface rounded-xl border border-border shadow-sm;
+}
+
+/* Section header used inside cards — keeps typography hierarchy tight. */
+.card-heading {
+  @apply font-display text-headline-sm font-semibold text-ink;
+}
+
+/* Eyebrow / overline label that sits above card titles. */
+.card-eyebrow {
+  @apply font-sans text-label-md uppercase tracking-wider text-outline;
+}
+
+/* KPI value emphasis — ensures tabular figures and brand ink across pages. */
+.kpi-value {
+  @apply font-sans text-financial-lg font-semibold text-ink tabular-nums;
+}
+
+.kpi-value-sm {
+  @apply font-sans text-financial-md font-medium text-ink tabular-nums;
+}

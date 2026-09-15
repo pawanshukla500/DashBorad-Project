@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { fetchUsers, createUser, updateUserRole, deleteUser, fetchUploadStatus } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 
@@ -414,7 +414,7 @@ export default function AdminCenterPage() {
       {/* TAB: ORGANIZATION PROFILE */}
       {activeTab === 'org' && (
         <section className="mb-8 max-w-2xl">
-          <div className="bg-surface rounded-2xl border border-border shadow-sm p-6">
+          <div className="bg-surface rounded-xl border border-border shadow-sm p-6">
             <h2 className="font-display text-headline-sm font-bold text-ink mb-4">Your Account Details</h2>
             <div className="flex items-center gap-4 mb-5">
               <div className="w-16 h-16 rounded-full bg-primary-container flex items-center justify-center text-on-primary text-xl font-bold">
@@ -478,7 +478,7 @@ export default function AdminCenterPage() {
           </section>
 
           <section>
-            <div className="bg-surface rounded-2xl border border-border shadow-sm p-6 mb-8">
+            <div className="bg-surface rounded-xl border border-border shadow-sm p-6 mb-8">
               <h2 className="font-display text-headline-sm font-bold text-ink mb-2">Change Password</h2>
               <p className="text-xs text-secondary mb-4">Update your login security credentials. Changes sync in local database and Firebase Auth.</p>
               
@@ -519,7 +519,7 @@ export default function AdminCenterPage() {
       {/* Invite User Modal */}
       {showInviteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/50 backdrop-blur-sm">
-          <div className="bg-surface rounded-2xl border border-border shadow-lg w-full max-w-lg overflow-hidden animate-fade-in">
+          <div className="bg-surface rounded-xl border border-border shadow-lg w-full max-w-lg overflow-hidden animate-fade-in">
             <div className="p-6 border-b border-border flex items-center justify-between">
               <div>
                 <h2 className="font-display text-headline-sm font-bold text-ink mb-1">Add Team Member</h2>

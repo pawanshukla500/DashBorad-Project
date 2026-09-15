@@ -67,7 +67,7 @@ export default function AmazonFcSettings() {
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Amazon Fulfillment Centers</h1>
+          <h1 className="font-display text-headline-lg font-semibold text-ink">Amazon Fulfillment Centers</h1>
           <p className="text-sm text-gray-500 mt-1">
             Manage the list of Amazon FCs to enable accurate local, regional, and national shipping zone calculations.
           </p>

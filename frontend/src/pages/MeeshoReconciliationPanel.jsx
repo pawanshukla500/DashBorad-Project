@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   fetchReconciliationSummary,
   fetchReconciliationItems,
@@ -112,32 +112,32 @@ export function MeeshoReconciliationPanel({ market, embedded = false }) {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <div className="rounded-xl border border-border bg-surface p-3.5 shadow-xs">
           <div className="text-[11px] font-medium text-secondary">Gross Sales</div>
-          <div className="mt-1 text-lg font-bold text-ink">{money(summary?.total_sale)}</div>
+          <div className="mt-1 text-financial-md font-semibold text-ink tabular-nums">{money(summary?.total_sale)}</div>
           <div className="mt-0.5 text-[10px] text-secondary">{summary?.settled_items || 0} sub-orders</div>
         </div>
         <div className="rounded-xl border border-border bg-surface p-3.5 shadow-xs">
           <div className="text-[11px] font-medium text-secondary">Bank Settlement</div>
-          <div className="mt-1 text-lg font-bold text-emerald-600">{money(summary?.bank_received)}</div>
+          <div className="mt-1 text-financial-md font-semibold text-emerald-600 tabular-nums">{money(summary?.bank_received)}</div>
           <div className="mt-0.5 text-[10px] text-emerald-700 font-medium">Final payout</div>
         </div>
         <div className="rounded-xl border border-border bg-surface p-3.5 shadow-xs">
           <div className="text-[11px] font-medium text-secondary">Total Deductions</div>
-          <div className="mt-1 text-lg font-bold text-rose-600">{money(summary?.total_deductions)}</div>
+          <div className="mt-1 text-financial-md font-semibold text-rose-600 tabular-nums">{money(summary?.total_deductions)}</div>
           <div className="mt-0.5 text-[10px] text-secondary">Fees + Shipping</div>
         </div>
         <div className="rounded-xl border border-border bg-surface p-3.5 shadow-xs">
           <div className="text-[11px] font-medium text-secondary">Returned Orders</div>
-          <div className="mt-1 text-lg font-bold text-purple-700">{summary?.returned_items || 0}</div>
+          <div className="mt-1 text-financial-md font-semibold text-purple-700 tabular-nums">{summary?.returned_items || 0}</div>
           <div className="mt-0.5 text-[10px] text-purple-600 font-medium">RVP + RTO</div>
         </div>
         <div className="rounded-xl border border-border bg-surface p-3.5 shadow-xs">
           <div className="text-[11px] font-medium text-secondary">Claims & Recovery</div>
-          <div className="mt-1 text-lg font-bold text-emerald-700">{money(totalClaims)}</div>
+          <div className="mt-1 text-financial-md font-semibold text-emerald-700 tabular-nums">{money(totalClaims)}</div>
           <div className="mt-0.5 text-[10px] text-secondary">{nonOrderData.meeshoClaims?.length || 0} claims</div>
         </div>
         <div className="rounded-xl border border-border bg-surface p-3.5 shadow-xs">
           <div className="text-[11px] font-medium text-secondary">Unsettled Sub-Orders</div>
-          <div className="mt-1 text-lg font-bold text-amber-600">{summary?.unsettled_items || 0}</div>
+          <div className="mt-1 text-financial-md font-semibold text-amber-600 tabular-nums">{summary?.unsettled_items || 0}</div>
           <div className="mt-0.5 text-[10px] text-amber-700 font-medium">{money(summary?.unsettled_amount)}</div>
         </div>
       </div>
