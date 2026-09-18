@@ -115,7 +115,12 @@ The same files already parameterize `seller_account` correctly on other queries 
 - **Downstream:** Rows flow into `unified_settlements` via `meeshoSettlementUnifiedSelect()` and then into `order_settlement_totals`. A second upload **inflates** `net_bank` and fees.
 - **Refresh errors swallowed:** `refreshOrderSettlementTotals(pool).catch(e => console.warn(...))` (~118) — totals can stay stale without failing the HTTP 200.
 - **UI vs API:** Data Center step-1 buttons are Flipkart / Amazon / Myntra EJ/VB only (`UploadPage.jsx` ~351–355). Meesho exists in `DATA_TYPE_KEYS_BY_MARKETPLACE` and `POST /api/upload/meesho-settlement` (operator+) but is **not** in `docs/DATA_CENTER_UPLOADS.md`. Operators can still hit the API (or a future UI tab) and corrupt totals.
-- **Fix before exposing Meesho in the UI:** unique constraint + replace-by-settlement (Flipkart/Amazon pattern); fail the request if totals refresh fails; document the allow-list.
+- **Fix before exposing Meesho in the UI:**
+  1. Treat **Transaction ID as required**. Rows with a blank Transaction ID must be **skipped** (row number + reason in upload history), not given `MS-{paymentDate}` or `Date.now()`. Those fallbacks are not a stable replace key: a date bucket would delete unrelated same-day uploads; `Date.now()` never matches a prior batch.
+  2. Unique constraint on **real** `(settlement_id, order_item_id)` only.
+  3. Replace Flipkart-style: parse first; `DELETE … WHERE settlement_id IN (transaction ids from this file)` then insert those rows; do not delete by payment date.
+  4. Fail the HTTP request if `refreshOrderSettlementTotals` fails.
+  5. Then either document+show the Data Center tab or remove the dead allow-list entry.
 
 #### H4. Amazon synthetic settlement keys still exist in the unified view
 
@@ -129,7 +134,8 @@ Orders ingest correctly refuses synthetic `AMZ-{order_id}-{sku}` keys (`amazonUp
 
 - **Impact:** `order_settlement_totals` is keyed by `order_item_id`. Phantom `AMZ:…` rows **do not join** `orders.order_item_id`, so the order stays unsettled while bank/fees exist under another key. That is the opposite of the “zero synthetic keys” rule in `AGENTS.md` / `MARKETPLACE_DATA_UPLOAD_SPEC.md`.
 - **Partial mitigation:** `ensureOrderSettlementTotals` tries to heal Amazon `orders.order_item_id` from `amazon_settlement_lines.order_item_code` (`orderSettlementTotals.js` ~84–107). Healing does not cover the `AMZ:` fallback when both the order join and `order_item_code` are missing.
-- **Fix:** Leave `order_item_id` NULL when the join/code is missing (the totals SELECT already excludes NULL keys). Surface those rows as an exception/unlinked-ledger list, not as a fake order key. Add a SQL assertion test that `amazonReportingRollupUnifiedSelect()` does not contain `'AMZ:'`.
+- **Fix (same PR, or CI fails):** Leave `order_item_id` NULL when the join/code is missing (the totals SELECT already excludes NULL keys). Surface those rows as an exception/unlinked-ledger list, not as a fake order key.
+- **Required test update:** `backend/tests/amazonStructure.test.js` (~23) currently **requires** the exact `GROUP BY COALESCE(ord.order_item_id, NULLIF(r.order_item_code, ''), 'AMZ:' || r.order_id || ':' || NULLIF(r.sku, ''))` string. Removing `'AMZ:'` from `amazonReportingRollupUnifiedSelect()` without inverting that assertion will fail CI. Change it to assert the SQL does **not** contain `'AMZ:'` and groups by `COALESCE(ord.order_item_id, NULLIF(r.order_item_code, ''))`.
 
 #### H5. Flipkart settlement ingest — core money path — has no dedicated tests
 
@@ -296,8 +302,8 @@ Use **Now / Next / Later** rather than calendar weeks. Each item is sized for a 
 
 ### Next (money correctness)
 
-6. **Meesho:** unique `(settlement_id, order_item_id)` + replace-on-reupload + fail if `refreshOrderSettlementTotals` fails. Then either document+show the Data Center tab or remove the dead allow-list entry.
-7. **Amazon:** remove `'AMZ:' || …` from `amazonReportingRollupUnifiedSelect`; treat unlinkable lines as exceptions. Test the SQL string.
+6. **Meesho:** skip blank Transaction ID (do **not** synthesize `MS-{date}`); unique on real `(settlement_id, order_item_id)`; replace only those Transaction IDs present in the file; fail if `refreshOrderSettlementTotals` fails. Then document+show the Data Center tab or remove the dead allow-list entry.
+7. **Amazon:** remove `'AMZ:' || …` from `amazonReportingRollupUnifiedSelect`; treat unlinkable lines as exceptions; **invert** `amazonStructure.test.js` so it asserts the expression is gone (it currently requires it).
 8. **One `unsettledPredicate()`** used by dashboard, outstanding, reconcile, and upload-health (include `Courier Return`; pick `returns` vs `order_returns` once). Update `uploadHealth.js` comment and Myntra/Meesho linkage.
 9. **Flipkart settlement tests:** fixture workbook (or row arrays) covering (a) valid NEFT replace, (b) one bad Orders row leaves that NEFT untouched, (c) totals refresh in the same transaction. Mock `pg` like Amazon ingest tests.
 10. **Unit-test `computeOutstandingMatrix`** with fixed in-memory rows: `Total Orders − Returns − Marketplace Fees − Payment Received`.
@@ -388,7 +394,7 @@ CI deploys only from `master` after tests+build. There is no frontend test job a
 ## Suggested first three PRs (after this audit)
 
 1. **Security hotfix:** H1 + H2 + gitignore/untrack C2 artifacts + redact C1 (no behavior change beyond authz/SQL binds).
-2. **Settlement integrity:** H3 Meesho unique/replace + H4 drop Amazon synthetic view keys + M1 shared unsettled predicate + M5 clear-data totals refresh.
+2. **Settlement integrity:** H3 Meesho skip-blank-Transaction-ID + unique/replace-by-real-id (never `MS-{date}`) + H4 drop Amazon synthetic view keys **and invert `amazonStructure.test.js`** + M1 shared unsettled predicate + M5 clear-data totals refresh.
 3. **Proof:** H5 Flipkart NEFT tests + `computeOutstandingMatrix` fixture tests + stop live PUT in outstanding tests.
 
 Do not combine those with a `data.js` rewrite or a Python rate-card project.
