@@ -7,7 +7,8 @@
 // and resolves with just the rows the caller needs.
 //
 // Each parse gets its own worker, torn down afterwards so all of its memory is
-// returned. At most SPREADSHEET_WORKERS (1 by default, 2 at most) run at once
+// returned. At most SPREADSHEET_WORKERS parses (1 by default, 2 at most) are
+// in progress at once, from reading the file until the last row has arrived,
 // to stay inside the container's 1 GB; further parses wait their turn. A
 // parse that runs out of memory now fails that upload instead of crashing the
 // API process.
@@ -30,8 +31,9 @@ const DEFAULT_TIMEOUT_MS = 10 * 60_000;
  *   cell replaced by its value (`cell.v`) and the sheet's `'!ref'`, instead of
  *   sheet_to_json output.
  * @property {boolean} [transfer] Move the buffer's memory to the worker instead
- *   of copying it. The caller's buffer is left empty (detached), so only pass
- *   this when the caller has no further use for it.
+ *   of copying it. The caller's buffer is left empty (detached) once the parse
+ *   starts, so only pass this when the caller has no further use for it.
+ *   Either way nothing is taken while the parse waits for a worker slot.
  */
 
 /**
@@ -61,9 +63,9 @@ export function createSpreadsheetParser({
 
   async function parse(buffer, options = {}) {
     const spec = workerSpec(options);
-    const data = takeBytes(buffer, options.transfer === true);
+    const bytes = byteView(buffer);
     await acquire();
-    return runWorker(data, spec, options.select, { timeoutMs, resourceLimits, release });
+    return runWorker(bytes, spec, options, { timeoutMs, resourceLimits, release });
   }
 
   return {
@@ -108,14 +110,15 @@ function workerSpec({ read = {}, sheets, select, json, values = false }) {
   };
 }
 
+function byteView(buffer) {
+  if (buffer instanceof ArrayBuffer) return new Uint8Array(buffer);
+  if (ArrayBuffer.isView(buffer)) return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  throw new TypeError('parseSpreadsheet expects a Buffer, Uint8Array or ArrayBuffer');
+}
+
 // Bytes the worker can own: the caller's memory itself when `transfer` is set
 // and the buffer spans its whole ArrayBuffer, otherwise an exact-size copy.
-function takeBytes(buffer, transfer) {
-  let bytes;
-  if (buffer instanceof ArrayBuffer) bytes = new Uint8Array(buffer);
-  else if (ArrayBuffer.isView(buffer)) bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  else throw new TypeError('parseSpreadsheet expects a Buffer, Uint8Array or ArrayBuffer');
-
+function takeBytes(bytes, transfer) {
   const ownsArrayBuffer = bytes.buffer instanceof ArrayBuffer
     && bytes.byteOffset === 0
     && bytes.byteLength === bytes.buffer.byteLength;
@@ -129,7 +132,7 @@ function takeBytes(buffer, transfer) {
   return bytes.slice();
 }
 
-function runWorker(data, spec, select, { timeoutMs, resourceLimits, release }) {
+function runWorker(bytes, spec, { select, transfer }, { timeoutMs, resourceLimits, release }) {
   return new Promise((resolve, reject) => {
     // The worker posts the rows to their own port and exits; they are read
     // here only after that, so the worker's heap is gone before the rows
@@ -137,6 +140,9 @@ function runWorker(data, spec, select, { timeoutMs, resourceLimits, release }) {
     const { port1: rowsPort, port2 } = new MessageChannel();
     let worker;
     try {
+      // Taken only now that this parse has its slot, so a queued parse never
+      // holds a second copy of its file.
+      const data = takeBytes(bytes, transfer === true);
       worker = new Worker(WORKER_URL, {
         workerData: { kind: 'spreadsheet-parse', data, spec, rowsPort: port2 },
         transferList: [data.buffer, port2],
@@ -152,7 +158,16 @@ function runWorker(data, spec, select, { timeoutMs, resourceLimits, release }) {
     const book = { SheetNames: [], Sheets: Object.create(null) };
     let parsed = false;
     let settled = false;
+    let exited = false;
+    let released = false;
     let timer = null;
+    // The slot is freed only once the worker is gone and every row has been
+    // read, so the next parse never overlaps with this one.
+    const releaseSlot = () => {
+      if (released || !exited || !settled) return;
+      released = true;
+      release();
+    };
     const fail = (error) => {
       if (settled) return;
       settled = true;
@@ -160,6 +175,7 @@ function runWorker(data, spec, select, { timeoutMs, resourceLimits, release }) {
       rowsPort.close();
       reject(error);
       void worker.terminate();
+      releaseSlot();
     };
     timer = setTimeout(() => {
       fail(new Error(`Reading the spreadsheet took longer than ${timeoutMs / 1000}s and was stopped.`));
@@ -176,6 +192,7 @@ function runWorker(data, spec, select, { timeoutMs, resourceLimits, release }) {
         settled = true;
         rowsPort.close();
         resolve(book);
+        releaseSlot();
         return;
       }
       const { message } = received;
@@ -214,13 +231,14 @@ function runWorker(data, spec, select, { timeoutMs, resourceLimits, release }) {
       fail(error?.code === 'ERR_WORKER_OUT_OF_MEMORY' ? outOfMemoryError(error) : error);
     });
     worker.on('exit', (code) => {
-      release();
+      exited = true;
       if (!parsed) {
         fail(new Error(`The spreadsheet reader stopped unexpectedly (exit code ${code}).`));
-        return;
+      } else {
+        clearTimeout(timer);
+        drain();
       }
-      clearTimeout(timer);
-      drain();
+      releaseSlot();
     });
   });
 }

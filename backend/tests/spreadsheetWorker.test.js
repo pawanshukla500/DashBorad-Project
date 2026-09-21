@@ -276,6 +276,36 @@ describe('spreadsheet worker: worker limit', () => {
     await Promise.all(jobs);
     await vi.waitFor(() => expect(parser.running).toBe(0));
   });
+
+  it('starts a queued parse, and takes its file, only after the previous parse has returned every row', async () => {
+    const parser = createSpreadsheetParser();
+    // Several chunks, so the first parse's rows arrive over several event-loop turns.
+    const first = Buffer.from(Array.from({ length: 60_000 }, (_, i) => `OD-${i},${i},SKU-${i % 50}`).join('\n'));
+    const second = ownedBuffer(buffer);
+    const size = second.byteLength;
+    let firstDone = false;
+    let overlapped = false;
+    let sampling = true;
+    const sample = () => {
+      if (!firstDone && (parser.queued === 0 || second.byteLength !== size)) overlapped = true;
+      if (sampling) setImmediate(sample);
+    };
+    setImmediate(sample);
+
+    const jobs = [
+      parser.parse(first, { json: { header: 1 } }).then((book) => {
+        firstDone = true;
+        return book;
+      }),
+      parser.parse(second, { transfer: true, json: {} }),
+    ];
+    const [book] = await Promise.all(jobs);
+    sampling = false;
+
+    expect(book.Sheets.Sheet1).toHaveLength(60_000);
+    expect(overlapped).toBe(false);
+    expect(second.byteLength).toBe(0);
+  }, 30_000);
 });
 
 describe('spreadsheet worker: failures', () => {

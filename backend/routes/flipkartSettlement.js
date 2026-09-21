@@ -463,11 +463,16 @@ async function insertGoogleAds(pool, sheetRows, marketplace) {
 // ── In-process job store (survives across requests, cleared after 5 min) ─────
 const jobs = new Map();
 
-// Sheets to parse for a sheetKey; an unknown key imports nothing.
+// '' and 'all' import every sheet; anything else must name one of them.
+function isSettlementSheetKey(sheetKey) {
+  return sheetKey === '' || sheetKey === 'all'
+    || (typeof sheetKey === 'string' && Object.hasOwn(SETTLEMENT_SHEETS, sheetKey));
+}
+
+// Sheets to parse for a valid sheetKey
 function settlementSheets(sheetKey) {
   const only = sheetKey || 'all';
-  if (only === 'all') return Object.values(SETTLEMENT_SHEETS);
-  return Object.hasOwn(SETTLEMENT_SHEETS, only) ? [SETTLEMENT_SHEETS[only]] : [];
+  return only === 'all' ? Object.values(SETTLEMENT_SHEETS) : [SETTLEMENT_SHEETS[only]];
 }
 
 // wb: parseSpreadsheet result ({ SheetNames, Sheets: rows by sheet name })
@@ -558,6 +563,13 @@ router.post('/', upload.single('file'), async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
 
+  const sheetKey = req.body.sheetKey || ''; // 'orders'|'spf'|'storage'|'ads'|'google_ads'|'' = all
+  if (!isSettlementSheetKey(sheetKey)) {
+    return res.status(400).json({
+      error: `Unknown sheetKey. Use one of: ${Object.keys(SETTLEMENT_SHEETS).join(', ')}, or leave it empty to import every sheet.`,
+    });
+  }
+
   const marketplace = req.body.marketplace || 'flipkart';
   const filename    = req.file.originalname;
   const buffer      = req.file.buffer; // hold ref before multer GC
@@ -573,7 +585,6 @@ router.post('/', upload.single('file'), async (req, res) => {
     const job = jobs.get(jobId);
     try {
       const pool = getPool();
-      const sheetKey = req.body.sheetKey || ''; // 'orders'|'spf'|'storage'|'ads'|'google_ads'|'' = all
       job.sheet = 'Reading workbook…';
       const wb = await parseSpreadsheet(buffer, {
         read: { raw: false },
