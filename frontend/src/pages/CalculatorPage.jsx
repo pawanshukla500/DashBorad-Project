@@ -29,6 +29,11 @@ export default function CalculatorPage() {
   const [result, setResult]           = useState(null);
   const [compareResult, setCompareResult] = useState(null);
   const [refreshing, setRefreshing]   = useState(false);
+  // Surfaced in the result panel instead of being silently swallowed.
+  // categoriesError: rate-card /categories endpoint failed at mount.
+  // calcError:      the latest /calculate or /compare call failed.
+  const [categoriesError, setCategoriesError] = useState(null);
+  const [calcError, setCalcError]             = useState(null);
   const [form, setForm] = useState({
     category:      '',
     price:         '',
@@ -47,13 +52,19 @@ export default function CalculatorPage() {
         if (!form.category && d.categories?.length) {
           setForm(f => ({ ...f, category: d.categories[0] }));
         }
+        setCategoriesError(null);
       })
-      .catch(() => {});
+      .catch(err => {
+        // Axios puts backend message on response.data.error; fall back to
+        // a generic message so the user is never stranded on a blank page.
+        setCategoriesError(err?.response?.data?.error || err?.message || 'Failed to load rate-card categories.');
+      });
   }, []);
 
   const calculate = useCallback(async () => {
     if (!form.category || !form.price) return;
     setLoading(true);
+    setCalcError(null);
     try {
       if (mode === 'compare') {
         const r = await compareMarketplaceFees(form);
@@ -62,7 +73,9 @@ export default function CalculatorPage() {
         const r = await calculateRateCardFees(form);
         setResult(r);
       }
-    } catch { }
+    } catch (err) {
+      setCalcError(err?.response?.data?.error || err?.message || 'Fee calculation failed. Please retry.');
+    }
     setLoading(false);
   }, [form, mode]);
 
@@ -79,7 +92,10 @@ export default function CalculatorPage() {
       await refreshRateCard();
       const d = await fetchRateCardCategories();
       setCategories(d?.categories || []);
+      setCategoriesError(null);
     } catch (err) {
+      // Mirror the mount-time path so a failed refresh is visible, not silent.
+      setCategoriesError(err?.response?.data?.error || err?.message || 'Failed to refresh rate card.');
       console.error('[CalculatorPage] Refresh rate card failed:', err);
     }
     setRefreshing(false);
@@ -206,12 +222,15 @@ export default function CalculatorPage() {
           </Field>
         </div>
 
-        {/* â”€â”€ Results â”€â”€ */}
-        <div className="xl:col-span-3">
+        {/* Results */}
+        <div className="xl:col-span-3 space-y-3">
+          {categoriesError && (
+            <AlertBanner tone="warning" message={`Rate-card categories unavailable. ${categoriesError}`} />
+          )}
           {mode === 'single' ? (
-            <FeeResult result={result} loading={loading} price={parseFloat(form.price) || 0} />
+            <FeeResult result={result} loading={loading} price={parseFloat(form.price) || 0} error={calcError} />
           ) : (
-            <CompareResult result={compareResult} loading={loading} price={parseFloat(form.price) || 0} category={form.category} />
+            <CompareResult result={compareResult} loading={loading} price={parseFloat(form.price) || 0} category={form.category} error={calcError} />
           )}
         </div>
       </div>
@@ -220,7 +239,7 @@ export default function CalculatorPage() {
 }
 
 // â”€â”€â”€ Single Result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function FeeResult({ result, loading, price }) {
+function FeeResult({ result, loading, price, error }) {
   if (!price) return (
     <div className="bg-surface rounded-xl border border-border p-10 text-center h-full flex items-center justify-center">
       <div>
@@ -243,7 +262,16 @@ function FeeResult({ result, loading, price }) {
     </div>
   );
 
-  if (!result) return null;
+  // No previous result and an error → surface the error in place of the panel.
+  if (!result) {
+    if (error) return <AlertBanner tone="danger" message={`Fee calculation failed. ${error}`} />;
+    return null;
+  }
+
+  // We have a previous successful result and the latest call failed → keep
+  // the result visible (so users do not lose their work) but flag the failure
+  // at the top of the panel.
+  const staleError = error ? <AlertBanner tone="danger" message={`Latest recalculation failed; showing previous result. ${error}`} /> : null;
 
   const fees = [
     { key: 'commission',     label: FEE_LABELS.commission,     value: result.commission,    extra: result.commissionRate ? `${(result.commissionRate*100).toFixed(1)}% of price` : null, meta: result.commissionMeta },
@@ -257,18 +285,20 @@ function FeeResult({ result, loading, price }) {
   const net       = result.netToSeller || 0;
 
   return (
-    <div className="bg-surface rounded-xl border border-border overflow-hidden">
-      {/* Header bar */}
-      <div className="bg-gradient-to-r from-indigo-600 to-indigo-500 px-6 py-5 text-white">
-        <div className="flex items-start justify-between">
-          <div>
-            <p className="text-indigo-200 text-xs font-semibold uppercase tracking-wide">Sale Price</p>
-            <p className="text-3xl font-bold mt-0.5">{currencyFull(price)}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-indigo-200 text-xs font-semibold uppercase tracking-wide">Net to You</p>
-            <p className="text-3xl font-bold mt-0.5">{currencyFull(net)}</p>
-            <p className="text-indigo-200 text-sm">{result.marginPct?.toFixed(1)}% margin</p>
+    <div className="space-y-3">
+      {staleError}
+      <div className="bg-surface rounded-xl border border-border overflow-hidden">
+        {/* Header bar */}
+        <div className="bg-gradient-to-r from-indigo-600 to-indigo-500 px-6 py-5 text-white">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-indigo-200 text-xs font-semibold uppercase tracking-wide">Sale Price</p>
+              <p className="text-3xl font-bold mt-0.5">{currencyFull(price)}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-indigo-200 text-xs font-semibold uppercase tracking-wide">Net to You</p>
+              <p className="text-3xl font-bold mt-0.5">{currencyFull(net)}</p>
+              <p className="text-indigo-200 text-sm">{result.marginPct?.toFixed(1)}% margin</p>
           </div>
         </div>
         {/* Visual bar */}
@@ -324,12 +354,13 @@ function FeeResult({ result, loading, price }) {
           </p>
         )}
       </div>
+      </div>
     </div>
   );
 }
 
 // â”€â”€â”€ Compare Result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function CompareResult({ result, loading, price, category }) {
+function CompareResult({ result, loading, price, category, error }) {
   if (!price) return (
     <div className="bg-surface rounded-xl border border-border p-10 text-center h-full flex items-center justify-center">
       <div>
@@ -347,9 +378,13 @@ function CompareResult({ result, loading, price, category }) {
       </svg>
     </div>
   );
-  if (!result) return null;
+  if (!result) {
+    if (error) return <AlertBanner tone="danger" message={`Marketplace comparison failed. ${error}`} />;
+    return null;
+  }
 
   const { flipkart: fk, shopsy: sh } = result;
+  const staleError = error ? <AlertBanner tone="danger" message={`Latest recalculation failed; showing previous result. ${error}`} /> : null;
   const rows = [
     { label: 'Commission',     fk: fk?.commission,     sh: sh?.commission,     extra: fk?.commissionRate ? `${(fk.commissionRate*100).toFixed(1)}%` : null, shExtra: sh?.commissionRate ? `${(sh.commissionRate*100).toFixed(1)}%` : null },
     { label: 'Fixed Fee',      fk: fk?.fixedFee,       sh: sh?.fixedFee },
@@ -363,8 +398,10 @@ function CompareResult({ result, loading, price, category }) {
   const saving = sh && fk ? (sh.netToSeller || 0) - (fk?.netToSeller || 0) : 0;
 
   return (
-    <div className="bg-surface rounded-xl border border-border overflow-hidden">
-      <div className="grid grid-cols-3 bg-surface-container-low border-b border-border">
+    <div className="space-y-3">
+      {staleError}
+      <div className="bg-surface rounded-xl border border-border overflow-hidden">
+        <div className="grid grid-cols-3 bg-surface-container-low border-b border-border">
         <div className="px-5 py-4 text-xs font-semibold text-secondary uppercase tracking-wide">Fee Type</div>
         <div className="px-5 py-4 text-center">
           <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-primary-container text-primary rounded-full text-xs font-bold">
@@ -393,6 +430,7 @@ function CompareResult({ result, loading, price, category }) {
             : `Flipkart earns you â‚¹${Math.abs(saving).toFixed(2)} more per order`}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -467,6 +505,27 @@ function Field({ label, children }) {
     <div>
       <label className="block text-xs font-semibold text-secondary mb-1.5 uppercase tracking-wide">{label}</label>
       {children}
+    </div>
+  );
+}
+
+// Inline alert used by CalculatorPage to surface API errors that the previous
+// version silently swallowed. Kept local to this page until a shared
+// ToastProvider lands (PR-C in the audit sequence).
+function AlertBanner({ tone = 'danger', message }) {
+  if (!message) return null;
+  const styles = tone === 'warning'
+    ? 'bg-amber-50 border-amber-200 text-amber-800'
+    : 'bg-rose-50 border-rose-200 text-rose-800';
+  const icon = tone === 'warning' ? 'warning' : 'error';
+  return (
+    <div
+      role="alert"
+      aria-live="polite"
+      className={`flex items-start gap-2.5 rounded-xl border px-4 py-3 text-sm ${styles}`}
+    >
+      <span className="material-symbols-outlined text-[18px] leading-none mt-0.5" aria-hidden="true">{icon}</span>
+      <span className="font-medium">{message}</span>
     </div>
   );
 }
