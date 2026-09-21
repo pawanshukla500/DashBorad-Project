@@ -1,6 +1,5 @@
 import express  from 'express';
 import multer   from 'multer';
-import { createRequire } from 'module';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { buildDateFormatMap, normalizeSqlDate, summarizeDateFormats } from '../utils/dateNormalizer.js';
 import { logUpload } from '../services/uploadLog.js';
@@ -10,6 +9,7 @@ import { clearSkuSettlementBenchmarkCache } from '../services/skuSettlementBench
 import { notifySkuSettlementBenchmarkAfterImport } from '../services/skuSettlementNotifications.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { invalidateReportCache } from '../services/reportCache.js';
+import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 
 const router = express.Router();
@@ -18,8 +18,18 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
   fileFilter: spreadsheetFileFilter,
 });
-const req2   = createRequire(import.meta.url);
-const XLSX   = req2('xlsx');
+
+// Workbook sheets this import reads, keyed by the upload's sheetKey. No other
+// sheet of the (up to 50 MB) settlement workbook is parsed.
+const SETTLEMENT_SHEETS = {
+  orders: 'Orders',
+  spf: 'Non_Order_SPF',
+  storage: 'Storage_Recall',
+  ads: 'Ads',
+  google_ads: 'Google Ads Services',
+};
+// sheet_to_json options for every settlement sheet
+const SHEET_ROWS = { header: 1, defval: '', blankrows: false, raw: false };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function normalize(s) { return (s + '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
@@ -27,9 +37,8 @@ function int(v)  { const n = num(v); return n === null || !Number.isInteger(n) ?
 function dt(v, hint) { return normalizeSqlDate(v, hint); }
 function isInvalidNumber(raw, parsed) { return str(raw) != null && parsed == null; }
 
-// Build normalized-header → column-index map from a worksheet's header row
-function buildColIdx(ws, headerRowNum = 1) {
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: false, raw: false });
+// Build normalized-header → column-index map from a sheet's rows (SHEET_ROWS)
+function buildColIdx(rows, headerRowNum = 1) {
   const headerRow = (rows[headerRowNum] || []).map(h => (h + '').replace(/\r\n/g, ' ').trim());
   const colIdx = {};
   headerRow.forEach((h, i) => { if (h) colIdx[normalize(h)] = i; });
@@ -155,8 +164,8 @@ const ORDERS_KNOWN_PREFIXES = [
 ];
 
 // ── Insert Orders sheet (bulk insert for performance with 30K rows) ───────────
-async function insertOrders(pool, ws, marketplace, onProgress) {
-  const { colIdx, data } = buildColIdx(ws, 1);
+async function insertOrders(pool, sheetRows, marketplace, onProgress) {
+  const { colIdx, data } = buildColIdx(sheetRows, 1);
 
   // Detect unknown columns and report them
   const unknownCols = findUnknownCols(colIdx, ORDERS_KNOWN_PREFIXES);
@@ -317,9 +326,9 @@ async function ensureSpfConstraint(pool) {
   }
 }
 
-async function insertSpfClaims(pool, ws, marketplace) {
+async function insertSpfClaims(pool, sheetRows, marketplace) {
   await ensureSpfConstraint(pool);
-  const { colIdx, data } = buildColIdx(ws, 1);
+  const { colIdx, data } = buildColIdx(sheetRows, 1);
   if (!data.length) return { inserted: 0, skipped: 0 };
   const g = (row, pfx) => gv(row, colIdx, pfx);
   const dateFormats = await getSheetDateFormats(data, g, ['paymentdate']);
@@ -354,8 +363,8 @@ const SR_COLS = [
   ['unsellable_regular_units'], ['unsellable_regular'], ['product_sub_category'],
   ['dead_weight'], ['volumetric_weight'], ['chargeable_weight_slab'], ['marketplace'],
 ];
-async function insertStorageRecall(pool, ws, marketplace) {
-  const { colIdx, data } = buildColIdx(ws, 1);
+async function insertStorageRecall(pool, sheetRows, marketplace) {
+  const { colIdx, data } = buildColIdx(sheetRows, 1);
   if (!data.length) return { inserted: 0, skipped: 0 };
   const g = (row, pfx) => gv(row, colIdx, pfx);
   const dateFormats = await getSheetDateFormats(data, g, ['paymentdate']);
@@ -391,8 +400,8 @@ const ADS_COLS = [
   ['campaign_id'], ['wallet_redeem'], ['wallet_redeem_reversal'], ['wallet_topup'],
   ['wallet_refund'], ['gst_on_ads'], ['marketplace'],
 ];
-async function insertAds(pool, ws, marketplace) {
-  const { colIdx, data } = buildColIdx(ws, 1);
+async function insertAds(pool, sheetRows, marketplace) {
+  const { colIdx, data } = buildColIdx(sheetRows, 1);
   if (!data.length) return { inserted: 0, skipped: 0 };
   const g = (row, pfx) => gv(row, colIdx, pfx);
   const dateFormats = await getSheetDateFormats(data, g, ['paymentdate']);
@@ -423,8 +432,8 @@ const GA_COLS = [
   ['service_details'], ['service_order_id'], ['purchase_date'], ['total_amount'],
   ['service_amount'], ['gst_on_service'], ['marketplace'],
 ];
-async function insertGoogleAds(pool, ws, marketplace) {
-  const { colIdx, data } = buildColIdx(ws, 1);
+async function insertGoogleAds(pool, sheetRows, marketplace) {
+  const { colIdx, data } = buildColIdx(sheetRows, 1);
   if (!data.length) return { inserted: 0, skipped: 0 };
   const g = (row, pfx) => gv(row, colIdx, pfx);
   const dateFormats = await getSheetDateFormats(data, g, ['paymentdate', 'purchasedate']);
@@ -454,6 +463,19 @@ async function insertGoogleAds(pool, ws, marketplace) {
 // ── In-process job store (survives across requests, cleared after 5 min) ─────
 const jobs = new Map();
 
+// '' and 'all' import every sheet; anything else must name one of them.
+function isSettlementSheetKey(sheetKey) {
+  return sheetKey === '' || sheetKey === 'all'
+    || (typeof sheetKey === 'string' && Object.hasOwn(SETTLEMENT_SHEETS, sheetKey));
+}
+
+// Sheets to parse for a valid sheetKey
+function settlementSheets(sheetKey) {
+  const only = sheetKey || 'all';
+  return only === 'all' ? Object.values(SETTLEMENT_SHEETS) : [SETTLEMENT_SHEETS[only]];
+}
+
+// wb: parseSpreadsheet result ({ SheetNames, Sheets: rows by sheet name })
 // sheetKey: 'orders'|'spf'|'storage'|'ads'|'google_ads'|'' (empty = all)
 async function processAllSheets(jobId, pool, wb, marketplace, filename, sheetKey = '') {
   const job = jobs.get(jobId);
@@ -463,9 +485,9 @@ async function processAllSheets(jobId, pool, wb, marketplace, filename, sheetKey
   const only = sheetKey || 'all';
 
   try {
-    if ((only === 'all' || only === 'orders') && wb.Sheets['Orders']) {
+    if ((only === 'all' || only === 'orders') && wb.Sheets[SETTLEMENT_SHEETS.orders]) {
       job.sheet = 'Orders (all deductions)'; job.sheetDone = 0; job.sheetTotal = 0;
-      const r = await insertOrders(pool, wb.Sheets['Orders'], marketplace, (done, total) => {
+      const r = await insertOrders(pool, wb.Sheets[SETTLEMENT_SHEETS.orders], marketplace, (done, total) => {
         job.sheetDone = done; job.sheetTotal = total;
       });
       results.orders = r;
@@ -473,30 +495,30 @@ async function processAllSheets(jobId, pool, wb, marketplace, filename, sheetKey
       mainLogId = await logUpload(pool, 'fk_settlement_orders', filename, marketplace, r.inserted, 0, r.skipped, 'ok');
     }
 
-    if ((only === 'all' || only === 'spf') && wb.Sheets['Non_Order_SPF']) {
+    if ((only === 'all' || only === 'spf') && wb.Sheets[SETTLEMENT_SHEETS.spf]) {
       job.sheet = 'Non-Order SPF claims'; job.sheetDone = 0; job.sheetTotal = 0;
-      const r = await insertSpfClaims(pool, wb.Sheets['Non_Order_SPF'], marketplace);
+      const r = await insertSpfClaims(pool, wb.Sheets[SETTLEMENT_SHEETS.spf], marketplace);
       results.spf_claims = r;
       if (r.inserted) await logUpload(pool, 'fk_spf_claims', filename, marketplace, r.inserted, 0, r.skipped, 'ok');
     }
 
-    if ((only === 'all' || only === 'storage') && wb.Sheets['Storage_Recall']) {
+    if ((only === 'all' || only === 'storage') && wb.Sheets[SETTLEMENT_SHEETS.storage]) {
       job.sheet = 'Storage & Recall fees'; job.sheetDone = 0; job.sheetTotal = 0;
-      const r = await insertStorageRecall(pool, wb.Sheets['Storage_Recall'], marketplace);
+      const r = await insertStorageRecall(pool, wb.Sheets[SETTLEMENT_SHEETS.storage], marketplace);
       results.storage_recall = r;
       if (r.inserted) await logUpload(pool, 'fk_storage_recall', filename, marketplace, r.inserted, 0, r.skipped, 'ok');
     }
 
-    if ((only === 'all' || only === 'ads') && wb.Sheets['Ads']) {
+    if ((only === 'all' || only === 'ads') && wb.Sheets[SETTLEMENT_SHEETS.ads]) {
       job.sheet = 'Flipkart Ads wallet'; job.sheetDone = 0; job.sheetTotal = 0;
-      const r = await insertAds(pool, wb.Sheets['Ads'], marketplace);
+      const r = await insertAds(pool, wb.Sheets[SETTLEMENT_SHEETS.ads], marketplace);
       results.ads = r;
       if (r.inserted) await logUpload(pool, 'fk_ads', filename, marketplace, r.inserted, 0, r.skipped, 'ok');
     }
 
-    if ((only === 'all' || only === 'google_ads') && wb.Sheets['Google Ads Services']) {
+    if ((only === 'all' || only === 'google_ads') && wb.Sheets[SETTLEMENT_SHEETS.google_ads]) {
       job.sheet = 'Google Ads billing'; job.sheetDone = 0; job.sheetTotal = 0;
-      const r = await insertGoogleAds(pool, wb.Sheets['Google Ads Services'], marketplace);
+      const r = await insertGoogleAds(pool, wb.Sheets[SETTLEMENT_SHEETS.google_ads], marketplace);
       results.google_ads = r;
       if (r.inserted) await logUpload(pool, 'fk_google_ads', filename, marketplace, r.inserted, 0, r.skipped, 'ok');
     }
@@ -541,6 +563,13 @@ router.post('/', upload.single('file'), async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
 
+  const sheetKey = req.body.sheetKey || ''; // 'orders'|'spf'|'storage'|'ads'|'google_ads'|'' = all
+  if (!isSettlementSheetKey(sheetKey)) {
+    return res.status(400).json({
+      error: `Unknown sheetKey. Use one of: ${Object.keys(SETTLEMENT_SHEETS).join(', ')}, or leave it empty to import every sheet.`,
+    });
+  }
+
   const marketplace = req.body.marketplace || 'flipkart';
   const filename    = req.file.originalname;
   const buffer      = req.file.buffer; // hold ref before multer GC
@@ -556,10 +585,13 @@ router.post('/', upload.single('file'), async (req, res) => {
     const job = jobs.get(jobId);
     try {
       const pool = getPool();
-      const sheetKey = req.body.sheetKey || ''; // 'orders'|'spf'|'storage'|'ads'|'google_ads'|'' = all
       job.sheet = 'Reading workbook…';
-      await yieldToEventLoop(); // let any queued requests through first
-      const wb = XLSX.read(buffer, { type: 'buffer', raw: false });
+      const wb = await parseSpreadsheet(buffer, {
+        read: { raw: false },
+        sheets: settlementSheets(sheetKey),
+        json: SHEET_ROWS,
+        transfer: true,
+      });
       await processAllSheets(jobId, pool, wb, marketplace, filename, sheetKey);
     } catch (e) {
       if (job) { job.status = 'error'; job.error = e.message; }

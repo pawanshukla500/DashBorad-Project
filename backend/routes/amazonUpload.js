@@ -62,6 +62,7 @@ import { replaceAmazonSettlement } from '../services/amazonSettlementIngest.js';
 import { refreshAmazonSettlementReportingRollups } from '../services/amazonSettlementReportingRollups.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { invalidateReportCache } from '../services/reportCache.js';
+import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import {
   AMAZON_CALCULATION_BASES,
   AMAZON_FEE_CATALOG,
@@ -90,12 +91,16 @@ const reqXlsx = createRequire(import.meta.url);
 const XLSX    = reqXlsx('xlsx');
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-function parseAllSheets(buffer) {
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellNF: false, raw: false });
+// Report files are parsed on a worker thread. Both helpers hand `buffer` over
+// to it, so the caller's buffer is empty afterwards.
+const REPORT_READ = { cellDates: true, cellNF: false, raw: false };
+const REPORT_ROWS = { header: 1, defval: '', raw: false };
+
+async function parseAllSheets(buffer) {
+  const wb = await parseSpreadsheet(buffer, { read: REPORT_READ, json: REPORT_ROWS, transfer: true });
   const sheets = [];
   for (const sheetName of wb.SheetNames) {
-    const ws   = wb.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+    const rows = wb.Sheets[sheetName] ?? [];
     if (rows.length < 2) continue;
     const headers = rows[0].map(h => (h + '').trim());
     const data    = rows.slice(1).filter(r => r.some(c => c !== ''));
@@ -104,11 +109,17 @@ function parseAllSheets(buffer) {
   return sheets;
 }
 
-function parseFile(buffer, preferredSheets = []) {
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellNF: false, raw: false });
-  const sheetName = preferredSheets.find(n => wb.SheetNames.includes(n)) || wb.SheetNames[0];
-  const ws   = wb.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+async function parseFile(buffer, preferredSheets = []) {
+  const pickSheet = names => preferredSheets.find(n => names.includes(n)) || names[0];
+  const wb = await parseSpreadsheet(buffer, {
+    read: REPORT_READ,
+    // Parse only the candidate sheets; select then keeps the one we read.
+    sheets: [...preferredSheets, 0],
+    select: names => [pickSheet(names)],
+    json: REPORT_ROWS,
+    transfer: true,
+  });
+  const rows = wb.Sheets[pickSheet(wb.SheetNames)] ?? [];
   if (rows.length < 2) return { headers: [], data: [] };
   const headers = rows[0].map(h => (h + '').trim());
   const data    = rows.slice(1).filter(r => r.some(c => c !== ''));
@@ -739,7 +750,7 @@ router.post('/amazon-order-reports', upload.single('file'), async (req, res) => 
       console.warn('[amazonUpload] Failed to load FC map:', e.message);
     }
     
-    const sheets = parseAllSheets(req.file.buffer);
+    const sheets = await parseAllSheets(req.file.buffer);
     req.file.buffer = null;
     if (!sheets.length) return res.status(400).json({ error: 'No data sheets found in file' });
 
@@ -985,7 +996,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
 
   try {
     const pool = getPool();
-    const { headers, data } = parseFile(req.file.buffer, ['Sale Orders', 'Orders', 'Sheet1']);
+    const { headers, data } = await parseFile(req.file.buffer, ['Sale Orders', 'Orders', 'Sheet1']);
     req.file.buffer = null;
     if (!headers.length) return res.status(400).json({ error: 'File has no readable headers' });
 
@@ -1227,7 +1238,7 @@ router.post('/amazon-order-summary', upload.single('file'), async (req, res) => 
 
   try {
     const pool = getPool();
-    const { headers, data } = parseFile(req.file.buffer, ['Orders Details', 'Orders', 'Sheet1']);
+    const { headers, data } = await parseFile(req.file.buffer, ['Orders Details', 'Orders', 'Sheet1']);
     req.file.buffer = null;
     if (!headers.length) return res.status(400).json({ error: 'File has no readable headers' });
 
@@ -1401,7 +1412,7 @@ router.post('/amazon-fba-returns', upload.single('file'), async (req, res) => {
 
   try {
     const pool = getPool();
-    const { headers, data } = parseFile(req.file.buffer);
+    const { headers, data } = await parseFile(req.file.buffer);
     req.file.buffer = null;
     if (!headers.length) return res.status(400).json({ error: 'File has no readable headers' });
 
@@ -1501,7 +1512,7 @@ router.post('/amazon-flex-returns', upload.single('file'), async (req, res) => {
 
   try {
     const pool = getPool();
-    const { headers, data } = parseFile(req.file.buffer);
+    const { headers, data } = await parseFile(req.file.buffer);
     req.file.buffer = null;
     if (!headers.length) return res.status(400).json({ error: 'File has no readable headers' });
 
@@ -1637,12 +1648,13 @@ export async function processAmazonSettlementWorkbook({ buffer, filename, jobId 
       job.percent = 5;
     }
 
-    const wb = XLSX.read(buffer, {
-      type: 'buffer',
-      dense: true,
-      cellDates: false,
-      cellNF: false,
-      cellStyles: false,
+    // Parsed on a worker thread, which takes over `buffer`. Each worksheet
+    // comes back dense (rows indexed by sheet row, plus '!ref') with every
+    // cell replaced by its value, which getCell reads just like the cell.
+    const wb = await parseSpreadsheet(buffer, {
+      read: { cellDates: false, cellNF: false, cellStyles: false },
+      values: true,
+      transfer: true,
     });
 
     const candidateSheets = [];

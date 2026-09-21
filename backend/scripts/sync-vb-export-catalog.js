@@ -1,13 +1,11 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
-import { createRequire } from 'module';
 import { getPool } from '../db/index.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 
 dotenv.config();
-const require = createRequire(import.meta.url);
-const XLSX = require('xlsx');
 
 /**
  * Create the catalog tables/columns/indexes only when one is missing (a fresh
@@ -52,20 +50,20 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
   const db = pool || getPool();
   console.log('[syncVbExportCatalog] Starting VB EXPORT SKU catalog synchronization...');
 
-  let wb;
-  if (buffer) {
-    wb = XLSX.read(buffer, { type: 'buffer' });
-  } else {
+  let data = buffer;
+  if (!data) {
     const resolvedPath = filePath || 'C:/Users/Pawan Shukla/Desktop/VB EXPORT Product Category.xlsx';
     if (!fs.existsSync(resolvedPath)) {
       throw new Error(`Catalog file not found at: ${resolvedPath}`);
     }
-    wb = XLSX.readFile(resolvedPath);
+    data = await fs.promises.readFile(resolvedPath);
   }
 
+  // Parsed on a worker thread. A caller's buffer is copied, since the caller
+  // may still need it; a file read here is handed over.
+  const wb = await parseSpreadsheet(data, { sheets: 0, json: {}, transfer: data !== buffer });
   const sheetName = wb.SheetNames[0];
-  const ws = wb.Sheets[sheetName];
-  const rawRows = XLSX.utils.sheet_to_json(ws);
+  const rawRows = wb.Sheets[sheetName] ?? [];
 
   console.log(`[syncVbExportCatalog] Read ${rawRows.length} rows from sheet "${sheetName}".`);
 

@@ -24,6 +24,7 @@ import { pagination } from '../utils/requestParams.js';
 import { optionalNumber, optionalString } from '../utils/valueParsers.js';
 import { MYNTRA_SELLER_IDS } from './myntraUpload.js';
 import { classifyMyntraNod } from '../services/myntraNodClassification.js';
+import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 
 const router = express.Router();
 const upload = multer({
@@ -32,6 +33,9 @@ const upload = multer({
 });
 const req2   = createRequire(import.meta.url);
 const XLSX   = req2('xlsx');
+// Invoice and ledger uploads: the first sheet as row objects, parsed on a
+// worker thread that takes over the upload buffer.
+const UPLOAD_SHEET_OPTIONS = { read: { cellDates: true }, sheets: 0, json: { defval: '' }, transfer: true };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 function num(v) { return optionalNumber(v) ?? 0; }
@@ -1189,9 +1193,8 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
   try {
     pool = getPool();
     sellerAccount = await resolveSellerAccount(pool, mp, req.query.seller_account || req.body.seller_account, { required: mp === 'myntra' });
-    const wb    = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-    const ws    = wb.Sheets[wb.SheetNames[0]];
-    const raw   = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    const wb    = await parseSpreadsheet(req.file.buffer, UPLOAD_SHEET_OPTIONS);
+    const raw   = wb.Sheets[wb.SheetNames[0]] ?? [];
     const batch = new Date().toISOString().replace(/[:.]/g, '-');
     if (!raw.length) throw inputError('The workbook has headers but no data rows. No data was saved.');
     if (mp === 'myntra') validateMyntraInvoiceSellerIds(raw, sellerAccount);
@@ -1368,9 +1371,8 @@ router.post('/ledger/upload', upload.single('file'), async (req, res) => {
   let skippedRows = [];
   try {
     pool = getPool();
-    const wb    = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-    const ws    = wb.Sheets[wb.SheetNames[0]];
-    const raw   = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    const wb    = await parseSpreadsheet(req.file.buffer, UPLOAD_SHEET_OPTIONS);
+    const raw   = wb.Sheets[wb.SheetNames[0]] ?? [];
     const batch = new Date().toISOString().replace(/[:.]/g, '-');
     if (!raw.length) throw inputError('The workbook has headers but no data rows. No data was saved.');
 
