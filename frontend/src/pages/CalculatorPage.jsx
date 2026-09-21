@@ -34,6 +34,10 @@ export default function CalculatorPage() {
   // calcError:      the latest /calculate or /compare call failed.
   const [categoriesError, setCategoriesError] = useState(null);
   const [calcError, setCalcError]             = useState(null);
+  // Bumped on every calculate() call; in-flight handlers bail if they are
+  // no longer the latest request, so a slow older failure cannot overwrite
+  // a newer successful result.
+  const latestReqId                           = useRef(0);
   const [form, setForm] = useState({
     category:      '',
     price:         '',
@@ -63,20 +67,27 @@ export default function CalculatorPage() {
 
   const calculate = useCallback(async () => {
     if (!form.category || !form.price) return;
+    // Token-based ordering: if a newer calculation starts before this one
+    // resolves (e.g. user typing fast in a price field), drop this stale
+    // response so an older failure cannot overwrite a newer success.
+    const reqId = ++latestReqId.current;
     setLoading(true);
     setCalcError(null);
     try {
       if (mode === 'compare') {
         const r = await compareMarketplaceFees(form);
+        if (reqId !== latestReqId.current) return;
         setCompareResult(r);
       } else {
         const r = await calculateRateCardFees(form);
+        if (reqId !== latestReqId.current) return;
         setResult(r);
       }
     } catch (err) {
+      if (reqId !== latestReqId.current) return;
       setCalcError(err?.response?.data?.error || err?.message || 'Fee calculation failed. Please retry.');
     }
-    setLoading(false);
+    if (reqId === latestReqId.current) setLoading(false);
   }, [form, mode]);
 
   useEffect(() => {

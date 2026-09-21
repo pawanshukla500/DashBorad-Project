@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
 import {
@@ -29,6 +29,10 @@ function OrderSearch() {
   // setState after the component is gone (the previous code warned in the
   // console after navigating away within the 420 ms debounce window).
   const mounted               = useRef(true);
+  // Increments on every search; the in-flight handler ignores its own setState
+  // calls if a newer search has started, so a slower earlier request cannot
+  // overwrite a newer query's results or error.
+  const latestReqId           = useRef(0);
 
   useEffect(() => () => {
     mounted.current = false;
@@ -37,22 +41,23 @@ function OrderSearch() {
 
   const runSearch = useCallback(async (q) => {
     if (q.length < 3) { setResults(null); setError(null); setOpen(false); return; }
+    const reqId = ++latestReqId.current;
     setLoading(true);
     try {
       const data = await searchOrder(q);
-      if (!mounted.current) return;
+      if (!mounted.current || reqId !== latestReqId.current) return;
       setResults(data);
       setError(null);
       setOpen(true);
     } catch (e) {
-      if (!mounted.current) return;
+      if (!mounted.current || reqId !== latestReqId.current) return;
       // Distinguish a real network failure from "no rows matched" — the
       // previous code conflated the two and showed "No results for 'foo'".
       setResults(null);
       setError(e?.response?.data?.error || e?.message || 'Search failed. Please retry.');
       setOpen(true);
     }
-    if (mounted.current) setLoading(false);
+    if (mounted.current && reqId === latestReqId.current) setLoading(false);
   }, []);
 
   function handleChange(e) {
