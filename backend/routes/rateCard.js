@@ -37,6 +37,18 @@ const TABLE_EXTRA_COLUMNS = {
   franchise_fee:   ['brand_name', 'price_min', 'price_max', 'rate'],
 };
 
+// Column defaults of the rc_* tables for numeric cells left blank in a save.
+// `rate` is not here: a blank rate is rejected instead.
+const NUMERIC_BLANK_DEFAULTS = {
+  price_min: 0,
+  price_max: 999999,
+  prepaid: 0,
+  postpaid: 0,
+  local_fee: 0,
+  zonal_fee: 0,
+  national_fee: 0,
+};
+
 function resolveTable(type) {
   const table = TABLE_MAP[type];
   if (!table) throw Object.assign(new Error(`Unknown rate card type: ${type}`), { status: 400 });
@@ -318,8 +330,10 @@ router.get('/config-status', async (req, res) => {
 router.post('/config/seed', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   try {
-    const { seedRateCard } = await import('../services/rateCard.js');
-    const result = await seedRateCard();
+    // The service exports seedRateCardToDb; the old name was undefined, so
+    // every seed request failed with "seedRateCard is not a function".
+    const { seedRateCardToDb } = await import('../services/rateCard.js');
+    const result = await seedRateCardToDb();
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[rate-card/seed]', e);
@@ -469,10 +483,28 @@ router.post('/config/:type/save-period', async (req, res) => {
     }
 
     // Validate all rows
+    const extraColumnsForType = TABLE_EXTRA_COLUMNS[type] || [];
     for (let i = 0; i < slabRows.length; i++) {
       const errors = validateRateRow(type, slabRows[i]);
+      // A blank rate reached PostgreSQL as '' and failed the whole save with
+      // "invalid input syntax for type numeric" (HTTP 500).
+      if (extraColumnsForType.includes('rate') && (slabRows[i]?.rate === undefined || slabRows[i]?.rate === null || String(slabRows[i].rate).trim() === '')) {
+        errors.push('rate is required');
+      }
       if (errors.length) {
         return res.status(400).json({ error: `Row ${i + 1}: ${errors.join('; ')}` });
+      }
+    }
+
+    // Rate-card ids are BIGINT and, for rows migrated from CockroachDB, larger
+    // than JavaScript numbers hold exactly (~1.2e18). Number() rounded them, so
+    // an edit targeted non-existent ids, and the ::int[] cast then overflowed:
+    // every edit of such a period failed. Keep ids as exact decimal strings.
+    let idList = null;
+    if (Array.isArray(replaceIds)) {
+      idList = replaceIds.map(id => String(id ?? '').trim());
+      if (idList.some(id => !/^[1-9]\d{0,18}$/.test(id))) {
+        return res.status(400).json({ error: 'replaceIds must contain rate-card row ids' });
       }
     }
 
@@ -486,12 +518,13 @@ router.post('/config/:type/save-period', async (req, res) => {
       //      we only touch the exact rows the user was editing.
       //  (b) fallback — match by category + date triple. Use for new periods
       //      and for edits where the page didn't track IDs.
-      const idList = Array.isArray(replaceIds) ? replaceIds.filter(n => Number.isFinite(+n)).map(Number) : null;
+      let deleted = null;
       if (idList && idList.length > 0) {
-        await client.query(
-          `DELETE FROM ${table} WHERE id = ANY($1::int[])`,
+        const removed = await client.query(
+          `DELETE FROM ${table} WHERE id = ANY($1::bigint[])`,
           [idList],
         );
+        deleted = removed.rowCount;
       } else {
         await client.query(
           `DELETE FROM ${table} WHERE category = $1 AND marketplace = $2 AND seller_account = $3
@@ -511,7 +544,16 @@ router.post('/config/:type/save-period', async (req, res) => {
         end_date || null,
         marketplace,
         seller_account,
-        ...extraCols.map(col => slab[col] ?? null),
+        ...extraCols.map(col => {
+          const value = slab[col] ?? null;
+          // A blank numeric cell reached PostgreSQL as '' ("invalid input
+          // syntax for type numeric", HTTP 500). It now takes the column's
+          // default, as if the cell had been omitted. Text cells are unchanged.
+          if (col in NUMERIC_BLANK_DEFAULTS && typeof value === 'string' && value.trim() === '') {
+            return NUMERIC_BLANK_DEFAULTS[col];
+          }
+          return value;
+        }),
       ]);
 
       await forEachDbBatch(slabData, allCols.length, async batch => {
@@ -531,7 +573,8 @@ router.post('/config/:type/save-period', async (req, res) => {
 
       await client.query('COMMIT');
       clearRateCardCache();
-      res.json({ ok: true, inserted: slabRows.length, deleted: idList ? idList.length : null });
+      // Report the rows actually removed, not the number of ids requested.
+      res.json({ ok: true, inserted: slabRows.length, deleted });
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       throw error;
@@ -850,15 +893,22 @@ router.get('/reconcile', async (req, res) => {
     if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
 
     const pool = getPool();
-    const mp = req.query.marketplace || 'flipkart';
-    const sa = req.query.seller_account || 'default';
+    // The filter bar sends Myntra as its account id (myntra_vb / myntra_ej).
+    const requestedMp = String(req.query.marketplace || 'flipkart').trim().toLowerCase();
+    const mp = requestedMp.startsWith('myntra_') ? 'myntra' : requestedMp;
+    const sa = req.query.seller_account || (requestedMp.startsWith('myntra_') ? requestedMp : 'default');
+    const isDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const startDate = isDate(req.query.startDate) ? req.query.startDate : null;
+    const endDate = isDate(req.query.endDate) ? req.query.endDate : null;
 
     const { getRateCard, reconcileOrder } = await import('../services/rateCard.js');
     const rc = await getRateCard(mp, sa);
 
     const { rows } = await pool.query(`
       SELECT o.order_item_id as "orderItemId", o.order_date as "orderDate", o.category, o.final_invoice_amount as price,
-             o.fulfilment_type as "fulfilmentType", o.brand as "brandName", o.payment_type as "paymentType",
+             -- orders has no payment_type column (selecting it failed every
+             -- request); order_type carries prepaid/COD as in /platform/summary.
+             o.fulfilment_type as "fulfilmentType", o.brand as "brandName", o.order_type as "paymentType",
              o.shipping_zone as zone,
              COALESCE(s.commission, ost.commission, 0) as commission,
              COALESCE(s.fixed_fee, ost.fixed_fee, 0) as "fixedFee",
@@ -869,20 +919,24 @@ router.get('/reconcile', async (req, res) => {
       LEFT JOIN order_settlement_totals ost ON o.order_item_id = ost.order_item_id
       WHERE o.marketplace = $1 AND COALESCE(o.seller_account, 'default') = $2
         AND o.final_invoice_amount > 0
-    `, [mp, sa]);
+        AND ($3::date IS NULL OR o.order_date >= $3::date)
+        AND ($4::date IS NULL OR o.order_date <= $4::date)
+    `, [mp, sa, startDate, endDate]);
 
     const orderMap = new Map();
     for (const row of rows) {
       if (!orderMap.has(row.orderItemId)) {
+        // reconcileOrder() reads finalInvoiceAmount/shippingZone; passing
+        // price/zone made it return null for every order (an always-empty report).
         orderMap.set(row.orderItemId, {
           orderItemId: row.orderItemId,
           orderDate: row.orderDate,
           category: row.category,
-          price: row.price,
+          finalInvoiceAmount: row.price == null ? null : Number(row.price),
           fulfilmentType: row.fulfilmentType,
           brandName: row.brandName,
           paymentType: row.paymentType,
-          zone: row.zone,
+          shippingZone: row.zone,
           settlementRows: []
         });
       }

@@ -26,11 +26,18 @@ describe('VB Export category mapping', () => {
       }),
       release: vi.fn(),
     };
+    const poolQuery = vi.fn(async () => ({ rows: [{ ready: true }] }));
     const pool = {
+      query: poolQuery,
       connect: vi.fn(async () => client),
     };
 
     await syncVbExportCatalog({ pool, buffer });
+
+    // Schema already present: no DDL at all, and none inside the transaction
+    // (ALTER TABLE orders there locked every dashboard read until COMMIT).
+    expect(poolQuery).toHaveBeenCalledTimes(1);
+    expect(calls.some(([sql]) => /ALTER TABLE|CREATE (TABLE|INDEX)/.test(sql))).toBe(false);
 
     // Verify transaction control
     const sqlTexts = calls.map(([sql]) => sql);
@@ -61,12 +68,37 @@ describe('VB Export category mapping', () => {
       }),
       release: vi.fn(),
     };
-    const pool = { connect: vi.fn(async () => client) };
+    const pool = { query: vi.fn(async () => ({ rows: [{ ready: true }] })), connect: vi.fn(async () => client) };
 
     await expect(syncVbExportCatalog({ pool, buffer })).rejects.toThrow('connection lost');
 
     const sqlTexts = client.query.mock.calls.map(([s]) => s);
     expect(sqlTexts.some(s => s === 'ROLLBACK')).toBe(true);
     expect(client.release).toHaveBeenCalled();
+  });
+
+  it('creates missing catalog schema before the transaction, never inside it', async () => {
+    const order = [];
+    const pool = {
+      query: vi.fn(async (sql) => {
+        order.push(/ALTER TABLE|CREATE TABLE/.test(sql) ? 'ddl' : 'check');
+        return { rows: [{ ready: false }] };
+      }),
+      connect: vi.fn(async () => {
+        order.push('connect');
+        return { query: vi.fn(async () => ({ rows: [{}], rowCount: 0 })), release: vi.fn() };
+      }),
+    };
+    const worksheet = XLSX.utils.aoa_to_sheet([
+      ['Marketplace SKU', "VB EXPORT SKU's", 'VB Export Product Category', 'Weight Slab (kg)', 'COGS (₹)', 'Marketplace'],
+      ['LIST-1', 'VB-1', 'Cat', 1, 200, 'all'],
+    ]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Catalog');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    await syncVbExportCatalog({ pool, buffer });
+
+    expect(order.slice(0, 3)).toEqual(['check', 'ddl', 'connect']);
   });
 });

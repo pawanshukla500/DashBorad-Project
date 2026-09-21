@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
+import useResettingPage from '../hooks/useResettingPage';
 import { fetchRateCardReconcile, fetchRateCardFeeSummary, fetchFeeIntelligence, fetchRcEntryReco, fetchRcEntryOrders, updateDisputeStatus, fetchMonthlyDetailedReport } from '../api/client';
 import { currencyFull, num } from '../utils/format';
 import ExportButton from '../components/ExportButton';
@@ -36,7 +37,7 @@ export function FlipkartFeeAudit({ embedded = false }) {
   const dep = [JSON.stringify(auditFilters), refreshKey];
   const [tab, setTab]           = useState('breakdown');
   const [statusFilter, setStatus] = useState('all');
-  const [page, setPage]         = useState(1);
+  const [page, setPage]         = useResettingPage(dep[0]);
   const [selectedId, setSelectedId] = useState(null);
   const PAGE_SIZE = 50;
 

@@ -44,7 +44,7 @@ import express from 'express';
 import multer  from 'multer';
 import { createRequire } from 'module';
 import { getPool, isDbConfigured } from '../db/index.js';
-import { AMAZON_BRAND } from '../services/amazonSettlementRollups.js';
+import { AMAZON_BRAND, refreshAmazonSettlementRollups } from '../services/amazonSettlementRollups.js';
 import { clearSkuSettlementBenchmarkCache } from '../services/skuSettlementBenchmark.js';
 import { notifySkuSettlementBenchmarkAfterImport } from '../services/skuSettlementNotifications.js';
 import {
@@ -61,6 +61,7 @@ import {
 import { replaceAmazonSettlement } from '../services/amazonSettlementIngest.js';
 import { refreshAmazonSettlementReportingRollups } from '../services/amazonSettlementReportingRollups.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { invalidateReportCache } from '../services/reportCache.js';
 import {
   AMAZON_CALCULATION_BASES,
   AMAZON_FEE_CATALOG,
@@ -1678,6 +1679,9 @@ export async function processAmazonSettlementWorkbook({ buffer, filename, jobId 
     }
 
     let processedRowsTotal = 0;
+    // A settlement can continue on a later sheet; only its first occurrence
+    // in this workbook replaces the stored lines, later ones append.
+    const settlementsWrittenThisUpload = new Set();
 
     for (let sheetIdx = 0; sheetIdx < candidateSheets.length; sheetIdx++) {
       const sheet = candidateSheets[sheetIdx];
@@ -1769,7 +1773,14 @@ export async function processAmazonSettlementWorkbook({ buffer, filename, jobId 
           envelope,
           filename,
           lines: settlementLines,
+          // Resolve orphan refund SKUs inside the replacement transaction, so
+          // the reconciliation and reporting rollups are each built once from
+          // the final SKUs (previously the reporting rollup was rebuilt a
+          // second time and the reconciliation rollup kept blank SKUs).
+          beforeRollups: client => resolveOrphanSkus(client, sid),
+          appendOnly: settlementsWrittenThisUpload.has(sid),
         });
+        settlementsWrittenThisUpload.add(sid);
 
         // Release array immediately
         linesBySettlement.delete(sid);
@@ -1780,10 +1791,7 @@ export async function processAmazonSettlementWorkbook({ buffer, filename, jobId 
         allSettlementIds.push(sid);
 
         replacement.affectedOrderIds.forEach(id => allAffectedOrderIds.add(id));
-
-        const skuResolved = await resolveOrphanSkus(pool, sid);
-        totalSkuResolved += skuResolved.totalResolved;
-        await refreshAmazonSettlementReportingRollups(pool, sid);
+        totalSkuResolved += replacement.beforeRollupsResult?.totalResolved || 0;
       }
     }
 
@@ -1872,6 +1880,10 @@ export async function processAmazonSettlementWorkbook({ buffer, filename, jobId 
       await saveSkippedRows(logPool, logId, skippedRows);
     } catch {}
     throw error;
+  } finally {
+    // The async upload responded (and cleared the report cache) before any
+    // of this data was written; reports computed meanwhile saw partial data.
+    invalidateReportCache();
   }
 }
 
@@ -1988,7 +2000,7 @@ async function resolveOrphanSkus(pool, settlementId = null) {
        AND l.sku IS NULL
        AND l.transaction_type = 'Fulfillment Fee Refund'
        ${scope}
-    RETURNING l.id
+    RETURNING l.id, l.settlement_id
   `, args);
 
   // ── Phase B+C: multi-SKU orders — window-function pairing ───────────────
@@ -2030,7 +2042,7 @@ async function resolveOrphanSkus(pool, settlementId = null) {
        AND  ABS(r.amount)        = o.abs_amt
        AND  r.rn                 = o.rn
      WHERE l.id = r.id
-    RETURNING l.id
+    RETURNING l.id, l.settlement_id
   `, args);
 
   // How many remain orphans
@@ -2051,6 +2063,7 @@ async function resolveOrphanSkus(pool, settlementId = null) {
     totalResolved:    phaseA.rowCount + phaseBC.rowCount,
     stillOrphan,
     pctResolved: orphansBefore ? +(100 * (orphansBefore - stillOrphan) / orphansBefore).toFixed(1) : 100,
+    settlementIds: [...new Set([...phaseA.rows, ...phaseBC.rows].map(row => row.settlement_id).filter(Boolean))],
   };
 }
 
@@ -2085,10 +2098,19 @@ async function resolveOrphanSkus(pool, settlementId = null) {
 // Idempotent: re-running overwrites with the latest aggregate across every
 // settlement for each affected order. A null scope performs a full repair.
 // ═════════════════════════════════════════════════════════════════════════════
+export function settlementBackfillScope(affectedOrderIds) {
+  // null/undefined means a deliberate full repair. Any other collection (the
+  // settlement job passes a Set) is a scope; treating a Set as "no scope" used
+  // to reset and rewrite every Amazon order on every settlement upload.
+  if (affectedOrderIds == null) return null;
+  if (typeof affectedOrderIds === 'string' || typeof affectedOrderIds[Symbol.iterator] !== 'function') {
+    throw new TypeError('affectedOrderIds must be an array or Set of order ids');
+  }
+  return [...new Set([...affectedOrderIds].filter(Boolean))];
+}
+
 async function backfillOrdersFromSettlement(pool, affectedOrderIds = null, { resetMissing = false } = {}) {
-  const scopedOrderIds = Array.isArray(affectedOrderIds)
-    ? [...new Set(affectedOrderIds.filter(Boolean))]
-    : null;
+  const scopedOrderIds = settlementBackfillScope(affectedOrderIds);
   if (scopedOrderIds && !scopedOrderIds.length) {
     return { rowsUpdated: 0, distinctOrders: 0 };
   }
@@ -2220,7 +2242,29 @@ router.post('/amazon-settlement/resolve-skus', express.json(), async (req, res) 
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   try {
     const settlementId = req.body?.settlement_id || null;
-    const result = await resolveOrphanSkus(getPool(), settlementId);
+    const pool = getPool();
+    const result = await resolveOrphanSkus(pool, settlementId);
+    // Both rollups and the per-order totals group by SKU. Rebuild every
+    // settlement whose lines changed, atomically per settlement, or the
+    // reports keep the old blank-SKU rows.
+    for (const sid of result.settlementIds) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await refreshAmazonSettlementRollups(client, sid);
+        await refreshAmazonSettlementReportingRollups(client, sid);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+    if (result.settlementIds.length) {
+      await refreshOrderSettlementTotals(pool);
+      invalidateAmazonReconciliationCache();
+    }
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[amazon-settlement/resolve-skus]', e);

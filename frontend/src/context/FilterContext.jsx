@@ -33,7 +33,9 @@ export function FilterProvider({ children }) {
     setFilters(DEFAULT_FILTERS);
   }, []);
 
-  const triggerRefresh = useCallback(() => setRefreshKey(k => k + 1), []);
+  // A timestamp rather than a counter: the API client honours each refresh
+  // token once, so tokens must not repeat across pages or sessions.
+  const triggerRefresh = useCallback(() => setRefreshKey(k => Math.max(Date.now(), k + 1)), []);
 
   const saveView = useCallback((name) => {
     const cleanName = name?.trim();

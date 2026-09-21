@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  backfillMyntraOrders,
   fetchReconciliationSummary,
   fetchReconciliationItems,
   fetchNonOrderDeductions,
@@ -55,16 +56,14 @@ export function MyntraReconciliationPanel({ market, embedded = false }) {
     setSyncing(true);
     setSyncMsg('');
     try {
-      const res = await fetch('/api/mp-settlement/invoices/backfill-myntra', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sellerAccount: account !== 'all' ? account : undefined }),
-      });
-      const data = await res.json();
-      setSyncMsg(data.message || `Linked ${data.ordersUpdated || 0} orders successfully.`);
+      // A raw fetch() sent no auth token, so the API answered 401 and this
+      // still reported success. It also sent `sellerAccount`, which the route
+      // ignores, so every Myntra account was backfilled.
+      const data = await backfillMyntraOrders(account !== 'all' ? account : undefined);
+      setSyncMsg(`Linked ${data.ordersUpdated || 0} orders successfully.`);
       loadData();
     } catch (e) {
-      setSyncMsg('Sync failed: ' + e.message);
+      setSyncMsg('Sync failed: ' + (e?.response?.data?.error || e.message));
     } finally {
       setSyncing(false);
     }
@@ -537,7 +536,7 @@ export function MyntraReconciliationPanel({ market, embedded = false }) {
         <div className="space-y-3">
           <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 text-xs text-blue-900 flex items-center justify-between">
             <div>
-              <span className="font-bold">🔗 Order Mapping Linkage:</span> Settlements are strictly mapped via Order Release ID &amp; Order Line ID (<code>orders.order_item_id = mp_invoices.order_line_id</code>). 99.998% match rate verified in active reporting periods.
+              <span className="font-bold">🔗 Order Mapping Linkage:</span> Settlements are strictly mapped via Order Release ID &amp; Order Line ID (<code>orders.order_item_id = mp_invoices.order_line_id</code>).
             </div>
             <span className="rounded-full bg-blue-200/80 px-2.5 py-0.5 text-[10px] font-bold text-blue-950">
               {total} Total Settlements

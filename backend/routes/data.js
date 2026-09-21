@@ -1,11 +1,16 @@
 import express from 'express';
 import { getPool } from '../db/index.js';
 import { attachRcFees } from '../services/orderFeeService.js';
+// /platform/summary and /order/:id called these without importing them, so the
+// first threw a ReferenceError (HTTP 500) whenever settled orders existed and
+// the second always reported null expected fees.
+import { calculateFees, getRateCard } from '../services/rateCard.js';
 import { SETT_CTE as SHARED_SETT_CTE } from '../services/settlementSql.js';
 import { ORDER_SETTLEMENT_TOTALS_TABLE } from '../services/orderSettlementTotals.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { optionalQueryText, pagination, positiveInt } from '../utils/requestParams.js';
 import { classifyMyntraNod } from '../services/myntraNodClassification.js';
+import { invalidateReportCache, reportCacheMiddleware } from '../services/reportCache.js';
 
 const router = express.Router();
 
@@ -63,111 +68,48 @@ export function parseOrderFeeDetailQuery(query = {}) {
   };
 }
 
-// The overview contains five independent chart requests.  They are read-only
-// and are safe to cache briefly: it avoids repeating expensive aggregate scans
-// when a user moves between workspaces or reopens the same dashboard.  Uploads
-// remain visible immediately through the manual Refresh button, which sends
-// `_refresh` and bypasses the cache.
-const DASHBOARD_CACHE_TTL_MS = 45_000;
-const dashboardCache = new Map();
-const dashboardInFlight = new Map();
-const dashboardReadVersions = new Map();
-const DASHBOARD_CACHE_PATHS = new Set([
+// Read-only report endpoints in this router. They are pure functions of the
+// query string (no per-user data) and each one aggregates the full order
+// history, so they share the version-validated cache in services/reportCache.js.
+// Paginated row lists (/orders, /returns, /settlement/orders, /sku-orders) are
+// deliberately excluded: exports page through them 50K rows at a time.
+const REPORT_CACHE_PATHS = new Set([
   '/summary',
+  '/marketplace-summary',
   '/sales-trend',
   '/return-trend',
   '/category-breakdown',
   '/return-reasons',
   '/return-types',
   '/top-products',
-  '/platform/summary',
-  '/marketplace-summary',
+  '/fee-breakdown',
   '/profit-loss',
+  '/platform/summary',
+  '/profit-analysis',
+  '/profit-analysis/unmerged-skus',
+  '/sku-return-summary',
+  '/filters',
+  '/brand-sales',
+  '/brand-top-skus',
+  '/settlement/summary',
+  '/settlement/trend',
+  '/settlement/unsettled-summary',
+  '/settlement/month-pl',
+  '/settlement/non-order-detail',
+  '/settlement/order-fee-compare',
+  '/settlement/monthly-statement',
+  '/settlement/reco-statement',
+  '/settlement/sale-statement',
+  '/settlement/fee-leaks',
+  '/settlement/order-fee-detail',
 ]);
 
-function dashboardCacheKey(req) {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(req.query || {}).sort(([left], [right]) => left.localeCompare(right))) {
-    if (key !== '_refresh' && value !== undefined && value !== '') {
-      params.set(key, String(value));
-    }
-  }
-  return `${req.path}?${params.toString()}`;
-}
-
+/** Kept for existing imports; the cache is shared by every report router. */
 export function invalidateDashboardReportCache() {
-  dashboardCache.clear();
-  // A request that began before a write may still finish afterwards. Advancing
-  // the version prevents that older response from repopulating the cache.
-  for (const [key, version] of dashboardReadVersions) {
-    dashboardReadVersions.set(key, version + 1);
-  }
+  invalidateReportCache();
 }
 
-router.use(async (req, res, next) => {
-  if (req.method !== 'GET' || !DASHBOARD_CACHE_PATHS.has(req.path)) return next();
-
-  const key = dashboardCacheKey(req);
-  // Any non-empty client refresh token must bypass the cache. FilterContext
-  // increments this value, so checking only for "1" made the second and later
-  // refreshes unexpectedly serve stale financial totals.
-  const forceRefresh = Boolean(req.query?._refresh);
-  const version = forceRefresh
-    ? (dashboardReadVersions.get(key) || 0) + 1
-    : (dashboardReadVersions.get(key) || 0);
-  dashboardReadVersions.set(key, version);
-  const cached = !forceRefresh && dashboardCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    res.set('X-Report-Cache', 'HIT');
-    return res.json(cached.body);
-  }
-
-  dashboardCache.delete(key);
-  const inFlightKey = `${key}\u001f${version}`;
-  const existing = !forceRefresh && dashboardInFlight.get(inFlightKey);
-  if (existing) {
-    try {
-      const result = await existing;
-      res.set('X-Report-Cache', 'COALESCED');
-      return res.status(result.statusCode).json(result.body);
-    } catch {
-      // If the source request was disconnected before it produced JSON, serve
-      // this caller normally rather than leaving it waiting on a dead promise.
-      return next();
-    }
-  }
-
-  let settle;
-  let reject;
-  let completed = false;
-  const pending = new Promise((resolve, rejectPromise) => {
-    settle = resolve;
-    reject = rejectPromise;
-  });
-  // Avoid an unhandled rejection when the originating HTTP client disconnects
-  // and no other request was waiting for the shared result.
-  pending.catch(() => {});
-  dashboardInFlight.set(inFlightKey, pending);
-  const sendJson = res.json.bind(res);
-  res.json = (body) => {
-    completed = true;
-    dashboardInFlight.delete(inFlightKey);
-    const statusCode = res.statusCode;
-    if (statusCode >= 200 && statusCode < 300 && dashboardReadVersions.get(key) === version) {
-      dashboardCache.set(key, { body, expiresAt: Date.now() + DASHBOARD_CACHE_TTL_MS });
-      res.set('X-Report-Cache', forceRefresh ? 'REFRESHED' : 'MISS');
-    }
-    settle({ statusCode, body });
-    return sendJson(body);
-  };
-  res.on('close', () => {
-    if (!completed && dashboardInFlight.get(inFlightKey) === pending) {
-      dashboardInFlight.delete(inFlightKey);
-      reject(new Error('Source request closed before producing a response'));
-    }
-  });
-  return next();
-});
+router.use(reportCacheMiddleware(req => REPORT_CACHE_PATHS.has(req.path)));
 
 // ── Filter helpers ─────────────────────────────────────────────────────────────
 // Returns { where: 'AND col=$1 AND col=$2', values: [...] }
@@ -229,6 +171,12 @@ const COGS_JOINS = `
         LEFT JOIN catalog_cogs cc_all ON cc_all.catalog_id = o.fsn AND cc_all.marketplace = 'all'
 `;
 const CANONICAL_CATEGORY_SQL = `COALESCE(vsm.category, sm_all.category, sm_mp.category, NULLIF(o.vb_export_category, ''), NULLIF(o.category, ''), 'Uncategorized')`;
+// The joins CANONICAL_CATEGORY_SQL reads (each matches at most one row).
+const CATEGORY_JOINS = `
+        LEFT JOIN sku_master sm_mp  ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = o.marketplace
+        LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
+        LEFT JOIN vb_sku_master vsm ON vsm.vb_export_sku = COALESCE(sm_mp.master_sku, sm_all.master_sku, o.vb_export_sku)
+`;
 const SETT_FEE_SQL = `
             COALESCE(s.commission,0)+COALESCE(s.fixed_fee,0)+COALESCE(s.collection_fee,0)+
             COALESCE(s.pick_pack_fee,0)+COALESCE(s.shipping_fee,0)+COALESCE(s.reverse_shipping,0)+
@@ -270,7 +218,7 @@ function settStatusFilter(ss) {
     case 'Partial Return': return `AND s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)>0 AND s.refund_count>0`;
     case 'Fully Returned': return `AND s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)=0 AND s.refund_count>0`;
     case 'Clawback':       return `AND s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)<0`;
-    case 'Unsettled':      return `AND s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL`;
+    case 'Unsettled':      return `AND s.order_item_id IS NULL AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL`;
     case 'Returned / Cancelled': return `AND s.order_item_id IS NULL AND (o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') OR o.return_type IS NOT NULL)`;
     // Refund = Fully Returned + Partial Return + Clawback + Returned/Cancelled combined
     case 'Refund':         return `AND (s.order_item_id IS NOT NULL AND (COALESCE(s.net_bank,0)<0 OR s.refund_count>0) OR (s.order_item_id IS NULL AND (o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') OR o.return_type IS NOT NULL)))`;
@@ -313,8 +261,8 @@ router.get('/summary', async (req, res) => {
                      COALESCE(s.pick_pack_fee,0)+COALESCE(s.shipping_fee,0)+
                      COALESCE(s.reverse_shipping,0)+COALESCE(s.franchise_fee,0)+
                      COALESCE(s.tcs,0)+COALESCE(s.tds,0)+COALESCE(s.gst_on_mp_fees,0)), 0) AS "totalFees",
-        COUNT(*) FILTER (WHERE s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL) AS "unsettledCount",
-        COALESCE(SUM(o.final_invoice_amount) FILTER (WHERE s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL), 0) AS "unsettledAmount",
+        COUNT(*) FILTER (WHERE s.order_item_id IS NULL AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL) AS "unsettledCount",
+        COALESCE(SUM(o.final_invoice_amount) FILTER (WHERE s.order_item_id IS NULL AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL), 0) AS "unsettledAmount",
         COUNT(ret.order_item_id)                                                   AS "returnCount",
         SUM(CASE WHEN ret.return_type ILIKE '%customer%' OR ret.return_type = 'Return' THEN 1 ELSE 0 END) AS "customerReturns",
         SUM(CASE WHEN ret.return_type ILIKE '%courier%' OR ret.return_type ILIKE '%rto%' THEN 1 ELSE 0 END) AS "courierReturns",
@@ -621,8 +569,8 @@ router.get('/profit-loss', async (req, res) => {
           COALESCE(SUM(COALESCE(s.net_bank,0)),0)                AS "bankReceived",
           COALESCE(SUM(COALESCE(s.refund_amount,0)),0)           AS "refundDebited",
           COUNT(ret.order_item_id)                               AS "returnCount",
-          SUM(CASE WHEN s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN o.final_invoice_amount ELSE 0 END) AS "unsettledAmount",
-          SUM(CASE WHEN s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END)              AS "unsettledCount",
+          SUM(CASE WHEN s.order_item_id IS NULL AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN o.final_invoice_amount ELSE 0 END) AS "unsettledAmount",
+          SUM(CASE WHEN s.order_item_id IS NULL AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END)              AS "unsettledCount",
           COALESCE(SUM(COALESCE(s.commission,0)),0)              AS commission,
           COALESCE(SUM(COALESCE(s.fixed_fee,0)),0)               AS "fixedFee",
           COALESCE(SUM(COALESCE(s.collection_fee,0)),0)          AS "collectionFee",
@@ -798,7 +746,7 @@ router.get('/platform/summary', async (req, res) => {
           COALESCE(SUM(o.final_invoice_amount),0) AS "unsettledAmount"
         FROM orders o
         WHERE 1=1 ${where}
-          AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+          AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
           AND o.return_type IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} fs WHERE fs.order_item_id = o.order_item_id
@@ -1279,6 +1227,9 @@ router.get('/profit-analysis', async (req, res) => {
           COALESCE(SUM(o.final_invoice_amount), 0) AS "unmergedRevenue"
         FROM orders o
         LEFT JOIN sku_master sm ON sm.listing_sku = o.sku
+        -- The shared WHERE uses CANONICAL_CATEGORY_SQL, which needs these
+        -- aliases; without them a category filter failed the whole report.
+        ${CATEGORY_JOINS}
         WHERE 1=1 ${where}${acctWhere}
           AND (o.vb_export_sku IS NULL OR sm.listing_sku IS NULL)
       `, values),
@@ -1749,7 +1700,7 @@ router.get('/settlement/summary', async (req, res) => {
         SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)>0 AND s.refund_count>0 THEN 1 ELSE 0 END) AS "partialReturnCount",
         SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)=0 AND s.refund_count>0 THEN 1 ELSE 0 END) AS "fullyReturnedCount",
         SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)<0                       THEN 1 ELSE 0 END) AS "clawbackCount",
-        SUM(CASE WHEN s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END) AS "unsettledCount",
+        SUM(CASE WHEN s.order_item_id IS NULL AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END) AS "unsettledCount",
         COALESCE(SUM(CASE WHEN COALESCE(s.net_bank,0)>0 THEN s.net_bank ELSE 0 END),0)       AS "totalBankReceived",
         COALESCE(SUM(CASE WHEN COALESCE(s.net_bank,0)<0 THEN ABS(s.net_bank) ELSE 0 END),0)  AS "totalDeducted",
         COALESCE(SUM(COALESCE(s.net_bank,0)),0)                                               AS "netBank",
@@ -1859,7 +1810,7 @@ router.get('/settlement/orders', async (req, res) => {
           SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)>0 AND s.refund_count>0 THEN 1 ELSE 0 END) AS "partialReturn",
           SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)=0 AND s.refund_count>0 THEN 1 ELSE 0 END) AS "fullyReturned",
           SUM(CASE WHEN s.order_item_id IS NOT NULL AND COALESCE(s.net_bank,0)<0                       THEN 1 ELSE 0 END) AS clawback,
-          SUM(CASE WHEN s.order_item_id IS NULL AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END) AS unsettled
+          SUM(CASE WHEN s.order_item_id IS NULL AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND ret.order_item_id IS NULL THEN 1 ELSE 0 END) AS unsettled
         FROM orders o
         LEFT JOIN sett s ON s.order_item_id = o.order_item_id
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
@@ -1907,7 +1858,7 @@ router.get('/settlement/unsettled-summary', async (req, res) => {
         FROM orders o
         ${COGS_JOINS}
         WHERE NOT EXISTS (SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} fs WHERE fs.order_item_id=o.order_item_id)
-        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+        AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
         AND o.return_type IS NULL
         AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.order_item_id = o.order_item_id)
         AND 1=1 ${where}
@@ -1919,7 +1870,7 @@ router.get('/settlement/unsettled-summary', async (req, res) => {
         FROM orders o
         ${COGS_JOINS}
         WHERE NOT EXISTS (SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} fs WHERE fs.order_item_id=o.order_item_id)
-        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+        AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
         AND o.return_type IS NULL
         AND NOT EXISTS (SELECT 1 FROM returns r WHERE r.order_item_id = o.order_item_id)
         AND 1=1 ${where}
@@ -2822,7 +2773,13 @@ router.get('/settlement/monthly-statement', async (req, res) => {
   try {
     const pool = getPool();
     const marketplace = parseMarketplaceFilter(req.query.marketplace);
-    const mpCond = marketplace ? "AND COALESCE(marketplace, 'flipkart') = $1" : '';
+    // The filter bar sends a Myntra account id (myntra_vb / myntra_ej), which
+    // never equals the view's marketplace ('myntra'): those statements were
+    // always empty. unified_settlements now carries seller_account.
+    const isMyntraAccount = marketplace === 'myntra_vb' || marketplace === 'myntra_ej';
+    const mpCond = !marketplace ? ''
+      : isMyntraAccount ? "AND marketplace = 'myntra' AND seller_account = $1"
+        : "AND COALESCE(marketplace, 'flipkart') = $1";
     const mpParams = marketplace ? [marketplace] : [];
     const includeFlipkartOnlyCharges = !marketplace || marketplace === 'flipkart';
     const M = `TO_CHAR(payment_date, 'YYYY-MM')`;
@@ -3019,103 +2976,81 @@ router.get('/settlement/reco-statement', async (req, res) => {
         --   Pick & Pack: flat_rate(₹703) × 3 = total pick & pack fee
         -- Band lookup MUST use unit_price (₹703), NOT total (₹2109).
         -- ──────────────────────────────────────────────────────────────────────
-        WITH rc_calc AS (
+        -- Each rate table is matched once (hash join + DISTINCT ON per settlement
+        -- row) instead of four correlated subqueries per row; same rule choice and
+        -- totals, verified against production data (3-4x faster).
+        WITH base AS MATERIALIZED (
           SELECT
+            ROW_NUMBER() OVER ()                                           AS row_id,
             fk.order_item_id,
-            TO_CHAR(o.order_date, 'YYYY-MM')   AS month,
-            -- Total sale amount (for display / aggregation)
+            TO_CHAR(o.order_date, 'YYYY-MM')                               AS month,
+            o.order_date,
             COALESCE(NULLIF(fk.sale_amount, 0), o.final_invoice_amount, 0) AS inv_amt,
-            -- Quantity: use fk.quantity first, fallback to orders.qty, minimum 1
             GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)                   AS qty,
-            -- Per-unit price = total_sale / qty (FK uses this for ALL fee band lookups)
-            COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
+            COALESCE(NULLIF(fk.sale_amount, 0), o.final_invoice_amount, 0)
               / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)               AS unit_price,
-            -- Normalised category (strip shopsy_ prefix for RC lookup)
             REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')              AS norm_cat,
-
-            -- Commission: rate(unit_price) × total_sale_amount
-            -- (rate × unit_price × qty = rate × total, so we can use total directly for % fees)
-            COALESCE((
-              SELECT rc.rate * COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-              FROM rc_commission rc
-              WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
-                AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
-                AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-                                     / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-                                     / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-                AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-              ORDER BY (rc.brand_name IS NOT NULL AND rc.brand_name <> '') DESC,
-                       rc.start_date DESC NULLS LAST LIMIT 1
-            ), 0) AS vb_commission,
-
-            -- Fixed fee: flat ₹ per UNIT × qty (NULL = no RC entry)
-            (
-              SELECT rc.rate * GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              FROM rc_fixed_fee rc
-              WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
-                AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-                                     / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-                                     / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-                AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-              ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-            ) AS vb_fixed_fee,
-
-            -- Collection fee: band lookup uses UNIT_PRICE; result × qty
-            -- prepaid_type='flat' → flat_amt × qty; 'pct' → rate × unit_price × qty = rate × total
-            (
-              SELECT CASE
-                WHEN rc.prepaid_type = 'flat'
-                     THEN rc.prepaid * GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                ELSE rc.prepaid * COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-              END
-              FROM rc_collection_fee rc
-              WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
-                AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-                                     / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-                                     / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-                AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-              ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-            ) AS vb_collection_fee,
-
-            (
-              SELECT rc.rate * GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              FROM rc_pick_pack rc
-              WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
-                AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-                                     / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-                                     / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-                AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-                AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-              ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-            ) AS vb_pick_pack_fee
+            COALESCE(o.marketplace, 'flipkart')                            AS mp,
+            COALESCE(o.seller_account, 'default')                          AS sa,
+            o.brand_name
           FROM unified_settlements fk
           INNER JOIN orders o ON o.order_item_id = fk.order_item_id
           WHERE o.order_date IS NOT NULL ${mpCond} AND fk.bank_settlement > 0
+        ),
+        commission AS (
+          SELECT DISTINCT ON (b.row_id) b.row_id, rc.rate * b.inv_amt AS fee
+          FROM base b
+          JOIN rc_commission rc ON LOWER(rc.category) = b.norm_cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+          WHERE (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = b.brand_name)
+            AND rc.price_min <= b.unit_price AND rc.price_max >= b.unit_price
+            AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+            AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+          ORDER BY b.row_id, (rc.brand_name IS NOT NULL AND rc.brand_name <> '') DESC, rc.start_date DESC NULLS LAST, rc.id DESC
+        ),
+        fixed_fee AS (
+          SELECT DISTINCT ON (b.row_id) b.row_id, rc.rate * b.qty AS fee
+          FROM base b
+          JOIN rc_fixed_fee rc ON LOWER(rc.category) = b.norm_cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+          WHERE rc.price_min <= b.unit_price AND rc.price_max >= b.unit_price
+            AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+            AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+          ORDER BY b.row_id, rc.start_date DESC NULLS LAST, rc.id DESC
+        ),
+        collection_fee AS (
+          SELECT DISTINCT ON (b.row_id) b.row_id,
+                 CASE WHEN rc.prepaid_type = 'flat' THEN rc.prepaid * b.qty ELSE rc.prepaid * b.inv_amt END AS fee
+          FROM base b
+          JOIN rc_collection_fee rc ON LOWER(rc.category) = b.norm_cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+          WHERE rc.price_min <= b.unit_price AND rc.price_max >= b.unit_price
+            AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+            AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+          ORDER BY b.row_id, rc.start_date DESC NULLS LAST, rc.id DESC
+        ),
+        pick_pack AS (
+          SELECT DISTINCT ON (b.row_id) b.row_id, rc.rate * b.qty AS fee
+          FROM base b
+          JOIN rc_pick_pack rc ON LOWER(rc.category) = b.norm_cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+          WHERE rc.price_min <= b.unit_price AND rc.price_max >= b.unit_price
+            AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+            AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+          ORDER BY b.row_id, rc.start_date DESC NULLS LAST, rc.id DESC
         )
-        SELECT month,
-          SUM(inv_amt)              AS vb_sale,
-          SUM(vb_commission)        AS vb_commission,
-          SUM(vb_fixed_fee)         AS vb_fixed_fee,
-          SUM(vb_collection_fee)    AS vb_collection_fee,
-          SUM(vb_pick_pack_fee)     AS vb_pick_pack_fee,
-          0                         AS vb_shipping_fee,
-          COUNT(DISTINCT order_item_id) AS vb_order_count
-        FROM rc_calc GROUP BY month ORDER BY month
+        SELECT b.month,
+          SUM(b.inv_amt)              AS vb_sale,
+          SUM(COALESCE(c.fee, 0))     AS vb_commission,
+          -- No COALESCE: a month with no matching rule stays NULL ("no RC entry").
+          SUM(f.fee)                  AS vb_fixed_fee,
+          SUM(cf.fee)                 AS vb_collection_fee,
+          SUM(p.fee)                  AS vb_pick_pack_fee,
+          0                           AS vb_shipping_fee,
+          COUNT(DISTINCT b.order_item_id) AS vb_order_count
+        FROM base b
+        LEFT JOIN commission     c  ON c.row_id  = b.row_id
+        LEFT JOIN fixed_fee      f  ON f.row_id  = b.row_id
+        LEFT JOIN collection_fee cf ON cf.row_id = b.row_id
+        LEFT JOIN pick_pack      p  ON p.row_id  = b.row_id
+        GROUP BY b.month
+        ORDER BY b.month
       `, mpParams),
 
       pool.query(`SELECT ${M} AS month, SUM(settlement_value) AS spf_total
@@ -3169,17 +3104,17 @@ router.get('/settlement/reco-statement', async (req, res) => {
       const vbGst = +(mpTaxableFees * 0.18).toFixed(2);
 
       const lines = [
-        { key: 'commission',       label: 'Commission',       cat: 'fee', fk: +(d.fk_commission||0),        vb: +(d.vb_commission||0)        },
-        { key: 'fixed_fee',        label: 'Fixed Fee',         cat: 'fee', fk: +(d.fk_fixed_fee||0),         vb: rcVal(d.vb_fixed_fee)         },
-        { key: 'collection_fee',   label: 'Collection Fee',    cat: 'fee', fk: +(d.fk_collection_fee||0),    vb: rcVal(d.vb_collection_fee)    },
-        { key: 'pick_pack_fee',    label: 'Pick & Pack Fee',   cat: 'fee', fk: +(d.fk_pick_pack_fee||0),     vb: rcVal(d.vb_pick_pack_fee)     },
-        { key: 'shipping_fee',     label: 'Shipping Fee',      cat: 'fee', fk: +(d.fk_shipping_fee||0),      vb: null },
-        { key: 'reverse_shipping', label: 'Reverse Shipping',  cat: 'fee', fk: +(d.fk_reverse_shipping||0),  vb: null },
-        { key: 'franchise_fee',    label: 'Franchise Fee',     cat: 'fee', fk: +(d.fk_franchise_fee||0),     vb: null },
-        { key: 'tcs',              label: 'TCS',               cat: 'tax', fk: +(d.fk_tcs||0),               vb: vbTcs, calc: true },
-        { key: 'tds',              label: 'TDS',               cat: 'tax', fk: +(d.fk_tds||0),               vb: vbTds, calc: true },
-        { key: 'gst_on_mp_fees',   label: 'GST on MP Fees',    cat: 'tax', fk: +(d.fk_gst||0),               vb: vbGst, calc: true },
-        { key: 'mp_other_fee',     label: 'Other Amazon Fees', cat: 'fee', fk: +(d.fk_other_fee||0),         vb: null },
+        { key: 'commission',       label: 'Commission',       cat: 'fee', fk: +(d.mp_commission||0),        vb: +(d.vb_commission||0)        },
+        { key: 'fixed_fee',        label: 'Fixed Fee',         cat: 'fee', fk: +(d.mp_fixed_fee||0),         vb: rcVal(d.vb_fixed_fee)         },
+        { key: 'collection_fee',   label: 'Collection Fee',    cat: 'fee', fk: +(d.mp_collection_fee||0),    vb: rcVal(d.vb_collection_fee)    },
+        { key: 'pick_pack_fee',    label: 'Pick & Pack Fee',   cat: 'fee', fk: +(d.mp_pick_pack_fee||0),     vb: rcVal(d.vb_pick_pack_fee)     },
+        { key: 'shipping_fee',     label: 'Shipping Fee',      cat: 'fee', fk: +(d.mp_shipping_fee||0),      vb: null },
+        { key: 'reverse_shipping', label: 'Reverse Shipping',  cat: 'fee', fk: +(d.mp_reverse_shipping||0),  vb: null },
+        { key: 'franchise_fee',    label: 'Franchise Fee',     cat: 'fee', fk: +(d.mp_franchise_fee||0),     vb: null },
+        { key: 'tcs',              label: 'TCS',               cat: 'tax', fk: +(d.mp_tcs||0),               vb: vbTcs, calc: true },
+        { key: 'tds',              label: 'TDS',               cat: 'tax', fk: +(d.mp_tds||0),               vb: vbTds, calc: true },
+        { key: 'gst_on_mp_fees',   label: 'GST on MP Fees',    cat: 'tax', fk: +(d.mp_gst||0),               vb: vbGst, calc: true },
+        { key: 'mp_other_fee',     label: 'Other Amazon Fees', cat: 'fee', fk: +(d.mp_other_fee||0),         vb: null },
       ]
         .filter(l => l.fk > 0.005 || (l.vb !== null && l.vb > 0.005))
         .map(l => ({
@@ -3195,9 +3130,9 @@ router.get('/settlement/reco-statement', async (req, res) => {
                          : null,
         }));
 
-      const fkSale        = +(d.fk_sale       || 0);
+      const fkSale        = +(d.mp_sale       || 0);
       const vbSale        = +(d.vb_sale        || 0);
-      const fkReturns     = +(d.fk_returns     || 0);
+      const fkReturns     = +(d.mp_returns     || 0);
       const netSettled    = +(d.net_settled     || 0);
       const spfTotal      = +(d.spf_total       || 0);
       const storTotal     = +(d.stor_total      || 0);
@@ -3370,126 +3305,113 @@ router.get('/settlement/sale-statement', async (req, res) => {
       ORDER BY DATE_TRUNC('month', o.order_date)
     `, mpParams);
 
-    // RC-calculated fees using the rate card tables directly in SQL
-    // (mirrors the rc_calc CTE pattern used in /reco-statement)
+    // RC-calculated fees per sale month. Each rate table is matched once with a
+    // hash join and DISTINCT ON picks the same rule the per-order subqueries
+    // chose (brand-specific first, then latest start_date). The old form ran six
+    // correlated subqueries per order (~1.7M executions for all marketplaces,
+    // 11-14 s per marketplace) and shipped every order row to Node to be summed;
+    // this returns one row per month with identical totals (verified against
+    // production data for Flipkart, Amazon and Myntra).
     const { rows: rcRows } = await pool.query(`
-      WITH rc_calc AS (
+      WITH base AS MATERIALIZED (
         SELECT
           o.order_item_id,
-          o.final_invoice_amount AS inv_amt,
-          CASE WHEN LOWER(COALESCE(o.order_type,'prepaid')) LIKE '%prepaid%' THEN 'prepaid' ELSE 'postpaid' END AS pay_type,
-
-          -- Commission
-          COALESCE((
-            SELECT rc.rate * COALESCE(o.final_invoice_amount, 0)
-            FROM rc_commission rc
-            WHERE LOWER(rc.category) = LOWER(o.category)
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
-              AND (rc.price_min IS NULL OR rc.price_min <= COALESCE(o.final_invoice_amount,0))
-              AND (rc.price_max IS NULL OR rc.price_max >= COALESCE(o.final_invoice_amount,0))
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY (rc.brand_name IS NOT NULL AND rc.brand_name <> '') DESC,
-                     rc.start_date DESC NULLS LAST
-            LIMIT 1
-          ), 0) AS calc_commission,
-
-          -- Fixed Fee
-          COALESCE((
-            SELECT rc.rate
-            FROM rc_fixed_fee rc
-            WHERE LOWER(rc.category) = LOWER(o.category)
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND (rc.price_min IS NULL OR rc.price_min <= COALESCE(o.final_invoice_amount,0))
-              AND (rc.price_max IS NULL OR rc.price_max >= COALESCE(o.final_invoice_amount,0))
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-          ), 0) AS calc_fixed_fee,
-
-          -- Collection Fee
-          COALESCE((
-            SELECT
-              CASE WHEN rc.prepaid_type = 'flat'
-                   THEN rc.prepaid
-                   ELSE rc.prepaid * COALESCE(o.final_invoice_amount, 0)
-              END
-            FROM rc_collection_fee rc
-            WHERE LOWER(rc.category) = LOWER(o.category)
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND (rc.price_min IS NULL OR rc.price_min <= COALESCE(o.final_invoice_amount,0))
-              AND (rc.price_max IS NULL OR rc.price_max >= COALESCE(o.final_invoice_amount,0))
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-          ), 0) AS calc_collection_fee,
-
-          -- Pick & Pack
-          COALESCE((
-            SELECT rc.rate
-            FROM rc_pick_pack rc
-            WHERE LOWER(rc.category) = LOWER(o.category)
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND (rc.price_min IS NULL OR rc.price_min <= COALESCE(o.final_invoice_amount,0))
-              AND (rc.price_max IS NULL OR rc.price_max >= COALESCE(o.final_invoice_amount,0))
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-          ), 0) AS calc_pick_pack_fee,
-
-          -- Reverse Shipping
-          COALESCE((
-            SELECT
-              CASE
-                WHEN LOWER(COALESCE(o.shipping_zone,'national')) = 'local'     THEN rc.local_fee
-                WHEN LOWER(COALESCE(o.shipping_zone,'national')) = 'zonal'     THEN rc.zonal_fee
-                ELSE rc.national_fee
-              END
-            FROM rc_reverse_shipping rc
-            WHERE LOWER(rc.category) = LOWER(o.category)
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND (rc.weight_slab IS NULL OR rc.weight_slab = COALESCE(o.weight_slab,''))
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-          ), 0) AS calc_reverse_shipping,
-
-          -- Franchise Fee
-          COALESCE((
-            SELECT rc.rate
-            FROM rc_franchise_fee rc
-            WHERE (rc.category = 'ALL' OR LOWER(rc.category) = LOWER(o.category))
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
-              AND (rc.price_min IS NULL OR rc.price_min <= COALESCE(o.final_invoice_amount,0))
-              AND (rc.price_max IS NULL OR rc.price_max >= COALESCE(o.final_invoice_amount,0))
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY (rc.brand_name IS NOT NULL AND rc.brand_name <> '') DESC,
-                     (rc.category <> 'ALL') DESC,
-                     rc.start_date DESC NULLS LAST
-            LIMIT 1
-          ), 0) AS calc_franchise_fee
-
+          DATE_TRUNC('month', o.order_date) AS month_sort,
+          o.order_date,
+          COALESCE(o.marketplace, 'flipkart')          AS mp,
+          COALESCE(o.seller_account, 'default')        AS sa,
+          o.brand_name,
+          LOWER(o.category)                            AS cat,
+          COALESCE(o.final_invoice_amount, 0)          AS amt,
+          LOWER(COALESCE(o.shipping_zone, 'national')) AS zone,
+          COALESCE(o.weight_slab, '')                  AS weight_slab
         FROM orders o
         WHERE o.order_date IS NOT NULL ${mpCond}
+      ),
+      commission AS (
+        SELECT DISTINCT ON (b.order_item_id) b.order_item_id, rc.rate * b.amt AS fee
+        FROM base b
+        JOIN rc_commission rc ON LOWER(rc.category) = b.cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+        WHERE (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = b.brand_name)
+          AND (rc.price_min IS NULL OR rc.price_min <= b.amt)
+          AND (rc.price_max IS NULL OR rc.price_max >= b.amt)
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.order_item_id, (rc.brand_name IS NOT NULL AND rc.brand_name <> '') DESC, rc.start_date DESC NULLS LAST, rc.id DESC
+      ),
+      fixed_fee AS (
+        SELECT DISTINCT ON (b.order_item_id) b.order_item_id, rc.rate AS fee
+        FROM base b
+        JOIN rc_fixed_fee rc ON LOWER(rc.category) = b.cat AND rc.marketplace = b.mp
+        WHERE (rc.price_min IS NULL OR rc.price_min <= b.amt)
+          AND (rc.price_max IS NULL OR rc.price_max >= b.amt)
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.order_item_id, rc.start_date DESC NULLS LAST, rc.id DESC
+      ),
+      collection_fee AS (
+        SELECT DISTINCT ON (b.order_item_id) b.order_item_id,
+               CASE WHEN rc.prepaid_type = 'flat' THEN rc.prepaid ELSE rc.prepaid * b.amt END AS fee
+        FROM base b
+        JOIN rc_collection_fee rc ON LOWER(rc.category) = b.cat AND rc.marketplace = b.mp
+        WHERE (rc.price_min IS NULL OR rc.price_min <= b.amt)
+          AND (rc.price_max IS NULL OR rc.price_max >= b.amt)
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.order_item_id, rc.start_date DESC NULLS LAST, rc.id DESC
+      ),
+      pick_pack AS (
+        SELECT DISTINCT ON (b.order_item_id) b.order_item_id, rc.rate AS fee
+        FROM base b
+        JOIN rc_pick_pack rc ON LOWER(rc.category) = b.cat AND rc.marketplace = b.mp
+        WHERE (rc.price_min IS NULL OR rc.price_min <= b.amt)
+          AND (rc.price_max IS NULL OR rc.price_max >= b.amt)
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.order_item_id, rc.start_date DESC NULLS LAST, rc.id DESC
+      ),
+      reverse_shipping AS (
+        SELECT DISTINCT ON (b.order_item_id) b.order_item_id,
+               CASE WHEN b.zone = 'local' THEN rc.local_fee WHEN b.zone = 'zonal' THEN rc.zonal_fee ELSE rc.national_fee END AS fee
+        FROM base b
+        JOIN rc_reverse_shipping rc ON LOWER(rc.category) = b.cat AND rc.marketplace = b.mp
+        WHERE (rc.weight_slab IS NULL OR rc.weight_slab = b.weight_slab)
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.order_item_id, rc.start_date DESC NULLS LAST, rc.id DESC
+      ),
+      franchise_fee AS (
+        SELECT DISTINCT ON (b.order_item_id) b.order_item_id, rc.rate AS fee
+        FROM base b
+        JOIN rc_franchise_fee rc ON rc.marketplace = b.mp AND rc.seller_account = b.sa
+         AND (rc.category = 'ALL' OR LOWER(rc.category) = b.cat)
+        WHERE (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = b.brand_name)
+          AND (rc.price_min IS NULL OR rc.price_min <= b.amt)
+          AND (rc.price_max IS NULL OR rc.price_max >= b.amt)
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.order_item_id, (rc.brand_name IS NOT NULL AND rc.brand_name <> '') DESC,
+                 (rc.category <> 'ALL') DESC, rc.start_date DESC NULLS LAST, rc.id DESC
       )
       SELECT
-        DATE_TRUNC('month', o.order_date)                      AS month_sort,
-        rc.calc_commission,
-        rc.calc_fixed_fee,
-        rc.calc_collection_fee,
-        rc.calc_pick_pack_fee,
-        rc.calc_reverse_shipping,
-        rc.calc_franchise_fee,
-        -- GST = 18% × (commission + fixedFee + franchiseFee)
-        (rc.calc_commission + rc.calc_fixed_fee + rc.calc_franchise_fee) * 0.18 AS calc_gst
-      FROM orders o
-      LEFT JOIN rc_calc rc ON rc.order_item_id = o.order_item_id
-      WHERE o.order_date IS NOT NULL ${mpCond}
+        b.month_sort,
+        SUM(COALESCE(c.fee, 0))  AS calc_commission,
+        SUM(COALESCE(f.fee, 0))  AS calc_fixed_fee,
+        SUM(COALESCE(cf.fee, 0)) AS calc_collection_fee,
+        SUM(COALESCE(p.fee, 0))  AS calc_pick_pack_fee,
+        SUM(COALESCE(r.fee, 0))  AS calc_reverse_shipping,
+        SUM(COALESCE(fr.fee, 0)) AS calc_franchise_fee,
+        -- GST = 18% × (commission + fixedFee + franchiseFee), per order as before
+        SUM((COALESCE(c.fee, 0) + COALESCE(f.fee, 0) + COALESCE(fr.fee, 0)) * 0.18) AS calc_gst
+      FROM base b
+      LEFT JOIN commission       c  ON c.order_item_id  = b.order_item_id
+      LEFT JOIN fixed_fee        f  ON f.order_item_id  = b.order_item_id
+      LEFT JOIN collection_fee   cf ON cf.order_item_id = b.order_item_id
+      LEFT JOIN pick_pack        p  ON p.order_item_id  = b.order_item_id
+      LEFT JOIN reverse_shipping r  ON r.order_item_id  = b.order_item_id
+      LEFT JOIN franchise_fee    fr ON fr.order_item_id = b.order_item_id
+      GROUP BY b.month_sort
+      ORDER BY b.month_sort
     `, mpParams);
 
     // Pre-build a monthly rcMap: { [monthSort]: { commission, fixedFee, ... } }
@@ -3964,7 +3886,7 @@ router.get('/settlement/fee-leaks', async (req, res) => {
     ) leaks
     ${feeLeakCond}
     ORDER BY leak_amount DESC
-    LIMIT $2 OFFSET $3
+    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
     `;
 
     const countSql = `
@@ -4172,8 +4094,13 @@ router.get('/order-items-summary', async (req, res) => {
 
     const conds = [];
     const values = [];
-    if (req.query.marketplace && req.query.marketplace !== 'all') {
-      values.push(req.query.marketplace);
+    const marketplace = typeof req.query.marketplace === 'string' ? req.query.marketplace.trim().toLowerCase() : '';
+    if (marketplace === 'myntra_vb' || marketplace === 'myntra_ej') {
+      // Filter-bar account ids map to marketplace + seller_account.
+      values.push(marketplace);
+      conds.push(`marketplace = 'myntra' AND seller_account = $${values.length}`);
+    } else if (marketplace && marketplace !== 'all') {
+      values.push(marketplace);
       conds.push(`marketplace = $${values.length}`);
     }
     if (req.query.startDate) { values.push(req.query.startDate); conds.push(`order_date >= $${values.length}`); }

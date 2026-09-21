@@ -10,6 +10,7 @@ import {
 } from '../api/client';
 import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
+import { matchesMarketplace } from '../utils/marketplace';
 import IndiaStateMap from '../components/charts/IndiaStateMap';
 import PageHeader from '../components/PageHeader';
 import TabGroup from '../components/TabGroup';
@@ -126,7 +127,7 @@ function ReturnIntelligence({ mp, filters }) {
     if (!data?.byCategory) return [];
     const mp2 = mp === 'all' ? null : mp;
     return (mp2
-      ? data.byCategory.filter(r => r.marketplace === mp2)
+      ? data.byCategory.filter(r => matchesMarketplace(r.marketplace, mp2))
       : data.byCategory.reduce((acc, r) => {
           const ex = acc.find(a => a.category === r.category);
           if (ex) { ex.orders = +ex.orders + +r.orders; ex.returns = +ex.returns + +r.returns; }
@@ -143,7 +144,7 @@ function ReturnIntelligence({ mp, filters }) {
     if (!data?.byState) return [];
     const mp2 = mp === 'all' ? null : mp;
     return (mp2
-      ? data.byState.filter(r => r.marketplace === mp2)
+      ? data.byState.filter(r => matchesMarketplace(r.marketplace, mp2))
       : data.byState.reduce((acc, r) => {
           const ex = acc.find(a => a.state === r.state);
           if (ex) { ex.orders = +ex.orders + +r.orders; ex.returns = +ex.returns + +r.returns; }
@@ -160,7 +161,7 @@ function ReturnIntelligence({ mp, filters }) {
   const { cats, states, matrix } = useMemo(() => {
     if (!data?.matrix) return { cats: [], states: [], matrix: {} };
     const mp2 = mp === 'all' ? null : mp;
-    const rows = mp2 ? data.matrix.filter(r => r.marketplace === mp2) : data.matrix;
+    const rows = mp2 ? data.matrix.filter(r => matchesMarketplace(r.marketplace, mp2)) : data.matrix;
     const catSet  = [...new Set(rows.map(r => r.category))].slice(0, 8);
     const stateSet = [...new Set(rows.map(r => r.state))].slice(0, 12);
     const mat = {};
@@ -320,7 +321,7 @@ function RtoRisk({ mp, filters }) {
   const skus = useMemo(() => {
     if (!data?.bySku) return [];
     const mp2 = mp === 'all' ? null : mp;
-    return (mp2 ? data.bySku.filter(r => r.marketplace === mp2) : data.bySku)
+    return (mp2 ? data.bySku.filter(r => matchesMarketplace(r.marketplace, mp2)) : data.bySku)
       .filter(r => !search || r.sku?.toLowerCase().includes(search.toLowerCase()))
       .sort((a, b) => b.return_rate - a.return_rate);
   }, [data, mp, search]);
@@ -332,7 +333,7 @@ function RtoRisk({ mp, filters }) {
   const stateData = useMemo(() => {
     if (!data?.byStateCategory) return [];
     const mp2 = mp === 'all' ? null : mp;
-    const rows = mp2 ? data.byStateCategory.filter(r => r.marketplace === mp2) : data.byStateCategory;
+    const rows = mp2 ? data.byStateCategory.filter(r => matchesMarketplace(r.marketplace, mp2)) : data.byStateCategory;
     const byState = rows.reduce((acc, r) => {
       const ex = acc.find(a => a.state === r.state);
       if (ex) { ex.orders += +r.orders; ex.returns += +r.returns; }
@@ -439,7 +440,7 @@ function FulfilmentPL({ mp, filters }) {
   const ftData = useMemo(() => {
     if (!data?.byFulfilment) return [];
     const mp2 = mp === 'all' ? null : mp;
-    const rows = mp2 ? data.byFulfilment.filter(r => r.marketplace === mp2) : data.byFulfilment.reduce((acc, r) => {
+    const rows = mp2 ? data.byFulfilment.filter(r => matchesMarketplace(r.marketplace, mp2)) : data.byFulfilment.reduce((acc, r) => {
       const ex = acc.find(a => a.ft === r.ft);
       if (ex) {
         ex.orders = +ex.orders + +r.orders;
@@ -464,7 +465,7 @@ function FulfilmentPL({ mp, filters }) {
   const catData = useMemo(() => {
     if (!data?.byCategoryFt) return [];
     const mp2 = mp === 'all' ? null : mp;
-    return mp2 ? data.byCategoryFt.filter(r => r.marketplace === mp2) : data.byCategoryFt;
+    return mp2 ? data.byCategoryFt.filter(r => matchesMarketplace(r.marketplace, mp2)) : data.byCategoryFt;
   }, [data, mp]);
 
   const chartData = ftData.map(r => ({

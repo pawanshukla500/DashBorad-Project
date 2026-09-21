@@ -38,14 +38,28 @@ export function AuthProvider({ children }) {
         if (!active) return;
       if (firebaseUser) {
         try {
-          // Fetch the current custom claims once while the Firebase session is
-          // restored, so legacy SQL roles migrated at backend startup take
-          // effect without the browser keeping a stale app role.
-          setUser(await sessionFromFirebase(firebaseUser, true));
+          // Render with the cached token's claims straight away; waiting for a
+          // forced token refresh put a round trip to Google in front of every
+          // app load. The API authorizes each request from its own verified
+          // token, so this only affects what the UI shows for a moment.
+          setUser(await sessionFromFirebase(firebaseUser, false));
         } catch (err) {
           console.warn('[Firebase session restore failed]', err.message);
           setUser(null);
         }
+        // Then fetch current custom claims once in the background, so a role
+        // changed by an admin (or migrated at backend startup) still applies.
+        void sessionFromFirebase(firebaseUser, true)
+          .then(fresh => {
+            if (!active) return;
+            // Only update the same, still signed-in user: a sign-out that
+            // happened meanwhile must not be undone by this late result.
+            setUser(previous => {
+              if (!previous || previous.firebase_uid !== fresh.firebase_uid) return previous;
+              return previous.role === fresh.role ? previous : fresh;
+            });
+          })
+          .catch(err => console.warn('[Firebase claims refresh failed]', err.message));
       } else {
         setUser(null);
       }

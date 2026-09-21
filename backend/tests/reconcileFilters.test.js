@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { buildFilters } from '../routes/reconcile.js';
+import { buildFilters, marketplaceScope } from '../routes/reconcile.js';
+
+describe('Myntra account scoping', () => {
+  it('maps a Myntra account selection to marketplace + seller_account', () => {
+    expect(marketplaceScope({ marketplace: 'myntra_vb' })).toEqual({ mkt: 'myntra', sellerAcc: 'myntra_vb' });
+    expect(marketplaceScope({ marketplace: 'Myntra_EJ' })).toEqual({ mkt: 'myntra', sellerAcc: 'myntra_ej' });
+  });
+
+  it('accepts both seller_account spellings and ignores "all"', () => {
+    expect(marketplaceScope({ marketplace: 'myntra', seller_account: 'myntra_ej' })).toEqual({ mkt: 'myntra', sellerAcc: 'myntra_ej' });
+    expect(marketplaceScope({ marketplace: 'myntra', sellerAccount: 'myntra_vb' })).toEqual({ mkt: 'myntra', sellerAcc: 'myntra_vb' });
+    expect(marketplaceScope({ marketplace: 'all', seller_account: 'all' })).toEqual({ mkt: null, sellerAcc: null });
+  });
+
+  it('filters settlements by account instead of comparing the account id with marketplace', () => {
+    const { where, values } = buildFilters({ marketplace: 'myntra_vb', startDate: '2026-06-01' });
+    expect(where).toBe(' AND fko.marketplace = $1 AND fko.seller_account = $2 AND fko.payment_date >= $3');
+    expect(values).toEqual(['myntra', 'myntra_vb', '2026-06-01']);
+  });
+});
 
 describe('unified link-up filters', () => {
   it('uses order and settlement aliases that exist in the unified link-up query', () => {

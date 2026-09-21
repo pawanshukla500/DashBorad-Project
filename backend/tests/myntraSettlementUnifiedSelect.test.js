@@ -35,7 +35,9 @@ describe('Myntra unified_settlements branch', () => {
   it('matches the unified_settlements column list exactly', () => {
     // The Flipkart branch defines the view's columns; every UNION branch must
     // line up positionally or the whole dashboard misreads its money columns.
-    expect(countSelectColumns(sql)).toBe(68);
+    // 69th column: seller_account (appended so EJ/VB can be filtered).
+    expect(countSelectColumns(sql)).toBe(69);
+    expect(sql).toMatch(/,\s*i\.seller_account\s+FROM mp_invoices i/);
   });
 
   it('maps payments onto the shared order reconciliation model', () => {
@@ -68,7 +70,8 @@ describe('Myntra unified_settlements branch', () => {
   it('is unioned into the unified_settlements view on boot', async () => {
     const { readFile } = await import('node:fs/promises');
     const path = new URL('../db/initDb.js', import.meta.url);
-    const source = await readFile(path, 'utf8');
+    // Windows checkouts (core.autocrlf) use CRLF; the assertion is about content.
+    const source = (await readFile(path, 'utf8')).replace(/\r\n/g, '\n');
     expect(source).toContain('UNION ALL\n${myntraInvoicesUnifiedSelect()}');
     // The order_type migration runs on already-current installations too.
     expect(source).toContain('await ensureMyntraOrderTypeSchema(pool);');

@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
+import useResettingPage from '../hooks/useResettingPage';
 import {
   fetchSummary, fetchReturnTrend, fetchReturnReasons, fetchReturnTypes,
   fetchReturns, fetchAllReturns, fetchSkuReturnSummary, fetchSkuOrders,
@@ -28,7 +29,7 @@ export default function ReturnsPage() {
   const dep = [JSON.stringify(filters), refreshKey];
   const reportFilters = { ...filters, _refresh: refreshKey || undefined };
   const [tab, setTab] = useState('analytics');
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useResettingPage(dep[0]);
   const [selectedId, setSelectedId] = useState(null);
 
   const { data: summary } = useFetch(() => fetchSummary(reportFilters), dep);

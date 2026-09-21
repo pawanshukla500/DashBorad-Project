@@ -19,9 +19,25 @@ export const DEFAULT_D2C_VENDORS = [
 ];
 
 /**
- * Ensure the configuration table exists
+ * Ensure the configuration table exists. This used to run CREATE + ALTER
+ * COLUMN TYPE on every request; ALTER takes an ACCESS EXCLUSIVE lock even when
+ * the type is unchanged, so each Outstanding Payments load briefly locked the
+ * table. The schema work now runs once per process (retried after a failure)
+ * and the ALTER only when the column still has its old type.
  */
-export async function ensureOutstandingConfigTable(pool) {
+let outstandingConfigReady = null;
+
+export function ensureOutstandingConfigTable(pool) {
+  if (!outstandingConfigReady) {
+    outstandingConfigReady = createOutstandingConfigTable(pool).catch(error => {
+      outstandingConfigReady = null;
+      throw error;
+    });
+  }
+  return outstandingConfigReady;
+}
+
+async function createOutstandingConfigTable(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outstanding_payment_config (
       id SERIAL PRIMARY KEY,
@@ -33,9 +49,19 @@ export async function ensureOutstandingConfigTable(pool) {
       cashback_rate NUMERIC(14,2) DEFAULT 0,
       is_active BOOLEAN DEFAULT TRUE,
       updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-    ALTER TABLE outstanding_payment_config ALTER COLUMN cashback_rate TYPE NUMERIC(14,2);
+    )
   `);
+  const { rows: cashbackType } = await pool.query(`
+    SELECT numeric_precision, numeric_scale
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'outstanding_payment_config'
+      AND column_name = 'cashback_rate'
+  `);
+  const { numeric_precision: precision, numeric_scale: scale } = cashbackType[0] || {};
+  if (Number(precision) !== 14 || Number(scale) !== 2) {
+    await pool.query('ALTER TABLE outstanding_payment_config ALTER COLUMN cashback_rate TYPE NUMERIC(14,2)');
+  }
 
   // Seed default rows if empty
   const countRes = await pool.query('SELECT COUNT(*) FROM outstanding_payment_config');
@@ -152,7 +178,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       -- Delivered Unsettled Orders: active orders pending settlement (excluding returns & cancellations)
       COUNT(CASE 
         WHEN ost.order_item_id IS NULL 
-         AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+         AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
          AND o.return_type IS NULL 
          AND rt.order_item_id IS NULL 
         THEN 1 
@@ -161,7 +187,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+           AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
           THEN o.final_invoice_amount 
@@ -172,7 +198,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+           AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
            AND (CURRENT_DATE - o.order_date::date) > 60 
@@ -184,7 +210,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+           AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
            AND (CURRENT_DATE - o.order_date::date) BETWEEN 31 AND 60 
@@ -196,7 +222,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+           AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
            AND (CURRENT_DATE - o.order_date::date) BETWEEN 16 AND 30 
@@ -208,7 +234,7 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       ROUND(COALESCE(SUM(
         CASE 
           WHEN ost.order_item_id IS NULL 
-           AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+           AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
            AND o.return_type IS NULL 
            AND rt.order_item_id IS NULL 
            AND (CURRENT_DATE - o.order_date::date) <= 15 
@@ -359,6 +385,8 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
         settled_adjusted: 0,
         total: totalOutstanding,
         overdue: totalOverdue,
+        overdue_31_60: Number(ejRow?.aging_31_60 || 0) + Number(vbRow?.aging_31_60 || 0),
+        overdue_60_plus: Number(ejRow?.aging_60_plus || 0) + Number(vbRow?.aging_60_plus || 0),
         due_in_grace: totalInGrace,
         upcoming: totalUpcoming,
         due_total: totalOutstanding,
@@ -422,6 +450,8 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     let chUnsettledCount = 0;
     let chUnsettled = 0;
     let chOverdue = 0;
+    let chOverdue3160 = 0;
+    let chOverdue60Plus = 0;
     let chInGrace = 0;
     let chUpcoming = 0;
 
@@ -448,6 +478,8 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       chUnsettledCount += uc;
       chUnsettled += un;
       chOverdue += od;
+      chOverdue3160 += Number(r.aging_31_60 || 0);
+      chOverdue60Plus += Number(r.aging_60_plus || 0);
       chInGrace += ig;
       chUpcoming += up;
 
@@ -497,6 +529,8 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       settled_adjusted: chKey === 'flipkart' ? fkNetAdj : 0,
       total: chTotalOutstanding,
       overdue: chOverdue,
+      overdue_31_60: chOverdue3160,
+      overdue_60_plus: chOverdue60Plus,
       due_in_grace: chInGrace,
       upcoming: chUpcoming,
       due_total: chTotalOutstanding,
@@ -520,6 +554,8 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     settled_adjusted: 0,
     total: 0,
     overdue: 0,
+    overdue_31_60: 0,
+    overdue_60_plus: 0,
     due_in_grace: 0,
     upcoming: 0,
     due_total: 0,
@@ -538,6 +574,8 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
     b2cTotal.settled_adjusted += c.settled_adjusted;
     b2cTotal.total += c.total;
     b2cTotal.overdue += c.overdue;
+    b2cTotal.overdue_31_60 += (c.overdue_31_60 || 0);
+    b2cTotal.overdue_60_plus += (c.overdue_60_plus || 0);
     b2cTotal.due_in_grace += c.due_in_grace;
     b2cTotal.upcoming += c.upcoming;
     b2cTotal.due_total += c.due_total;
@@ -613,13 +651,16 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
         count: 0,
         amount: b2cTotal.due_in_grace,
       },
+      // Exact buckets from SQL (these were previously a made-up 10%/90% split
+      // of the overdue total, and the 60+ count was every unsettled order).
+      // Per-bucket order counts are not computed.
       '31-60 days': {
-        count: 0,
-        amount: Math.round(b2cTotal.overdue * 0.1),
+        count: null,
+        amount: b2cTotal.overdue_31_60,
       },
       '60+ days': {
-        count: b2cChannels.reduce((sum, c) => sum + (c.orders_count || 0), 0),
-        amount: b2cTotal.overdue - Math.round(b2cTotal.overdue * 0.1),
+        count: null,
+        amount: b2cTotal.overdue_60_plus,
       },
     },
     by_marketplace: b2cChannels.map(c => ({
@@ -633,8 +674,8 @@ export async function computeOutstandingMatrix(pool, filters = {}) {
       total_outstanding: c.total,
       aging_0_15: c.upcoming,
       aging_16_30: c.due_in_grace,
-      aging_31_60: Math.round(c.overdue * 0.1),
-      aging_60_plus: c.overdue - Math.round(c.overdue * 0.1),
+      aging_31_60: c.overdue_31_60 || 0,
+      aging_60_plus: c.overdue_60_plus || 0,
       percentage_of_total: totalOutstanding > 0 ? Math.round((c.total / totalOutstanding) * 1000) / 10 : 0,
     })),
   };

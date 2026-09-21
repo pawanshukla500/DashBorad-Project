@@ -5,6 +5,7 @@ import {
   ComposedChart, Area,
 } from 'recharts';
 import { fetchCashFlow } from '../api/client';
+import { matchesMarketplace } from '../utils/marketplace';
 import useFetch from '../hooks/useFetch';
 import { useFilters } from '../context/FilterContext';
 import PageHeader from '../components/PageHeader';
@@ -88,7 +89,7 @@ function SettlementTimeline({ history, mp }) {
   const chartData = useMemo(() => {
     if (!history?.length) return [];
     const mp2 = mp === 'all' ? null : mp;
-    const filtered = mp2 ? history.filter(r => r.marketplace === mp2) : history;
+    const filtered = mp2 ? history.filter(r => matchesMarketplace(r.marketplace, mp2)) : history;
 
     if (view === 'daily') {
       return filtered.map(r => ({
@@ -122,7 +123,7 @@ function SettlementTimeline({ history, mp }) {
     const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
     const mp2 = mp === 'all' ? null : mp;
     return (history || [])
-      .filter(r => new Date(r.date) >= cutoff && (!mp2 || r.marketplace === mp2))
+      .filter(r => new Date(r.date) >= cutoff && matchesMarketplace(r.marketplace, mp2))
       .reduce((s, r) => s + +r.inflow, 0);
   }, [history, mp]);
 
@@ -161,10 +162,7 @@ function SettlementTimeline({ history, mp }) {
 }
 
 function matchesMp(rowMp, targetMp) {
-  if (!targetMp || targetMp === 'all') return true;
-  if (rowMp === targetMp) return true;
-  if (targetMp === 'myntra' && (rowMp === 'myntra_vb' || rowMp === 'myntra_ej' || rowMp === 'myntra')) return true;
-  return false;
+  return matchesMarketplace(rowMp, targetMp);
 }
 
 function formatSpfReason(r) {
@@ -402,7 +400,7 @@ function UnsettledOrders({ unsettled, mp }) {
   const rows = useMemo(() => {
     if (!unsettled?.length) return [];
     const mp2 = mp === 'all' ? null : mp;
-    return mp2 ? unsettled.filter(r => r.marketplace === mp2) : unsettled;
+    return mp2 ? unsettled.filter(r => matchesMarketplace(r.marketplace, mp2)) : unsettled;
   }, [unsettled, mp]);
 
   const totalVal = rows.reduce((s, r) => s + +r.value, 0);
@@ -459,7 +457,7 @@ function CashFlowForecast({ history, mp }) {
   const forecast = useMemo(() => {
     if (!history?.length) return [];
     const mp2 = mp === 'all' ? null : mp;
-    const rows = (mp2 ? history.filter(r => r.marketplace === mp2) : history)
+    const rows = (mp2 ? history.filter(r => matchesMarketplace(r.marketplace, mp2)) : history)
       .filter(r => r.date >= new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10));
 
     if (rows.length < 2) return [];
@@ -529,7 +527,7 @@ function RecentNefts({ nefts, mp }) {
   const rows = useMemo(() => {
     if (!nefts?.length) return [];
     const mp2 = mp === 'all' ? null : mp;
-    return mp2 ? nefts.filter(r => r.marketplace === mp2) : nefts;
+    return mp2 ? nefts.filter(r => matchesMarketplace(r.marketplace, mp2)) : nefts;
   }, [nefts, mp]);
 
   return (

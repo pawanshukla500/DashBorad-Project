@@ -108,22 +108,59 @@ export async function ensureOrderSettlementTotals(pool) {
   }
 }
 
+// Transaction-scoped advisory lock that serializes rebuilds. Without it, two
+// imports finishing together both ran DELETE+INSERT: the second transaction
+// could not see the first's uncommitted rows and failed on the primary key
+// (rolling back a whole Flipkart NEFT import, or silently leaving totals stale).
+export const ORDER_SETTLEMENT_TOTALS_LOCK_KEY = 7_140_231_117;
+
+const METRIC_COLUMNS = COLUMNS.filter(column => column !== 'order_item_id');
+const NEXT_TABLE = 'order_settlement_totals_next';
+
 /** Rebuild atomically in the caller's transaction after settlement-source writes. */
 export async function refreshOrderSettlementTotals(queryable) {
   const ownsTransaction = typeof queryable.connect === 'function' && typeof queryable.release !== 'function';
   const client = ownsTransaction ? await queryable.connect() : queryable;
   try {
     if (ownsTransaction) await client.query('BEGIN');
-    // DELETE keeps concurrent dashboard reads on the previously committed
-    // snapshot. TRUNCATE would take an ACCESS EXCLUSIVE lock and make every tab
-    // wait behind a multi-second import refresh.
-    await client.query(`DELETE FROM ${ORDER_SETTLEMENT_TOTALS_TABLE}`);
-    const result = await client.query(`
-      INSERT INTO ${ORDER_SETTLEMENT_TOTALS_TABLE} (${COLUMNS.join(', ')})
+    await client.query('SELECT pg_advisory_xact_lock($1)', [ORDER_SETTLEMENT_TOTALS_LOCK_KEY]);
+
+    // Compute the complete model once, then write only the rows that changed.
+    // An import usually changes a few thousand of ~330K rows; the previous
+    // DELETE-all + INSERT-all rewrote every row (and its index entry and WAL)
+    // on each upload and left a table's worth of dead tuples behind. The end
+    // state is identical: rows missing from the new model are deleted, and
+    // every other row is inserted or updated to exactly the new values.
+    // Concurrent dashboard reads keep their committed snapshot throughout.
+    await client.query(`DROP TABLE IF EXISTS pg_temp.${NEXT_TABLE}`);
+    const built = await client.query(`
+      CREATE TEMP TABLE ${NEXT_TABLE} ON COMMIT DROP AS
       ${ORDER_SETTLEMENT_TOTALS_SELECT}
     `);
+    // Temp tables are never auto-analyzed; without statistics the planner can
+    // pick a nested-loop anti join over two 300K-row inputs.
+    await client.query(`ANALYZE ${NEXT_TABLE}`);
+    const removed = await client.query(`
+      DELETE FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} existing
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${NEXT_TABLE} fresh WHERE fresh.order_item_id = existing.order_item_id
+      )
+    `);
+    // EXCLUDED carries the target column types (NUMERIC(14,2)), so the change
+    // test compares the same rounded values the table stores.
+    const written = await client.query(`
+      INSERT INTO ${ORDER_SETTLEMENT_TOTALS_TABLE} (${COLUMNS.join(', ')})
+      SELECT ${COLUMNS.join(', ')} FROM ${NEXT_TABLE}
+      ON CONFLICT (order_item_id) DO UPDATE SET
+        ${METRIC_COLUMNS.map(column => `${column} = EXCLUDED.${column}`).join(',\n        ')}
+      WHERE (${METRIC_COLUMNS.map(column => `${ORDER_SETTLEMENT_TOTALS_TABLE}.${column}`).join(', ')})
+        IS DISTINCT FROM (${METRIC_COLUMNS.map(column => `EXCLUDED.${column}`).join(', ')})
+    `);
     if (ownsTransaction) await client.query('COMMIT');
-    return { rowsRefreshed: result.rowCount || 0 };
+    return {
+      rowsRefreshed: built.rowCount || 0,
+      rowsChanged: (written.rowCount || 0) + (removed.rowCount || 0),
+    };
   } catch (error) {
     if (ownsTransaction) await client.query('ROLLBACK').catch(() => {});
     throw error;

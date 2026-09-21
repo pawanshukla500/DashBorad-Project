@@ -10,6 +10,8 @@ const ENV_KEYS = [
   'PG_CONNECT_TIMEOUT_MS',
   'PG_POOL_IDLE_TIMEOUT_MS',
   'PG_POOL_MAX_LIFETIME_SECONDS',
+  'PG_JIT',
+  'PG_WORK_MEM',
 ];
 const originalEnvironment = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
 
@@ -103,5 +105,33 @@ describe('PostgreSQL transport policy', () => {
     expect(config.statement_timeout).toBe(30_000);
     expect(config.idleTimeoutMillis).toBe(30_000);
     expect(config.maxLifetimeSeconds).toBe(300);
+  });
+
+  it('turns off JIT for API sessions in the startup packet unless PG_JIT=on', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.DATABASE_URL = 'postgresql://payments:secret@postgres:5432/reconciliation';
+    process.env.PG_SSL = 'false';
+    delete process.env.PG_JIT;
+    delete process.env.PG_WORK_MEM;
+
+    expect(resolvePgConfig().options).toBe('-c jit=off');
+
+    process.env.PG_JIT = 'on';
+    expect(resolvePgConfig().options).toBeUndefined();
+    process.env.PG_JIT = 'true';
+    expect(resolvePgConfig().options).toBeUndefined();
+  });
+
+  it('adds a validated work_mem to the session options and ignores malformed values', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.DATABASE_URL = 'postgresql://payments:secret@postgres:5432/reconciliation';
+    process.env.PG_SSL = 'false';
+    delete process.env.PG_JIT;
+
+    process.env.PG_WORK_MEM = '32MB';
+    expect(resolvePgConfig().options).toBe('-c jit=off -c work_mem=32MB');
+
+    process.env.PG_WORK_MEM = '32MB -c statement_timeout=0';
+    expect(resolvePgConfig().options).toBe('-c jit=off');
   });
 });

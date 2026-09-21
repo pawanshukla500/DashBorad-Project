@@ -1000,7 +1000,10 @@ const handleMonthlySummary = async (req, res) => {
     const marketplace = str(req.query.marketplace) || 'myntra';
     const sellerAcc = str(req.query.seller_account || req.query.sellerAccount) || 'all';
 
-    const accountWhere = (sellerAcc && sellerAcc !== 'all') ? `AND seller_account = '${sellerAcc}'` : '';
+    // Bound as $2 — the value comes straight from the query string.
+    const hasAccount = Boolean(sellerAcc && sellerAcc !== 'all');
+    const accountWhere = hasAccount ? 'AND seller_account = $2' : '';
+    const params = hasAccount ? [marketplace, sellerAcc] : [marketplace];
 
     const [ordRes, nodRes, unsettleRes] = await Promise.all([
       pool.query(`
@@ -1029,7 +1032,7 @@ const handleMonthlySummary = async (req, res) => {
           ${accountWhere}
         GROUP BY TO_CHAR(payment_date, 'YYYY-MM'), seller_account
         ORDER BY month DESC, seller_account
-      `, [marketplace]),
+      `, params),
 
       pool.query(`
         SELECT
@@ -1044,7 +1047,7 @@ const handleMonthlySummary = async (req, res) => {
           AND (order_type = 'nod' OR notes ILIKE '%nod%' OR invoice_number ILIKE '%nod%')
           ${accountWhere}
         ORDER BY payment_date DESC
-      `, [marketplace]),
+      `, params),
 
       pool.query(`
         SELECT
@@ -1055,7 +1058,7 @@ const handleMonthlySummary = async (req, res) => {
         FROM orders o
         WHERE marketplace = $1
           ${accountWhere}
-          AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+          AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
           AND o.return_type IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM returns r WHERE r.order_item_id = o.order_item_id
@@ -1067,7 +1070,7 @@ const handleMonthlySummary = async (req, res) => {
               AND i.order_line_id = o.order_item_id
           )
         GROUP BY TO_CHAR(order_date, 'YYYY-MM'), seller_account
-      `, [marketplace]),
+      `, params),
     ]);
 
     const nodByMonth = {};

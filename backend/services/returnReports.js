@@ -175,7 +175,10 @@ export async function getReturnsTracker(pool, {
         r.*,
         rr.order_item_id AS received_return_item_id,
         rr.is_bad_return,
-        rr.received_date,
+        -- returns has its own received_date, so r.* already carries one; a
+        -- second unaliased column made every tracker page fail with
+        -- "column reference received_date is ambiguous".
+        rr.received_date AS tracker_received_date,
         rr.notes,
         ost.spf_received,
         ost.spf_received_date,
@@ -221,7 +224,7 @@ export async function getReturnsTracker(pool, {
       COALESCE(o_exact.final_invoice_amount, o_amazon.final_invoice_amount, 0) AS invoice_amount,
       (r.received_return_item_id IS NOT NULL) AS is_received,
       r.is_bad_return,
-      TO_CHAR(r.received_date, 'YYYY-MM-DD') AS received_date,
+      TO_CHAR(r.tracker_received_date, 'YYYY-MM-DD') AS received_date,
       r.notes,
       COALESCE(spf.spf_total, 0) AS spf_deducted,
       COALESCE(r.spf_received, FALSE) AS spf_received,

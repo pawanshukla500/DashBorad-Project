@@ -30,8 +30,9 @@ function countSelectColumns(sql) {
 describe('Meesho unified_settlements branch', () => {
   const sql = meeshoSettlementUnifiedSelect();
 
-  it('matches the unified_settlements column list exactly (68 columns)', () => {
-    expect(countSelectColumns(sql)).toBe(68);
+  it('matches the unified_settlements column list exactly (69 columns, seller_account last)', () => {
+    expect(countSelectColumns(sql)).toBe(69);
+    expect(sql).toContain("'default'::text AS seller_account");
   });
 
   it('contains expected Meesho mappings and columns', () => {
