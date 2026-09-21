@@ -56,14 +56,41 @@ function clean(value) {
   return (value ?? '').toString().trim();
 }
 
+// value() is called ~75 times per row. It used to re-normalize every header
+// with a regex on every call (tens of millions of regex runs for a normal
+// file, all blocking the event loop). Header normalization is memoized, and
+// each row's normalized-header index is built once. The index keeps the first
+// column in key order for each normalized name, exactly as find() did; rows
+// are never mutated after parsing.
+const headerKeys = new Map();
 function headerKey(value) {
-  return clean(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const text = clean(value);
+  let key = headerKeys.get(text);
+  if (key === undefined) {
+    key = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (headerKeys.size < 10_000) headerKeys.set(text, key);
+  }
+  return key;
+}
+
+const rowHeaderIndexes = new WeakMap();
+function rowHeaderIndex(row) {
+  let index = rowHeaderIndexes.get(row);
+  if (!index) {
+    index = new Map();
+    for (const column of Object.keys(row)) {
+      const key = headerKey(column);
+      if (!index.has(key)) index.set(key, column);
+    }
+    rowHeaderIndexes.set(row, index);
+  }
+  return index;
 }
 
 function value(row, ...names) {
+  const index = rowHeaderIndex(row);
   for (const name of names) {
-    const key = headerKey(name);
-    const matchingKey = Object.keys(row).find(column => headerKey(column) === key);
+    const matchingKey = index.get(headerKey(name));
     if (matchingKey && clean(row[matchingKey])) return clean(row[matchingKey]);
   }
   return '';
@@ -550,7 +577,10 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
     }
 
     try {
-      await backfillOrdersFromMyntraPayment(pool, sellerAccount);
+      // Only the uploaded orders can gain payment fields; the unscoped call
+      // re-aggregated every invoice of the account and rewrote all its orders.
+      const uploadedReleaseIds = [...new Set(validRows.map(row => value(row, 'order release id')).filter(Boolean))];
+      await backfillOrdersFromMyntraPayment(pool, sellerAccount, uploadedReleaseIds);
       await refreshOrderSettlementTotals(pool);
       await pool.query(`
         UPDATE orders o

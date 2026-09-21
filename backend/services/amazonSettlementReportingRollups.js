@@ -200,7 +200,8 @@ SELECT
     BOOL_OR(r.spf_received),
     MAX(r.spf_received_date),
     SUM(r.spf_received_amount),
-    MAX(r.spf_received_neft_id)
+    MAX(r.spf_received_neft_id),
+    'default'::text
 FROM ${AMAZON_REPORTING_ROLLUP_TABLE} r
 LEFT JOIN (
   SELECT order_id, sku,

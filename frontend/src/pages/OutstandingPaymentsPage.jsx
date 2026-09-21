@@ -75,6 +75,7 @@ export default function OutstandingPaymentsPage() {
   // Summary Data State
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState(null);
   const [expandedChannels, setExpandedChannels] = useState({
     myntra: true,
     ...(urlChannel ? { [urlChannel]: true } : {}),
@@ -111,6 +112,7 @@ export default function OutstandingPaymentsPage() {
   // 1. Fetch Outstanding Summary
   const loadSummary = useCallback(async () => {
     setLoading(true);
+    setSummaryError(null);
     try {
       const res = await fetchOutstandingSummary();
       if (res) {
@@ -118,6 +120,7 @@ export default function OutstandingPaymentsPage() {
       }
     } catch (err) {
       console.error('Failed to load outstanding summary', err);
+      setSummaryError(err?.response?.data?.error || err?.message || 'Could not load outstanding payments.');
     } finally {
       setLoading(false);
     }
@@ -324,13 +327,10 @@ export default function OutstandingPaymentsPage() {
     ], `Outstanding_Payments_Consolidated_${today}`);
   };
 
-  const kpis = data?.kpis || {
-    total_orders: 169959492,
-    returns: 51778440,
-    marketplace_fees: 20194479,
-    payment_received: 91569506,
-    total_outstanding: 18085613,
-  };
+  // Real figures only. The previous fallback showed fixed crore amounts while
+  // loading and whenever the API failed, which read as live financial data.
+  const kpis = data?.kpis || {};
+  const kpiAmount = (value) => (data?.kpis ? formatCurrency(value || 0) : '—');
 
   const b2cChannels = data?.b2c?.channels || [];
   const b2cTotal = data?.b2c?.total || {};
@@ -369,6 +369,14 @@ export default function OutstandingPaymentsPage() {
         </div>
       </div>
 
+      {summaryError && (
+        <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-body-sm text-rose-700">
+          Outstanding payments could not be loaded: {summaryError}
+          {' '}
+          <button type="button" onClick={loadSummary} className="font-semibold underline">Retry</button>
+        </div>
+      )}
+
       {/* 2. Top 5 KPI Cards Row: Total Orders, Returns, Marketplace Fees, Payment Received, Total Outstanding */}
       <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-5">
         {/* TOTAL ORDERS */}
@@ -383,7 +391,7 @@ export default function OutstandingPaymentsPage() {
           </div>
           <div className="mt-2">
             <span className="text-financial-lg text-ink tabular-nums">
-              {formatCurrency(kpis.total_orders || kpis.unsettled || 0)}
+              {kpiAmount(kpis.total_orders || kpis.unsettled)}
             </span>
             <div className="text-body-sm text-outline mt-0.5">Gross order value</div>
           </div>
@@ -401,7 +409,7 @@ export default function OutstandingPaymentsPage() {
           </div>
           <div className="mt-2">
             <span className="text-financial-lg text-ink tabular-nums">
-              {formatCurrency(kpis.returns || 0)}
+              {kpiAmount(kpis.returns)}
             </span>
             <div className="text-body-sm text-outline mt-0.5">Customer & RTO refunds</div>
           </div>
@@ -419,7 +427,7 @@ export default function OutstandingPaymentsPage() {
           </div>
           <div className="mt-2">
             <span className="text-financial-lg text-ink tabular-nums">
-              {formatCurrency(kpis.marketplace_fees || 0)}
+              {kpiAmount(kpis.marketplace_fees)}
             </span>
             <div className="text-body-sm text-outline mt-0.5">Commissions & taxes</div>
           </div>
@@ -437,7 +445,7 @@ export default function OutstandingPaymentsPage() {
           </div>
           <div className="mt-2">
             <span className="text-financial-lg text-ink tabular-nums">
-              {formatCurrency(kpis.payment_received || 0)}
+              {kpiAmount(kpis.payment_received)}
             </span>
             <div className="text-body-sm text-outline mt-0.5">Bank payouts settled</div>
           </div>
@@ -455,7 +463,7 @@ export default function OutstandingPaymentsPage() {
           </div>
           <div className="mt-2">
             <span className="text-financial-lg text-white tabular-nums">
-              {formatCurrency(kpis.total_outstanding || 0)}
+              {kpiAmount(kpis.total_outstanding)}
             </span>
             <div className="text-body-sm text-white/60 mt-0.5">Net pending to receive</div>
           </div>

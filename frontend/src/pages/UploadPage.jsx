@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, pollAmazonSettlementProgress, uploadMeeshoSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData } from '../api/client';
+import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, pollAmazonSettlementProgress, uploadMeeshoSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData, invalidateApiReadCache } from '../api/client';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const MARKETPLACES = [
@@ -262,6 +262,9 @@ export default function UploadPage() {
           res = await uploadDataFile(uploadContext.dataType, uploadFd);
         }
       }
+      // Settlement imports finish in a background job after the upload request
+      // returned; reports fetched meanwhile may hold partial totals.
+      invalidateApiReadCache();
       setResult(res);
       setResultContext(uploadContext);
       setStep('result');

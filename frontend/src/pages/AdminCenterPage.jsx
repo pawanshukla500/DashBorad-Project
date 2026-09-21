@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect } from 'react';
 import { fetchUsers, createUser, updateUserRole, deleteUser, fetchUploadStatus } from '../api/client';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 // ── DB Banner Component ────────────────────────────────────────────────────────
@@ -72,6 +73,32 @@ function DbBanner({ configured, dbConnected, counts, lastUploads, fkSettlementPe
       </div>
     </div>
   );
+}
+
+// Upload log data types by marketplace (see LOG_TYPE_MAP in UploadPage).
+const MARKETPLACE_CARDS = [
+  { key: 'amazon', label: 'Amazon IN', icon: 'shopping_bag', matches: type => type.startsWith('amazon_') },
+  { key: 'flipkart', label: 'Flipkart', icon: 'shopping_bag', matches: type => type.startsWith('fk_') || ['orders', 'returns', 'settlements'].includes(type) },
+  { key: 'myntra', label: 'Myntra (VB & EJ)', icon: 'checkroom', matches: type => type.startsWith('myntra_') },
+  { key: 'meesho', label: 'Meesho', icon: 'storefront', matches: type => type.startsWith('meesho_') },
+];
+
+function latestUploadFor(lastUploads, matches) {
+  let latest = null;
+  for (const [type, uploadedAt] of Object.entries(lastUploads || {})) {
+    if (!uploadedAt || !matches(type)) continue;
+    const time = new Date(uploadedAt);
+    if (!Number.isNaN(time.getTime()) && (!latest || time > latest)) latest = time;
+  }
+  return latest;
+}
+
+function formatUploadTime(date) {
+  const minutes = Math.round((Date.now() - date.getTime()) / 60000);
+  const ago = minutes < 60 ? `${Math.max(minutes, 0)} min ago`
+    : minutes < 48 * 60 ? `${Math.round(minutes / 60)} h ago`
+      : `${Math.round(minutes / 1440)} days ago`;
+  return `${date.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} (${ago})`;
 }
 
 export default function AdminCenterPage() {
@@ -247,7 +274,7 @@ export default function AdminCenterPage() {
       {/* Tabs */}
       <div className="flex border-b border-border mb-8 gap-8 overflow-x-auto hide-scrollbar">
         <TabButton id="user" label="User Management" />
-        <TabButton id="marketplace" label="Marketplace Connections" />
+        <TabButton id="marketplace" label="Marketplace Data" />
         <TabButton id="org" label="Organization Profile" />
         <TabButton id="security" label="Security & Audit" />
       </div>
@@ -298,7 +325,7 @@ export default function AdminCenterPage() {
                   <th className="px-6 py-4">Email</th>
                   <th className="px-6 py-4">Role</th>
                   <th className="px-6 py-4">Status</th>
-                  <th className="px-6 py-4 text-right">Last Login</th>
+                  <th className="px-6 py-4 text-right">Added</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border text-sm">
@@ -329,12 +356,20 @@ export default function AdminCenterPage() {
                         </select>
                       </td>
                       <td className="px-6 py-4">
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          <span className="material-symbols-outlined text-[14px]">check_circle</span> Active
-                        </span>
+                        {/* Only what the directory records: a Firebase login is linked or not.
+                            Every row used to say "Active" and "Today"/"Yesterday". */}
+                        {u.firebase_uid ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <span className="material-symbols-outlined text-[14px]">check_circle</span> Login linked
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-surface-container-low text-secondary border border-border">
+                            Not signed in yet
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-right text-secondary">
-                        {isMe ? 'Today' : 'Yesterday'}
+                        {u.created_at ? new Date(u.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
                       </td>
                     </tr>
                   );
@@ -354,59 +389,35 @@ export default function AdminCenterPage() {
       {/* TAB: MARKETPLACE CONNECTIONS */}
       {activeTab === 'marketplace' && (
         <section className="mb-8">
-          <h2 className="font-display text-headline-md font-bold text-ink mb-4">Marketplace Connections</h2>
+          <h2 className="font-display text-headline-md font-bold text-ink mb-1">Marketplace Data</h2>
+          <p className="text-body-sm text-secondary mb-4">
+            Marketplace data is imported from report files on the Uploads page. Times below are the latest successful upload per marketplace.
+          </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            
-            {/* Amazon */}
-            <div className="bg-surface border border-border rounded-xl p-5 shadow-sm flex flex-col">
-              <div className="flex justify-between items-start mb-4">
-                <div className="w-10 h-10 rounded bg-surface-container-low border border-border flex items-center justify-center">
-                  <span className="material-symbols-outlined text-outline">shopping_bag</span>
+            {MARKETPLACE_CARDS.map(card => {
+              const lastUpload = latestUploadFor(dbStatus?.lastUploads, card.matches);
+              return (
+                <div key={card.key} className="bg-surface border border-border rounded-xl p-5 shadow-sm flex flex-col">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="w-10 h-10 rounded bg-surface-container-low border border-border flex items-center justify-center">
+                      <span className="material-symbols-outlined text-outline">{card.icon}</span>
+                    </div>
+                    {dbStatus && (
+                      lastUpload
+                        ? <span className="px-2 py-0.5 rounded-sm bg-emerald-50 text-emerald-600 border border-emerald-100 text-[10px] font-bold tracking-wider uppercase">Data loaded</span>
+                        : <span className="px-2 py-0.5 rounded-sm bg-surface-container-low text-secondary border border-border text-[10px] font-bold tracking-wider uppercase">No uploads</span>
+                    )}
+                  </div>
+                  <h3 className="font-bold text-ink">{card.label}</h3>
+                  <p className="text-xs text-secondary mt-1 mb-5">
+                    {!dbStatus ? 'Loading…' : lastUpload ? `Last upload: ${formatUploadTime(lastUpload)}` : 'No files uploaded yet'}
+                  </p>
+                  <Link to="/upload" className="mt-auto w-full py-2 border border-border rounded font-bold text-sm text-center text-secondary hover:text-ink hover:bg-surface-container transition-colors">
+                    Go to Uploads
+                  </Link>
                 </div>
-                <span className="px-2 py-0.5 rounded-sm bg-emerald-50 text-emerald-600 border border-emerald-100 text-[10px] font-bold tracking-wider uppercase">Connected</span>
-              </div>
-              <h3 className="font-bold text-ink">Amazon IN</h3>
-              <p className="text-xs text-secondary mt-1 mb-5">Last sync: 10 mins ago</p>
-              <button className="mt-auto w-full py-2 border border-border rounded font-bold text-sm text-secondary hover:text-ink hover:bg-surface-container transition-colors">Configure</button>
-            </div>
-
-            {/* Flipkart */}
-            <div className="bg-surface border border-border rounded-xl p-5 shadow-sm flex flex-col">
-              <div className="flex justify-between items-start mb-4">
-                <div className="w-10 h-10 rounded bg-surface-container-low border border-border flex items-center justify-center">
-                  <span className="material-symbols-outlined text-outline">shopping_bag</span>
-                </div>
-                <span className="px-2 py-0.5 rounded-sm bg-emerald-50 text-emerald-600 border border-emerald-100 text-[10px] font-bold tracking-wider uppercase">Connected</span>
-              </div>
-              <h3 className="font-bold text-ink">Flipkart</h3>
-              <p className="text-xs text-secondary mt-1 mb-5">Last sync: 45 mins ago</p>
-              <button className="mt-auto w-full py-2 border border-border rounded font-bold text-sm text-secondary hover:text-ink hover:bg-surface-container transition-colors">Configure</button>
-            </div>
-
-            {/* Myntra */}
-            <div className="bg-[#FFF8F3] border border-[#FDBA74] rounded-xl p-5 shadow-sm flex flex-col">
-              <div className="flex justify-between items-start mb-4">
-                <div className="w-10 h-10 rounded bg-surface border border-[#FDBA74] flex items-center justify-center">
-                  <span className="material-symbols-outlined text-[#F97316]">checkroom</span>
-                </div>
-                <span className="px-2 py-0.5 rounded-sm bg-[#FFEDD5] text-[#C2410C] border border-[#FDBA74] text-[10px] font-bold tracking-wider uppercase">Auth Req</span>
-              </div>
-              <h3 className="font-bold text-ink">Myntra</h3>
-              <p className="text-xs text-[#C2410C] mt-1 mb-5">Token expired. Please re-auth.</p>
-              <button className="mt-auto w-full py-2 bg-[#EA580C] text-white rounded font-bold text-sm hover:bg-[#C2410C] transition-colors">Re-authenticate</button>
-            </div>
-
-            {/* Meesho */}
-            <div className="bg-surface border border-border rounded-xl p-5 shadow-sm flex flex-col opacity-75">
-              <div className="flex justify-between items-start mb-4">
-                <div className="w-10 h-10 rounded bg-surface-container-low border border-border flex items-center justify-center">
-                  <span className="material-symbols-outlined text-outline">storefront</span>
-                </div>
-              </div>
-              <h3 className="font-bold text-ink">Meesho</h3>
-              <p className="text-xs text-secondary mt-1 mb-5">Not connected</p>
-              <button className="mt-auto w-full py-2 bg-secondary text-white rounded font-bold text-sm hover:bg-primary transition-colors">Connect</button>
-            </div>
+              );
+            })}
           </div>
         </section>
       )}

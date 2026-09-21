@@ -152,9 +152,14 @@ access to `3001` should not be required.
 - The API keeps a bounded pool with TCP keepalive, retries safe reads after
   transient socket failures, recreates stale pools in the background, and
   returns `503` instead of empty business data while PostgreSQL is unavailable.
-- Dashboard and Profit & Loss report responses are cached briefly and
-  invalidated after successful mutations. A browser refresh bypasses the cache
-  with `_refresh`.
+- Read-only report responses (dashboard, sales, P&L, profit analysis,
+  settlement statements, filters) share one server cache
+  (`backend/services/reportCache.js`). An entry is dropped after every
+  successful API write, at the end of background import jobs, and whenever
+  PostgreSQL's per-table write counters change (so writes from another
+  instance or a script are picked up within about a second).
+  `REPORT_CACHE_TTL_MS` (default 10 minutes) is only an upper bound. The
+  Refresh button's `_refresh` token recomputes each report once per click.
 - If the API reports `DATABASE_STARTING` or `DB_UNAVAILABLE`, check the API
   logs and database health first rather than repeatedly restarting the
   container:
@@ -165,6 +170,43 @@ access to `3001` should not be required.
   docker compose -f docker-compose.production.yml exec api getent hosts postgres
   curl -i http://127.0.0.1/health
   ```
+
+### PostgreSQL server tuning (Postgres container)
+
+The PostgreSQL container runs with stock settings. Measured on production
+(September 2026, 1.8 GB database): `shared_buffers=128MB`, `work_mem=4MB`,
+`jit=on`; the buffer cache hit ratio was 92.8% and report queries had spilled
+97 GB of temporary files to disk. The API already turns JIT off for its own
+sessions. Apply the following to the PostgreSQL service in its own compose file
+(these are server settings; they are not part of this repository), sized to the
+VPS RAM, then restart that container:
+
+```yaml
+services:
+  postgresql:
+    shm_size: 1g            # parallel queries use /dev/shm (Docker default is 64 MB)
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB  # ~25% of RAM (8 GB VPS); 512MB on 4 GB
+      - -c
+      - effective_cache_size=4GB  # ~50-75% of RAM
+      - -c
+      - work_mem=16MB       # per sort/hash node, per connection; keep modest
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - random_page_cost=1.1      # SSD/NVMe storage
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - jit=off
+```
+
+After the restart, `SHOW shared_buffers;` should report the new value.
+`pg_stat_statements` (`shared_preload_libraries=pg_stat_statements`, then
+`CREATE EXTENSION pg_stat_statements;` in `paymentapp`) is recommended so slow
+queries can be identified from real traffic.
 
 ## Recovery commands
 

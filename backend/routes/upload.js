@@ -508,6 +508,7 @@ async function batchUpsert(pool, table, keyCol, fields, rows, marketplace, confl
   }
   const deduped = [...seen.values()];
 
+  let rowsWritten = 0;
   await forEachDbBatch(deduped, fields.length + 2, async batch => {
     const values = [];
     const groups = batch.map((row) => {
@@ -526,10 +527,20 @@ async function batchUpsert(pool, table, keyCol, fields, rows, marketplace, confl
         if (outcome.inserted) inserted++;
         else updated++;
       }
+      rowsWritten += batch.length;
     } catch (e) {
       if (e.message.includes('no unique or exclusion constraint')) {
         throw new Error(`Database setup incomplete: no UNIQUE constraint on "${keyCol}" in table "${table}". Please run the database migration and restart the server.`);
       }
+      // Any other failure used to be swallowed: the whole batch (up to ~1,500
+      // rows) was counted as "skipped" and the upload was logged as ok.
+      const error = new Error(
+        `Upload stopped after ${rowsWritten} of ${deduped.length} rows were saved: ${e.message}. `
+        + 'Saved rows are keyed, so re-uploading the corrected file updates them in place.',
+      );
+      error.status = e.status || 500;
+      error.cause = e;
+      throw error;
     }
   });
 
@@ -617,6 +628,15 @@ const ORDER_FIELDS = [
   ['brand_name',             g => str(g('Brand'))],
 ];
 
+// Handlers must read parsed values by column name. Positional reads silently
+// broke returns validation when order_id was inserted into RETURN_FIELDS
+// (quantity moved from 15 to 16 and every titled row was rejected).
+export function fieldIndex(fields) {
+  return Object.fromEntries(fields.map(([name], index) => [name, index]));
+}
+
+const ORDER_FIELD_INDEX = fieldIndex(ORDER_FIELDS);
+
 const RETURN_FIELDS = [
   ['return_id',                     g => { const v = str(g('return_id')); return v ? v.replace(/^RI:/i, '') || null : null; }],
   ['order_item_id',                 g => { const v = str(g('order_item_id')); return v ? v.replace(/^OI:/i, '') || null : null; }],
@@ -655,6 +675,40 @@ const RETURN_FIELDS = [
   ['return_cancellation_date',      g => dt(g('return_cancellation_date'), g.dateFormat('return_cancellation_date'))],
   ['return_date',                   g => dt(g('return_date') || g('Return Date'), g.dateFormat('return_date') || g.dateFormat('Return Date'))],
 ];
+
+export const RETURN_FIELD_INDEX = fieldIndex(RETURN_FIELDS);
+
+/**
+ * Parse one generic returns-upload row. `g(field)` reads a mapped cell and
+ * `g.dateFormat(field)` its detected date format. Returns the RETURN_FIELDS
+ * values (with a synthetic order_item_id where the source has none) or the
+ * reason the row is skipped.
+ */
+export function parseReturnUploadRow(g, { marketplace, rowIndex }) {
+  const vals = RETURN_FIELDS.map(([, get]) => get(g));
+  const RETURN_ID = RETURN_FIELD_INDEX.return_id;
+  const ORDER_ITEM_ID = RETURN_FIELD_INDEX.order_item_id;
+  const quantity = vals[RETURN_FIELD_INDEX.quantity];
+  if (hasInvalidNumber(g('quantity'), quantity) || (quantity != null && (!Number.isInteger(quantity) || quantity < 1))) {
+    return { reason: 'quantity must be a positive whole number' };
+  }
+  // Fallback: if order_item_id missing but return_id present, use synthetic key
+  if (!vals[ORDER_ITEM_ID]) {
+    if (vals[RETURN_ID]) {
+      vals[ORDER_ITEM_ID] = `RET_${vals[RETURN_ID]}`;
+    } else if (marketplace === 'amazon') {
+      // Amazon returns: synthesise from order_id + sku
+      const ordId = str(g('Order ID') || g('order_id')) || '';
+      const sku   = vals[RETURN_FIELD_INDEX.sku] || '';
+      if (!ordId) return { reason: 'order_item_id and order_id both empty' };
+      vals[ORDER_ITEM_ID] = `AMZR-${ordId}${sku ? `-${sku.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,30)}` : `-${rowIndex}`}`;
+      if (!vals[RETURN_ID]) vals[RETURN_ID] = vals[ORDER_ITEM_ID]; // use as return_id too
+    } else {
+      return { reason: 'order_item_id and return_id both empty' };
+    }
+  }
+  return { vals };
+}
 
 const SETTLEMENT_FIELDS = [
   ['neft_id',                g => str(g('NEFT ID'))],
@@ -1084,7 +1138,10 @@ router.delete('/clear/:type', async (req, res) => {
     fk_storage_recall:    { tables: FK_TABLES,     logTypes: FK_LOGTYPES, scopeMp: false },
     fk_ads:               { tables: FK_TABLES,     logTypes: FK_LOGTYPES, scopeMp: false },
     fk_google_ads:        { tables: FK_TABLES,     logTypes: FK_LOGTYPES, scopeMp: false },
-    all: { tables: ['orders','returns','settlements', ...FK_TABLES], logTypes: null, scopeMp: !!marketplace },
+    // Every table here has a marketplace column. With a marketplace given, each
+    // one is scoped: previously only orders/returns were, so clearing "all"
+    // for Amazon also deleted every Flipkart settlement row.
+    all: { tables: ['orders','returns','settlements', ...FK_TABLES], logTypes: null, scopeMp: !!marketplace, scopeAllTables: true },
   };
 
   const cfg = CONFIGS[req.params.type];
@@ -1108,7 +1165,7 @@ router.delete('/clear/:type', async (req, res) => {
           `DELETE FROM ${table} WHERE marketplace = $1 AND seller_account = $2`,
           [mp, cfg.forceSellerAccount],
         );
-      } else if (cfg.scopeMp && mp && (table === 'orders' || table === 'returns')) {
+      } else if (cfg.scopeMp && mp && (cfg.scopeAllTables || table === 'orders' || table === 'returns')) {
         result = await client.query(`DELETE FROM ${table} WHERE COALESCE(marketplace,'flipkart') = $1`, [mp]);
       } else {
         result = await client.query(`DELETE FROM ${table}`);
@@ -1230,14 +1287,17 @@ router.post('/orders', upload.single('file'), async (req, res) => {
       const g = (f) => getField(rawRow, f, colMap);
       g.dateFormat = (f) => dateFormats[f];
       const vals = ORDER_FIELDS.map(([, get]) => get(g));
+      const field = (name) => vals[ORDER_FIELD_INDEX[name]];
       const rawQty = g('QTY') || g('Qty');
       const rawAmount = g('Amount') || g('Final Invoice Amount');
+      const qty = field('qty');
+      const amount = field('final_invoice_amount');
       let reason = null;
-      if (!vals[0]) reason = 'order_id is empty';
-      else if (!vals[1]) reason = 'order_item_id is empty';
-      else if (!vals[10]) reason = 'order_date is empty or invalid';
-      else if (hasInvalidNumber(rawQty, vals[11]) || !Number.isInteger(vals[11]) || vals[11] < 1) reason = 'QTY must be a positive whole number';
-      else if (hasInvalidNumber(rawAmount, vals[12]) || vals[12] == null) reason = 'Amount is empty or invalid';
+      if (!field('order_id')) reason = 'order_id is empty';
+      else if (!field('order_item_id')) reason = 'order_item_id is empty';
+      else if (!field('order_date')) reason = 'order_date is empty or invalid';
+      else if (hasInvalidNumber(rawQty, qty) || !Number.isInteger(qty) || qty < 1) reason = 'QTY must be a positive whole number';
+      else if (hasInvalidNumber(rawAmount, amount) || amount == null) reason = 'Amount is empty or invalid';
       if (reason) {
         skipped++;
         skippedRows.push({ rowNum: idx + 2, reason, data: rowData(rawRow) });
@@ -1286,34 +1346,11 @@ router.post('/returns', upload.single('file'), async (req, res) => {
     rawRows.forEach((rawRow, idx) => {
       const g = (f) => getField(rawRow, f, colMap);
       g.dateFormat = (f) => dateFormats[f];
-      const vals = RETURN_FIELDS.map(([, get]) => get(g));
-      const rawQuantity = g('quantity');
-      if (hasInvalidNumber(rawQuantity, vals[15]) || (vals[15] != null && (!Number.isInteger(vals[15]) || vals[15] < 1))) {
+      const { vals, reason } = parseReturnUploadRow(g, { marketplace, rowIndex: idx });
+      if (reason) {
         skipped++;
-        skippedRows.push({ rowNum: idx + 2, reason: 'quantity must be a positive whole number', data: rowData(rawRow) });
+        skippedRows.push({ rowNum: idx + 2, reason, data: rowData(rawRow) });
         return;
-      }
-      // Fallback: if order_item_id missing but return_id present, use synthetic key
-      if (!vals[1]) {
-        if (vals[0]) {
-          vals[1] = `RET_${vals[0]}`;
-        } else if (marketplace === 'amazon') {
-          // Amazon returns: synthesise from order_id + sku (vals[12]=sku, order_id via g)
-          const ordId = str(g('Order ID') || g('order_id')) || '';
-          const sku   = vals[12] || '';
-          if (ordId) {
-            vals[1] = `AMZR-${ordId}${sku ? `-${sku.replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,30)}` : `-${idx}`}`;
-            if (!vals[0]) vals[0] = vals[1]; // use as return_id too
-          } else {
-            skipped++;
-            skippedRows.push({ rowNum: idx + 2, reason: 'order_item_id and order_id both empty', data: rowData(rawRow) });
-            return;
-          }
-        } else {
-          skipped++;
-          skippedRows.push({ rowNum: idx + 2, reason: 'order_item_id and return_id both empty', data: rowData(rawRow) });
-          return;
-        }
       }
       parsedRows.push(vals);
     });

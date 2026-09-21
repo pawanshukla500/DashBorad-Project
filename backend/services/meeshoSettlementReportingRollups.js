@@ -79,7 +79,8 @@ SELECT
     BOOL_OR(COALESCE(m.claims, 0) > 0) AS spf_received,
     MAX(CASE WHEN COALESCE(m.claims, 0) > 0 THEN m.payment_date ELSE NULL END) AS spf_received_date,
     COALESCE(SUM(m.claims), 0) AS spf_received_amount,
-    MAX(CASE WHEN COALESCE(m.claims, 0) > 0 THEN m.settlement_id ELSE NULL END) AS spf_received_neft_id
+    MAX(CASE WHEN COALESCE(m.claims, 0) > 0 THEN m.settlement_id ELSE NULL END) AS spf_received_neft_id,
+    'default'::text AS seller_account
 FROM meesho_settlement_items m
 LEFT JOIN orders o
   ON o.marketplace = 'meesho'

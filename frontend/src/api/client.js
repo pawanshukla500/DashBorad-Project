@@ -43,6 +43,37 @@ function readCacheKey(url, config = {}) {
   return `${cacheScope()}|${url}|${stableSerialize(params)}`;
 }
 
+// Pages attach the Refresh button's token as `_refresh` to every request they
+// make afterwards, because the token lives in shared filter state. Honouring
+// it on every request turned one Refresh click into "no browser cache, no
+// server cache, no request de-duplication" for the rest of the session. A
+// token is therefore honoured once per report, and only in the burst of
+// requests right after it first appears; afterwards it is stripped so both
+// caches work normally again.
+const REFRESH_TOKEN_LIVE_MS = 10_000;
+const MAX_TRACKED_REFRESH = 500;
+const refreshTokenFirstSeen = new Map();
+const honouredRefreshTokens = new Map();
+
+function trackBounded(map, key, value) {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > MAX_TRACKED_REFRESH) map.delete(map.keys().next().value);
+}
+
+function refreshDirective(key, params) {
+  if (!params || !Object.prototype.hasOwnProperty.call(params, '_refresh')) return { force: false, strip: false };
+  const raw = params._refresh;
+  if (raw === undefined || raw === null || raw === '' || raw === 0 || raw === false) return { force: false, strip: true };
+  const token = String(raw);
+  const now = Date.now();
+  if (!refreshTokenFirstSeen.has(token)) trackBounded(refreshTokenFirstSeen, token, now);
+  const live = now - refreshTokenFirstSeen.get(token) < REFRESH_TOKEN_LIVE_MS;
+  if (!live || honouredRefreshTokens.get(key) === token) return { force: false, strip: true };
+  trackBounded(honouredRefreshTokens, key, token);
+  return { force: true, strip: false };
+}
+
 export function invalidateApiReadCache() {
   // Keep an invalidation generation even though the per-key version map is
   // cleared. Otherwise a pre-invalidation request and a new request for the
@@ -59,7 +90,12 @@ api.get = (url, config = {}) => {
   if (!isCacheableRead(config)) return rawGet(url, config);
 
   const key = readCacheKey(url, config);
-  const forceRefresh = Object.prototype.hasOwnProperty.call(config.params || {}, '_refresh');
+  const { force: forceRefresh, strip } = refreshDirective(key, config.params);
+  if (strip) {
+    const params = { ...config.params };
+    delete params._refresh;
+    config = { ...config, params };
+  }
   const generation = readCacheGeneration;
   const version = forceRefresh
     ? (readVersions.get(key) || 0) + 1
@@ -88,7 +124,8 @@ api.get = (url, config = {}) => {
       if (ttl > 0 && readCacheGeneration === generation && readVersions.get(key) === version) {
         readCache.set(key, {
           data: cloneCachedData(response.data),
-          response,
+          // Keep headers/status only; the clone above is the cached payload.
+          response: { ...response, data: undefined },
           expiresAt: Date.now() + ttl,
         });
       }
@@ -185,7 +222,6 @@ function p(filters = {}) {
   if (filters.category)    params.category    = filters.category;
   if (filters.region)      params.region      = filters.region;
   if (filters.status)      params.status      = filters.status;
-  if (filters.groupBy)     params.groupBy     = filters.groupBy;
   if (filters.marketplace) params.marketplace = filters.marketplace;
   if (filters.brand)       params.brand       = filters.brand;
   if (filters.sellerAccount || filters.seller_account) {
@@ -197,14 +233,23 @@ function p(filters = {}) {
   return params;
 }
 
+// Only these reports read groupBy (/sales-trend, /return-trend, /profit-loss,
+// /profit-analysis, /settlement/trend). Sending it to every report made each
+// Daily/Weekly/Monthly switch miss both caches for reports it cannot change.
+function pWithGroupBy(filters = {}) {
+  const params = p(filters);
+  if (filters.groupBy) params.groupBy = filters.groupBy;
+  return params;
+}
+
 export const fetchData        = ()            => api.post('/fetch').then(r => r.data);
 export const fetchAmazonFcMaster = ()         => api.get('/amazon-fc').then(r => r.data);
 export const saveAmazonFc = (body)            => api.post('/amazon-fc', body).then(r => r.data);
 export const removeAmazonFc = (code)          => api.delete(`/amazon-fc/${encodeURIComponent(code)}`).then(r => r.data);
 export const fetchSummary            = (f) => api.get('/summary',             { params: p(f) }).then(r => r.data);
 export const fetchMarketplaceSummary = (f) => api.get('/marketplace-summary', { params: p(f) }).then(r => r.data);
-export const fetchSalesTrend  = (f)           => api.get('/sales-trend', { params: p(f) }).then(r => r.data);
-export const fetchReturnTrend = (f)           => api.get('/return-trend', { params: p(f) }).then(r => r.data);
+export const fetchSalesTrend  = (f)           => api.get('/sales-trend', { params: pWithGroupBy(f) }).then(r => r.data);
+export const fetchReturnTrend = (f)           => api.get('/return-trend', { params: pWithGroupBy(f) }).then(r => r.data);
 export const fetchTopProducts = (f, limit=10) => api.get('/top-products', { params: { ...p(f), limit } }).then(r => r.data);
 export const fetchReturnReasons     = (f)       => api.get('/return-reasons',      { params: p(f) }).then(r => r.data);
 export const fetchSkuReturnSummary  = (f, skuView = 'listing') => api.get('/sku-return-summary', { params: { ...p(f), skuView } }).then(r => r.data);
@@ -224,7 +269,7 @@ export const fetchOrderDetail = (orderItemId) => api.get(`/order/${orderItemId}`
 export const pushSettlementReport = () => api.post('/settlement/push-report').then(r => r.data);
 
 // Full P&L from SQL orders, returns, and settlements
-export const fetchProfitLoss = (f) => api.get('/profit-loss', { params: p(f) }).then(r => r.data);
+export const fetchProfitLoss = (f) => api.get('/profit-loss', { params: pWithGroupBy(f) }).then(r => r.data);
 
 // Monthly Statement (PDF upload + SQL save)
 export const uploadStatement      = (formData) => api.post('/statement/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data);
@@ -258,7 +303,7 @@ export const fetchFeeLeaks = (marketplace = 'flipkart', month = 'all', feeType =
 
 // Settlement
 export const fetchSettlementSummary  = (f) => api.get('/settlement/summary', { params: p(f) }).then(r => r.data);
-export const fetchSettlementTrend    = (f) => api.get('/settlement/trend',   { params: p(f) }).then(r => r.data);
+export const fetchSettlementTrend    = (f) => api.get('/settlement/trend',   { params: pWithGroupBy(f) }).then(r => r.data);
 export const fetchSettlementOrders   = (f, page=1, status='', pageSize=50) =>
   api.get('/settlement/orders', { params: { ...p(f), page, pageSize, ...(status ? { settlementStatus: status } : {}) } }).then(r => r.data);
 export const fetchUnsettledSummary   = (f) => api.get('/settlement/unsettled-summary', { params: p(f) }).then(r => r.data);
@@ -347,8 +392,8 @@ export const fetchMpInvoiceRateAudit = (marketplace = 'myntra', sellerAccount = 
 // AI-powered rate card screenshot parser (uses Gemini Vision on backend)
 
 // Upload Management
-export const fetchUploadStatus   = ()         => api.get('/upload/status').then(r => r.data);
-export const fetchUploadHistory  = (params = {}) => api.get('/upload/history', { params }).then(r => r.data);
+export const fetchUploadStatus   = ()         => api.get('/upload/status', { cache: false }).then(r => r.data);
+export const fetchUploadHistory  = (params = {}) => api.get('/upload/history', { params, cache: false }).then(r => r.data);
 // sku_master.{master_sku, cogs}.
 //   filters: { settlement_id?, month? (YYYY-MM), order_id?, sku?, fulfilment? (FBA|Flex),
 //              only_multi_settlement?, only_with_refund?, page?, pageSize? }
@@ -392,7 +437,11 @@ export const fetchUnsettledItems    = (f, page=1, pageSize=50) => {
 export const fetchNonOrderDeductions = (f) => api.get('/reconcile/non-order', { params: p(f) }).then(r => r.data);
 export const fetchRateAudit          = (f) => api.get('/reconcile/rate-audit', { params: p(f) }).then(r => r.data);
 export const fetchMyntraMonthlySummary = (f) => api.get('/mp-settlement/monthly-summary', { params: p(f) }).then(r => r.data);
-export const fetchUnifiedLinkup = (f = {}) => api.get('/reconcile/unified-linkup', { params: p(f) }).then(r => r.data);
+// p() only keeps filter fields; paging must be passed through explicitly or
+// "Next" keeps returning page 1.
+export const fetchUnifiedLinkup = (f = {}) => api.get('/reconcile/unified-linkup', {
+  params: { ...p(f), ...(f.page ? { page: f.page } : {}), ...(f.pageSize ? { pageSize: f.pageSize } : {}) },
+}).then(r => r.data);
 
 // Aliases
 export const fetchReconciliationSummary = fetchReconcileSummary;
@@ -432,7 +481,7 @@ export const fetchBrandTopSkus  = (f) => api.get('/brand-top-skus', { params: p(
 
 // Profit Analysis (revenue – FK fees – COGS = gross profit, by category/month/SKU/brand)
 export const fetchProfitAnalysis = (f, sellerAccount) =>
-  api.get('/profit-analysis', { params: { ...p(f), ...(sellerAccount ? { sellerAccount } : {}) } }).then(r => r.data);
+  api.get('/profit-analysis', { params: { ...pWithGroupBy(f), ...(sellerAccount ? { sellerAccount } : {}) } }).then(r => r.data);
 
 // VB Export SKU prefilled template download
 export const downloadVbExportPrefilledTemplate = () =>
@@ -476,6 +525,11 @@ export const uploadMyntraData       = (type, formData, sellerAccount) =>
   api.post(`/upload/myntra/${type}`, formData, { params: { seller_account: sellerAccount }, headers: { 'Content-Type': 'multipart/form-data' }, timeout: 900000 }).then(r => r.data);
 export const downloadMyntraTemplate = (type) =>
   api.get(`/upload/myntra/template/${type}`, { responseType: 'blob' }).then(r => r.data);
+
+// Links Myntra payment totals onto orders. Goes through the authenticated
+// client; the route reads `seller_account`.
+export const backfillMyntraOrders   = (sellerAccount) =>
+  api.post('/mp-settlement/invoices/backfill-myntra', sellerAccount ? { seller_account: sellerAccount } : {}).then(r => r.data);
 
 export const fetchMpLedger          = (mp, type, page = 1, pageSize = 50) =>
   api.get('/mp-settlement/ledger', { params: { marketplace: mp, entry_type: type, page, pageSize } }).then(r => r.data);
@@ -588,8 +642,10 @@ export const uploadFkSettlement  = (formData) =>
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 30000,
   }).then(r => r.data);
+// Progress/status polls must never come from the 12 s read cache: a cached
+// poll froze the progress bar and delayed "done" by up to 12 s per upload.
 export const pollFkProgress = (jobId) =>
-  api.get(`/upload/flipkart-settlement/progress/${jobId}`).then(r => r.data);
+  api.get(`/upload/flipkart-settlement/progress/${jobId}`, { cache: false }).then(r => r.data);
 
 // Amazon Settlement
 
@@ -605,7 +661,7 @@ export const uploadAmazonSettlement    = (formData) =>
     timeout: 900000,
   }).then(r => r.data);
 export const pollAmazonSettlementProgress = (jobId) =>
-  api.get(`/upload/amazon-settlement/progress/${jobId}`).then(r => r.data);
+  api.get(`/upload/amazon-settlement/progress/${jobId}`, { cache: false }).then(r => r.data);
 export const fetchAmazonSettlementSummary = () =>
   api.get('/upload/amazon-settlement/summary').then(r => r.data);
 export const fetchAmazonNonOrder = ({ settlement_id, month, page = 1, pageSize = 100 } = {}) =>

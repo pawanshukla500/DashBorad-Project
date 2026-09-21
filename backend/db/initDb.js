@@ -25,6 +25,7 @@ const MYNTRA_BLANK_TRACKING_RTO_SCHEMA_VERSION = '2026.09.myntra-blank-tracking-
 const MYNTRA_BLANK_TRACKING_CANCELLED_SCHEMA_VERSION = '2026.09.myntra-blank-tracking-cancelled-2';
 const MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION = '2026.09.myntra-ej-rate-cards-1';
 const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimization-1';
+const LOOKUP_INDEXES_SCHEMA_VERSION = '2026.09.lookup-indexes-1';
 
 const TABLES = [`
   CREATE TABLE IF NOT EXISTS orders (
@@ -753,6 +754,7 @@ export async function initDb() {
       await ensureMyntraBlankTrackingCancelledFix(pool);
       await ensureMyntraEjRateCardsSeed(pool);
       await ensureDbConnectionOptimization(pool);
+      await ensureLookupIndexes(pool);
       // A read-model migration changes the view definition as well as the
       // backing table, so it must run on already-current installations too.
       await ensureAmazonSettlementReportingRollups(pool);
@@ -1445,6 +1447,7 @@ export async function initDb() {
     await ensureMyntraBlankTrackingCancelledFix(pool);
     await ensureMyntraEjRateCardsSeed(pool);
     await ensureDbConnectionOptimization(pool);
+    await ensureLookupIndexes(pool);
 
     await pool.query(
       `INSERT INTO schema_version (version) VALUES ('2026.07.longterm-1') ON CONFLICT (version) DO NOTHING`
@@ -2340,12 +2343,25 @@ async function ensureMyntraEjRateCardsSeed(pool) {
 }
 
 /**
- * Configures role-level TCP keepalive and idle session timeout on the PostgreSQL server,
- * and clears out any orphaned zombie sessions left behind by terminated backend processes.
+ * Configures role-level TCP keepalive and idle session timeout on the PostgreSQL server.
+ *
+ * Role settings persist in PostgreSQL, so this runs once per schema version
+ * rather than on every boot. It deliberately does NOT terminate "idle" sessions:
+ * an idle session of the same role is usually a healthy pooled connection of
+ * another running API instance (the previous container during a deploy, or a
+ * developer backend pointed at this database), and killing it forces that
+ * instance to rebuild its whole pool. PostgreSQL already reaps sessions whose
+ * client died via the TCP keepalives configured here.
  */
 async function ensureDbConnectionOptimization(pool) {
   try {
-    // 1. Role-level keepalive and idle session policy:
+    const { rowCount } = await pool.query(
+      `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+      [DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION],
+    );
+    if (rowCount) return;
+
+    // Role-level keepalive and idle session policy:
     // Ensures PostgreSQL proactively pings every 30s to prevent NAT firewall drops,
     // explicitly disables idle_session_timeout so pooled connections are NEVER killed by the server,
     // and terminates sessions only if stuck in an uncommitted transaction for > 3 minutes.
@@ -2354,20 +2370,6 @@ async function ensureDbConnectionOptimization(pool) {
     await pool.query('ALTER ROLE CURRENT_USER SET tcp_keepalives_count = 5;').catch(() => {});
     await pool.query('ALTER ROLE CURRENT_USER SET idle_session_timeout = 0;').catch(() => {});
     await pool.query("ALTER ROLE CURRENT_USER SET idle_in_transaction_session_timeout = '180s';").catch(() => {});
-
-    // 2. Terminate any preexisting zombie sessions from previous crashed/restarted processes
-    const res = await pool.query(`
-      SELECT pid, pg_terminate_backend(pid) as terminated
-      FROM pg_stat_activity 
-      WHERE pid != pg_backend_pid() 
-        AND datname = current_database()
-        AND usename = current_user
-        AND state = 'idle'
-        AND (now() - state_change) > interval '5 minutes'
-    `).catch(() => ({ rows: [] }));
-    if (res.rows?.length > 0) {
-      console.log(`[db] Cleaned up ${res.rows.length} orphaned idle database sessions on startup.`);
-    }
 
     await pool.query(
       `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
@@ -2380,12 +2382,68 @@ async function ensureDbConnectionOptimization(pool) {
 }
 
 /**
+ * Single-column lookup indexes the per-order paths need. The only orders index
+ * containing order_item_id is (marketplace, seller_account, order_item_id), so
+ * an order-detail or search lookup by order_item_id scanned all orders
+ * (~40 ms on production); mp_invoices and sku_master had the same gap for
+ * order_line_id and listing_sku (~100 ms per Myntra line lookup).
+ *
+ * CONCURRENTLY keeps reads and writes running during the build (it cannot run
+ * in a transaction; pool.query is autocommit). A build interrupted part-way
+ * leaves an INVALID index that IF NOT EXISTS would then skip, so those are
+ * dropped and rebuilt first.
+ */
+const LOOKUP_INDEXES = [
+  ['ix_orders_order_item_id', 'orders (order_item_id)'],
+  ['ix_mp_invoices_order_line_id', 'mp_invoices (order_line_id) WHERE order_line_id IS NOT NULL'],
+  ['ix_sku_master_listing_sku', 'sku_master (listing_sku)'],
+];
+
+async function ensureLookupIndexes(pool) {
+  try {
+    const { rowCount } = await pool.query(
+      `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+      [LOOKUP_INDEXES_SCHEMA_VERSION],
+    );
+    if (rowCount) return;
+
+    for (const [name, definition] of LOOKUP_INDEXES) {
+      const { rows } = await pool.query(`
+        SELECT i.indisvalid AS valid
+        FROM pg_class c
+        JOIN pg_index i ON i.indexrelid = c.oid
+        WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
+      `, [name]);
+      if (rows[0]?.valid) continue;
+      if (rows.length) await pool.query(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+      console.log(`[db] Building lookup index ${name}…`);
+      await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${definition}`);
+    }
+
+    await pool.query(
+      `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+      [LOOKUP_INDEXES_SCHEMA_VERSION],
+    );
+    console.log(`[db] Schema ${LOOKUP_INDEXES_SCHEMA_VERSION} applied.`);
+  } catch (err) {
+    // Performance-only: never block startup. The version row is not written,
+    // so the next boot retries.
+    console.warn('[db] Non-critical: lookup index build failed:', err.message);
+  }
+}
+
+/**
  * Bridges physical Amazon return rows to one reporting row per order item.
  * Every LPN/RMA event remains intact in `returns`; this view deliberately
  * selects the newest event only so joins cannot multiply order revenue.
  */
 async function ensureOrderReturnsView(pool) {
+  // order_items_summary selects from order_returns, so a plain DROP of
+  // order_returns fails once it exists and the whole batch (including the
+  // CREATE) is silently skipped. Every caller recreates order_items_summary
+  // immediately afterwards via ensureOrderItemsSummaryView.
   const sql = `
+DROP VIEW IF EXISTS order_items_summary;
 DROP VIEW IF EXISTS order_returns;
 CREATE OR REPLACE VIEW order_returns AS
       SELECT 
@@ -2474,7 +2532,11 @@ SELECT
     fulfilment_type, seller_sku, quantity, product_sub_category, additional_info,
     return_type, shopsy_order, item_return_status, invoice_id, invoice_date,
     'flipkart'::text AS marketplace, uploaded_at,
-    spf_received, spf_received_date, spf_received_amount, spf_received_neft_id
+    spf_received, spf_received_date, spf_received_amount, spf_received_neft_id,
+    -- Appended last (CREATE OR REPLACE VIEW may only add trailing columns).
+    -- Myntra's two accounts share marketplace = 'myntra'; reports filtering
+    -- on myntra_vb / myntra_ej need this to find their rows at all.
+    'default'::text AS seller_account
 FROM fk_settlement_orders
 UNION ALL
 ${amazonReportingRollupUnifiedSelect()}
@@ -2522,7 +2584,9 @@ SELECT
   COALESCE(vsm.category, sm_all.category, sm_mp.category, NULLIF(o.vb_export_category, ''), NULLIF(o.category, ''), 'Uncategorized') AS canonical_category,
   COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) AS cogs_per_unit,
   COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) * COALESCE(o.qty, 1) AS cogs_total,
-  COALESCE(vsm.weight_slab, sm_all.weight_slab, sm_mp.weight_slab, o.weight_slab) AS weight_slab,
+  -- Master tables store the slab as NUMERIC, orders as TEXT. Mixing them in
+  -- one COALESCE is a type error that made this CREATE fail on every boot.
+  COALESCE(vsm.weight_slab::text, sm_all.weight_slab::text, sm_mp.weight_slab::text, NULLIF(o.weight_slab, '')) AS weight_slab,
   -- Return data (via order_returns view which normalizes Amazon returns)
   ret.return_id,
   ret.return_status,
@@ -2547,8 +2611,11 @@ SELECT
   s.tcs,
   s.tds,
   s.gst_on_mp_fees,
-  -- Net profit (revenue - COGS - fees + bank received)
-  o.final_invoice_amount - COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) * COALESCE(o.qty, 1) - COALESCE(s.commission, 0) - COALESCE(s.fixed_fee, 0) - COALESCE(s.collection_fee, 0) - COALESCE(s.pick_pack_fee, 0) - COALESCE(s.shipping_fee, 0) - COALESCE(s.reverse_shipping, 0) - COALESCE(s.franchise_fee, 0) - COALESCE(s.tcs, 0) - COALESCE(s.tds, 0) - COALESCE(s.gst_on_mp_fees, 0) + COALESCE(s.net_bank, 0) - COALESCE(s.refund_amount, 0) AS net_profit,
+  -- Same definition as Profit Analysis' gross profit: (bank received -
+  -- refunds) - COGS. Bank received is already net of marketplace fees; the
+  -- previous formula added the invoice amount on top of it (revenue counted
+  -- twice) and subtracted every fee again.
+  COALESCE(s.net_bank, 0) - COALESCE(s.refund_amount, 0) - COALESCE(vsm.cogs, sm_all.cogs, sm_mp.cogs, 0) * COALESCE(o.qty, 1) AS net_profit,
   o.uploaded_at
 FROM orders o
 LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id

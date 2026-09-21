@@ -9,6 +9,7 @@ import { optionalNumber as num, optionalString as str } from '../utils/valuePars
 import { clearSkuSettlementBenchmarkCache } from '../services/skuSettlementBenchmark.js';
 import { notifySkuSettlementBenchmarkAfterImport } from '../services/skuSettlementNotifications.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { invalidateReportCache } from '../services/reportCache.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 
 const router = express.Router();
@@ -565,6 +566,10 @@ router.post('/', upload.single('file'), async (req, res) => {
       try {
         await logUpload(getPool(), 'fk_settlement', filename, marketplace, 0, 0, 0, 'error', e.message);
       } catch {}
+    } finally {
+      // The response above cleared the report cache before any row was
+      // written; reports computed during the import saw partial data.
+      invalidateReportCache();
     }
   });
 });

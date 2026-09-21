@@ -70,6 +70,20 @@ function poolMaxLifetimeSeconds() {
   });
 }
 
+// Session options sent in the startup packet, so they cost no extra round trip
+// and are also what RESET returns to. JIT compilation adds 100-250 ms to every
+// dashboard aggregate (measured on production: ~1030 ms -> ~830 ms with JIT
+// off) and these report queries never run long enough to repay it.
+// PG_JIT=on restores the server default.
+function sessionStartupOptions() {
+  const options = [];
+  const jit = String(process.env.PG_JIT || '').trim().toLowerCase();
+  if (!['on', 'true', '1', 'yes'].includes(jit)) options.push('-c jit=off');
+  const workMem = String(process.env.PG_WORK_MEM || '').trim();
+  if (/^\d+(kB|MB|GB)?$/i.test(workMem)) options.push(`-c work_mem=${workMem}`);
+  return options.length ? options.join(' ') : undefined;
+}
+
 export class DatabaseUnavailableError extends Error {
   constructor(cause) {
     super('Database connection is temporarily unavailable. The service is retrying automatically; please try again shortly.');
@@ -194,6 +208,8 @@ export function resolvePgConfig() {
     keepAliveInitialDelayMillis: 10_000,
     application_name: process.env.PG_APPLICATION_NAME || 'reconcentral-api',
   };
+  const options = sessionStartupOptions();
+  if (options) poolOptions.options = options;
 
   // pg requires min <= max. A bad environment value should never prevent the
   // service from starting or accidentally create an unbounded pool.
@@ -507,6 +523,24 @@ function instrumentClient(client) {
   return client;
 }
 
+// The SETs in connect() are session-level, so without this a pooled connection
+// keeps "no timeout" forever after its first transaction, and later dashboard
+// reads on that socket lose the PG_READ_STATEMENT_TIMEOUT_MS guard. RESET
+// returns to the startup-packet values. A client that cannot be reset (e.g.
+// left in an aborted transaction) is discarded instead of returned to the pool.
+function restoreSessionLimitsOnRelease(client) {
+  const release = client.release.bind(client);
+  let released = false;
+  client.release = (error) => {
+    if (released) return undefined;
+    released = true;
+    if (error) return release(error);
+    client.query('RESET statement_timeout; RESET idle_in_transaction_session_timeout;')
+      .then(() => release(), resetError => release(resetError instanceof Error ? resetError : new Error(String(resetError))));
+    return undefined;
+  };
+}
+
 export function getPool() {
   if (_pool) return _pool;
   _realPool = createRealPool();
@@ -560,6 +594,7 @@ export function getPool() {
         const client = instrumentClient(await _realPool.connect());
         // Ensure long tasks don't get killed by Postgres session limits
         await client.query('SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 0;').catch(() => {});
+        restoreSessionLimitsOnRelease(client);
         markDatabaseOnline();
         return client;
       } catch (error) {

@@ -528,7 +528,7 @@ router.get('/cash-flow', async (req, res) => {
         LEFT JOIN ${ORDER_SETTLEMENT_TOTALS_TABLE} fk ON fk.order_item_id = o.order_item_id
         LEFT JOIN returns ret ON ret.order_item_id = o.order_item_id
         WHERE fk.order_item_id IS NULL
-          AND o.orders_status NOT IN ('Cancelled','CANCELLED','cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
+          AND COALESCE(o.orders_status, '') NOT IN ('Cancelled','CANCELLED','cancelled', 'RTO', 'Customer Return', 'Courier Return', 'Return', 'Refunded', 'Returned')
           AND o.return_type IS NULL
           AND ret.order_item_id IS NULL ${omWhere}
         GROUP BY o.marketplace

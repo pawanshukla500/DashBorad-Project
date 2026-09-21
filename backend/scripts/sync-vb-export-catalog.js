@@ -9,6 +9,45 @@ dotenv.config();
 const require = createRequire(import.meta.url);
 const XLSX = require('xlsx');
 
+/**
+ * Create the catalog tables/columns/indexes only when one is missing (a fresh
+ * database). initDb creates all of them, so on a normal installation this is
+ * a single catalog read and takes no table locks.
+ */
+export async function ensureCatalogSchema(db) {
+  const { rows } = await db.query(`
+    SELECT
+      to_regclass('vb_sku_master') IS NOT NULL
+      AND (SELECT COUNT(*) FROM information_schema.columns
+           WHERE table_schema = current_schema()
+             AND ((table_name = 'sku_master' AND column_name = 'category')
+               OR (table_name = 'orders' AND column_name IN ('vb_export_sku', 'vb_export_category')))) = 3
+      AND (SELECT COUNT(*) FROM pg_indexes
+           WHERE schemaname = current_schema()
+             AND indexname IN ('ix_orders_vb_export_sku', 'ix_orders_vb_export_cat', 'ix_sku_master_category', 'ix_vb_sku_master_category')) = 4
+      AS ready
+  `);
+  if (rows[0]?.ready) return;
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS vb_sku_master (
+      vb_export_sku TEXT PRIMARY KEY,
+      category      TEXT,
+      cogs          NUMERIC(14,2) NOT NULL DEFAULT 0,
+      weight_slab   NUMERIC(6,2),
+      product_name  TEXT,
+      created_at    TIMESTAMPTZ DEFAULT NOW(),
+      updated_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+    ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS category TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_sku TEXT;
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_category TEXT;
+    CREATE INDEX IF NOT EXISTS IX_orders_vb_export_sku ON orders(vb_export_sku);
+    CREATE INDEX IF NOT EXISTS IX_orders_vb_export_cat ON orders(vb_export_category);
+    CREATE INDEX IF NOT EXISTS IX_sku_master_category ON sku_master(category);
+    CREATE INDEX IF NOT EXISTS IX_vb_sku_master_category ON vb_sku_master(category);
+  `);
+}
+
 export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
   const db = pool || getPool();
   console.log('[syncVbExportCatalog] Starting VB EXPORT SKU catalog synchronization...');
@@ -30,6 +69,12 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
 
   console.log(`[syncVbExportCatalog] Read ${rawRows.length} rows from sheet "${sheetName}".`);
 
+  // Schema DDL must run before, not inside, the sync transaction: ALTER TABLE
+  // orders takes an ACCESS EXCLUSIVE lock even when the column already exists,
+  // and inside the transaction that lock was held for the whole sync, blocking
+  // every dashboard query on orders until COMMIT.
+  await ensureCatalogSchema(db);
+
   // Use a dedicated transaction client so the entire sync is atomic.
   // pool.connect() returns a client with statement_timeout disabled,
   // preventing the 45s interactive read timeout from cancelling a
@@ -42,26 +87,6 @@ export async function syncVbExportCatalog({ pool, filePath, buffer } = {}) {
 
   try {
     await client.query('BEGIN');
-
-    // Ensure tables and columns exist
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS vb_sku_master (
-        vb_export_sku TEXT PRIMARY KEY,
-        category      TEXT,
-        cogs          NUMERIC(14,2) NOT NULL DEFAULT 0,
-        weight_slab   NUMERIC(6,2),
-        product_name  TEXT,
-        created_at    TIMESTAMPTZ DEFAULT NOW(),
-        updated_at    TIMESTAMPTZ DEFAULT NOW()
-      );
-      ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS category TEXT;
-      ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_sku TEXT;
-      ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_category TEXT;
-      CREATE INDEX IF NOT EXISTS IX_orders_vb_export_sku ON orders(vb_export_sku);
-      CREATE INDEX IF NOT EXISTS IX_orders_vb_export_cat ON orders(vb_export_category);
-      CREATE INDEX IF NOT EXISTS IX_sku_master_category ON sku_master(category);
-      CREATE INDEX IF NOT EXISTS IX_vb_sku_master_category ON vb_sku_master(category);
-    `);
 
   // Parse and deduplicate
   const vbMasterMap = new Map(); // vb_export_sku -> { category, cogs, weightSlab }

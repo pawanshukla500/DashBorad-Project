@@ -63,6 +63,21 @@ router.get('/unified-linkup', async (req, res) => {
 });
 
 
+// The UI selects Myntra by account (myntra_vb / myntra_ej), while orders,
+// invoices and unified_settlements store marketplace = 'myntra' plus
+// seller_account. Comparing the account id with `marketplace` matched nothing,
+// and the summary then fell through to its all-marketplace branch.
+export function marketplaceScope(q = {}) {
+  let marketplace = q.marketplace && q.marketplace !== 'all' ? String(q.marketplace).toLowerCase() : null;
+  let sellerAccount = q.seller_account || q.sellerAccount || null;
+  if (sellerAccount === 'all') sellerAccount = null;
+  if (marketplace === 'myntra_vb' || marketplace === 'myntra_ej') {
+    sellerAccount = sellerAccount || marketplace;
+    marketplace = 'myntra';
+  }
+  return { mkt: marketplace, sellerAcc: sellerAccount };
+}
+
 // ── Filter builder ────────────────────────────────────────────────────────────
 export function buildFilters(q, {
   alias = 'fko',
@@ -72,7 +87,10 @@ export function buildFilters(q, {
 } = {}) {
   const conds  = [];
   const values = [];
-  if (q.marketplace && q.marketplace !== 'all') { conds.push(`${alias}.marketplace = $${values.push(q.marketplace)}`); }
+  // Both aliases in use (orders, unified_settlements) carry seller_account.
+  const { mkt, sellerAcc } = marketplaceScope(q);
+  if (mkt) { conds.push(`${alias}.marketplace = $${values.push(mkt)}`); }
+  if (sellerAcc) { conds.push(`${alias}.seller_account = $${values.push(sellerAcc)}`); }
   if (q.startDate)      { conds.push(`${alias}.${dateColumn} >= $${values.push(q.startDate)}`); }
   if (q.endDate)        { conds.push(`${alias}.${dateColumn} <= $${values.push(q.endDate)}`); }
   if (q.category)       { conds.push(`${alias}.${categoryColumn} = $${values.push(q.category)}`); }
@@ -103,8 +121,7 @@ router.get('/summary', async (req, res) => {
     const pool = getPool();
     const { where, values } = buildFilters(req.query);
 
-    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
-    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+    const { mkt, sellerAcc } = marketplaceScope(req.query);
 
     let unsettleWhere = '';
     const unsettleVals = [];
@@ -137,7 +154,10 @@ router.get('/summary', async (req, res) => {
           0 AS meesho_claims_total
       `);
     } else if (mkt === 'myntra') {
-      const myntraAccFilter = (sellerAcc && sellerAcc !== 'all') ? `AND seller_account = '${sellerAcc}'` : '';
+      // Bound parameter, never string-spliced: a query string value inside the
+      // SQL text ran as the API's database user (stacked statements included).
+      const accountValues = (sellerAcc && sellerAcc !== 'all') ? [String(sellerAcc)] : [];
+      const myntraAccFilter = accountValues.length ? 'AND seller_account = $1' : '';
       nonOrdQuery = pool.query(`
         SELECT
           0 AS spf_total,
@@ -146,7 +166,7 @@ router.get('/summary', async (req, res) => {
           0 AS google_ads_total,
           COALESCE((SELECT SUM(amount_received) FROM mp_invoices WHERE marketplace = 'myntra' ${myntraAccFilter} AND (order_type = 'nod' OR notes ILIKE '%nod%' OR invoice_number ILIKE '%nod%')), 0) AS myntra_nod_total,
           0 AS meesho_claims_total
-      `);
+      `, accountValues);
     } else if (mkt === 'meesho') {
       nonOrdQuery = pool.query(`
         SELECT
@@ -207,7 +227,7 @@ router.get('/summary', async (req, res) => {
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
         )
-        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+        AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
         AND o.return_type IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM order_returns ret WHERE ret.order_item_id = o.order_item_id
@@ -290,8 +310,7 @@ router.get('/unsettled', async (req, res) => {
     const pool = getPool();
     const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 200 });
 
-    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
-    const sellerAcc = req.query.sellerAccount || null;
+    const { mkt, sellerAcc } = marketplaceScope(req.query);
 
     let filterSql = '';
     const vals = [];
@@ -318,7 +337,7 @@ router.get('/unsettled', async (req, res) => {
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
         )
-        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+        AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
         AND o.return_type IS NULL
         AND rt.order_item_id IS NULL
         ${filterSql}
@@ -332,7 +351,7 @@ router.get('/unsettled', async (req, res) => {
         WHERE NOT EXISTS (
           SELECT 1 FROM ${ORDER_SETTLEMENT_TOTALS_TABLE} s WHERE s.order_item_id = o.order_item_id
         )
-        AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
+        AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned')
         AND o.return_type IS NULL
         AND rt.order_item_id IS NULL
         ${filterSql}
@@ -391,8 +410,7 @@ router.get('/outstanding/orders', async (req, res) => {
   if (!(await isDbConfigured())) return res.json({ configured: false, data: [], total: 0, total_amount: 0, page, pageSize });
   try {
     const pool = getPool();
-    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
-    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+    const { mkt, sellerAcc } = marketplaceScope(req.query);
     const agingBucket = req.query.aging_bucket || req.query.agingBucket || null;
     const status = req.query.status || null;
     const search = (req.query.search || '').trim();
@@ -412,7 +430,7 @@ router.get('/outstanding/orders', async (req, res) => {
       filterSql += ` AND (o.orders_status IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') OR o.return_type IS NOT NULL OR rt.order_item_id IS NOT NULL)`;
       if (status && status !== 'all') filterSql += ` AND o.orders_status = $${vals.push(status)}`;
     } else {
-      filterSql += ` AND o.orders_status NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND rt.order_item_id IS NULL`;
+      filterSql += ` AND COALESCE(o.orders_status, '') NOT IN ('Cancelled', 'RTO', 'Customer Return', 'Return', 'Refunded', 'Returned') AND o.return_type IS NULL AND rt.order_item_id IS NULL`;
       if (status && status !== 'all') filterSql += ` AND o.orders_status = $${vals.push(status)}`;
     }
 
@@ -492,8 +510,7 @@ router.get('/outstanding/invoices', async (req, res) => {
   if (!(await isDbConfigured())) return res.json({ configured: false, data: [], total: 0, total_pending: 0, total_net_payable: 0, total_received: 0, page, pageSize });
   try {
     const pool = getPool();
-    const mkt = req.query.marketplace && req.query.marketplace !== 'all' ? req.query.marketplace.toLowerCase() : null;
-    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+    const { mkt, sellerAcc } = marketplaceScope(req.query);
     const search = (req.query.search || '').trim();
 
     let filterSql = '';

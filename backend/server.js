@@ -113,9 +113,9 @@ app.use(compression({
 app.use(express.json({ limit: '50mb' }));
 
 // Weak ETag for GET /api/* responses that did not set their own. The body is
-// hashed once after the handler runs; the next request sends If-None-Match and
-// a 304 short-circuits the database read entirely. This is especially valuable
-// for dashboard aggregates that browsers re-issue on tab focus.
+// hashed after the handler runs, so a matching If-None-Match saves the
+// transfer and browser JSON parse (the query has already run by then; the
+// report caches in routes/data.js are what avoid repeat database work).
 app.set('etag', 'weak');
 app.use((req, res, next) => {
   if (req.method !== 'GET') return next();
@@ -125,20 +125,26 @@ app.use((req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = (body) => {
     if (res.noEtag) return originalJson(body);
+    let json;
     try {
-      const json = JSON.stringify(body);
-      const etag = `W/"${crypto.createHash('sha1').update(json).digest('base64').slice(0, 22)}"`;
-      res.setHeader('ETag', etag);
-      res.setHeader('Vary', 'Accept-Encoding');
-      const inm = req.headers['if-none-match'];
-      if (typeof inm === 'string' && inm === etag) {
-        res.status(304);
-        return res.end();
-      }
+      json = JSON.stringify(body);
     } catch {
-      // Fall back to the default behaviour if hashing/serialisation fails.
+      // Fall back to the default behaviour if serialisation fails.
+      return originalJson(body);
     }
-    return originalJson(body);
+    if (typeof json !== 'string') return originalJson(body);
+    const etag = `W/"${crypto.createHash('sha1').update(json).digest('base64').slice(0, 22)}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Vary', 'Accept-Encoding');
+    const inm = req.headers['if-none-match'];
+    if (typeof inm === 'string' && inm === etag) {
+      res.status(304);
+      return res.end();
+    }
+    // Send the string already produced for the hash. Large report payloads
+    // were previously serialised twice on the event loop.
+    if (!res.get('Content-Type')) res.set('Content-Type', 'application/json; charset=utf-8');
+    return res.send(json);
   };
   next();
 });

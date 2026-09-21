@@ -318,8 +318,10 @@ router.get('/config-status', async (req, res) => {
 router.post('/config/seed', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   try {
-    const { seedRateCard } = await import('../services/rateCard.js');
-    const result = await seedRateCard();
+    // The service exports seedRateCardToDb; the old name was undefined, so
+    // every seed request failed with "seedRateCard is not a function".
+    const { seedRateCardToDb } = await import('../services/rateCard.js');
+    const result = await seedRateCardToDb();
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[rate-card/seed]', e);
@@ -850,15 +852,22 @@ router.get('/reconcile', async (req, res) => {
     if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
 
     const pool = getPool();
-    const mp = req.query.marketplace || 'flipkart';
-    const sa = req.query.seller_account || 'default';
+    // The filter bar sends Myntra as its account id (myntra_vb / myntra_ej).
+    const requestedMp = String(req.query.marketplace || 'flipkart').trim().toLowerCase();
+    const mp = requestedMp.startsWith('myntra_') ? 'myntra' : requestedMp;
+    const sa = req.query.seller_account || (requestedMp.startsWith('myntra_') ? requestedMp : 'default');
+    const isDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+    const startDate = isDate(req.query.startDate) ? req.query.startDate : null;
+    const endDate = isDate(req.query.endDate) ? req.query.endDate : null;
 
     const { getRateCard, reconcileOrder } = await import('../services/rateCard.js');
     const rc = await getRateCard(mp, sa);
 
     const { rows } = await pool.query(`
       SELECT o.order_item_id as "orderItemId", o.order_date as "orderDate", o.category, o.final_invoice_amount as price,
-             o.fulfilment_type as "fulfilmentType", o.brand as "brandName", o.payment_type as "paymentType",
+             -- orders has no payment_type column (selecting it failed every
+             -- request); order_type carries prepaid/COD as in /platform/summary.
+             o.fulfilment_type as "fulfilmentType", o.brand as "brandName", o.order_type as "paymentType",
              o.shipping_zone as zone,
              COALESCE(s.commission, ost.commission, 0) as commission,
              COALESCE(s.fixed_fee, ost.fixed_fee, 0) as "fixedFee",
@@ -869,20 +878,24 @@ router.get('/reconcile', async (req, res) => {
       LEFT JOIN order_settlement_totals ost ON o.order_item_id = ost.order_item_id
       WHERE o.marketplace = $1 AND COALESCE(o.seller_account, 'default') = $2
         AND o.final_invoice_amount > 0
-    `, [mp, sa]);
+        AND ($3::date IS NULL OR o.order_date >= $3::date)
+        AND ($4::date IS NULL OR o.order_date <= $4::date)
+    `, [mp, sa, startDate, endDate]);
 
     const orderMap = new Map();
     for (const row of rows) {
       if (!orderMap.has(row.orderItemId)) {
+        // reconcileOrder() reads finalInvoiceAmount/shippingZone; passing
+        // price/zone made it return null for every order (an always-empty report).
         orderMap.set(row.orderItemId, {
           orderItemId: row.orderItemId,
           orderDate: row.orderDate,
           category: row.category,
-          price: row.price,
+          finalInvoiceAmount: row.price == null ? null : Number(row.price),
           fulfilmentType: row.fulfilmentType,
           brandName: row.brandName,
           paymentType: row.paymentType,
-          zone: row.zone,
+          shippingZone: row.zone,
           settlementRows: []
         });
       }

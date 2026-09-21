@@ -37,6 +37,15 @@ function buildInsertBatch(rows) {
   return { values, groups };
 }
 
+/**
+ * Atomically replace one settlement's lines and rebuild its read models.
+ * `beforeRollups(client)` runs inside the transaction after the new lines are
+ * written and before the rollups are built (the upload job resolves orphan
+ * refund SKUs there), so both rollups are built once from final data.
+ * `appendOnly` keeps the settlement's existing lines: used when one workbook
+ * carries the same settlement on several sheets, so a later sheet does not
+ * delete the lines an earlier sheet of the same upload just wrote.
+ */
 export async function replaceAmazonSettlement({
   pool,
   settlementId,
@@ -44,6 +53,8 @@ export async function replaceAmazonSettlement({
   filename,
   lines,
   batchSize = UPLOAD_BATCH_SIZE,
+  beforeRollups = null,
+  appendOnly = false,
 }) {
   const affectedOrderIds = new Set(lines.map(line => line.order_id).filter(Boolean));
   const client = await pool.connect();
@@ -91,18 +102,20 @@ export async function replaceAmazonSettlement({
       'SELECT settlement_id FROM amazon_settlements WHERE settlement_id = $1 FOR UPDATE',
       [settlementId],
     );
-    const oldOrders = await client.query(`
-      SELECT DISTINCT order_id
-      FROM amazon_settlement_lines
-      WHERE settlement_id = $1 AND order_id IS NOT NULL
-    `, [settlementId]);
-    oldOrders.rows.forEach(row => affectedOrderIds.add(row.order_id));
+    if (!appendOnly) {
+      const oldOrders = await client.query(`
+        SELECT DISTINCT order_id
+        FROM amazon_settlement_lines
+        WHERE settlement_id = $1 AND order_id IS NOT NULL
+      `, [settlementId]);
+      oldOrders.rows.forEach(row => affectedOrderIds.add(row.order_id));
 
-    const deleted = await client.query(
-      'DELETE FROM amazon_settlement_lines WHERE settlement_id = $1',
-      [settlementId],
-    );
-    replacedLines = deleted.rowCount;
+      const deleted = await client.query(
+        'DELETE FROM amazon_settlement_lines WHERE settlement_id = $1',
+        [settlementId],
+      );
+      replacedLines = deleted.rowCount;
+    }
 
     const brandedLines = lines.map(line => ({ ...line, brand_name: AMAZON_BRAND }));
     await forEachDbBatch(brandedLines, SETTLEMENT_LINE_FIELDS.length, async batch => {
@@ -113,6 +126,10 @@ export async function replaceAmazonSettlement({
       );
       linesInserted += inserted.rowCount;
     }, { preferredSize: batchSize });
+
+    const beforeRollupsResult = typeof beforeRollups === 'function'
+      ? await beforeRollups(client)
+      : null;
 
     // Rebuild only this settlement's compact read model while the replacement
     // transaction is still open, so reports never see mismatched line/rollup data.
@@ -126,6 +143,7 @@ export async function replaceAmazonSettlement({
       linesInserted,
       replacedLines,
       affectedOrderIds: [...affectedOrderIds],
+      beforeRollupsResult,
     };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

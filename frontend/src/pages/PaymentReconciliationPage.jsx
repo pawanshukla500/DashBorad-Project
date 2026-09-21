@@ -232,7 +232,7 @@ function InvoicePaymentPanel({ market }) {
   if (error) return <ProblemPanel message={error} />;
 
   return <section className="space-y-4">
-    {isMyntra && <MyntraAccountToolbar accounts={accounts} sellerAccount={sellerAccount} onAccountChange={setSellerAccount} onUploaded={() => setRefreshKey(value => value + 1)} />}
+    {isMyntra && <MyntraAccountToolbar accounts={accounts} sellerAccount={sellerAccount} onAccountChange={setSellerAccount} onUploaded={() => setRefreshKey(value => Math.max(Date.now(), value + 1))} />}
 
     {/* Rate Card Integration Status Banner */}
     <div className={`rounded-xl border p-4 transition ${!rateCardStatus ? 'border-border bg-surface-container-low/70' : rateCardConfigured ? 'border-primary bg-gradient-to-r from-indigo-50/80 to-blue-50/60' : 'border-amber-200 bg-amber-50/70'}`}>

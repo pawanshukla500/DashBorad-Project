@@ -6,6 +6,8 @@ const originalEnvironment = Object.fromEntries(ENV_KEYS.map(key => [key, process
 let queryResponses = [];
 let queryCalls = [];
 let createdPools = [];
+let connectedClients = [];
+let clientQueryImpl = async () => ({ rows: [] });
 
 class MockPool {
   constructor(options) {
@@ -31,10 +33,12 @@ class MockPool {
   }
 
   async connect() {
-    return {
-      query: vi.fn(async () => ({ rows: [] })),
-      release: vi.fn(),
-    };
+    // db/index.js wraps query/release on the returned object, so keep the
+    // original mocks separately for assertions.
+    const query = vi.fn((...args) => clientQueryImpl(...args));
+    const release = vi.fn();
+    connectedClients.push({ query, release });
+    return { query, release };
   }
 
   async end() {
@@ -59,6 +63,8 @@ async function loadDbModule(responses = []) {
   queryResponses = [...responses];
   queryCalls = [];
   createdPools = [];
+  connectedClients = [];
+  clientQueryImpl = async () => ({ rows: [] });
   process.env.NODE_ENV = 'production';
   process.env.DATABASE_URL = 'postgresql://payments:secret@postgres:5432/paymentapp';
   process.env.PG_SSL = 'false';
@@ -107,6 +113,50 @@ describe('PostgreSQL connection recovery', () => {
     expect(db.getDatabaseStatus().connected).toBe(true);
     expect(db.getDatabaseStatus().poolRecreatePending).toBe(false);
     expect(db.getDatabaseStatus().lastPoolRecreatedAt).toEqual(expect.any(String));
+    await db.getPool().end();
+  });
+
+  it('restores the read statement timeout before a transaction client returns to the pool', async () => {
+    const db = await loadDbModule();
+    const client = await db.getPool().connect();
+    const [raw] = connectedClients;
+    expect(raw.query).toHaveBeenCalledWith('SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 0;');
+
+    client.release();
+    client.release(); // a double release must not reach pg-pool twice
+    await vi.waitFor(() => expect(raw.release).toHaveBeenCalledTimes(1));
+
+    expect(raw.query).toHaveBeenLastCalledWith('RESET statement_timeout; RESET idle_in_transaction_session_timeout;');
+    expect(raw.release).toHaveBeenCalledWith();
+    await db.getPool().end();
+  });
+
+  it('discards a transaction client whose session limits cannot be reset', async () => {
+    const db = await loadDbModule();
+    const client = await db.getPool().connect();
+    const [raw] = connectedClients;
+    clientQueryImpl = async (text) => {
+      if (String(text).startsWith('RESET')) throw new Error('current transaction is aborted');
+      return { rows: [] };
+    };
+
+    client.release();
+    await vi.waitFor(() => expect(raw.release).toHaveBeenCalledTimes(1));
+
+    expect(raw.release.mock.calls[0][0]).toBeInstanceOf(Error);
+    await db.getPool().end();
+  });
+
+  it('passes a release error straight through without attempting a reset', async () => {
+    const db = await loadDbModule();
+    const client = await db.getPool().connect();
+    const [raw] = connectedClients;
+    const failure = new Error('broken client');
+
+    client.release(failure);
+
+    expect(raw.release).toHaveBeenCalledWith(failure);
+    expect(raw.query).not.toHaveBeenCalledWith('RESET statement_timeout; RESET idle_in_transaction_session_timeout;');
     await db.getPool().end();
   });
 });

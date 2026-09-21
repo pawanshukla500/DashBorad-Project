@@ -1,4 +1,5 @@
-import dataRoutes, { invalidateDashboardReportCache } from './data.js';
+import dataRoutes from './data.js';
+import { invalidateReportCache } from '../services/reportCache.js';
 import statementRoutes from './statement.js';
 import rateCardRoutes from './rateCard.js';
 import returnTrackingRoutes from './returnTracking.js';
@@ -40,14 +41,15 @@ export function mountApiRoutes(app) {
     return authMiddleware(req, res, next);
   });
 
-  // The dashboard's short-lived aggregate cache is safe only until a
-  // successful write. Invalidate it after every mutation so an upload, rate
-  // change, or correction is visible on the next tab load without waiting for
-  // its TTL. Failed writes leave the cache untouched.
+  // The report cache is safe only until a successful write. Invalidate it
+  // after every mutation so an upload, rate change, or correction is visible
+  // on the next tab load. Background import jobs (which respond before they
+  // write) invalidate again when they finish, and services/reportCache.js
+  // also checks PostgreSQL's write counters on every hit.
   app.use('/api', (req, res, next) => {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       res.on('finish', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) invalidateDashboardReportCache();
+        if (res.statusCode >= 200 && res.statusCode < 300) invalidateReportCache();
       });
     }
     next();

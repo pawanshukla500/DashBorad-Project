@@ -28,7 +28,10 @@ export function myntraInvoicesUnifiedSelect() {
 SELECT
     MAX(NULLIF(i.payment_reference, '')),
     NULL,
-    MAX(i.payment_date),
+    -- A GROUP BY key, so this equals MAX(i.payment_date); exposing the plain
+    -- column lets date filters on unified_settlements reach mp_invoices
+    -- instead of aggregating every Myntra invoice first.
+    i.payment_date,
     -- Reverse rows already deduct the refunded principal from amount_received;
     -- report that principal through \`refund\` instead so it is not netted twice.
     SUM(i.amount_received)
@@ -70,7 +73,8 @@ SELECT
     FALSE,
     NULL,
     0,
-    NULL
+    NULL,
+    i.seller_account
 FROM mp_invoices i
 LEFT JOIN orders o
   ON o.marketplace = 'myntra'
