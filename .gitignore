@@ -51,3 +51,7 @@ fix_*.js
 script.js
 .freebuff/
 frontend/*.cjs
+
+# Agent/tool scratch output (headless Chrome profiles, one-off analysis scripts)
+.codex-tmp/
+**/.codex-tmp/
