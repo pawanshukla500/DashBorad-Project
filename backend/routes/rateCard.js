@@ -37,6 +37,18 @@ const TABLE_EXTRA_COLUMNS = {
   franchise_fee:   ['brand_name', 'price_min', 'price_max', 'rate'],
 };
 
+// Column defaults of the rc_* tables for numeric cells left blank in a save.
+// `rate` is not here: a blank rate is rejected instead.
+const NUMERIC_BLANK_DEFAULTS = {
+  price_min: 0,
+  price_max: 999999,
+  prepaid: 0,
+  postpaid: 0,
+  local_fee: 0,
+  zonal_fee: 0,
+  national_fee: 0,
+};
+
 function resolveTable(type) {
   const table = TABLE_MAP[type];
   if (!table) throw Object.assign(new Error(`Unknown rate card type: ${type}`), { status: 400 });
@@ -471,10 +483,28 @@ router.post('/config/:type/save-period', async (req, res) => {
     }
 
     // Validate all rows
+    const extraColumnsForType = TABLE_EXTRA_COLUMNS[type] || [];
     for (let i = 0; i < slabRows.length; i++) {
       const errors = validateRateRow(type, slabRows[i]);
+      // A blank rate reached PostgreSQL as '' and failed the whole save with
+      // "invalid input syntax for type numeric" (HTTP 500).
+      if (extraColumnsForType.includes('rate') && (slabRows[i]?.rate === undefined || slabRows[i]?.rate === null || String(slabRows[i].rate).trim() === '')) {
+        errors.push('rate is required');
+      }
       if (errors.length) {
         return res.status(400).json({ error: `Row ${i + 1}: ${errors.join('; ')}` });
+      }
+    }
+
+    // Rate-card ids are BIGINT and, for rows migrated from CockroachDB, larger
+    // than JavaScript numbers hold exactly (~1.2e18). Number() rounded them, so
+    // an edit targeted non-existent ids, and the ::int[] cast then overflowed:
+    // every edit of such a period failed. Keep ids as exact decimal strings.
+    let idList = null;
+    if (Array.isArray(replaceIds)) {
+      idList = replaceIds.map(id => String(id ?? '').trim());
+      if (idList.some(id => !/^[1-9]\d{0,18}$/.test(id))) {
+        return res.status(400).json({ error: 'replaceIds must contain rate-card row ids' });
       }
     }
 
@@ -488,12 +518,13 @@ router.post('/config/:type/save-period', async (req, res) => {
       //      we only touch the exact rows the user was editing.
       //  (b) fallback — match by category + date triple. Use for new periods
       //      and for edits where the page didn't track IDs.
-      const idList = Array.isArray(replaceIds) ? replaceIds.filter(n => Number.isFinite(+n)).map(Number) : null;
+      let deleted = null;
       if (idList && idList.length > 0) {
-        await client.query(
-          `DELETE FROM ${table} WHERE id = ANY($1::int[])`,
+        const removed = await client.query(
+          `DELETE FROM ${table} WHERE id = ANY($1::bigint[])`,
           [idList],
         );
+        deleted = removed.rowCount;
       } else {
         await client.query(
           `DELETE FROM ${table} WHERE category = $1 AND marketplace = $2 AND seller_account = $3
@@ -513,7 +544,16 @@ router.post('/config/:type/save-period', async (req, res) => {
         end_date || null,
         marketplace,
         seller_account,
-        ...extraCols.map(col => slab[col] ?? null),
+        ...extraCols.map(col => {
+          const value = slab[col] ?? null;
+          // A blank numeric cell reached PostgreSQL as '' ("invalid input
+          // syntax for type numeric", HTTP 500). It now takes the column's
+          // default, as if the cell had been omitted. Text cells are unchanged.
+          if (col in NUMERIC_BLANK_DEFAULTS && typeof value === 'string' && value.trim() === '') {
+            return NUMERIC_BLANK_DEFAULTS[col];
+          }
+          return value;
+        }),
       ]);
 
       await forEachDbBatch(slabData, allCols.length, async batch => {
@@ -533,7 +573,8 @@ router.post('/config/:type/save-period', async (req, res) => {
 
       await client.query('COMMIT');
       clearRateCardCache();
-      res.json({ ok: true, inserted: slabRows.length, deleted: idList ? idList.length : null });
+      // Report the rows actually removed, not the number of ids requested.
+      res.json({ ok: true, inserted: slabRows.length, deleted });
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       throw error;

@@ -33,6 +33,25 @@ describe('return report service', () => {
     expect(dataSql).toContain('COALESCE(ost.spf_received, FALSE) = FALSE');
   });
 
+  it('does not expose two received_date columns from the returns page CTE', async () => {
+    // returns.received_date comes in through r.*; selecting the tracker's own
+    // date unaliased made PostgreSQL reject every tracker page as ambiguous.
+    const pool = {
+      query: vi.fn(async (sql) => sql.startsWith('SELECT COUNT')
+        ? { rows: [{ cnt: '0' }] }
+        : { rows: [] }),
+    };
+
+    await getReturnsTracker(pool, { filter: 'all', marketplace: null, page: 1, pageSize: 10, offset: 0 });
+
+    const dataSql = pool.query.mock.calls[0][0];
+    const pageCte = dataSql.slice(dataSql.indexOf('WITH return_page AS ('), dataSql.indexOf('FROM returns r'));
+    expect(pageCte).toContain('r.*');
+    expect(pageCte).not.toMatch(/rr\.received_date\s*,/);
+    expect(pageCte).toContain('rr.received_date AS tracker_received_date');
+    expect(dataSql).toContain("TO_CHAR(r.tracker_received_date, 'YYYY-MM-DD') AS received_date");
+  });
+
   it('uses the current SPF schema and aggregates settlement rows per order', async () => {
     const pool = {
       query: vi.fn(async (sql) => sql.includes('SELECT COUNT(*) AS cnt')
