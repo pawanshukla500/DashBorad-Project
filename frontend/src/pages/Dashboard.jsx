@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useFilters } from '../context/FilterContext';
 import useFetch from '../hooks/useFetch';
 import {
@@ -21,34 +21,62 @@ const fmtK = (v) => { const n = +v; if (!n) return '₹0'; if (Math.abs(n) >= 10
 function OrderSearch() {
   const [query, setQuery]     = useState('');
   const [results, setResults] = useState(null);
+  const [error, setError]     = useState(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen]       = useState(false);
   const debounce              = useRef(null);
+  // Survives Strict Mode double-mount and a fast unmount so we don't call
+  // setState after the component is gone (the previous code warned in the
+  // console after navigating away within the 420 ms debounce window).
+  const mounted               = useRef(true);
+  // Increments on every search; the in-flight handler ignores its own setState
+  // calls if a newer search has started, so a slower earlier request cannot
+  // overwrite a newer query's results or error.
+  const latestReqId           = useRef(0);
+
+  useEffect(() => () => {
+    mounted.current = false;
+    if (debounce.current) clearTimeout(debounce.current);
+  }, []);
 
   const runSearch = useCallback(async (q) => {
-    if (q.length < 3) { setResults(null); setOpen(false); return; }
+    if (q.length < 3) { setResults(null); setError(null); setOpen(false); return; }
+    const reqId = ++latestReqId.current;
     setLoading(true);
     try {
       const data = await searchOrder(q);
+      if (!mounted.current || reqId !== latestReqId.current) return;
       setResults(data);
+      setError(null);
       setOpen(true);
-    } catch { setResults(null); }
-    setLoading(false);
+    } catch (e) {
+      if (!mounted.current || reqId !== latestReqId.current) return;
+      // Distinguish a real network failure from "no rows matched" — the
+      // previous code conflated the two and showed "No results for 'foo'".
+      setResults(null);
+      setError(e?.response?.data?.error || e?.message || 'Search failed. Please retry.');
+      setOpen(true);
+    }
+    if (mounted.current && reqId === latestReqId.current) setLoading(false);
   }, []);
 
   function handleChange(e) {
     const q = e.target.value;
     setQuery(q);
-    clearTimeout(debounce.current);
+    if (debounce.current) clearTimeout(debounce.current);
     debounce.current = setTimeout(() => runSearch(q.trim()), 420);
   }
 
   function handleKeyDown(e) {
-    if (e.key === 'Enter') { clearTimeout(debounce.current); runSearch(query.trim()); }
+    if (e.key === 'Enter') {
+      if (debounce.current) clearTimeout(debounce.current);
+      runSearch(query.trim());
+    }
     if (e.key === 'Escape') { setOpen(false); }
   }
 
   const hasResults = results && (results.orders?.length || results.settlements?.length || results.returns?.length);
+  const dropdownId = 'order-search-results';
 
   return (
     <div className="relative w-full max-w-sm">
@@ -67,16 +95,36 @@ function OrderSearch() {
           value={query}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          onFocus={() => hasResults && setOpen(true)}
+          onFocus={() => (hasResults || error) && setOpen(true)}
           placeholder="Search order ID or item ID…"
+          aria-label="Search order by ID or item ID"
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={dropdownId}
+          aria-autocomplete="list"
+          autoComplete="off"
+          spellCheck="false"
           className="w-full pl-9 pr-9 py-2 text-sm rounded-xl border border-border bg-surface shadow-sm focus:outline-none focus:ring-2 focus:ring-primary placeholder-outline-variant"
         />
       </div>
 
       {/* Results dropdown */}
       {open && (
-        <div className="absolute z-[100] top-full mt-2 left-0 right-0 bg-surface rounded-xl shadow-2xl border border-border overflow-hidden max-h-[500px] overflow-y-auto">
-          {!hasResults ? (
+        <div
+          id={dropdownId}
+          role="listbox"
+          aria-label="Order search results"
+          className="absolute z-[100] top-full mt-2 left-0 right-0 bg-surface rounded-xl shadow-2xl border border-border overflow-hidden max-h-[500px] overflow-y-auto"
+        >
+          {error ? (
+            <div role="alert" aria-live="polite" className="px-4 py-4 flex items-start gap-2 bg-rose-50 border-b border-rose-100">
+              <span className="material-symbols-outlined text-rose-600 text-[18px] leading-none mt-0.5" aria-hidden="true">error</span>
+              <div className="text-xs text-rose-800">
+                <p className="font-semibold">Search failed</p>
+                <p className="mt-0.5 font-mono">{error}</p>
+              </div>
+            </div>
+          ) : !hasResults ? (
             <p className="text-xs text-outline text-center py-6">No results for "{query}"</p>
           ) : (
             <div className="divide-y divide-slate-50">
