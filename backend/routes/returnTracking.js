@@ -4,6 +4,7 @@ import { createRequire } from 'module';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
+import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { pagination } from '../utils/requestParams.js';
 
 const require = createRequire(import.meta.url);
@@ -265,8 +266,8 @@ router.post('/tracking/upload', upload.single('file'), async (req, res) => {
     const marketplace = canonicalMarketplace(req.query.marketplace || 'flipkart');
     if (!marketplace) throw inputError('Invalid marketplace');
 
-    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+    const wb = await parseSpreadsheet(req.file.buffer, { sheets: 0, json: { header: 1, defval: '' }, transfer: true });
+    const rows = wb.Sheets[wb.SheetNames[0]] ?? [];
     if (rows.length < 2) throw inputError('The workbook has headers but no data rows. No data was saved.');
 
     // Find column indexes based on header row (row 0)

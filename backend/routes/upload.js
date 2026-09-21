@@ -18,6 +18,7 @@ import {
 } from '../services/returnReports.js';
 import { refreshAmazonSettlementReportingRollups } from '../services/amazonSettlementReportingRollups.js';
 import { ORDER_SETTLEMENT_TOTALS_TABLE, refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 import { syncVbExportCatalog } from '../scripts/sync-vb-export-catalog.js';
 
@@ -137,11 +138,19 @@ const TEMPLATE_SAMPLES = {
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function parseFile(buffer, preferredSheets = []) {
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
-  const sheetName = preferredSheets.find(n => wb.SheetNames.includes(n)) || wb.SheetNames[0];
-  const ws   = wb.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+// Parses on a worker thread, which takes over `buffer` (it is empty afterwards)
+// unless keepBuffer is set.
+async function parseFile(buffer, preferredSheets = [], { keepBuffer = false } = {}) {
+  const pickSheet = names => preferredSheets.find(n => names.includes(n)) || names[0];
+  const wb = await parseSpreadsheet(buffer, {
+    read: { cellDates: true },
+    // Parse only the candidate sheets; select then keeps the one we read.
+    sheets: [...preferredSheets, 0],
+    select: names => [pickSheet(names)],
+    json: { header: 1, defval: '', raw: false },
+    transfer: !keepBuffer,
+  });
+  const rows = wb.Sheets[pickSheet(wb.SheetNames)] ?? [];
   if (rows.length < 2) return { headers: [], data: [] };
   const headers = rows[0].map(h => (h + '').trim());
   const data    = rows.slice(1).filter(r => r.some(c => c !== ''));
@@ -1273,7 +1282,7 @@ router.post('/orders', upload.single('file'), async (req, res) => {
     const colMap = parseColumnMap(req.body.columnMap);
     marketplace = genericMarketplace(req.body.marketplace);
     const pool = getPool();
-    const { headers, data } = parseFile(req.file.buffer);
+    const { headers, data } = await parseFile(req.file.buffer);
     await resolveColumnMap(colMap, REQUIRED_FIELDS.orders, headers);
     requireUploadRows(data);
     requireMappedFields('orders', colMap, headers);
@@ -1333,7 +1342,7 @@ router.post('/returns', upload.single('file'), async (req, res) => {
     const colMap = parseColumnMap(req.body.columnMap);
     marketplace = genericMarketplace(req.body.marketplace);
     const pool = getPool();
-    const { headers, data } = parseFile(req.file.buffer, ['Return Data', 'Returns']);
+    const { headers, data } = await parseFile(req.file.buffer, ['Return Data', 'Returns']);
     await resolveColumnMap(colMap, REQUIRED_FIELDS.returns, headers);
     requireUploadRows(data);
     requireMappedFields('returns', colMap, headers);
@@ -1429,7 +1438,8 @@ router.post('/sku-master', upload.single('file'), async (req, res) => {
   const skippedRows = [];
 
   try {
-    const { headers, data } = parseFile(req.file.buffer);
+    // The VB EXPORT catalog sync below reads the file again.
+    const { headers, data } = await parseFile(req.file.buffer, [], { keepBuffer: true });
 
     // Auto-detect VB EXPORT Product Category format
     const isVbExport = headers.some(h => /vb\s*export\s*sku/i.test(h)) ||
@@ -1971,7 +1981,7 @@ router.post('/catalog-cogs', upload.single('file'), async (req, res) => {
   const skippedRows = [];
 
   try {
-    const { headers, data } = parseFile(req.file.buffer);
+    const { headers, data } = await parseFile(req.file.buffer);
     const norm = (s) => String(s || '').toLowerCase().replace(/[\s_-]/g, '');
     const findCol = (...variants) => {
       const wanted = variants.map(norm);
@@ -2188,8 +2198,8 @@ router.post('/returns-received', upload.single('file'), async (req, res) => {
   const skippedRows = [];
   try {
     const pool = getPool();
-    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+    const wb = await parseSpreadsheet(req.file.buffer, { sheets: 0, json: { header: 1, defval: '' }, transfer: true });
+    const rows = wb.Sheets[wb.SheetNames[0]] ?? [];
     const headerRow = (rows[0] || []).map((header, index) => normalizedUploadHeader(header) || `col_${index}`);
     const data = rows.slice(1).filter(r => r.some(c => c !== ''));
     requireUploadRows(data);

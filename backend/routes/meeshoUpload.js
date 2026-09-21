@@ -1,6 +1,5 @@
 import express from 'express';
 import multer from 'multer';
-import { createRequire } from 'module';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { optionalNumber as num, optionalString as str } from '../utils/valueParsers.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
@@ -8,9 +7,16 @@ import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
+import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 
-const require = createRequire(import.meta.url);
-const XLSX = require('xlsx');
+// Auto-detect the sheet containing the settlement lines
+function orderPaymentsSheet(sheetNames) {
+  let orderSheet = sheetNames.find(n => n.includes('Order Payments'));
+  if (!orderSheet && sheetNames.includes('Disclaimer')) {
+    orderSheet = sheetNames[1]; // Typically 2nd sheet
+  }
+  return orderSheet;
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -29,21 +35,21 @@ router.post('/', upload.single('file'), async (req, res) => {
 
   try {
     pool = getPool();
-    const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-    
-    // Auto-detect sheet containing settlement logic
-    let orderSheet = wb.SheetNames.find(n => n.includes('Order Payments'));
-    if (!orderSheet && wb.SheetNames.includes('Disclaimer')) {
-      orderSheet = wb.SheetNames[1]; // Typically 2nd sheet
-    }
-    
+    const wb = await parseSpreadsheet(req.file.buffer, {
+      read: { cellDates: true },
+      select: names => [orderPaymentsSheet(names)],
+      // Use range: 1 to skip the first top-level grouping row. The headers will be read from row 2
+      json: { range: 1 },
+      transfer: true,
+    });
+
+    const orderSheet = orderPaymentsSheet(wb.SheetNames);
     if (!orderSheet) {
       return res.status(400).json({ error: 'Could not find "Order Payments" sheet in Meesho payment file' });
     }
 
-    // Use range: 1 to skip the first top-level grouping row. The headers will be read from row 2
-    const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[orderSheet], { range: 1 });
-    
+    const rawRows = wb.Sheets[orderSheet] ?? [];
+
     if (rawRows.length === 0) {
       return res.status(400).json({ error: 'Order Payments sheet is empty or only contains headers' });
     }

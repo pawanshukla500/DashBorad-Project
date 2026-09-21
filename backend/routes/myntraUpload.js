@@ -15,6 +15,7 @@ import { forEachDbBatch } from '../utils/dbBatch.js';
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
 
 const router = express.Router();
@@ -158,10 +159,15 @@ function orderReturnType(row) {
   return value(row, 'return creation date') ? 'Customer Return' : null;
 }
 
-function parseSheet(buffer) {
-  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+// Reads the first sheet on a worker thread, which takes over `buffer`.
+async function parseSheet(buffer) {
+  const workbook = await parseSpreadsheet(buffer, {
+    read: { cellDates: true },
+    sheets: 0,
+    json: { header: 1, defval: '', raw: false },
+    transfer: true,
+  });
+  const matrix = workbook.Sheets[workbook.SheetNames[0]] ?? [];
   const headers = (matrix[0] || []).map(clean);
   const rows = matrix.slice(1)
     .filter(row => row.some(cell => clean(cell)))
@@ -685,7 +691,7 @@ router.post('/:type', upload.single('file'), async (req, res) => {
   try {
     pool = getPool();
     sellerAccount = await resolveMyntraAccount(pool, req.query.seller_account || req.body.seller_account);
-    const { headers, rows } = parseSheet(req.file.buffer);
+    const { headers, rows } = await parseSheet(req.file.buffer);
     parsedRows = rows;
     if (!rows.length) throw new InputError('The workbook has headers but no data rows. No data was saved.');
     validateLayout(headers, type);
