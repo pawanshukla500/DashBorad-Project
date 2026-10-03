@@ -36,6 +36,10 @@ const ChargesConfigPage = lazy(() => import('./pages/ChargesConfigPage'));
 const AdminCenterPage = lazy(() => import('./pages/AdminCenterPage'));
 const AuditLogPage = lazy(() => import('./pages/AuditLogPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
+const SorMyntraJabongPage   = lazy(() => import('./pages/Sor/SorMyntraJabongPage'));
+const SorZeptoPage          = lazy(() => import('./pages/Sor/SorZeptoPage'));
+const SorRelianceAjioPage   = lazy(() => import('./pages/Sor/SorRelianceAjioPage'));
+const SorCocobluPage        = lazy(() => import('./pages/Sor/SorCocobluPage'));
 
 function FullScreenLoader() {
   return (
@@ -182,6 +186,14 @@ function AppRoutes({ user }) {
         path="/upload"
         element={hasRole(user.role, OPS_ROLES) ? <UploadPage /> : <Navigate to="/" replace />}
       />
+      {/* SOR Level Payment Reco — invoice-level reconciliation per portal.
+          /sor itself redirects to the largest portal (Myntra Jabong) so the
+          Sidebar click never lands on an empty page. */}
+      <Route path="/sor" element={<Navigate to="/sor/myntra-jabong" replace />} />
+      <Route path="/sor/myntra-jabong" element={<SorMyntraJabongPage />} />
+      <Route path="/sor/zepto"         element={<SorZeptoPage />} />
+      <Route path="/sor/reliance-ajio" element={<SorRelianceAjioPage />} />
+      <Route path="/sor/cocoblu"       element={<SorCocobluPage />} />
       <Route
         path="/rate-card-config"
         element={user.role === 'admin' ? <RateCardConfigPage /> : <Navigate to="/upload" replace />}

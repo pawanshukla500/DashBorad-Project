@@ -10,6 +10,7 @@ const ICONS = {
   payouts: 'payments',
   profitability: 'analytics',
   data: 'database',
+  sor: 'receipt_long',
   admin: 'admin_panel_settings',
 };
 

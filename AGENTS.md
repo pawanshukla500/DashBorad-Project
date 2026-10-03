@@ -56,5 +56,76 @@ Whenever modifying, extending, or debugging data ingestion, orders, returns, set
    - Master Catalog Upload Template: Downloadable template format strictly has columns: `Marketplace SKU`, `VB EXPORT SKU's`, `VB Export Product Category`, `Weight Slab (kg)`, `COGS (₹)`, `Marketplace`.
    - UI Layout & Anti-Clutter Rule: Strictly maintain 6 clean top-level tabs on Profit Analysis (`Overview`, `By Category`, `By SKU`, `By Account`, `By Zone`, `COGS & Weight Slabs`). Do NOT create redundant top-level tabs; use in-tab toggles or sub-tabs instead.
 
+## Skills Roster (adopted from `msitarzewski/agency-agents`)
+
+ReconCentral adopts the role-based skills from
+[`msitarzewski/agency-agents`](https://github.com/msitarzewski/agency-agents).
+The canonical roster, canonical-file mapping, and per-skill usage contract
+live in [`docs/SKILLS.md`](docs/SKILLS.md). Sub-agents spawned for scoped
+tasks MUST compose their prompt as
+`<local context block> + <canonical skill body>` per the §3 procedure
+in that file.
+
+Primary 13 skills (mandatory for SOR + security + Notion work):
+1. Frontend Developer (`engineering/engineering-frontend-developer.md`)
+2. Backend Architect (`engineering/engineering-backend-architect.md`)
+3. AI Engineer (`engineering/engineering-ai-engineer.md`)
+4. DevOps Automator (`engineering/engineering-devops-automator.md`)
+5. Senior Developer (`engineering/engineering-senior-developer.md`)
+6. Code Reviewer (`engineering/engineering-code-reviewer.md`)
+7. Software Architect (`engineering/engineering-software-architect.md`)
+8. Data Engineer (`engineering/engineering-data-engineer.md`)
+9. Email Intelligence Engineer (`engineering/engineering-email-intelligence-engineer.md`)
+10. Database Reliability Engineer (`engineering/engineering-database-reliability-engineer.md`)
+11. UI Designer (`design/design-ui-designer.md`)
+12. UX Researcher (`design/design-ux-researcher.md`)
+13. Analytics Reporter (`engineering/engineering-data-visualization-engineer.md` — closest upstream match; flagged for rename when upstream adds a closer role.)
+
+## SOR Level Payment Reco Workspace
+
+A new top-level workspace **SOR Level Payment Reco** (`/sor`) is
+reserved for **invoice-level** reconciliation on top of the existing
+order-level pipeline. Four portal sub-tabs:
+
+| Sub-tab | Portal | Phase |
+|---|---|---|
+| `/sor/myntra-jabong` | Myntra Jabong India Private Limited | 0 — scaffold, awaiting Phase 1 source confirmation |
+| `/sor/zepto` | Zepto Limited | 0 — scaffold, awaiting source confirmation |
+| `/sor/reliance-ajio` | Reliance Retail Ltd (AJIO) | 0 — scaffold, awaiting invoice source |
+| `/sor/cocoblu` | Cocoblu Retails | 0 — scaffold, awaiting source confirmation |
+
+SOR-specific invariants:
+
+- **Schema** lives in `sor_invoice` (header) + `sor_invoice_line`
+  (line items) + `sor_upload_log` (audit). Idempotent migration
+  `2026.10.sor-invoice-1` is wired into `backend/db/initDb.js`.
+  UNIQUE constraint is `(portal, portal_account, invoice_no, invoice_type)`
+  so re-uploads are idempotent.
+- **Myntra** keeps the strict 10708 / 45833 split — `portal_account`
+  must equal the seller ID, otherwise the row is rejected.
+- **All JSONB writes** must go through `forEachDbBatch`.
+- **All settlement-line linkage** must trigger
+  `refreshOrderSettlementTotals(pool)` after the write.
+- **No top-level tab bloat** — SOR is a sibling workspace, not a tab
+  inside Analytics. Its 4 sub-tabs are siblings, not nested, so
+  cross-portal pivot keeps filter state.
+- **Security** — every new portal onboarding (Zepto, Cocoblu, etc.)
+  must complete the threat-model checklist in
+  [`docs/SECURITY_AUDIT_2026-10-03.md`](docs/SECURITY_AUDIT_2026-10-03.md)
+  before any code lands.
+
+Full design: [`docs/SOR_LEVEL_PAYMENT_RECO.md`](docs/SOR_LEVEL_PAYMENT_RECO.md).
+
+## Security Audit Cadence
+
+- Every PR: AppSec + Code Reviewer skills.
+- Monthly: `npm audit --omit=dev --audit-level=high`.
+- Quarterly: full Security Audit doc refresh
+  (`docs/SECURITY_AUDIT_YYYY-MM-DD.md`).
+- On new portal onboarding: threat model + AppSec review BEFORE code.
+
+Findings ledger lives in
+[`docs/SECURITY_AUDIT_2026-10-03.md`](docs/SECURITY_AUDIT_2026-10-03.md).
+
 
 
