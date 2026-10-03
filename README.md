@@ -2,6 +2,10 @@
 
 Multi-marketplace seller finance & reconciliation dashboard (Flipkart-first, Amazon growing).
 
+Includes the **SOR Level Payment Reco** workspace for invoice-grain reconciliation
+across Myntra Jabong India Pvt Ltd, Zepto Limited, Reliance Retail Ltd (AJIO),
+and Cocoblu Retails — see [`docs/SOR_LEVEL_PAYMENT_RECO.md`](docs/SOR_LEVEL_PAYMENT_RECO.md).
+
 ## Stack
 
 - **Frontend:** React 18 + Vite + Tailwind (`frontend/`)

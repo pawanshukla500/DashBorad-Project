@@ -62,54 +62,143 @@ WORKSPACES
 
 `/sor` itself redirects to `/sor/myntra-jabong` (the largest portal).
 
+**Role gate (Phase 0):** SOR is `EXPORT_ROLES` (analyst, operator, admin)
+only. Viewers do not see the workspace in the Sidebar; direct URL
+access redirects to the Dashboard). Enforced both in
+`frontend/src/navigation.js` (`roles: EXPORT_ROLES`) and in
+`frontend/src/App.jsx` (per-route `hasRole(user.role, EXPORT_ROLES)`
+check on every `/sor/*` route).
+
 ---
 
-## 4. Invoice-level schema (planned)
+## 4. Invoice-level schema (live in Phase 0)
+
+The migration `2026.10.sor-invoice-1` is wired into `backend/db/initDb.js`
+via `ensureSorInvoiceSchema()`. The DDL shipped in Phase 0 PR #42 is the
+single source of truth — reproduced below for reference.
 
 ```sql
 -- Header per portal invoice
-CREATE TABLE sor_invoice (
+CREATE TABLE IF NOT EXISTS sor_invoice (
   id              BIGSERIAL PRIMARY KEY,
-  portal          TEXT NOT NULL,        -- 'myntra_jabong' | 'zepto' | 'reliance_ajio' | 'cocoblu'
-  portal_account  TEXT NOT NULL,        -- '10708' | '45833' | 'zepto_main' | 'ajio_main' | 'cocoblu_main'
+  portal          TEXT NOT NULL,
+  portal_account  TEXT NOT NULL DEFAULT 'default',
   invoice_no      TEXT NOT NULL,
-  invoice_date    DATE NOT NULL,
+  invoice_date    DATE,
   period_from     DATE,
   period_to       DATE,
-  invoice_type    TEXT NOT NULL,        -- 'sale' | 'return' | 'settlement' | 'credit_note' | 'debit_note'
+  invoice_type    TEXT NOT NULL,
   gross_amount    NUMERIC(14,2),
   fee_amount      NUMERIC(14,2),
   tds_amount      NUMERIC(14,2),
   net_payable     NUMERIC(14,2),
-  raw_payload     JSONB NOT NULL,       -- full parsed row, audit-safe
+  raw_payload     JSONB NOT NULL,
   uploaded_by     TEXT,
-  uploaded_at     TIMESTAMPTZ DEFAULT now(),
-  UNIQUE (portal, portal_account, invoice_no, invoice_type)
+  uploaded_at     TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT uq_sor_invoice_portal_account_no_type UNIQUE (portal, portal_account, invoice_no, invoice_type)
 );
 
--- Line items linking invoice ↔ order
-CREATE TABLE sor_invoice_line (
+-- Line items linking invoice ↔ order ↔ settlement.
+-- settlement_id and order_row_id are FK references with ON DELETE SET NULL
+-- so clearing the parent settlement or order preserves the audit row.
+CREATE TABLE IF NOT EXISTS sor_invoice_line (
   id              BIGSERIAL PRIMARY KEY,
-  invoice_id      BIGINT REFERENCES sor_invoice(id) ON DELETE CASCADE,
-  order_id        TEXT,                 -- marketplace order id
-  sku             TEXT,                 -- marketplace SKU
-  vb_export_sku   TEXT,                 -- master SKU (per AGENTS.md invariant)
+  invoice_id      BIGINT NOT NULL REFERENCES sor_invoice(id) ON DELETE CASCADE,
+  order_id        TEXT,
+  sku             TEXT,
+  vb_export_sku   TEXT,
   quantity        INT,
   gross_amount    NUMERIC(14,2),
   fee_amount      NUMERIC(14,2),
-  settlement_id   BIGINT REFERENCES settlement_items(id), -- when present
-  order_row_id    BIGINT REFERENCES orders(id),           -- when present
+  settlement_id   BIGINT REFERENCES settlements(id) ON DELETE SET NULL,
+  order_row_id    BIGINT REFERENCES orders(id)      ON DELETE SET NULL,
   raw_payload     JSONB NOT NULL
 );
 
-CREATE INDEX idx_sor_invoice_portal     ON sor_invoice(portal, portal_account);
-CREATE INDEX idx_sor_invoice_period     ON sor_invoice(portal, invoice_date);
-CREATE INDEX idx_sor_invoice_line_order ON sor_invoice_line(order_id);
-CREATE INDEX idx_sor_invoice_line_sku   ON sor_invoice_line(vb_export_sku);
+-- Audit trail per uploaded file.
+CREATE TABLE IF NOT EXISTS sor_upload_log (
+  id            SERIAL PRIMARY KEY,
+  portal        TEXT NOT NULL,
+  portal_account TEXT NOT NULL DEFAULT 'default',
+  filename      TEXT,
+  rows_inserted INT DEFAULT 0,
+  rows_updated  INT DEFAULT 0,
+  rows_skipped  INT DEFAULT 0,
+  status        TEXT,
+  error_msg     TEXT,
+  remark        TEXT,
+  uploaded_by   TEXT,
+  uploaded_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 7 covering indexes shipped with Phase 0:
+-- IX_sor_invoice_portal        ON sor_invoice(portal, portal_account)
+-- IX_sor_invoice_date          ON sor_invoice(invoice_date DESC)
+-- IX_sor_invoice_period        ON sor_invoice(period_from, period_to)
+-- IX_sor_invoice_line_order    ON sor_invoice_line(order_id) WHERE order_id IS NOT NULL
+-- IX_sor_invoice_line_sku      ON sor_invoice_line(vb_export_sku) WHERE vb_export_sku IS NOT NULL
+-- IX_sor_invoice_line_invoice  ON sor_invoice_line(invoice_id)
+-- IX_sor_upload_log_portal_date ON sor_upload_log(portal, uploaded_at DESC)
+```
+
+### Audit mirror trigger (Phase 0)
+
+Every `sor_upload_log` row is mirrored into `upload_log` via the
+`trg_sor_upload_log_mirror` AFTER INSERT trigger (function
+`sor_upload_log_mirror()`). The mirror row uses `marketplace=portal`
+(e.g. `'myntra'`, `'zepto'`) and `data_type='sor_invoice'`, so the
+existing Audit History query surfaces SOR uploads alongside marketplace
+uploads with **no** Audit History code change.
+
+```sql
+CREATE OR REPLACE FUNCTION sor_upload_log_mirror() RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO upload_log (
+    data_type, filename, marketplace, rows_inserted, rows_updated,
+    rows_skipped, status, error_msg, remark, uploaded_at
+  ) VALUES (
+    'sor_invoice', NEW.filename, NEW.portal, NEW.rows_inserted,
+    NEW.rows_updated, NEW.rows_skipped, NEW.status, NEW.error_msg,
+    COALESCE(NEW.remark, '') || ' | portal_account=' || NEW.portal_account,
+    NEW.uploaded_at
+  );
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_sor_upload_log_mirror
+  AFTER INSERT ON sor_upload_log
+  FOR EACH ROW EXECUTE FUNCTION sor_upload_log_mirror();
+```
+
+### FK constraint hardening
+
+For installs that pre-date the FK references in `sor_invoice_line`,
+`ensureSorInvoiceSchema()` adds the constraints idempotently using a
+`pg_constraint` lookup guard:
+
+```sql
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_settlement'
+  ) THEN
+    ALTER TABLE sor_invoice_line
+      ADD CONSTRAINT fk_sor_invoice_line_settlement
+      FOREIGN KEY (settlement_id) REFERENCES settlements(id) ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_order'
+  ) THEN
+    ALTER TABLE sor_invoice_line
+      ADD CONSTRAINT fk_sor_invoice_line_order
+      FOREIGN KEY (order_row_id) REFERENCES orders(id) ON DELETE SET NULL;
+  END IF;
+END $$;
 ```
 
 All `JSONB` writes go through `forEachDbBatch` and any change to
-`orders` / `settlement_items` triggers `refreshOrderSettlementTotals`
+`orders` / `settlements` triggers `refreshOrderSettlementTotals`
 (per AGENTS.md invariants).
 
 ---

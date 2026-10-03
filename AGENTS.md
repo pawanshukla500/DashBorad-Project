@@ -89,10 +89,10 @@ order-level pipeline. Four portal sub-tabs:
 
 | Sub-tab | Portal | Phase |
 |---|---|---|
-| `/sor/myntra-jabong` | Myntra Jabong India Private Limited | 0 — scaffold, awaiting Phase 1 source confirmation |
-| `/sor/zepto` | Zepto Limited | 0 — scaffold, awaiting source confirmation |
-| `/sor/reliance-ajio` | Reliance Retail Ltd (AJIO) | 0 — scaffold, awaiting invoice source |
-| `/sor/cocoblu` | Cocoblu Retails | 0 — scaffold, awaiting source confirmation |
+| `/sor/myntra-jabong` | Myntra Jabong India Private Limited | 1 — Excel parser (data source confirmed, sample pending) |
+| `/sor/zepto` | Zepto Limited | 3 — Excel parser (data source confirmed, sample pending) |
+| `/sor/reliance-ajio` | Reliance Retail Ltd (AJIO) | 2 — wire existing AJIO upload path (data source confirmed) |
+| `/sor/cocoblu` | Cocoblu Retails | 4 — Excel parser (data source confirmed, sample pending) |
 
 SOR-specific invariants:
 
@@ -101,14 +101,30 @@ SOR-specific invariants:
   `2026.10.sor-invoice-1` is wired into `backend/db/initDb.js`.
   UNIQUE constraint is `(portal, portal_account, invoice_no, invoice_type)`
   so re-uploads are idempotent.
-- **Myntra** keeps the strict 10708 / 45833 split — `portal_account`
-  must equal the seller ID, otherwise the row is rejected.
+- **Referential integrity** — `sor_invoice_line.settlement_id` and
+  `sor_invoice_line.order_row_id` are foreign keys to `settlements(id)`
+  and `orders(id)` with `ON DELETE SET NULL`. Constraints are added
+  idempotently by `ensureSorInvoiceSchema()` for installs that pre-date
+  the FK declarations. Audit rows survive parent clears.
+- **Audit integration** — `sor_upload_log` mirrors into `upload_log` via
+  the `trg_sor_upload_log_mirror` AFTER INSERT trigger (function
+  `sor_upload_log_mirror()`). `data_type='sor_invoice'` and
+  `marketplace=portal` so existing Audit History queries surface SOR
+  uploads with no code change.
+- **Myntra** keeps the strict 10708 / 45833 split **only** for the
+  regular Myntra marketplace pipeline (`myntraUpload.js`); MJIPL is a
+  separate legal entity and **does not** use this gate.
 - **All JSONB writes** must go through `forEachDbBatch`.
 - **All settlement-line linkage** must trigger
   `refreshOrderSettlementTotals(pool)` after the write.
 - **No top-level tab bloat** — SOR is a sibling workspace, not a tab
   inside Analytics. Its 4 sub-tabs are siblings, not nested, so
   cross-portal pivot keeps filter state.
+- **Role gate** — SOR is `EXPORT_ROLES` (analyst, operator, admin)
+  only. Viewers do not see the workspace in the Sidebar and direct
+  URL access redirects to the Dashboard. Enforced both in
+  `navigation.js` (`roles: EXPORT_ROLES`) and in `App.jsx` (per-route
+  `hasRole(user.role, EXPORT_ROLES)` check on every `/sor/*` route).
 - **Security** — every new portal onboarding (Zepto, Cocoblu, etc.)
   must complete the threat-model checklist in
   [`docs/SECURITY_AUDIT_2026-10-03.md`](docs/SECURITY_AUDIT_2026-10-03.md)
