@@ -28,7 +28,12 @@ function WorkspaceIcon({ name, filled }) {
 function Brand() {
   return (
     <div className="flex items-center px-6 mb-6 gap-2.5">
-      <img src="/logo.png" alt="ReconCentral Logo" className="h-8 w-8 object-contain" />
+      <span
+        className="h-8 w-8 rounded-lg bg-emerald-700 flex items-center justify-center shrink-0"
+        aria-hidden="true"
+      >
+        <img src="/logo-white.png" alt="" className="h-5 w-5" />
+      </span>
       <span className="font-display text-headline-md font-semibold text-ink">ReconCentral</span>
     </div>
   );
