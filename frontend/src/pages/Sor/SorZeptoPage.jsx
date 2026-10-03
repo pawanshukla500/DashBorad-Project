@@ -15,8 +15,9 @@ export default function SorZeptoPage() {
       portalLabel="SOR · Zepto Limited"
       legalName="Zepto Limited"
       portalAccount={null}
-      phase="scaffold"
+      phase={3}
       phaseBadge="Phase 3 — Excel parser (data source confirmed)"
+      dataSourceConfirmed={true}
       description="Invoice-level reconciliation for Zepto via Excel upload"
       openQuestions={[
         'Zepto seller-account identifier(s) — single Zepto account or multiple brands?',

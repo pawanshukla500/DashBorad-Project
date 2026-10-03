@@ -15,8 +15,9 @@ export default function SorCocobluPage() {
       portalLabel="SOR · Cocoblu Retails"
       legalName="Cocoblu Retails (Cocoblu)"
       portalAccount={null}
-      phase="scaffold"
+      phase={4}
       phaseBadge="Phase 4 — Excel parser (data source confirmed)"
+      dataSourceConfirmed={true}
       description="Invoice-level reconciliation for Cocoblu via Excel upload"
       openQuestions={[
         'Cocoblu seller-account identifier(s) — single account or multiple brands?',

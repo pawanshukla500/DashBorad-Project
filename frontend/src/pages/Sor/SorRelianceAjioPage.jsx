@@ -15,8 +15,9 @@ export default function SorRelianceAjioPage() {
       portalLabel="SOR · Reliance Retail Ltd (AJIO)"
       legalName="Reliance Retail Ltd (AJIO)"
       portalAccount={null}
-      phase="scaffold"
+      phase={2}
       phaseBadge="Phase 2 — Wire existing AJIO upload path"
+      dataSourceConfirmed={true}
       description="Invoice-level reconciliation for AJIO via the existing AJIO upload path"
       openQuestions={[
         'AJIO seller-account identifier(s) — single AJIO account or multiple brands under Reliance Retail Ltd?',

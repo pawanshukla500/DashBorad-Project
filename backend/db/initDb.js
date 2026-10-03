@@ -662,9 +662,10 @@ const TABLES = [`
     uploaded_at     TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT uq_sor_invoice_portal_account_no_type UNIQUE (portal, portal_account, invoice_no, invoice_type)
   )`,
-  // Line items that link invoice ↔ order ↔ settlement. Settlements and orders
-  // are linked by reference so deletes are protected; matching is by
-  // portal_id + portal_account + vendor identifier on the order side.
+  // Line items that link invoice ↔ order ↔ settlement. FK references on
+  // settlement_id and order_row_id protect referential integrity — deleting
+  // the parent settlement or order cascades into NULLs (not the lines
+  // themselves) so audit history is preserved.
   `CREATE TABLE IF NOT EXISTS sor_invoice_line (
     id              BIGSERIAL PRIMARY KEY,
     invoice_id      BIGINT NOT NULL REFERENCES sor_invoice(id) ON DELETE CASCADE,
@@ -674,12 +675,15 @@ const TABLES = [`
     quantity        INT,
     gross_amount    NUMERIC(14,2),
     fee_amount      NUMERIC(14,2),
-    settlement_id   BIGINT,
-    order_row_id    BIGINT,
+    settlement_id   BIGINT REFERENCES settlements(id) ON DELETE SET NULL,
+    order_row_id    BIGINT REFERENCES orders(id)      ON DELETE SET NULL,
     raw_payload     JSONB NOT NULL
   )`,
-  // Audit trail for SOR uploads. One row per uploaded file. Pairs with
-  // upload_log so the existing Audit History surface picks it up.
+  // Audit trail for SOR uploads. One row per uploaded file. The
+  // ensureSorInvoiceSchema() migration below adds a trigger that mirrors
+  // every insert into upload_log (with marketplace = portal) so existing
+  // Audit History queries surface SOR uploads alongside marketplace
+  // uploads — no Audit History code change required.
   `CREATE TABLE IF NOT EXISTS sor_upload_log (
     id            SERIAL PRIMARY KEY,
     portal        TEXT NOT NULL,
@@ -1774,9 +1778,10 @@ async function ensureMyntraPaymentLinkageSchema(pool) {
 /**
  * SOR Level Payment Reconciliation — invoice grain across portals.
  * Tables sor_invoice, sor_invoice_line, sor_upload_log are created by the
- * TABLES array on a fresh install; this function only records the schema
- * version and adds any future column-level hardening without re-running
- * the full DDL pass on every boot.
+ * TABLES array on a fresh install. This function then adds the FK
+ * constraints on sor_invoice_line (referential integrity on settlement /
+ * order), and the upload_log mirror trigger (so Audit History surfaces SOR
+ * uploads alongside marketplace uploads), then records the schema version.
  *
  * Per-portal reconciliation rules live in docs/SOR_LEVEL_PAYMENT_RECO.md.
  */
@@ -1787,13 +1792,57 @@ async function ensureSorInvoiceSchema(pool) {
   );
   if (rowCount) return;
 
-  // The TABLES array already creates sor_invoice, sor_invoice_line,
-  // sor_upload_log on a fresh install. On an existing install that is at
-  // the previous CURRENT_SCHEMA_VERSION the `for (const ddl of TABLES)`
-  // loop inside initDb() also runs the CREATE TABLE IF NOT EXISTS for these
-  // tables before we get here, so there is nothing else to do at this
-  // version. We still record the version so the schema_version table
-  // reflects the work.
+  // FK constraints on sor_invoice_line. CREATE TABLE on a fresh install
+  // already declares them; on an existing install that pre-dates the FK
+  // declaration we add them idempotently. SET NULL preserves audit rows
+  // when the parent settlement or order is later cleared.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_settlement'
+      ) THEN
+        ALTER TABLE sor_invoice_line
+          ADD CONSTRAINT fk_sor_invoice_line_settlement
+          FOREIGN KEY (settlement_id) REFERENCES settlements(id) ON DELETE SET NULL;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_order'
+      ) THEN
+        ALTER TABLE sor_invoice_line
+          ADD CONSTRAINT fk_sor_invoice_line_order
+          FOREIGN KEY (order_row_id) REFERENCES orders(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `).catch(e => console.warn('[db] sor_invoice_line FK:', e.message));
+
+  // Mirror SOR upload events into upload_log so the existing Audit History
+  // query surfaces them without a code change. data_type = 'sor_invoice'
+  // makes them filterable; marketplace = portal keeps the column truthful.
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION sor_upload_log_mirror() RETURNS TRIGGER AS $$
+    BEGIN
+      INSERT INTO upload_log (
+        data_type, filename, marketplace, rows_inserted, rows_updated,
+        rows_skipped, status, error_msg, remark, uploaded_at
+      ) VALUES (
+        'sor_invoice', NEW.filename, NEW.portal, NEW.rows_inserted,
+        NEW.rows_updated, NEW.rows_skipped, NEW.status, NEW.error_msg,
+        COALESCE(NEW.remark, '') || ' | portal_account=' || NEW.portal_account,
+        NEW.uploaded_at
+      );
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+  `).catch(e => console.warn('[db] sor_upload_log_mirror function:', e.message));
+
+  await pool.query(`
+    DROP TRIGGER IF EXISTS trg_sor_upload_log_mirror ON sor_upload_log;
+    CREATE TRIGGER trg_sor_upload_log_mirror
+      AFTER INSERT ON sor_upload_log
+      FOR EACH ROW EXECUTE FUNCTION sor_upload_log_mirror();
+  `).catch(e => console.warn('[db] trg_sor_upload_log_mirror:', e.message));
+
   await pool.query(
     `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
     [SOR_INVOICE_SCHEMA_VERSION],

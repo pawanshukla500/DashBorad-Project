@@ -21,6 +21,7 @@ export default function SorPageShell({
   legalName,
   phase,
   phaseBadge,
+  dataSourceConfirmed = false,
   description,
   openQuestions,
   nextPhase,
@@ -58,7 +59,9 @@ export default function SorPageShell({
           </span>
           <div className="flex-1 min-w-0">
             <h3 className="font-display text-base font-semibold text-ink">
-              {phase === 'scaffold' ? 'Workspace scaffolded, data source needed' : `Phase ${phase} — work in progress`}
+              {phase === 'scaffold' && !dataSourceConfirmed
+                ? 'Workspace scaffolded, data source needed'
+                : `Phase ${phase} — work in progress`}
             </h3>
             <p className="mt-1 text-sm text-secondary max-w-[68ch]">
               {cta || 'This sub-tab is reserved for invoice-level reconciliation. The route is wired, the DB tables and indexes are in place, and the design system shell is live. Wire the per-portal data source and the KPI grid + invoice table will populate.'}

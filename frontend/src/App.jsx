@@ -10,7 +10,7 @@ import { SkeletonChart, SkeletonKpiGrid, SkeletonTable } from './components/Skel
 import RefreshingBanner from './components/RefreshingBanner';
 import { FilterProvider } from './context/FilterContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { OPS_ROLES, workspaceForPath } from './navigation';
+import { OPS_ROLES, EXPORT_ROLES, workspaceForPath } from './navigation';
 import { hasRole } from './utils/roles';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -187,13 +187,14 @@ function AppRoutes({ user }) {
         element={hasRole(user.role, OPS_ROLES) ? <UploadPage /> : <Navigate to="/" replace />}
       />
       {/* SOR Level Payment Reco — invoice-level reconciliation per portal.
-          /sor itself redirects to the largest portal (Myntra Jabong) so the
-          Sidebar click never lands on an empty page. */}
+          analyst+ only; viewers (below EXPORT_ROLES) redirect to the
+          Dashboard. /sor itself redirects to the largest portal
+          (Myntra Jabong) so the Sidebar click never lands on an empty page. */}
       <Route path="/sor" element={<Navigate to="/sor/myntra-jabong" replace />} />
-      <Route path="/sor/myntra-jabong" element={<SorMyntraJabongPage />} />
-      <Route path="/sor/zepto"         element={<SorZeptoPage />} />
-      <Route path="/sor/reliance-ajio" element={<SorRelianceAjioPage />} />
-      <Route path="/sor/cocoblu"       element={<SorCocobluPage />} />
+      <Route path="/sor/myntra-jabong" element={hasRole(user.role, EXPORT_ROLES) ? <SorMyntraJabongPage /> : <Navigate to="/" replace />} />
+      <Route path="/sor/zepto"         element={hasRole(user.role, EXPORT_ROLES) ? <SorZeptoPage />        : <Navigate to="/" replace />} />
+      <Route path="/sor/reliance-ajio" element={hasRole(user.role, EXPORT_ROLES) ? <SorRelianceAjioPage /> : <Navigate to="/" replace />} />
+      <Route path="/sor/cocoblu"       element={hasRole(user.role, EXPORT_ROLES) ? <SorCocobluPage />      : <Navigate to="/" replace />} />
       <Route
         path="/rate-card-config"
         element={user.role === 'admin' ? <RateCardConfigPage /> : <Navigate to="/upload" replace />}

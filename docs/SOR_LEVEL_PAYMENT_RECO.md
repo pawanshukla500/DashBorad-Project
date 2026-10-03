@@ -118,7 +118,13 @@ All `JSONB` writes go through `forEachDbBatch` and any change to
 
 ### 5.1 Myntra Jabong India Private Limited
 
-- Seller ID gate stays strict: 10708 (vb) | 45833 (ej).
+- **This is a separate legal entity** from the regular Myntra marketplace
+  (which uses the 10708 / 45833 split). MJIPL has its own seller-ID model
+  (single account or multi-brand — to be confirmed during Phase 1).
+- **No 10708 / 45833 gate applies** here. The strict Myntra-vb / Myntra-ej
+  split used by `myntraUpload.js` is intentionally NOT used; MJIPL
+  invoices flow into `sor_invoice` directly with `portal_account` set to
+  MJIPL's own account identifier.
 - For each `sor_invoice` (type = `settlement`):
   - Sum `gross_amount` (sale side) → `sum_orders_gross`.
   - Sum `gross_amount` (return side) → `sum_returns_gross`.
