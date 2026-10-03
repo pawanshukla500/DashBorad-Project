@@ -157,7 +157,7 @@ CodeAnt follow-up.
 - Project: **DashBorad Project** (`ee11667b-fe64-4f33-9d07-b81c4ce1d99f`)
 - Project UI: https://task.youthnic.shop/my-tasks
 - Endpoint: `https://nekdjoquirhecmejuoba.supabase.co/functions/v1/mcp-server`
-- Auth header: `tfp_pat_70446977b019aacb725dfaf4b486e92fe8f277610a805e5110814a9a45a8e620`
+- Auth header: `<TASKFLOW_PAT — load from your local MCP config, e.g. ~/.gemini/mcp_config.json or ~/.minimax/mcp.json. Never commit a live PAT to the repo.>`
 - All tasks assigned to Pawan (`9631e904-ebc6-4ea2-8481-7778e2c3c743`).
 - Lifecycle: `in_progress` → `in_review` → `done`.
 
