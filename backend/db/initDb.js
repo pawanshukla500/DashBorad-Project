@@ -9,7 +9,8 @@ import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.j
 // Every item below this version is idempotent but not free: ALTER TABLE takes
 // a table lock even when the column already exists. Record completion so a
 // normal backend restart is a quick health check rather than a full DDL pass.
-const CURRENT_SCHEMA_VERSION = '2026.08.myntra-invoices-unified-1';
+const CURRENT_SCHEMA_VERSION = '2026.10.sor-invoice-1';
+const SOR_INVOICE_SCHEMA_VERSION = '2026.10.sor-invoice-1';
 const MYNTRA_UPLOAD_SCHEMA_VERSION = '2026.08.myntra-ej-vb-order-return-1';
 const MYNTRA_SELLER_ID_SCHEMA_VERSION = '2026.08.myntra-seller-id-guard-1';
 const UPLOAD_AUDIT_RETENTION_SCHEMA_VERSION = '2026.08.upload-audit-retention-1';
@@ -636,6 +637,67 @@ const TABLES = [`
     updated_at      TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT uq_fee_disputes_item_fee UNIQUE (order_item_id, fee_type)
   )`,
+
+  /* ── SOR Level Payment Reconciliation — invoice grain (2026.10.sor-invoice-1) ── */
+  // Per-portal invoice headers. The UNIQUE constraint enforces de-dup of the
+  // same physical invoice if it's uploaded twice. portal_id is the lowercase
+  // portal slug from the AGENTS.md marketplace enumeration; portal_account is
+  // the seller-account key (e.g. '10708' / '45833' for Myntra, 'ajio_main',
+  // 'zepto_main', 'cocoblu_main' until Pawan names them).
+  `CREATE TABLE IF NOT EXISTS sor_invoice (
+    id              BIGSERIAL PRIMARY KEY,
+    portal          TEXT NOT NULL,
+    portal_account  TEXT NOT NULL DEFAULT 'default',
+    invoice_no      TEXT NOT NULL,
+    invoice_date    DATE,
+    period_from     DATE,
+    period_to       DATE,
+    invoice_type    TEXT NOT NULL,
+    gross_amount    NUMERIC(14,2),
+    fee_amount      NUMERIC(14,2),
+    tds_amount      NUMERIC(14,2),
+    net_payable     NUMERIC(14,2),
+    raw_payload     JSONB NOT NULL,
+    uploaded_by     TEXT,
+    uploaded_at     TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_sor_invoice_portal_account_no_type UNIQUE (portal, portal_account, invoice_no, invoice_type)
+  )`,
+  // Line items that link invoice ↔ order ↔ settlement. FK references on
+  // settlement_id and order_row_id protect referential integrity — deleting
+  // the parent settlement or order cascades into NULLs (not the lines
+  // themselves) so audit history is preserved.
+  `CREATE TABLE IF NOT EXISTS sor_invoice_line (
+    id              BIGSERIAL PRIMARY KEY,
+    invoice_id      BIGINT NOT NULL REFERENCES sor_invoice(id) ON DELETE CASCADE,
+    order_id        TEXT,
+    sku             TEXT,
+    vb_export_sku   TEXT,
+    quantity        INT,
+    gross_amount    NUMERIC(14,2),
+    fee_amount      NUMERIC(14,2),
+    settlement_id   BIGINT REFERENCES settlements(id) ON DELETE SET NULL,
+    order_row_id    BIGINT REFERENCES orders(id)      ON DELETE SET NULL,
+    raw_payload     JSONB NOT NULL
+  )`,
+  // Audit trail for SOR uploads. One row per uploaded file. The
+  // ensureSorInvoiceSchema() migration below adds a trigger that mirrors
+  // every insert into upload_log (with marketplace = portal) so existing
+  // Audit History queries surface SOR uploads alongside marketplace
+  // uploads — no Audit History code change required.
+  `CREATE TABLE IF NOT EXISTS sor_upload_log (
+    id            SERIAL PRIMARY KEY,
+    portal        TEXT NOT NULL,
+    portal_account TEXT NOT NULL DEFAULT 'default',
+    filename      TEXT,
+    rows_inserted INT DEFAULT 0,
+    rows_updated  INT DEFAULT 0,
+    rows_skipped  INT DEFAULT 0,
+    status        TEXT,
+    error_msg     TEXT,
+    remark        TEXT,
+    uploaded_by   TEXT,
+    uploaded_at   TIMESTAMPTZ DEFAULT NOW()
+  )`,
 ];
 
 const INDEXES = [
@@ -714,6 +776,14 @@ const INDEXES = [
   // Faster sidebar filter for the Returns tab and the Returns tab's source
   // drill-down on (marketplace, return_status, return_requested_date).
   `CREATE INDEX IF NOT EXISTS IX_returns_market_status_requested ON returns(marketplace, return_status, return_requested_date DESC) WHERE return_status IS NOT NULL`,
+  /* SOR invoice — drives /sor/* pages and the SOR reconciliation views. */
+  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_portal ON sor_invoice(portal, portal_account)`,
+  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_date   ON sor_invoice(invoice_date DESC)`,
+  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_period ON sor_invoice(period_from, period_to)`,
+  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_order ON sor_invoice_line(order_id) WHERE order_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_sku   ON sor_invoice_line(vb_export_sku) WHERE vb_export_sku IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_invoice ON sor_invoice_line(invoice_id)`,
+  `CREATE INDEX IF NOT EXISTS IX_sor_upload_log_portal_date ON sor_upload_log(portal, uploaded_at DESC)`,
 ];
 
 export async function initDb() {
@@ -753,6 +823,7 @@ export async function initDb() {
       await ensureMyntraBlankTrackingRtoFix(pool);
       await ensureMyntraBlankTrackingCancelledFix(pool);
       await ensureMyntraEjRateCardsSeed(pool);
+      await ensureSorInvoiceSchema(pool);
       await ensureDbConnectionOptimization(pool);
       await ensureLookupIndexes(pool);
       // A read-model migration changes the view definition as well as the
@@ -1446,6 +1517,7 @@ export async function initDb() {
     await ensureMyntraBlankTrackingRtoFix(pool);
     await ensureMyntraBlankTrackingCancelledFix(pool);
     await ensureMyntraEjRateCardsSeed(pool);
+    await ensureSorInvoiceSchema(pool);
     await ensureDbConnectionOptimization(pool);
     await ensureLookupIndexes(pool);
 
@@ -1701,6 +1773,81 @@ async function ensureMyntraPaymentLinkageSchema(pool) {
     [MYNTRA_PAYMENT_LINKAGE_SCHEMA_VERSION],
   );
   console.log(`[db] Schema ${MYNTRA_PAYMENT_LINKAGE_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * SOR Level Payment Reconciliation — invoice grain across portals.
+ * Tables sor_invoice, sor_invoice_line, sor_upload_log are created by the
+ * TABLES array on a fresh install. This function then adds the FK
+ * constraints on sor_invoice_line (referential integrity on settlement /
+ * order), and the upload_log mirror trigger (so Audit History surfaces SOR
+ * uploads alongside marketplace uploads), then records the schema version.
+ *
+ * Per-portal reconciliation rules live in docs/SOR_LEVEL_PAYMENT_RECO.md.
+ */
+async function ensureSorInvoiceSchema(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [SOR_INVOICE_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  // FK constraints on sor_invoice_line. CREATE TABLE on a fresh install
+  // already declares them; on an existing install that pre-dates the FK
+  // declaration we add them idempotently. SET NULL preserves audit rows
+  // when the parent settlement or order is later cleared.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_settlement'
+      ) THEN
+        ALTER TABLE sor_invoice_line
+          ADD CONSTRAINT fk_sor_invoice_line_settlement
+          FOREIGN KEY (settlement_id) REFERENCES settlements(id) ON DELETE SET NULL;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_order'
+      ) THEN
+        ALTER TABLE sor_invoice_line
+          ADD CONSTRAINT fk_sor_invoice_line_order
+          FOREIGN KEY (order_row_id) REFERENCES orders(id) ON DELETE SET NULL;
+      END IF;
+    END $$;
+  `).catch(e => console.warn('[db] sor_invoice_line FK:', e.message));
+
+  // Mirror SOR upload events into upload_log so the existing Audit History
+  // query surfaces them without a code change. data_type = 'sor_invoice'
+  // makes them filterable; marketplace = portal keeps the column truthful.
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION sor_upload_log_mirror() RETURNS TRIGGER AS $$
+    BEGIN
+      INSERT INTO upload_log (
+        data_type, filename, marketplace, rows_inserted, rows_updated,
+        rows_skipped, status, error_msg, remark, uploaded_at
+      ) VALUES (
+        'sor_invoice', NEW.filename, NEW.portal, NEW.rows_inserted,
+        NEW.rows_updated, NEW.rows_skipped, NEW.status, NEW.error_msg,
+        COALESCE(NEW.remark, '') || ' | portal_account=' || NEW.portal_account,
+        NEW.uploaded_at
+      );
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+  `).catch(e => console.warn('[db] sor_upload_log_mirror function:', e.message));
+
+  await pool.query(`
+    DROP TRIGGER IF EXISTS trg_sor_upload_log_mirror ON sor_upload_log;
+    CREATE TRIGGER trg_sor_upload_log_mirror
+      AFTER INSERT ON sor_upload_log
+      FOR EACH ROW EXECUTE FUNCTION sor_upload_log_mirror();
+  `).catch(e => console.warn('[db] trg_sor_upload_log_mirror:', e.message));
+
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [SOR_INVOICE_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${SOR_INVOICE_SCHEMA_VERSION} applied.`);
 }
 
 /**

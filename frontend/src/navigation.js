@@ -28,6 +28,7 @@ export const ROUTE_FILTERS = {
   '/calculator':       { marketplace: false, dates: false, groupBy: false, advanced: false },
   '/upload':           { marketplace: false, dates: false, groupBy: false, advanced: false },
   '/rate-card-config': { marketplace: false, dates: false, groupBy: false, advanced: false },
+  '/sor':              { marketplace: false, dates: true, groupBy: false, advanced: false },
   '/admin-center':     { marketplace: false, dates: false, groupBy: false, advanced: false },
   '/charges':          { marketplace: false, dates: false, groupBy: false, advanced: false },
   '/audit-log':        { marketplace: false, dates: false, groupBy: false, advanced: false },
@@ -115,6 +116,27 @@ export const WORKSPACES = [
     tabs: [
       { path: '/upload', label: 'Uploads' },
       { path: '/rate-card-config', label: 'Rate Cards', roles: ['admin'] },
+    ],
+  },
+  {
+    // SOR Level Payment Reconciliation — invoice grain, per-portal.
+    // Independent workspace (not nested under Analytics) so reconciliation
+    // rules, invoice parsers, and portal-specific UX can evolve without
+    // coupling to order-level Profit Analysis invariants. analyst+ only;
+    // viewers don't see it in the Sidebar and direct URL access redirects
+    // to the Dashboard.
+    key: 'sor',
+    label: 'SOR Level Payment Reco',
+    description: 'Invoice-level reconciliation across key portals',
+    job: 'Match portal invoices against orders, returns, and settlements',
+    path: '/sor',
+    paths: ['/sor'],
+    roles: EXPORT_ROLES,
+    tabs: [
+      { path: '/sor/myntra-jabong', label: 'Myntra Jabong India Private Limited' },
+      { path: '/sor/zepto',         label: 'Zepto Limited' },
+      { path: '/sor/reliance-ajio', label: 'Reliance Retail Ltd (AJIO)' },
+      { path: '/sor/cocoblu',       label: 'Cocoblu Retails' },
     ],
   },
 ];
