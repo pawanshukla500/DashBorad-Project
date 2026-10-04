@@ -9,9 +9,10 @@ import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.j
 // Every item below this version is idempotent but not free: ALTER TABLE takes
 // a table lock even when the column already exists. Record completion so a
 // normal backend restart is a quick health check rather than a full DDL pass.
-const CURRENT_SCHEMA_VERSION = '2026.10.sor-ledger-1';
+const CURRENT_SCHEMA_VERSION = '2026.10.sor-ajio-mirror-1';
 const SOR_INVOICE_SCHEMA_VERSION = '2026.10.sor-invoice-1';
 const SOR_LEDGER_SCHEMA_VERSION = '2026.10.sor-ledger-1';
+const SOR_AJIO_MIRROR_SCHEMA_VERSION = '2026.10.sor-ajio-mirror-1';
 const MYNTRA_UPLOAD_SCHEMA_VERSION = '2026.08.myntra-ej-vb-order-return-1';
 const MYNTRA_SELLER_ID_SCHEMA_VERSION = '2026.08.myntra-seller-id-guard-1';
 const UPLOAD_AUDIT_RETENTION_SCHEMA_VERSION = '2026.08.upload-audit-retention-1';
@@ -837,6 +838,7 @@ export async function initDb() {
       await ensureMyntraEjRateCardsSeed(pool);
       await ensureSorInvoiceSchema(pool);
       await ensureSorLedgerSchema(pool);
+      await ensureSorAjioMirrorSchema(pool);
       await ensureDbConnectionOptimization(pool);
       await ensureLookupIndexes(pool);
       // A read-model migration changes the view definition as well as the
@@ -1532,6 +1534,7 @@ export async function initDb() {
     await ensureMyntraEjRateCardsSeed(pool);
     await ensureSorInvoiceSchema(pool);
     await ensureSorLedgerSchema(pool);
+    await ensureSorAjioMirrorSchema(pool);
     await ensureDbConnectionOptimization(pool);
     await ensureLookupIndexes(pool);
 
@@ -1969,6 +1972,45 @@ async function ensureSorLedgerSchema(pool) {
     [SOR_LEDGER_SCHEMA_VERSION],
   );
   console.log(`[db] Schema ${SOR_LEDGER_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * SOR Phase 2 — AJIO mirror hook.
+ *
+ * After a successful mp_invoices upsert for marketplace='ajio', the
+ * mpSettlement route calls mirrorAjioInvoicesToSor() (in
+ * `services/sorMirror.js`) to populate sor_invoice + sor_invoice_line
+ * so the SOR sub-tab for Reliance Retail Ltd (AJIO) lights up
+ * automatically.
+ *
+ * No new columns or constraints land here — the mirror writes into
+ * the existing sor_invoice + sor_invoice_line tables created by
+ * Phase 0 (PR #42) and Phase 0.5 (PR #44). This migration runner
+ * exists to mark the schema version so future phases can detect that
+ * the mirror hook is registered.
+ */
+async function ensureSorAjioMirrorSchema(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [SOR_AJIO_MIRROR_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  // The mirror runs idempotently because:
+  //   - sor_invoice has UNIQUE (portal, portal_account, invoice_no,
+  //     invoice_type) and uses ON CONFLICT … DO UPDATE
+  //   - sor_invoice_line has no UNIQUE; the mirror DELETEs all lines
+  //     for an invoice and re-INSERTs the latest breakdown in the same
+  //     transaction. This is the cleanest correctness story for the
+  //     single-line-type+sku=NULL+line_type+sku=NULL case.
+  // If future portals need per-line idempotency, add a partial UNIQUE
+  // (invoice_id, line_type) WHERE line_type <> 'sale' here.
+
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [SOR_AJIO_MIRROR_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${SOR_AJIO_MIRROR_SCHEMA_VERSION} applied.`);
 }
 
 /**

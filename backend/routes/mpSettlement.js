@@ -25,6 +25,7 @@ import { optionalNumber, optionalString } from '../utils/valueParsers.js';
 import { MYNTRA_SELLER_IDS } from './myntraUpload.js';
 import { classifyMyntraNod } from '../services/myntraNodClassification.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
+import { mirrorAjioInvoicesToSor } from '../services/sorMirror.js';
 
 const router = express.Router();
 const upload = multer({
@@ -1241,6 +1242,20 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
       clearSkuSettlementBenchmarkCache(mp);
       void notifySkuSettlementBenchmarkAfterImport(pool, mp)
         .catch(error => console.warn('[sku settlement notification]', error.message));
+      // SOR mirror — AJIO only. Phase 2 wires the existing mp_invoices
+      // pipeline into the SOR accounting ledger (sor_invoice + sor_invoice_line).
+      // Errors are non-blocking; logged but never fail the upload.
+      if (mp === 'ajio') {
+        void mirrorAjioInvoicesToSor(pool, raw)
+          .then(result => {
+            if (result.errors.length > 0) {
+              console.warn('[sorMirror] ajio mirror finished with errors:', result.errors.length);
+            } else {
+              console.log(`[sorMirror] ajio mirror OK — ${result.mirrored} invoice(s) reflected`);
+            }
+          })
+          .catch(error => console.warn('[sorMirror] ajio mirror failed:', error.message));
+      }
     }
     // Myntra payments feed the unified_settlements view, so the per-order
     // settlement read model must be rebuilt exactly like Flipkart/Amazon do
