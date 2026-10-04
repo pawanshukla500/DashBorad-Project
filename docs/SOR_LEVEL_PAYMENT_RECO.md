@@ -287,9 +287,9 @@ Each Phase has its own TaskFlow task (assigned to Pawan).
 | Phase | Sub-tab | Scope | TaskFlow task |
 |---|---|---|---|
 | **Phase 0 — Scaffold** *(merged)* | All 4 | Workspace + routes + DB migration + page stubs | `c5be7da4-0f4f-4127-af8e-8b15f5499050` |
-| **Phase 0.5 — Accounting ledger extension** *(this PR)* | All 4 | Add `sor_invoice_line.line_type` (sale/payment/return/deduction) + `sor_outstanding` view + outstanding endpoint + KPI grid refactor | TBD (created with the PR) |
+| **Phase 0.5 — Accounting ledger extension** *(PR #44, in review; commit `6d1092d`)* | All 4 | Add `sor_invoice_line.line_type` (sale/payment/return/deduction) + `sor_outstanding` view + outstanding endpoint + KPI grid refactor | `c5be7da4-…` (parent) → `9393b4d6-…` (this PR) |
 | **Phase 1** | Myntra Jabong India Pvt Ltd | Excel parsers × 4 (invoice, payment, return, deduction) + upload cards + outstanding ledger + drilldown | `060d4c84-8a8b-4602-8fc9-b5e918812ab6` |
-| **Phase 2** | Reliance Retail Ltd (AJIO) | Wire existing AJIO upload path → `sor_invoice` (4 streams) | `1e7418dc-e901-45c4-a042-161779961148` |
+| **Phase 2** | Reliance Retail Ltd (AJIO) | **Implementation on branch `sor/phase-2-ajio-mirror`** (commit `103d241`). `backend/services/sorMirror.js` mirrors each successful AJIO `mp_invoices` upload into `sor_invoice` + `sor_invoice_line`: one 'sale' line per SKU + 'deduction' lines for commission / other_deductions / tds. Idempotent (UNIQUE on header; line DELETE+INSERT in a transaction). Migration version `2026.10.sor-ajio-mirror-1`. Frontend deep-links to `/upload?marketplace=ajio`. **Awaiting rebase + PR open** (base is PR #44's HEAD). | `1e7418dc-…` (plan) + `3d8a33dd-…` (impl) |
 | **Phase 3** | Zepto Limited | Excel parsers × 4 + upload cards + outstanding ledger + drilldown | `da3de148-8e7a-4bdc-a1f4-b8d6c1c8db1d` |
 | **Phase 4** | Cocoblu Retails | Excel parsers × 4 + upload cards + outstanding ledger + drilldown | `ec570612-a290-4ea5-8fc4-bdad27692043` |
 | **Phase 5** | Cross-portal | Insights ("Invoices with outstanding > ₹X", "Aging buckets", "Outstanding payments not yet uploaded", etc.) | TBD |
