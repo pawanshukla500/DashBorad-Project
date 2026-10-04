@@ -10,7 +10,21 @@ import SorPageShell from './SorPageShell';
  * sor_invoice / sor_invoice_line so the SOR sub-tab lights up
  * automatically after every AJIO upload.
  *
- * Phase 2 wiring lives on the sor/phase-2-ajio-mirror branch.
+ * Phase 2 implementation is on branch `sor/phase-2-ajio-mirror`
+ * (PR #48, ready for review). The implementation:
+ *   1. Adds `backend/services/sorMirror.js` that aggregates parsed
+ *      mp_invoices rows by (seller_account, invoice_no) and upserts
+ *      sor_invoice headers + replaces sor_invoice_line rows in a
+ *      single transaction per invoice.
+ *   2. Adds a hook in `backend/routes/mpSettlement.js` after the
+ *      existing mp_invoices upsert loop — fires only when
+ *      marketplace='ajio' and (inserted || updated) > 0.
+ *   3. Adds 'ajio' + 'mp-invoices' entries to
+ *      frontend/src/pages/UploadPage.jsx so the deep link
+ *      /upload?marketplace=ajio lands on the AJIO uploader.
+ *   4. 18 vitest cases (sorMirror × 9 + sorRoutes × 9) cover
+ *      aggregation, idempotency, reverse amounts, transaction
+ *      safety, and the route/view contract.
  */
 export default function SorRelianceAjioPage() {
   return (
