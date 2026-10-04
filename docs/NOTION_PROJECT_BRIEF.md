@@ -119,12 +119,23 @@ the full design doc.
 
 **Phases:**
 
-- Phase 0 — Scaffold (workspace, sub-tabs, route stubs, migration).
-- Phase 1 — Myntra end-to-end.
-- Phase 2 — AJIO end-to-end.
-- Phase 3 — Zepto end-to-end (Pawan's data source).
-- Phase 4 — Cocoblu end-to-end (Pawan's data source).
-- Phase 5 — Cross-portal insights.
+- **Phase 0** — Scaffold *(PR #42, merged in `6d95313`)*. Workspace,
+  sub-tabs, route stubs, migration, FK constraints, audit mirror
+  trigger, role gate.
+- **Phase 0.5** — Accounting ledger *(PR #44, in review; commit
+  `6d1092d`)*. `line_type` discriminator on `sor_invoice_line`
+  (sale / payment / return / deduction); `sor_outstanding` view
+  computes `outstanding = sale − payment − return − deduction` per
+  invoice; REST endpoints `/api/sor/:portal/{outstanding, invoices,
+  invoice/:id}`; rewritten `SorPageShell` renders KPI grid +
+  Outstanding Ledger + drilldown drawer grouped by `line_type`.
+- **Phase 1** — Myntra Jabong India Pvt Ltd end-to-end (pending
+  sample XLSX from Pawan).
+- **Phase 2** — Reliance Retail / AJIO end-to-end (wire existing
+  upload path) *(unblocked)*.
+- **Phase 3** — Zepto Limited end-to-end (pending sample XLSX).
+- **Phase 4** — Cocoblu Retails end-to-end (pending sample XLSX).
+- **Phase 5** — Cross-portal insights (aging buckets, etc.).
 
 ---
 
@@ -132,6 +143,35 @@ the full design doc.
 
 See [`docs/SECURITY_AUDIT_2026-10-03.md`](SECURITY_AUDIT_2026-10-03.md)
 for the full report.
+
+**Brand colour & contrast (PR #45, in review):**
+
+Pawan (2026-10-04) flagged that the LoginPage hero panel + dashboard
+subtitles + marketplace filter pills + several avatar chips were
+illegible because of a leftover white-on-light-burgundy token
+mismatch from the PR #27 brand migration, plus several pages that
+still used the OLD indigo palette directly.
+
+PR #45 fixes the readability bugs across:
+
+- `LoginPage` hero panel: `bg-primary-container` → `bg-primary` so
+  `text-on-primary` (white) is correctly contrasted.
+- `PageHeader` subtitle: `text-outline` (#777587) → `text-secondary`
+  (#515f74).
+- `FilterBar` inactive pill: `text-secondary` → `text-ink` + hover bg.
+- `App.jsx` header avatar, `AdminCenterPage` avatars, `SorPageShell`
+  phase badges: token-mismatch fix (`text-on-primary` →
+  `text-on-primary-container` on light-burgundy surfaces).
+- `index.css`: global `:focus-visible` outline from `#3525cd` (old
+  indigo) → `#902A4A` (brand burgundy).
+- `OutstandingPaymentsPage` + `CalculatorPage`: indigo hex leaks
+  replaced with brand tokens.
+
+Phase 0.5 fixes from PR #44's CodeAnt review (commit `98ba9e7`):
+`IX_sor_invoice_line_type_invoice` moved out of the global `INDEXES`
+array into `ensureSorLedgerSchema` so existing installs don't crash
+on the column-addition order; view-creation error no longer
+swallowed; `/invoices` endpoint gains pagination.
 
 **Findings (10 total, all Low/Medium, none Critical):**
 
@@ -165,13 +205,24 @@ CodeAnt follow-up.
 
 ## Page 10 — Roadmap (next 6 weeks)
 
-1. **SOR Phase 0** — Scaffold (PR open, in review).
-2. **SOR Phase 1** — Myntra invoice-level end-to-end.
-3. **Security Fix PRs** — H1–H4, H7, H10 (roll-up into 1–2 PRs).
-4. **Zepto** data source confirmation + Phase 3.
-5. **AJIO** invoice file parsing + Phase 2.
-6. **Cocoblu** data source confirmation + Phase 4.
-7. **Cross-portal insights** + quarterly security review.
+1. **SOR Phase 0** — Scaffold *(PR #42, merged `6d95313`)*.
+2. **SOR Phase 0.5** — Accounting ledger *(PR #44, in review)*.
+3. **Brand colour & contrast** *(PR #45, in review)* — fixed
+   white-on-light-burgundy token mismatches on LoginPage,
+   PageHeader, FilterBar, App.jsx avatar, AdminCenterPage avatars,
+   SorPageShell badges, CalculatorPage gradient, and the global
+   `:focus-visible` outline.
+4. **SOR Phase 2** — AJIO wire-up *(unblocked)*.
+5. **SOR Phase 1** — Myntra Jabong invoice-level end-to-end (pending
+   sample XLSX from Pawan).
+6. **SOR Phase 3** — Zepto end-to-end (pending sample XLSX).
+7. **SOR Phase 4** — Cocoblu end-to-end (pending sample XLSX).
+8. **Tonal sweep follow-up** — light-indigo highlights on
+   SalesPage / ReturnsPage / StatementPage / RateAuditPage /
+   PaymentReconciliationPage → light-burgundy.
+9. **Pre-existing PAT leak in docs/TASKFLOW_INTEGRATION.md** —
+   redact + rotate TaskFlow PAT.
+10. **Security Fix PRs** — H1–H4, H7, H10 (roll-up into 1–2 PRs).
 
 ---
 

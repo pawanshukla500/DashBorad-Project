@@ -116,6 +116,38 @@ SOR-specific invariants:
 
 Full design: [`docs/SOR_LEVEL_PAYMENT_RECO.md`](docs/SOR_LEVEL_PAYMENT_RECO.md).
 
+## Brand colour & contrast (PR #45)
+
+ReconCentral uses a Material-3-derived palette rooted on brand
+burgundy `#902A4A`. The full palette lives in
+`frontend/tailwind.config.js`. Two invariants for keep Misfit from
+leaking:
+
+- **Token-pair rule** — never pair `bg-primary-container` (light
+  burgundy #fbe9f0) with `text-on-primary` (white #ffffff). That's
+  white on light burgundy and is **unreadable**. Light surfaces
+  (avatar chips, status pills, banner backgrounds) must use
+  `text-on-primary-container` (#902A4A burgundy). Dark surfaces
+  (login hero, calculator gradient header, primary buttons) use
+  `text-on-primary` (white).
+- **No indigo hex leakage** — the OLD indigo palette (`#3525cd`,
+  `bg-indigo-600`, `bg-indigo-50`, `text-indigo-700`) is banned.
+  Use brand tokens (`bg-primary`, `bg-primary-container/*`,
+  `text-primary`) instead. The exception is the
+  `FeeAlertBanner` / `ServiceStatusBanner` which use
+  `bg-rose-600` / `bg-amber-500` for genuine alerts.
+- **Global focus ring** — `frontend/src/index.css` declares
+  `:focus-visible { outline: 2px solid #902A4A; }`. Do not change
+  this back to indigo.
+
+The colour/contrast pass in PR #45 fixed the actual readability bugs
+(white-on-light-burgundy across the LoginPage hero, App header
+avatar, AdminCenterPage avatars, SorPageShell phase badges, etc.).
+The remaining `bg-indigo-50/*` and `bg-indigo-100` highlights on
+SalesPage / ReturnsPage / StatementPage / RateAuditPage /
+PaymentReconciliationPage are pure tonal highlights (no contrast
+issue) and will land in a follow-up PR.
+
 ## Security Audit Cadence
 
 - Every PR: AppSec + Code Reviewer skills.

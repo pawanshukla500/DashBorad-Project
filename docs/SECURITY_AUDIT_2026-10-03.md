@@ -156,6 +156,31 @@ delete after merge, CodeAnt follow-up.
 
 ---
 
+## ✅ Findings / security-adjacent concerns already addressed (PR #44, PR #45)
+
+These items surfaced in the reviews of PR #44 (Phase 0.5 ledger) and
+PR #45 (colour/contrast pass) and are now closed:
+
+| Concern | Resolution | PR |
+|---|---|---|
+| Plaintext TaskFlow PAT in `docs/NOTION_PROJECT_BRIEF.md` (PAT was on line 160 at PR #42 time; placeholder now on line 198) | Replaced live PAT with `<TASKFLOW_PAT — load from local MCP config>` placeholder | PR #42, commit `57202b0` |
+| SOR workspace reachable by viewers | Workspace hidden in Sidebar (`roles: EXPORT_ROLES`); each `/sor/*` route redirects viewers to `/` | PR #42, commit `2245e31` |
+| White-on-light-burgundy token mismatches (LoginPage hero, App.jsx avatar, AdminCenterPage avatars, SorPageShell badges) | Light surfaces now use `text-on-primary-container` (burgundy); dark surfaces use `text-on-primary` (white) | PR #45, commit `972c046` |
+| Global `:focus-visible` outline was old indigo `#3525cd` | Now `#902A4A` (brand burgundy) in `frontend/src/index.css` | PR #45, commit `972c046` |
+| Hardcoded indigo hex `#3525cd`, `bg-indigo-600`, `bg-indigo-50/*`, `text-indigo-700` in `OutstandingPaymentsPage` + `CalculatorPage` | Replaced with brand tokens (`bg-primary`, `bg-primary-container/*`, `text-primary`) | PR #45, commit `972c046` |
+| `IX_sor_invoice_line_type_invoice` index crashed existing installs (ran before `line_type` was added by `ensureSorLedgerSchema`) | Moved the index inside `ensureSorLedgerSchema` so it runs after the column is added | PR #44, commit `98ba9e7` |
+| `sor_outstanding` view-creation `.catch(e => console.warn(...))` swallowed errors but still recorded the schema version | Removed the swallow — failed view now logs + prevents version insert so repair retries on next boot | PR #44, commit `98ba9e7` |
+| `/api/sor/:portal/invoices` had no pagination — invoice-picker requests transferred every invoice for a portal | Added `?page=1&pageSize=200` with hard cap 500 + `LIMIT/OFFSET` | PR #44, commit `98ba9e7` |
+
+## 🟡 Pre-existing concerns still open
+
+| Concern | Resolution | Where |
+|---|---|---|
+| Plaintext TaskFlow PAT in `docs/TASKFLOW_INTEGRATION.md:79` (committed 2026-09-10 in `db37fd7`, pre-dates the 2026-10 audit) | **Still open** — flagged for separate PR + token rotation in TaskFlow project settings | Not yet addressed |
+| `bg-indigo-50/*`, `bg-indigo-100` tonal highlights on SalesPage / ReturnsPage / StatementPage / RateAuditPage / PaymentReconciliationPage | **Pure tonal highlights** — no contrast issue, just wrong hue. Will sweep in a follow-up PR after the readability fixes settle. | Out of scope for PR #45 |
+
+---
+
 ## Re-test cadence
 
 - **After each fix PR:** targeted test (`tests/*`) must pass.
