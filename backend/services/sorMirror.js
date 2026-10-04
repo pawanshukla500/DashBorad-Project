@@ -54,9 +54,19 @@ export async function mirrorAjioInvoicesToSor(pool, rows) {
   const errors = [];
   if (!rows || rows.length === 0) return { mirrored: 0, errors };
 
+  // 0. Filter out rows that lack the keys we need to aggregate on.
+  // The upstream `parseInvoiceUploadRow` already rejects these at the
+  // route layer, but a defensive filter here keeps the mirror robust
+  // when invoked directly from a future job / migration path.
+  const validRows = (rows || []).filter(
+    r => r && r.invoice_no && String(r.invoice_no).trim() !== ''
+      && r.seller_account && String(r.seller_account).trim() !== '',
+  );
+  if (validRows.length === 0) return { mirrored: 0, errors };
+
   // 1. Aggregate per-invoice totals from the parsed mp_invoices rows.
   const byInvoiceNo = new Map();
-  for (const row of rows) {
+  for (const row of validRows) {
     const key = `${row.seller_account}::${row.invoice_no}`;
     if (!byInvoiceNo.has(key)) {
       byInvoiceNo.set(key, {

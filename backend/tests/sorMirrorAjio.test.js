@@ -182,4 +182,49 @@ describe('mirrorAjioInvoicesToSor — aggregation + idempotency', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toMatch(/sor_invoice upsert failed for AJI\/2025-26\/000001/);
   });
+
+  it('skips rows missing required invoice_no / seller_account', async () => {
+    // The MP pipeline already rejects rows with missing invoice_no before
+    // they reach the mirror, but if a malformed row slips through the
+    // service should still ignore it (rather than throwing or
+    // corrupting the aggregation map).
+    const { pool, log } = makeStubPool();
+    const result = await mirrorAjioInvoicesToSor(pool, [
+      { seller_account: '', invoice_no: '', invoice_date: '2025-10-04', invoice_amount: 100, commission: 10, other_deductions: 5, tds: 1 },
+      ...sampleRows,
+    ]);
+    // The malformed row is dropped; the two valid invoices still mirror.
+    expect(result.mirrored).toBe(2);
+    expect(result.errors).toEqual([]);
+    // Two header INSERTs only — the malformed row produced no SQL.
+    const headerInserts = log.filter(e => /INSERT INTO sor_invoice \(/.test(e.sql));
+    expect(headerInserts).toHaveLength(2);
+  });
+
+  it('handles negative amounts (e.g. AJIO reverses) without double-counting', async () => {
+    // A reverse row in AJIO is a credit — negative invoice_amount,
+    // negative commission. The mirror should still aggregate cleanly
+    // and surface the variance through net_payable = sale − fee − tds.
+    const { pool, log } = makeStubPool();
+    const result = await mirrorAjioInvoicesToSor(pool, [
+      {
+        seller_account: 'ajio_main',
+        invoice_no: 'AJI/REV/2025-26/000001',
+        invoice_date: '2025-10-04',
+        sku: 'EJ1201-RET-001',
+        order_item_id: 'ORDER-AJI-REV-001',
+        invoice_amount: -500,
+        commission: -50,
+        other_deductions: 0,
+        tds: 0,
+        net_payable: -450,
+      },
+    ]);
+    expect(result.mirrored).toBe(1);
+    const headerInsert = log.find(e => /INSERT INTO sor_invoice \(/.test(e.sql));
+    expect(Number(headerInsert.params[7])).toBe(-500); // gross_amount = -500
+    expect(Number(headerInsert.params[8])).toBe(-50);  // fee_amount = -50
+    expect(Number(headerInsert.params[9])).toBe(0);    // tds_amount = 0
+    expect(Number(headerInsert.params[10])).toBe(-500 - -50 - 0); // net_payable = -450
+  });
 });
