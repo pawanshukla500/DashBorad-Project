@@ -9,8 +9,9 @@ import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.j
 // Every item below this version is idempotent but not free: ALTER TABLE takes
 // a table lock even when the column already exists. Record completion so a
 // normal backend restart is a quick health check rather than a full DDL pass.
-const CURRENT_SCHEMA_VERSION = '2026.10.sor-invoice-1';
+const CURRENT_SCHEMA_VERSION = '2026.10.sor-ledger-1';
 const SOR_INVOICE_SCHEMA_VERSION = '2026.10.sor-invoice-1';
+const SOR_LEDGER_SCHEMA_VERSION = '2026.10.sor-ledger-1';
 const MYNTRA_UPLOAD_SCHEMA_VERSION = '2026.08.myntra-ej-vb-order-return-1';
 const MYNTRA_SELLER_ID_SCHEMA_VERSION = '2026.08.myntra-seller-id-guard-1';
 const UPLOAD_AUDIT_RETENTION_SCHEMA_VERSION = '2026.08.upload-audit-retention-1';
@@ -666,9 +667,15 @@ const TABLES = [`
   // settlement_id and order_row_id protect referential integrity — deleting
   // the parent settlement or order cascades into NULLs (not the lines
   // themselves) so audit history is preserved.
+  // `line_type` is the SOR accounting-ledger discriminator (Phase 0.5):
+  //   'sale'        — invoice sale line (qty × unit_price per SKU)
+  //   'payment'     — payment line applied to this invoice
+  //   'return'      — return line applied to this invoice
+  //   'deduction'   — TDS / GST / reverse-charge / other debit note
   `CREATE TABLE IF NOT EXISTS sor_invoice_line (
     id              BIGSERIAL PRIMARY KEY,
     invoice_id      BIGINT NOT NULL REFERENCES sor_invoice(id) ON DELETE CASCADE,
+    line_type       TEXT NOT NULL DEFAULT 'sale',
     order_id        TEXT,
     sku             TEXT,
     vb_export_sku   TEXT,
@@ -677,7 +684,9 @@ const TABLES = [`
     fee_amount      NUMERIC(14,2),
     settlement_id   BIGINT REFERENCES settlements(id) ON DELETE SET NULL,
     order_row_id    BIGINT REFERENCES orders(id)      ON DELETE SET NULL,
-    raw_payload     JSONB NOT NULL
+    raw_payload     JSONB NOT NULL,
+    CONSTRAINT sor_invoice_line_line_type_check
+        CHECK (line_type IN ('sale', 'payment', 'return', 'deduction'))
   )`,
   // Audit trail for SOR uploads. One row per uploaded file. The
   // ensureSorInvoiceSchema() migration below adds a trigger that mirrors
@@ -783,6 +792,9 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_order ON sor_invoice_line(order_id) WHERE order_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_sku   ON sor_invoice_line(vb_export_sku) WHERE vb_export_sku IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_invoice ON sor_invoice_line(invoice_id)`,
+  // Phase 0.5 — line_type-discriminated reads (the sor_outstanding view
+  // groups by line_type, so an index here avoids a sort on every page load).
+  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_type_invoice ON sor_invoice_line(line_type, invoice_id)`,
   `CREATE INDEX IF NOT EXISTS IX_sor_upload_log_portal_date ON sor_upload_log(portal, uploaded_at DESC)`,
 ];
 
@@ -824,6 +836,7 @@ export async function initDb() {
       await ensureMyntraBlankTrackingCancelledFix(pool);
       await ensureMyntraEjRateCardsSeed(pool);
       await ensureSorInvoiceSchema(pool);
+      await ensureSorLedgerSchema(pool);
       await ensureDbConnectionOptimization(pool);
       await ensureLookupIndexes(pool);
       // A read-model migration changes the view definition as well as the
@@ -1518,6 +1531,7 @@ export async function initDb() {
     await ensureMyntraBlankTrackingCancelledFix(pool);
     await ensureMyntraEjRateCardsSeed(pool);
     await ensureSorInvoiceSchema(pool);
+    await ensureSorLedgerSchema(pool);
     await ensureDbConnectionOptimization(pool);
     await ensureLookupIndexes(pool);
 
@@ -1848,6 +1862,97 @@ async function ensureSorInvoiceSchema(pool) {
     [SOR_INVOICE_SCHEMA_VERSION],
   );
   console.log(`[db] Schema ${SOR_INVOICE_SCHEMA_VERSION} applied.`);
+}
+
+/**
+ * SOR accounting ledger — Phase 0.5.
+ *
+ * Adds the `line_type` discriminator on `sor_invoice_line` (sale /
+ * payment / return / deduction) and creates the `sor_outstanding`
+ * view. The view is the single source of truth for the per-portal KPI
+ * grid and the Outstanding Ledger UI on every SOR sub-tab.
+ *
+ * Forward-portable: works on installs that pre-date the column (default
+ * 'sale' on existing rows) and installs that already declared the
+ * column (idempotent ALTER).
+ */
+async function ensureSorLedgerSchema(pool) {
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+    [SOR_LEDGER_SCHEMA_VERSION],
+  );
+  if (rowCount) return;
+
+  // Add line_type to installs that pre-date the column declaration.
+  await pool.query(`
+    ALTER TABLE sor_invoice_line
+      ADD COLUMN IF NOT EXISTS line_type TEXT NOT NULL DEFAULT 'sale'
+  `).catch(e => console.warn('[db] sor_invoice_line.line_type column:', e.message));
+
+  // Add the CHECK constraint idempotently. If the table was created
+  // fresh by the TABLES array it already has the constraint; this is a
+  // no-op. If it pre-dates Phase 0.5, the constraint is added now.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'sor_invoice_line_line_type_check'
+      ) THEN
+        ALTER TABLE sor_invoice_line
+          ADD CONSTRAINT sor_invoice_line_line_type_check
+          CHECK (line_type IN ('sale', 'payment', 'return', 'deduction'));
+      END IF;
+    END $$;
+  `).catch(e => console.warn('[db] sor_invoice_line.line_type check:', e.message));
+
+  // Make settlement_id and order_row_id explicitly NULLable so payment /
+  // return / deduction lines (no link to orders) can be inserted without
+  // the existing FK forcing them through NOT NULL defaults.
+  await pool.query(`
+    ALTER TABLE sor_invoice_line ALTER COLUMN settlement_id DROP NOT NULL
+  `).catch(() => {});
+  await pool.query(`
+    ALTER TABLE sor_invoice_line ALTER COLUMN order_row_id  DROP NOT NULL
+  `).catch(() => {});
+
+  // The sor_outstanding view. One row per sor_invoice, with the four
+  // per-stream totals, outstanding, age in days, declared_net_payable,
+  // and variance vs declared.
+  await pool.query(`
+    CREATE OR REPLACE VIEW sor_outstanding AS
+    SELECT
+        i.id                                                          AS invoice_id,
+        i.portal,
+        i.portal_account,
+        i.invoice_no,
+        i.invoice_date,
+        i.period_from,
+        i.period_to,
+        i.invoice_type,
+        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'))      AS sale_total,
+        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'payment'))   AS payment_total,
+        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'return'))    AS return_total,
+        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'deduction')) AS deduction_total,
+        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'), 0)
+          - COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type IN ('payment','return','deduction')), 0)
+                                                                                AS outstanding,
+        (CURRENT_DATE - i.invoice_date)                                       AS age_days,
+        i.net_payable                                                        AS declared_net_payable,
+        (i.net_payable
+          - (COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'), 0)
+             - COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type IN ('payment','return','deduction')), 0))
+        )                                                                     AS variance
+    FROM sor_invoice i
+    LEFT JOIN sor_invoice_line s ON s.invoice_id = i.id
+    GROUP BY i.id, i.portal, i.portal_account, i.invoice_no, i.invoice_date,
+             i.period_from, i.period_to, i.invoice_type, i.net_payable
+  `).catch(e => console.warn('[db] sor_outstanding view:', e.message));
+
+  await pool.query(
+    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+    [SOR_LEDGER_SCHEMA_VERSION],
+  );
+  console.log(`[db] Schema ${SOR_LEDGER_SCHEMA_VERSION} applied.`);
 }
 
 /**

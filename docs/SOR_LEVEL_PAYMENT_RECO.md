@@ -283,7 +283,7 @@ Each Phase has its own TaskFlow task (assigned to Pawan).
 | Phase | Sub-tab | Scope | TaskFlow task |
 |---|---|---|---|
 | **Phase 0 — Scaffold** *(merged)* | All 4 | Workspace + routes + DB migration + page stubs | `c5be7da4-0f4f-4127-af8e-8b15f5499050` |
-| **Phase 0.5 — Accounting ledger extension** | All 4 | Add `sor_invoice_line.line_type` (sale/payment/return/deduction) + `sor_outstanding` view + outstanding endpoint + KPI grid refactor | TBD (created after Pawan confirms ledger design in §8) |
+| **Phase 0.5 — Accounting ledger extension** *(this PR)* | All 4 | Add `sor_invoice_line.line_type` (sale/payment/return/deduction) + `sor_outstanding` view + outstanding endpoint + KPI grid refactor | TBD (created with the PR) |
 | **Phase 1** | Myntra Jabong India Pvt Ltd | Excel parsers × 4 (invoice, payment, return, deduction) + upload cards + outstanding ledger + drilldown | `060d4c84-8a8b-4602-8fc9-b5e918812ab6` |
 | **Phase 2** | Reliance Retail Ltd (AJIO) | Wire existing AJIO upload path → `sor_invoice` (4 streams) | `1e7418dc-e901-45c4-a042-161779961148` |
 | **Phase 3** | Zepto Limited | Excel parsers × 4 + upload cards + outstanding ledger + drilldown | `da3de148-8e7a-4bdc-a1f4-b8d6c1c8db1d` |

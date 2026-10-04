@@ -19,6 +19,7 @@ import exceptionsRoutes from './exceptions.js';
 import disputesRoutes from './disputes.js';
 import exportRoutes from './export.js';
 import uploadHealthRoutes from './uploadHealth.js';
+import sorRoutes from './sor.js';
 import {
   authMiddleware,
   mutationAccessGuard,
@@ -99,4 +100,12 @@ export function mountApiRoutes(app) {
 
   protectMutations(app, '/api/mp-settlement');
   app.use('/api/mp-settlement', mpSettlementRoutes);
+
+  // SOR (Sales Order Reconciliation) — invoice-grain outstanding ledger
+  // across Myntra Jabong, Zepto, AJIO, Cocoblu. Read-only endpoints —
+  // the four upload streams (invoice/payment/return/deduction) live in
+  // portal-specific routes added in Phases 1–4. Role-gated to analyst+
+  // (matches the workspace's nav-level gate in frontend/src/navigation.js).
+  app.use('/api/sor', requireRole('analyst', 'operator', 'admin'));
+  app.use('/api/sor', sorRoutes);
 }

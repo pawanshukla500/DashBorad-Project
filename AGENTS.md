@@ -98,7 +98,8 @@ SOR-specific invariants:
 
 - **Schema** lives in `sor_invoice` (header) + `sor_invoice_line`
   (line items) + `sor_upload_log` (audit). Idempotent migration
-  `2026.10.sor-invoice-1` is wired into `backend/db/initDb.js`.
+  `2026.10.sor-ledger-1` (current; supersedes `2026.10.sor-invoice-1`)
+  is wired into `backend/db/initDb.js`.
   UNIQUE constraint is `(portal, portal_account, invoice_no, invoice_type)`
   so re-uploads are idempotent.
 - **Referential integrity** — `sor_invoice_line.settlement_id` and
