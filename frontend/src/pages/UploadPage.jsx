@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, pollAmazonSettlementProgress, uploadMeeshoSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData, invalidateApiReadCache } from '../api/client';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -30,6 +31,16 @@ const MARKETPLACES = [
       <svg viewBox="0 0 32 32" className="w-5 h-5 shrink-0" fill="none">
         <rect width="32" height="32" rx="6" fill="#FF3F6C"/>
         <text x="16" y="22" textAnchor="middle" fontSize="11" fontWeight="bold" fill="white" fontFamily="Arial">MY</text>
+      </svg>
+    ),
+  },
+  { id: 'ajio', label: 'AJIO',
+    cls:    'bg-rose-50 border-rose-200 text-rose-700',
+    active: 'bg-rose-600 border-rose-600 text-white shadow-sm',
+    logo: (
+      <svg viewBox="0 0 32 32" className="w-5 h-5 shrink-0" fill="none">
+        <rect width="32" height="32" rx="6" fill="#E91E63"/>
+        <text x="16" y="22" textAnchor="middle" fontSize="11" fontWeight="bold" fill="white" fontFamily="Arial">AJ</text>
       </svg>
     ),
   },
@@ -79,6 +90,8 @@ const DATA_TYPES = [
     blurb: 'Myntra Return Layout only. Return Order ID and Order Line ID link to the uploaded order for the same selected Myntra account.' },
   { key: 'myntra-invoices', label: 'Invoice / Payment', icon: '🧾', uniqueKey: 'Invoice Number',
     blurb: 'Myntra invoice/payment file. The selected Data Center account is stored on every row and can never mix with the other Myntra account.' },
+  { key: 'mp-invoices', label: 'AJIO Invoices', icon: '🧾', uniqueKey: 'Invoice Number',
+    blurb: 'AJIO invoice file (Reliance Retail Ltd — Ajio seller portal export). Each row is mirrored into the SOR ledger after upload via the sorMirror service.' },
   { key: 'settlements', label: 'Settlement (Payment)', icon: '📊', uniqueKey: 'settlement_id',
     blurb: 'Generic settlement / payment file upload.' },
 ];
@@ -96,6 +109,7 @@ const DATA_TYPE_KEYS_BY_MARKETPLACE = Object.freeze({
   // Myntra follows the same three-stage order → return → payment flow as
   // Flipkart, but payment is its account-scoped invoice/payment importer.
   myntra: ['myntra-orders', 'myntra-returns', 'myntra-invoices'],
+  ajio: ['mp-invoices'],
 });
 const dataTypesForMarketplace = marketplace => {
   const allowed = new Set(DATA_TYPE_KEYS_BY_MARKETPLACE[marketplace] || []);
@@ -115,7 +129,14 @@ export default function UploadPage() {
   const [loading, setLoading]   = useState(true);
   const [linkage, setLinkage]   = useState(null);
 
-  const [marketplace, setMarketplace] = useState('flipkart');
+  // Read ?marketplace= from the URL so deep links like
+  // /upload?marketplace=ajio open the right uploader. Default to
+  // 'flipkart' when the param is missing or unknown.
+  const [searchParams] = useSearchParams();
+  const urlMarketplace = (searchParams.get('marketplace') || '').toLowerCase();
+  const allowedMarketplaces = new Set(['flipkart', 'amazon', 'myntra', 'meesho', 'ajio', 'custom']);
+  const initialMarketplace = allowedMarketplaces.has(urlMarketplace) ? urlMarketplace : 'flipkart';
+  const [marketplace, setMarketplace] = useState(initialMarketplace);
   const [sellerAccount, setSellerAccount] = useState('');
   const [dataType, setDataType]       = useState('orders');
   const [step, setStep]               = useState('drop'); // 'drop' | 'map' | 'result'
@@ -251,6 +272,12 @@ export default function UploadPage() {
           // Myntra directory before importing. EJ and VB therefore stay
           // separate even when their spreadsheets have identical columns.
           res = await uploadMpInvoices('myntra', uploadFd, uploadContext.sellerAccount);
+        } else if (uploadContext.dataType === 'mp-invoices' && uploadContext.marketplace === 'ajio') {
+          // AJIO invoices flow through the same generic mp_invoices pipeline.
+          // After upload, the sorMirror service in backend/services/sorMirror.js
+          // mirrors the parsed rows into sor_invoice + sor_invoice_line so the
+          // /sor/reliance-ajio sub-tab lights up automatically.
+          res = await uploadMpInvoices('ajio', uploadFd, uploadContext.sellerAccount || 'ajio_main');
         } else if (uploadContext.dataType === 'myntra-orders' || uploadContext.dataType === 'myntra-returns') {
           res = await uploadMyntraData(
             uploadContext.dataType === 'myntra-orders' ? 'orders' : 'returns',
