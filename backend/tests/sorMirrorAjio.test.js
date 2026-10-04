@@ -39,7 +39,25 @@ function makeStubPool({ rowsMap = new Map() } = {}) {
     }
     return { rows: [] };
   });
-  return { pool: { query, _log: log }, log };
+  // The mirror uses pool.connect() to acquire a dedicated client so the
+  // BEGIN / INSERT / DELETE / COMMIT chain stays on one connection.
+  // The stub client records into the same `log` so the timeline is
+  // accurate. We don't delegate to `query` because that would double-log.
+  const client = {
+    query: vi.fn(async (sql, params) => {
+      const trimmed = typeof sql === 'string' ? sql.trim() : sql;
+      log.push({ sql: trimmed.replace(/\s+/g, ' ').slice(0, 80), params });
+      if (typeof sql === 'string' && trimmed.startsWith('INSERT INTO sor_invoice')) {
+        return { rows: [{ id: 42 }] };
+      }
+      // Mimic the actual table behavior for non-INSERT statements:
+      // SELECT 1 returns empty, DELETE returns no rows, etc.
+      return { rows: [] };
+    }),
+    release: vi.fn(() => {}),
+  };
+  const connect = vi.fn(async () => client);
+  return { pool: { query, connect, _log: log, _client: client }, log, client, connect };
 }
 
 const sampleRows = [
@@ -176,7 +194,34 @@ describe('mirrorAjioInvoicesToSor — aggregation + idempotency', () => {
       }
       return { rows: [] };
     });
-    const pool = { query };
+    const client = {
+      query: vi.fn(async (sql, params) => {
+        if (typeof sql === 'string' && sql.trim().startsWith('INSERT INTO sor_invoice')) {
+          throw new Error('synthetic db failure');
+        }
+        return { rows: [] };
+      }),
+      release: vi.fn(() => {}),
+    };
+    let insertCalls = 0;
+    const pool = {
+      query,
+      connect: vi.fn(async () => {
+        // First invoice's first INSERT throws. Second invoice's INSERT
+        // succeeds because insertCalls is now 1 across connect() calls.
+        return {
+          query: vi.fn(async (sql, params) => {
+            if (typeof sql === 'string' && sql.trim().startsWith('INSERT INTO sor_invoice')) {
+              insertCalls += 1;
+              if (insertCalls === 1) throw new Error('synthetic db failure');
+              return { rows: [{ id: 99 }] };
+            }
+            return { rows: [] };
+          }),
+          release: vi.fn(() => {}),
+        };
+      }),
+    };
     const result = await mirrorAjioInvoicesToSor(pool, sampleRows);
     expect(result.mirrored).toBe(1);
     expect(result.errors).toHaveLength(1);
@@ -205,6 +250,9 @@ describe('mirrorAjioInvoicesToSor — aggregation + idempotency', () => {
     // A reverse row in AJIO is a credit — negative invoice_amount,
     // negative commission. The mirror should still aggregate cleanly
     // and surface the variance through net_payable = sale − fee − tds.
+    // The new behaviour (commit x) emits deduction lines for ANY
+    // non-zero value, not just positive, so the reversal fee / TDS
+    // breakdown is preserved.
     const { pool, log } = makeStubPool();
     const result = await mirrorAjioInvoicesToSor(pool, [
       {
@@ -226,5 +274,103 @@ describe('mirrorAjioInvoicesToSor — aggregation + idempotency', () => {
     expect(Number(headerInsert.params[8])).toBe(-50);  // fee_amount = -50
     expect(Number(headerInsert.params[9])).toBe(0);    // tds_amount = 0
     expect(Number(headerInsert.params[10])).toBe(-500 - -50 - 0); // net_payable = -450
-  });
+
+    // Reverse should produce a 'deduction' line for commission (negative)
+    // and a 'sale' line (negative). other_deductions=0 + tds=0 → no lines for them.
+    const lineInserts = log.filter(e => /INSERT INTO sor_invoice_line/.test(e.sql));
+    // forEachDbBatch bundles all 11-param rows for the invoice into one
+  // INSERT, so a single lineInserts entry carries the flat params for
+  // every line. We assert per-line semantics by inspecting the slice of
+  // params that belongs to each line.
+  expect(lineInserts).toHaveLength(1);
+  const flat = lineInserts[0].params;
+  // 11 params per line; the first line is 'sale', the second is
+  // 'deduction' (commission) — both for the same invoice.
+  expect(flat[1]).toBe('sale');        // first line line_type
+  expect(flat[6]).toBe(-500);          // first line gross_amount
+  expect(flat[12]).toBe('deduction');  // second line line_type
+  expect(flat[17]).toBe(-50);          // second line gross_amount (negative commission)
+});
+
+it('acquires a dedicated client per invoice so BEGIN/COMMIT stay on one connection', async () => {
+  // CodeAnt (Major, Race condition): bare pool.query routes to different
+  // connections from the pool, which would silently break the BEGIN/COMMIT
+  // pair. The mirror must use pool.connect() + client.release() so each
+  // invoice's transactions are atomic on one connection.
+  let poolConnectCalls = 0;
+  let lastClient = null;
+  const queriesOnClient = [];
+  const fakeClient = {
+    query: vi.fn(async (sql, params) => {
+      queriesOnClient.push(sql);
+      // Pretend the INSERT returns id=42 on the first query.
+      if (/INSERT INTO sor_invoice/.test(sql)) {
+        return { rows: [{ id: 42 }] };
+      }
+      return { rows: [] };
+    }),
+    release: vi.fn(() => { lastClient.released = true; }),
+  };
+  fakeClient.released = false;
+  lastClient = fakeClient;
+  const pool = {
+    query: vi.fn(async () => ({ rows: [] })), // raw / pg_metadata queries
+    connect: vi.fn(async () => { poolConnectCalls += 1; return fakeClient; }),
+  };
+  const result = await mirrorAjioInvoicesToSor(pool, [
+    {
+      seller_account: 'ajio_main',
+      invoice_no: 'AJI/2025-26/000007',
+      invoice_date: '2025-10-04',
+      sku: 'EJ1201-16007',
+      quantity: 1,
+      order_item_id: 'ORDER-AJI-007',
+      invoice_amount: 200, commission: 20, other_deductions: 5, tds: 2, net_payable: 173,
+    },
+  ]);
+  expect(result.mirrored).toBe(1);
+  expect(poolConnectCalls).toBe(1);            // exactly one client for one invoice
+  expect(lastClient.released).toBe(true);     // client released back to pool
+  // BEGIN must come before any INSERT / DELETE; COMMIT must come last.
+  const beginIdx = queriesOnClient.findIndex(s => s.trim() === 'BEGIN');
+  const insertIdx = queriesOnClient.findIndex(s => /INSERT INTO sor_invoice/.test(s));
+  const deleteIdx = queriesOnClient.findIndex(s => /DELETE FROM sor_invoice_line/.test(s));
+  const lineIdx   = queriesOnClient.findIndex(s => /INSERT INTO sor_invoice_line/.test(s));
+  const commitIdx = queriesOnClient.findIndex(s => s.trim() === 'COMMIT');
+  expect(beginIdx).toBe(0);
+  expect(beginIdx).toBeLessThan(insertIdx);
+  expect(insertIdx).toBeLessThan(deleteIdx);
+  expect(deleteIdx).toBeLessThan(lineIdx);
+  expect(lineIdx).toBeLessThan(commitIdx);
+});
+
+it('rolls back on a per-invoice failure and releases the client', async () => {
+  let releaseCount = 0;
+  let queryCount = 0;
+  const fakeClient = {
+    query: vi.fn(async (sql) => {
+      queryCount += 1;
+      if (queryCount === 1) throw new Error('synthetic db failure during BEGIN');
+      return { rows: [] };
+    }),
+    release: vi.fn(() => { releaseCount += 1; }),
+  };
+  const pool = {
+    query: vi.fn(async () => ({ rows: [] })),
+    connect: vi.fn(async () => fakeClient),
+  };
+  const result = await mirrorAjioInvoicesToSor(pool, [
+    {
+      seller_account: 'ajio_main',
+      invoice_no: 'AJI/2025-26/000008',
+      invoice_date: '2025-10-04',
+      sku: 'EJ1201-16008',
+      quantity: 1, order_item_id: 'ORDER-AJI-008',
+      invoice_amount: 100, commission: 10, other_deductions: 0, tds: 0, net_payable: 90,
+    },
+  ]);
+  expect(result.mirrored).toBe(0);
+  expect(result.errors).toHaveLength(1);
+  expect(releaseCount).toBe(1); // finally clause ran even on failure
+});
 });

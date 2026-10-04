@@ -15,6 +15,13 @@ import { forEachDbBatch } from '../utils/dbBatch.js';
  *   invoice in a single transaction (DELETE then INSERT) so the line
  *   table mirrors the latest mp_invoices state for that invoice.
  *
+ * Transaction safety:
+ * - We use `pool.connect()` (NOT bare `pool.query`) to acquire a
+ *   single client, then issue BEGIN / INSERT / DELETE / INSERT /
+ *   COMMIT on that same connection. Bare `pool.query` can route
+ *   each statement to a different connection from the pool, which
+ *   would silently break the BEGIN/COMMIT pair.
+ *
  * Line breakdown per AJIO row:
  *   line_type = 'sale'        gross_amount = invoice_amount,
  *                                       sku, quantity, fee_amount = 0
@@ -24,6 +31,11 @@ import { forEachDbBatch } from '../utils/dbBatch.js';
  *                                       (one row, fee_type='other_deductions')
  *   line_type = 'deduction'   gross_amount = tds_amount
  *                                       (one row, fee_type='tds')
+ *
+ * Note: deduction lines are emitted for ANY non-zero value (not just
+ * positive). AJIO reverses can produce negative commission / TDS
+ * values that still need to be tracked in the SOR ledger so the
+ * per-invoice outstanding reflects the reversal.
  *
  * Aggregates commission / other_deductions / tds across all rows
  * of the same invoice into a single header-level sor_invoice record.
@@ -105,7 +117,7 @@ export async function mirrorAjioInvoicesToSor(pool, rows) {
       order_row_id: null, // resolved lazily by a follow-up query
       raw_payload: { source: 'mp_invoices', row },
     });
-    if (toNum(row.commission) > 0) {
+    if (toNum(row.commission) !== 0) {
       agg.lines.push({
         line_type: 'deduction',
         sku: null,
@@ -114,7 +126,7 @@ export async function mirrorAjioInvoicesToSor(pool, rows) {
         raw_payload: { source: 'mp_invoices', fee_type: 'commission', row },
       });
     }
-    if (toNum(row.other_deductions) > 0) {
+    if (toNum(row.other_deductions) !== 0) {
       agg.lines.push({
         line_type: 'deduction',
         sku: null,
@@ -123,7 +135,7 @@ export async function mirrorAjioInvoicesToSor(pool, rows) {
         raw_payload: { source: 'mp_invoices', fee_type: 'other_deductions', row },
       });
     }
-    if (toNum(row.tds) > 0) {
+    if (toNum(row.tds) !== 0) {
       agg.lines.push({
         line_type: 'deduction',
         sku: null,
@@ -162,11 +174,15 @@ export async function mirrorAjioInvoicesToSor(pool, rows) {
   }
 
   // 3. Upsert sor_invoice headers + replace line rows for each invoice.
+  // Acquire a dedicated client so BEGIN/COMMIT stay on one connection —
+  // bare pool.query routes each statement to a different connection from
+  // the pool, which would silently break the transaction.
   let mirrored = 0;
   for (const agg of byInvoiceNo.values()) {
+    const client = await pool.connect();
     try {
-      await pool.query('BEGIN');
-      const { rows: insertedHeaderRows } = await pool.query(
+      await client.query('BEGIN');
+      const { rows: insertedHeaderRows } = await client.query(
         `
           INSERT INTO sor_invoice (
             portal, portal_account, invoice_no, invoice_date,
@@ -194,12 +210,12 @@ export async function mirrorAjioInvoicesToSor(pool, rows) {
       );
       const headerId = insertedHeaderRows[0]?.id;
       if (!headerId) {
-        await pool.query('ROLLBACK');
+        await client.query('ROLLBACK');
         errors.push(`sor_invoice upsert returned no id for ${agg.invoice_no}`);
         continue;
       }
       // Replace all existing lines for this invoice.
-      await pool.query(`DELETE FROM sor_invoice_line WHERE invoice_id = $1`, [headerId]);
+      await client.query(`DELETE FROM sor_invoice_line WHERE invoice_id = $1`, [headerId]);
       // Insert lines in batches.
       await forEachDbBatch(agg.lines, 9, async (batch) => {
         const values = [];
@@ -220,7 +236,7 @@ export async function mirrorAjioInvoicesToSor(pool, rows) {
           );
           return `($${start+1},$${start+2},$${start+3},$${start+4},$${start+5},$${start+6},$${start+7},$${start+8},$${start+9},$${start+10},$${start+11}::jsonb)`;
         });
-        await pool.query(
+        await client.query(
           `INSERT INTO sor_invoice_line (
              invoice_id, line_type, order_id, sku, vb_export_sku,
              quantity, gross_amount, fee_amount, settlement_id, order_row_id,
@@ -229,12 +245,15 @@ export async function mirrorAjioInvoicesToSor(pool, rows) {
           values,
         );
       });
-      await pool.query('COMMIT');
+      await client.query('COMMIT');
       mirrored++;
     } catch (err) {
-      await pool.query('ROLLBACK').catch(() => {});
+      await client.query('ROLLBACK').catch(() => {});
       errors.push(`sor_invoice upsert failed for ${agg.invoice_no}: ${err.message}`);
       console.warn(`[sorMirror] ${err.message}`);
+    } finally {
+      // Release the client back to the pool in all paths.
+      client.release();
     }
   }
 

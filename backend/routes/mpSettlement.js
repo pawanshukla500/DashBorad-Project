@@ -1201,6 +1201,7 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
     if (mp === 'myntra') validateMyntraInvoiceSellerIds(raw, sellerAccount);
 
     const recordsByFingerprint = new Map();
+    const mirrorRows = []; // pre-mirror rows for the AJIO mirror only (filtered below)
     for (let index = 0; index < raw.length; index++) {
       const parsed = parseInvoiceUploadRow(raw[index], { marketplace: mp, sellerAccount, batch });
       if (parsed.error) {
@@ -1214,6 +1215,32 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
         continue;
       }
       recordsByFingerprint.set(parsed.fingerprint, parsed.values);
+      // Build the SOR-mirror-ready normalized row from the parsed values.
+      // INVOICE_STORAGE_COLUMNS index map → mirror input fields.
+      if (mp === 'ajio') {
+        const v = parsed.values;
+        // Map index-by-INVOICE_STORAGE_COLUMNS order — keep this in sync
+        // if the column order ever changes.
+        const COL_IDX = Object.freeze({
+          marketplace: 0, seller_account: 1, invoice_number: 2, invoice_date: 3,
+          dispatch_date: 4, sku: 5, product_title: 6, quantity: 7, mrp: 8, selling_price: 9,
+          invoice_amount: 10, commission_pct: 11, commission_amount: 12,
+          tds_pct: 13, tds_amount: 14, other_deductions: 15, net_payable: 16, amount_received: 17,
+        });
+        mirrorRows.push({
+          seller_account: v[COL_IDX.seller_account] || sellerAccount,
+          invoice_no:     v[COL_IDX.invoice_number],
+          invoice_date:   v[COL_IDX.invoice_date],
+          sku:            v[COL_IDX.sku],
+          quantity:       v[COL_IDX.quantity],
+          invoice_amount: v[COL_IDX.invoice_amount],
+          commission:     v[COL_IDX.commission_amount],
+          other_deductions: v[COL_IDX.other_deductions],
+          tds:            v[COL_IDX.tds_amount],
+          net_payable:    v[COL_IDX.net_payable],
+          order_item_id:  v[COL_IDX.invoice_number], // AJIO invoices don't carry order_id here
+        });
+      }
     }
 
     const records = [...recordsByFingerprint.entries()].map(([fingerprint, values]) => [...values, fingerprint]);
@@ -1246,7 +1273,7 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
       // pipeline into the SOR accounting ledger (sor_invoice + sor_invoice_line).
       // Errors are non-blocking; logged but never fail the upload.
       if (mp === 'ajio') {
-        void mirrorAjioInvoicesToSor(pool, raw)
+        void mirrorAjioInvoicesToSor(pool, mirrorRows)
           .then(result => {
             if (result.errors.length > 0) {
               console.warn('[sorMirror] ajio mirror finished with errors:', result.errors.length);
