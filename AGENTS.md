@@ -111,6 +111,14 @@ SOR-specific invariants:
   `sor_upload_log_mirror()`). `data_type='sor_invoice'` and
   `marketplace=portal` so existing Audit History queries surface SOR
   uploads with no code change.
+- **Accounting ledger** — `sor_invoice_line.line_type` (CHECK
+  constraint) is one of `sale | payment | return | deduction`. The
+  `sor_outstanding` view computes
+  `outstanding = sale − payment − return − deduction` per invoice and
+  is the single source of truth for the per-portal KPI grid and the
+  Outstanding Ledger UI. Sale lines link to `orders` via
+  `order_row_id`; payment / return / deduction lines only need
+  `invoice_id`. See [`docs/SOR_LEVEL_PAYMENT_RECO.md` §6a](docs/SOR_LEVEL_PAYMENT_RECO.md).
 - **Myntra** keeps the strict 10708 / 45833 split **only** for the
   regular Myntra marketplace pipeline (`myntraUpload.js`); MJIPL is a
   separate legal entity and **does not** use this gate.

@@ -282,12 +282,17 @@ Each Phase has its own TaskFlow task (assigned to Pawan).
 
 | Phase | Sub-tab | Scope | TaskFlow task |
 |---|---|---|---|
-| **Phase 0 — Scaffold** *(done)* | All 4 | Workspace + routes + DB migration + page stubs | `c5be7da4-0f4f-4127-af8e-8b15f5499050` |
-| **Phase 1** | Myntra Jabong India Pvt Ltd | Excel parser + Data Hub upload card + KPI / table / drilldown | `060d4c84-8a8b-4602-8fc9-b5e918812ab6` |
-| **Phase 2** | Reliance Retail Ltd (AJIO) | Wire existing AJIO upload path → `sor_invoice` | `1e7418dc-e901-45c4-a042-161779961148` |
-| **Phase 3** | Zepto Limited | Excel parser + Data Hub upload card + KPI / table / drilldown | `da3de148-8e7a-4bdc-a1f4-b8d6c1c8db1d` |
-| **Phase 4** | Cocoblu Retails | Excel parser + Data Hub upload card + KPI / table / drilldown | `ec570612-a290-4ea5-8fc4-bdad27692043` |
-| **Phase 5** | Cross-portal | Insights ("Invoices with variance > ₹X", "Invoices not present in settlement", etc.) | TBD |
+| **Phase 0 — Scaffold** *(merged)* | All 4 | Workspace + routes + DB migration + page stubs | `c5be7da4-0f4f-4127-af8e-8b15f5499050` |
+| **Phase 0.5 — Accounting ledger extension** | All 4 | Add `sor_invoice_line.line_type` (sale/payment/return/deduction) + `sor_outstanding` view + outstanding endpoint + KPI grid refactor | TBD (created after Pawan confirms ledger design in §8) |
+| **Phase 1** | Myntra Jabong India Pvt Ltd | Excel parsers × 4 (invoice, payment, return, deduction) + upload cards + outstanding ledger + drilldown | `060d4c84-8a8b-4602-8fc9-b5e918812ab6` |
+| **Phase 2** | Reliance Retail Ltd (AJIO) | Wire existing AJIO upload path → `sor_invoice` (4 streams) | `1e7418dc-e901-45c4-a042-161779961148` |
+| **Phase 3** | Zepto Limited | Excel parsers × 4 + upload cards + outstanding ledger + drilldown | `da3de148-8e7a-4bdc-a1f4-b8d6c1c8db1d` |
+| **Phase 4** | Cocoblu Retails | Excel parsers × 4 + upload cards + outstanding ledger + drilldown | `ec570612-a290-4ea5-8fc4-bdad27692043` |
+| **Phase 5** | Cross-portal | Insights ("Invoices with outstanding > ₹X", "Aging buckets", "Outstanding payments not yet uploaded", etc.) | TBD |
+
+Each per-portal Phase ships **4 upload streams** (invoice / payment /
+return / deduction) and the Outstanding Ledger UI for that portal —
+never just the invoice stream alone.
 
 ---
 
@@ -327,10 +332,20 @@ Each Phase has its own TaskFlow task (assigned to Pawan).
       Sidebar (analyst+).
 - [ ] Each portal sub-tab has its own URL and renders without crashing
       even when empty.
-- [ ] Myntra sub-tab reconciles invoice-level variances (Phase 1).
-- [ ] AJIO sub-tab reconciles invoice-level variances (Phase 2).
-- [ ] Zepto + Cocoblu sub-tabs work end-to-end once data sources are
-      provided (Phase 3 / 4).
+- [ ] **Phase 0.5** — `sor_invoice_line.line_type` column + CHECK
+      constraint; `sor_outstanding` view returns one row per invoice
+      with `outstanding = sale − payment − return − deduction`; KPI
+      grid on every sub-tab reads from `sor_outstanding`.
+- [ ] **Phase 1 (Myntra Jabong)** — 4 upload streams (invoice /
+      payment / return / deduction) + Outstanding Ledger + drilldown
+      drawer showing all 4 streams per invoice.
+- [ ] **Phase 2 (AJIO)** — same shape; existing AJIO upload path wired
+      for all 4 streams.
+- [ ] **Phase 3 / 4 (Zepto / Cocoblu)** — same shape once data
+      sources are confirmed.
+- [ ] **Phase 5 (cross-portal)** — Insights cards: total outstanding
+      per portal, aging buckets, invoices with outstanding > ₹X but
+      no recent payment upload.
 - [ ] No regression in existing reconciliation pages.
 - [ ] All new endpoints pass `auditLogSanitization`, `uploadSecurity`,
       `dbBatch` tests.
