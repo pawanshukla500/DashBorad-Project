@@ -127,9 +127,9 @@ the full design doc.
 
 **Phases:**
 
-- **Phase 0 — Scaffold** *(PR #42, in review)* — workspace, sub-tabs,
-  route stubs, migration, FK constraints, audit mirror trigger, role
-  gate.
+- **Phase 0 — Scaffold** *(PR #42, merged in `6d95313`)* — workspace,
+  sub-tabs, route stubs, migration, FK constraints, audit mirror
+  trigger, role gate.
 - **Phase 1** — Myntra Jabong India Pvt Ltd end-to-end (parser +
   Data Hub upload card). Pending sample XLSX from Pawan.
 - **Phase 2** — Reliance Retail / AJIO end-to-end (wire existing

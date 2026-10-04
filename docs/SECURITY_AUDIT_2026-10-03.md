@@ -147,7 +147,7 @@ fell outside the original ten-finding list:
 
 | Concern | Resolution | Where |
 |---|---|---|
-| Plaintext TaskFlow PAT in `docs/NOTION_PROJECT_BRIEF.md:160` | Replaced live PAT with `<TASKFLOW_PAT — load from local MCP config>` placeholder | PR #42, commit `57202b0` |
+| Plaintext TaskFlow PAT in `docs/NOTION_PROJECT_BRIEF.md` (PAT was on line 160 at PR #42 time; the placeholder currently sits on line 198 after later additions) | Replaced live PAT with `<TASKFLOW_PAT — load from local MCP config>` placeholder | PR #42, commit `57202b0` |
 | SOR workspace reachable by viewers | Workspace hidden in Sidebar (`roles: EXPORT_ROLES`); each `/sor/*` route redirects viewers to `/` | `frontend/src/navigation.js`, `frontend/src/App.jsx` (PR #42, commit `2245e31`) |
 | Pre-existing PAT leak in `docs/TASKFLOW_INTEGRATION.md:79` (committed 2026-09-10 in `db37fd7`) | **Still open** — flagged for separate PR + token rotation in TaskFlow project settings | Not yet addressed |
 
