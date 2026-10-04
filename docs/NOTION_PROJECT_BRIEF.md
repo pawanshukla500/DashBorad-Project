@@ -101,6 +101,13 @@ specific subsystems:
 See [`docs/SOR_LEVEL_PAYMENT_RECO.md`](SOR_LEVEL_PAYMENT_RECO.md) for
 the full design doc.
 
+> **Reading this page on a checkout that hasn't merged PR #44 yet?**
+> The `sor_invoice_line.line_type` column, the `sor_outstanding` view,
+> and the `/api/sor/:portal/*` endpoints are **not yet on `master`**.
+> They land with [PR #44](https://github.com/pawanshukla500/DashBorad-Project/pull/44)
+> (currently in review). Until #44 lands, the SOR sub-tabs in the
+> frontend will render the empty-state copy only.
+
 **What it adds:**
 
 - New top-level workspace **"SOR Level Payment Reco"** with four
