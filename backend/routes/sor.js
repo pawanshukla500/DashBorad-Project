@@ -190,8 +190,7 @@ router.get('/:portal/invoice/:id', async (req, res) => {
           fee_amount,
           settlement_id,
           order_row_id,
-          raw_payload,
-          uploaded_at
+          raw_payload
         FROM sor_invoice_line
         WHERE invoice_id = $1
         ORDER BY line_type, id

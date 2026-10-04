@@ -101,9 +101,11 @@ CREATE TABLE IF NOT EXISTS sor_invoice (
 -- Line items linking invoice ↔ order ↔ settlement.
 -- settlement_id and order_row_id are FK references with ON DELETE SET NULL
 -- so clearing the parent settlement or order preserves the audit row.
+-- line_type is the SOR accounting-ledger discriminator: 'sale' | 'payment' | 'return' | 'deduction'.
 CREATE TABLE IF NOT EXISTS sor_invoice_line (
   id              BIGSERIAL PRIMARY KEY,
   invoice_id      BIGINT NOT NULL REFERENCES sor_invoice(id) ON DELETE CASCADE,
+  line_type       TEXT NOT NULL DEFAULT 'sale',
   order_id        TEXT,
   sku             TEXT,
   vb_export_sku   TEXT,
@@ -112,6 +114,8 @@ CREATE TABLE IF NOT EXISTS sor_invoice_line (
   fee_amount      NUMERIC(14,2),
   settlement_id   BIGINT REFERENCES settlements(id) ON DELETE SET NULL,
   order_row_id    BIGINT REFERENCES orders(id)      ON DELETE SET NULL,
+  CONSTRAINT sor_invoice_line_line_type_check
+    CHECK (line_type IN ('sale', 'payment', 'return', 'deduction'))
   raw_payload     JSONB NOT NULL
 );
 

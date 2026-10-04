@@ -1,9 +1,9 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import PageHeader from '../../components/PageHeader';
 import EmptyState from '../../components/EmptyState';
 import { fetchSorOutstanding, fetchSorInvoiceDetail } from '../../api/client';
-import { currencyFull as formatINR, currencyCompact as formatINRCompact } from '../../utils/format';
+import { currencyFull as formatINR, currencyCompact as formatINRCompact, num as formatCount } from '../../utils/format';
 
 /**
  * Shared layout for the four SOR portal sub-tabs.
@@ -38,6 +38,7 @@ export default function SorPageShell({
   const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
   const [drawerInvoice, setDrawerInvoice] = useState(null);
+  const lastDrawerRequestId = useRef(0);
 
   const load = useCallback(async () => {
     if (!portalId) return;
@@ -65,10 +66,19 @@ export default function SorPageShell({
   }, [load]);
 
   async function openDrawer(invoice) {
+    // Race-condition guard: if the user opens invoice A, then clicks
+    // invoice B before A's request resolves, the late-arriving A
+    // payload must NOT replace B's detail in the drawer. Bumping a
+    // request-id ref ensures only the latest request's response wins.
+    const requestedId = invoice.invoice_id;
+    lastDrawerRequestId.current += 1;
+    const myRequestId = lastDrawerRequestId.current;
     try {
-      const detail = await fetchSorInvoiceDetail(portalId, invoice.invoice_id);
+      const detail = await fetchSorInvoiceDetail(portalId, requestedId);
+      if (myRequestId !== lastDrawerRequestId.current) return; // a newer request superseded us
       setDrawerInvoice(detail);
     } catch (err) {
+      if (myRequestId !== lastDrawerRequestId.current) return;
       setDrawerInvoice({ error: err?.message, invoice });
     }
   }
@@ -153,7 +163,7 @@ export default function SorPageShell({
       <section aria-label="KPI grid" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KpiTile
           label="Invoices"
-          value={kpis ? formatINRCompact(kpis.invoiceCount || 0) : '—'}
+          value={kpis ? formatCount(kpis.invoiceCount || 0) : '—'}
           loading={loading}
         />
         <KpiTile
@@ -164,7 +174,7 @@ export default function SorPageShell({
         />
         <KpiTile
           label="Outstanding > 0"
-          value={kpis ? formatINRCompact(kpis.invoicesWithOutstanding || 0) : '—'}
+          value={kpis ? formatCount(kpis.invoicesWithOutstanding || 0) : '—'}
           loading={loading}
           sub={kpis && kpis.overpaidInvoices ? `${kpis.overpaidInvoices} overpaid` : null}
         />

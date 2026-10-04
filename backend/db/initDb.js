@@ -792,9 +792,9 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_order ON sor_invoice_line(order_id) WHERE order_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_sku   ON sor_invoice_line(vb_export_sku) WHERE vb_export_sku IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_invoice ON sor_invoice_line(invoice_id)`,
-  // Phase 0.5 — line_type-discriminated reads (the sor_outstanding view
-  // groups by line_type, so an index here avoids a sort on every page load).
-  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_type_invoice ON sor_invoice_line(line_type, invoice_id)`,
+  // Phase 0.5 — IX_sor_invoice_line_type_invoice is created INSIDE
+  // ensureSorLedgerSchema after the line_type column is added, so
+  // existing installs that pre-date the column don't crash on this DDL.
   `CREATE INDEX IF NOT EXISTS IX_sor_upload_log_portal_date ON sor_upload_log(portal, uploaded_at DESC)`,
 ];
 
@@ -1917,36 +1917,52 @@ async function ensureSorLedgerSchema(pool) {
 
   // The sor_outstanding view. One row per sor_invoice, with the four
   // per-stream totals, outstanding, age in days, declared_net_payable,
-  // and variance vs declared.
+  // and variance vs declared. COALESCE with explicit zero fallbacks so
+  // invoices missing a stream still surface numeric (not NULL) totals
+  // downstream. Wrapped in try/throw so a broken view doesn't sneak
+  // past the schema-version gate.
+  try {
+    await pool.query(`
+      CREATE OR REPLACE VIEW sor_outstanding AS
+      SELECT
+          i.id                                                          AS invoice_id,
+          i.portal,
+          i.portal_account,
+          i.invoice_no,
+          i.invoice_date,
+          i.period_from,
+          i.period_to,
+          i.invoice_type,
+          COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'), 0)        AS sale_total,
+          COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'payment'), 0)     AS payment_total,
+          COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'return'), 0)      AS return_total,
+          COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'deduction'), 0)   AS deduction_total,
+          COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'), 0)
+            - COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type IN ('payment','return','deduction')), 0)
+                                                                                      AS outstanding,
+          (CURRENT_DATE - i.invoice_date)                                             AS age_days,
+          i.net_payable                                                                AS declared_net_payable,
+          (i.net_payable
+            - (COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'), 0)
+               - COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type IN ('payment','return','deduction')), 0))
+          )                                                                           AS variance
+      FROM sor_invoice i
+      LEFT JOIN sor_invoice_line s ON s.invoice_id = i.id
+      GROUP BY i.id, i.portal, i.portal_account, i.invoice_no, i.invoice_date,
+               i.period_from, i.period_to, i.invoice_type, i.net_payable
+    `);
+  } catch (e) {
+    console.error('[db] sor_outstanding view creation failed:', e.message);
+    throw e;
+  }
+
+  // Covering index for the sor_outstanding view. Created here (after the
+  // line_type column is added) so existing installs that pre-date the
+  // column don't fail in the global INDEXES loop.
   await pool.query(`
-    CREATE OR REPLACE VIEW sor_outstanding AS
-    SELECT
-        i.id                                                          AS invoice_id,
-        i.portal,
-        i.portal_account,
-        i.invoice_no,
-        i.invoice_date,
-        i.period_from,
-        i.period_to,
-        i.invoice_type,
-        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'))      AS sale_total,
-        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'payment'))   AS payment_total,
-        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'return'))    AS return_total,
-        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'deduction')) AS deduction_total,
-        COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'), 0)
-          - COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type IN ('payment','return','deduction')), 0)
-                                                                                AS outstanding,
-        (CURRENT_DATE - i.invoice_date)                                       AS age_days,
-        i.net_payable                                                        AS declared_net_payable,
-        (i.net_payable
-          - (COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'), 0)
-             - COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type IN ('payment','return','deduction')), 0))
-        )                                                                     AS variance
-    FROM sor_invoice i
-    LEFT JOIN sor_invoice_line s ON s.invoice_id = i.id
-    GROUP BY i.id, i.portal, i.portal_account, i.invoice_no, i.invoice_date,
-             i.period_from, i.period_to, i.invoice_type, i.net_payable
-  `).catch(e => console.warn('[db] sor_outstanding view:', e.message));
+    CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_type_invoice
+      ON sor_invoice_line(line_type, invoice_id)
+  `).catch(e => console.warn('[db] IX_sor_invoice_line_type_invoice:', e.message));
 
   await pool.query(
     `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
