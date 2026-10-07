@@ -28,7 +28,7 @@ vi.mock('@google/generative-ai', () => ({
   },
 }));
 
-const { default: rateCardRouter, MAX_PARSE_IMAGE_BASE64_CHARS } = await import('../routes/rateCard.js');
+const { default: rateCardRouter, MAX_PARSE_IMAGE_BASE64_CHARS, parseImageInput } = await import('../routes/rateCard.js');
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]).toString('base64');
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32)]).toString('base64');
@@ -99,6 +99,12 @@ describe('rate-card screenshot parser input', () => {
       expect(res.body.error).toContain(message);
     }
     expect(state.aiCalls).toHaveLength(0);
+  });
+
+  it('treats a missing or null body as a client error', () => {
+    for (const body of [null, undefined]) {
+      expect(() => parseImageInput(body)).toThrow(expect.objectContaining({ status: 400, message: 'No image provided' }));
+    }
   });
 
   it('returns a range check for every parsed slab, in slab order', async () => {
@@ -183,5 +189,31 @@ describe('rate-card save-period range checks', () => {
     expect(status).toBe(400);
     expect(body.error).toBe('Row 1: price_min must be 0 or more');
     expect(state.statements).toHaveLength(0);
+  });
+});
+
+describe('rate-card single-row writes', () => {
+  async function send(method, path, body) {
+    const res = await fetch(`${baseUrl}/api/rate-card${path}`, {
+      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  }
+
+  it('rejects a blank rate with a 400 instead of a NOT NULL failure', async () => {
+    for (const rate of [undefined, null, '', '  ']) {
+      const res = await send('POST', '/config/fixed_fee', { category: 'kurta', fulfilment_type: 'Silver', price_min: 0, price_max: 500, rate });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('rate is required');
+    }
+    expect((await send('PUT', '/config/fixed_fee/7', { rate: null })).body.error).toBe('rate is required');
+    expect(state.statements).toHaveLength(0);
+  });
+
+  it('lets a partial update leave rate out, and returns warnings', async () => {
+    const res = await send('PUT', '/config/commission/7', { end_date: '2026-12-31', rate: 14 });
+    expect(res.status).toBe(200);
+    expect(res.body.warnings[0]).toContain('above 1');
+    expect((await send('PUT', '/config/commission/7', { end_date: '2026-12-31' })).status).toBe(200);
   });
 });

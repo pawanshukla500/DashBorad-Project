@@ -60,6 +60,15 @@ function columnValue(col, value) {
   return value ?? null;
 }
 
+// rate is NOT NULL, so a blank rate is an error rather than a silent 0 (or a
+// 500 from PostgreSQL). A partial update may leave rate out altogether.
+function blankRateError(type, row, { partial = false } = {}) {
+  if (!TABLE_EXTRA_COLUMNS[type]?.includes('rate')) return null;
+  const rate = row?.rate;
+  if (partial && rate === undefined) return null;
+  return rate === undefined || rate === null || String(rate).trim() === '' ? 'rate is required' : null;
+}
+
 function resolveTable(type) {
   const table = TABLE_MAP[type];
   if (!table) throw Object.assign(new Error(`Unknown rate card type: ${type}`), { status: 400 });
@@ -360,6 +369,8 @@ router.post('/config/:type', async (req, res) => {
     const pool = getPool();
 
     const { errors, warnings, row: body } = checkRateRow(type, req.body);
+    const rateError = blankRateError(type, body);
+    if (rateError) errors.push(rateError);
     if (errors.length) return res.status(400).json({ error: errors.join('; ') });
 
     const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(body.marketplace, body.seller_account);
@@ -398,6 +409,8 @@ router.put('/config/:type/:id', async (req, res) => {
     const pool = getPool();
 
     const { errors, warnings, row: body } = checkRateRow(type, req.body);
+    const rateError = blankRateError(type, body, { partial: true });
+    if (rateError) errors.push(rateError);
     if (errors.length) return res.status(400).json({ error: errors.join('; ') });
 
     const extraCols = TABLE_EXTRA_COLUMNS[type];
@@ -467,16 +480,14 @@ router.post('/config/:type/save-period', async (req, res) => {
 
     // Validate all rows. Warnings (implausible but storable values) are
     // returned with the result rather than blocking the save.
-    const extraColumnsForType = TABLE_EXTRA_COLUMNS[type] || [];
     const checkedRows = [];
     const rowWarnings = [];
     for (let i = 0; i < slabRows.length; i++) {
       const { errors, warnings, row } = checkRateRow(type, slabRows[i]);
       // A blank rate reached PostgreSQL as '' and failed the whole save with
       // "invalid input syntax for type numeric" (HTTP 500).
-      if (extraColumnsForType.includes('rate') && (slabRows[i]?.rate === undefined || slabRows[i]?.rate === null || String(slabRows[i].rate).trim() === '')) {
-        errors.push('rate is required');
-      }
+      const rateError = blankRateError(type, slabRows[i]);
+      if (rateError) errors.push(rateError);
       if (errors.length) {
         return res.status(400).json({ error: `Row ${i + 1}: ${errors.join('; ')}` });
       }
@@ -1172,7 +1183,8 @@ const PARSE_IMAGE_SIGNATURES = {
 const MAX_PARSE_IMAGE_MB = 6;
 export const MAX_PARSE_IMAGE_BASE64_CHARS = (MAX_PARSE_IMAGE_MB * 1024 * 1024 / 3) * 4;
 
-export function parseImageInput({ imageBase64, mimeType } = {}) {
+export function parseImageInput(body) {
+  const { imageBase64, mimeType } = body || {};
   const fail = (status, message) => Object.assign(new Error(message), { status });
   if (typeof imageBase64 !== 'string' || !imageBase64) throw fail(400, 'No image provided');
   if (typeof mimeType !== 'string' || !mimeType.trim()) throw fail(400, 'Image MIME type is required');

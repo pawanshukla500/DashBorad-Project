@@ -52,6 +52,13 @@ describe('rate-card range checks', () => {
     expect(checkRateRow('fixed_fee', { price_min: 501, price_max: 500, rate: 5 }).errors).toEqual(['price_min must be ≤ price_max']);
   });
 
+  it('applies column limits after PostgreSQL rounds to the column scale', () => {
+    expect(checkRateRow('commission', { rate: 99.9999999 }).errors[0]).toContain('rate must be below 100');
+    expect(checkRateRow('commission', { rate: 99.999999 }).errors).toEqual([]);
+    expect(checkRateRow('fixed_fee', { rate: 99999999.996 }).errors[0]).toContain('rate must be below');
+    expect(checkRateRow('fixed_fee', { price_max: 9999999999.995, rate: 5 }).errors[0]).toContain('price_max must be below');
+  });
+
   it('only accepts pct or flat collection types, normalising their case', () => {
     expect(checkRateRow('collection_fee', { prepaid: 1, prepaid_type: 'percent' }).errors)
       .toEqual(['prepaid_type must be "pct" or "flat"']);

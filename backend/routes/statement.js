@@ -152,20 +152,44 @@ export function parseStatementPayload(payload = {}) {
   const totalSettled = statementNumber(payload.totalSettled, 'Total settled');
   const saleItem = items.find(item => item.description.toLowerCase().includes('sale amount'));
   if (!saleItem || saleItem.net <= 0) throw new StatementInputError('Statement needs a positive Sale Amount line to calculate financial percentages.');
+  // statements.pct is NUMERIC(10,6). A line 100 times the Sale Amount is not
+  // a real statement (the Sale Amount was misread), and would only fail the
+  // commit after the reviewer had approved it.
+  const lines = [...items.map((item, index) => [`Line ${index + 1}`, item.net]), ['Total settled', totalSettled]];
+  for (const [label, value] of lines) {
+    if (Math.abs(percentOfSales(value, saleItem.net)) >= 10000) {
+      throw new StatementInputError(`${label} is more than 100 times the Sale Amount; check that the Sale Amount was read correctly.`);
+    }
+  }
   return { month, period, items, totalSettled, saleAmount: saleItem.net };
+}
+
+function percentOfSales(value, saleAmount) {
+  return +((value / saleAmount) * 100).toFixed(2);
 }
 
 // The model reads the PDF text and returns figures; nothing stops it from
 // inventing, rounding, or "correcting" one. Every amount it returns must
-// appear in the comma-stripped PDF text and every description in the text
-// itself, or the row is flagged for the reviewer. Descriptions are compared
-// without case, whitespace, or commas, which pdf-parse reflows inside table
-// cells. Zero needs no proof: blank cells are 0.
-function amountInText(amount, amountText) {
-  if (amount === 0) return true;
-  // String(1000) is a prefix of "1000.00" and String(1234.5) of "1234.50",
-  // so the shortest form matches every rendering of the same figure.
-  return amountText.includes(String(Math.abs(amount)));
+// appear as a whole number in the comma-stripped PDF text and every
+// description in the text itself, or the row is flagged for the reviewer.
+// Descriptions are compared without case, whitespace, or commas, which
+// pdf-parse reflows inside table cells. Zero needs no proof: blank cells are 0.
+
+// The numbers in the comma-stripped text, in paise. A substring match let a
+// figure with a dropped digit through (1530587 is inside "15305872.00"), so
+// amounts must match a whole number. pdf-parse joins the cells of a row
+// without spaces ("15305872.0015305872.00"), so a number ends after two
+// decimals and the next cell's digits start a new one.
+function amountsInText(pdfText) {
+  const amounts = new Set();
+  for (const [token] of String(pdfText ?? '').replace(/,/g, '').matchAll(/\d+(?:\.\d{1,2})?/g)) {
+    amounts.add(Math.round(Number(token) * 100));
+  }
+  return amounts;
+}
+
+function amountInText(amount, amounts) {
+  return amount === 0 || amounts.has(Math.round(Math.abs(amount) * 100));
 }
 
 function squashText(value) {
@@ -173,7 +197,7 @@ function squashText(value) {
 }
 
 export function checkStatementProvenance(parsed, pdfText) {
-  const amountText = String(pdfText ?? '').replace(/,/g, '');
+  const amounts = amountsInText(pdfText);
   const descriptionText = squashText(pdfText);
   const items = parsed.items.map(item => {
     const issues = [];
@@ -181,19 +205,19 @@ export function checkStatementProvenance(parsed, pdfText) {
       issues.push('Description is not in the PDF text');
     }
     for (const [field, label] of [['credits', 'Credits'], ['debits', 'Debits'], ['net', 'Net']]) {
-      if (!amountInText(item[field], amountText)) issues.push(`${label} ${item[field]} is not in the PDF text`);
+      if (!amountInText(item[field], amounts)) issues.push(`${label} ${item[field]} is not in the PDF text`);
     }
     return issues;
   });
-  const totalSettled = amountInText(parsed.totalSettled, amountText)
+  const totalSettled = amountInText(parsed.totalSettled, amounts)
     ? []
     : [`Total settled ${parsed.totalSettled} is not in the PDF text`];
   return { items, totalSettled };
 }
 
 function buildStatementRows(parsed) {
-  // parseStatementPayload guarantees a positive Sale Amount.
-  const pctOfSales = value => +((value / parsed.saleAmount) * 100).toFixed(2);
+  // parseStatementPayload guarantees a positive Sale Amount and in-range percentages.
+  const pctOfSales = value => percentOfSales(value, parsed.saleAmount);
   const base = { month: parsed.month, period: parsed.period };
   const rows = parsed.items.map(item => ({
     ...base,

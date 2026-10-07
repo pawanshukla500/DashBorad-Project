@@ -60,3 +60,36 @@ describe('statement PDF provenance check', () => {
     expect(result.totalSettled).toEqual(['Total settled 99 is not in the PDF text']);
   });
 });
+
+describe('statement provenance review fixes', () => {
+  it('needs a whole number, not a digit substring, so a dropped or partial figure is flagged', () => {
+    const text = 'Sale Amount 1,53,05,872.00 1,53,05,872.00';
+    const flagged = amount => checkStatementProvenance({
+      items: [{ description: 'Sale Amount', credits: amount, debits: 0, net: amount }], totalSettled: 0,
+    }, text).items[0];
+    expect(flagged(15305872)).toEqual([]);
+    expect(flagged(1530587)).toEqual(['Credits 1530587 is not in the PDF text', 'Net 1530587 is not in the PDF text']);
+    expect(flagged(5305)).toHaveLength(2);
+  });
+
+  it('still finds amounts in cells pdf-parse joined without spaces', () => {
+    const text = 'Commission Fee12,450.50-12,450.50Collection Fee3,210.00-3,210.00';
+    expect(checkStatementProvenance({
+      items: [
+        { description: 'Commission Fee', credits: 0, debits: 12450.5, net: -12450.5 },
+        { description: 'Collection Fee', credits: 0, debits: 3210, net: -3210 },
+      ],
+      totalSettled: 0,
+    }, text)).toEqual({ items: [[], []], totalSettled: [] });
+  });
+
+  it('rejects a Sale Amount so small the percentages could not be stored', () => {
+    expect(() => parseStatementPayload({
+      ...validStatement,
+      items: [
+        { description: 'Sale Amount', credits: 0.5, debits: 0, net: 0.5 },
+        { description: 'Commission Fee', credits: 0, debits: 50, net: -50 },
+      ],
+    })).toThrow('Line 2 is more than 100 times the Sale Amount');
+  });
+});

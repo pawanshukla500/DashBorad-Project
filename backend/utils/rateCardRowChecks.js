@@ -17,10 +17,15 @@
  * as 14 rather than 0.14 by scripts/import_commissions.js) must stay editable.
  */
 
-// PostgreSQL NUMERIC(p, s) holds magnitudes below 10^(p - s).
-const NUMERIC_8_6_LIMIT = 100;              // rc_commission.rate, rc_collection_fee.prepaid/postpaid
-const NUMERIC_10_2_LIMIT = 100_000_000;     // flat ₹ fee columns
-const NUMERIC_12_2_LIMIT = 10_000_000_000;  // price_min / price_max
+// PostgreSQL NUMERIC(p, s) rounds to s decimals, then holds magnitudes below
+// 10^(p - s): 99.9999999 rounds to 100.000000 and overflows NUMERIC(8,6).
+const NUMERIC_8_6 = { limit: 100, scale: 6 };                // rc_commission.rate, rc_collection_fee.prepaid/postpaid
+const NUMERIC_10_2 = { limit: 100_000_000, scale: 2 };       // flat ₹ fee columns
+const NUMERIC_12_2 = { limit: 10_000_000_000, scale: 2 };    // price_min / price_max
+
+function overflows(value, column) {
+  return Math.abs(Number(value.toFixed(column.scale))) >= column.limit;
+}
 
 // initDb.js resets commission rates below this to 0 on every start.
 const COMMISSION_RESET_BELOW = 0.005;
@@ -33,29 +38,29 @@ const RUPEES = 'rupees';
 const FEE_FIELDS = {
   commission: [
     {
-      key: 'rate', label: 'Commission rate', unit: FRACTION, limit: NUMERIC_8_6_LIMIT, warnAbove: 0.6,
+      key: 'rate', label: 'Commission rate', unit: FRACTION, column: NUMERIC_8_6, warnAbove: 0.6,
       resetBelow: COMMISSION_RESET_BELOW,
     },
   ],
   fixed_fee: [
-    { key: 'rate', label: 'Fixed fee', unit: RUPEES, limit: NUMERIC_10_2_LIMIT, warnAbove: 500 },
+    { key: 'rate', label: 'Fixed fee', unit: RUPEES, column: NUMERIC_10_2, warnAbove: 500 },
   ],
   pick_pack: [
-    { key: 'rate', label: 'Pick & pack fee', unit: RUPEES, limit: NUMERIC_10_2_LIMIT, warnAbove: 500 },
+    { key: 'rate', label: 'Pick & pack fee', unit: RUPEES, column: NUMERIC_10_2, warnAbove: 500 },
   ],
   franchise_fee: [
-    { key: 'rate', label: 'Franchise fee', unit: RUPEES, limit: NUMERIC_10_2_LIMIT, warnAbove: 500 },
+    { key: 'rate', label: 'Franchise fee', unit: RUPEES, column: NUMERIC_10_2, warnAbove: 500 },
   ],
   reverse_shipping: [
-    { key: 'local_fee', label: 'Local fee', unit: RUPEES, limit: NUMERIC_10_2_LIMIT, warnAbove: 1500 },
-    { key: 'zonal_fee', label: 'Zonal fee', unit: RUPEES, limit: NUMERIC_10_2_LIMIT, warnAbove: 1500 },
-    { key: 'national_fee', label: 'National fee', unit: RUPEES, limit: NUMERIC_10_2_LIMIT, warnAbove: 1500 },
+    { key: 'local_fee', label: 'Local fee', unit: RUPEES, column: NUMERIC_10_2, warnAbove: 1500 },
+    { key: 'zonal_fee', label: 'Zonal fee', unit: RUPEES, column: NUMERIC_10_2, warnAbove: 1500 },
+    { key: 'national_fee', label: 'National fee', unit: RUPEES, column: NUMERIC_10_2, warnAbove: 1500 },
   ],
   // Unit follows the row's *_type; a blank type is stored as the column
   // default 'pct'. Both share a NUMERIC(8,6) column, so flat fees cap at ₹99.99.
   collection_fee: [
-    { key: 'prepaid', label: 'Prepaid fee', typeKey: 'prepaid_type', limit: NUMERIC_8_6_LIMIT },
-    { key: 'postpaid', label: 'Postpaid fee', typeKey: 'postpaid_type', limit: NUMERIC_8_6_LIMIT },
+    { key: 'prepaid', label: 'Prepaid fee', typeKey: 'prepaid_type', column: NUMERIC_8_6 },
+    { key: 'postpaid', label: 'Postpaid fee', typeKey: 'postpaid_type', column: NUMERIC_8_6 },
   ],
 };
 
@@ -114,7 +119,7 @@ function checkPrice(row, key, errors) {
     return null;
   }
   if (value < 0) errors.push(`${key} must be 0 or more`);
-  else if (value >= NUMERIC_12_2_LIMIT) errors.push(`${key} must be below ${NUMERIC_12_2_LIMIT.toLocaleString('en-IN')}`);
+  else if (overflows(value, NUMERIC_12_2)) errors.push(`${key} must be below ${NUMERIC_12_2.limit.toLocaleString('en-IN')}`);
   return value;
 }
 
@@ -158,8 +163,8 @@ export function checkRateRow(type, input = {}) {
       errors.push(`${field.key} must be a non-negative number`);
       continue;
     }
-    if (value >= field.limit) {
-      errors.push(`${field.key} must be below ${field.limit.toLocaleString('en-IN')} (the most its column can hold)`);
+    if (overflows(value, field.column)) {
+      errors.push(`${field.key} must be below ${field.column.limit.toLocaleString('en-IN')} (the most its column can hold)`);
       continue;
     }
     if (unit === FRACTION) checkFraction(field, value, warnAbove, warnings);
