@@ -9,3 +9,24 @@ frontend/.env
 dist
 **/dist
 .codex-tmp
+**/.codex-tmp
+
+# Secrets: every env variant (only the example template ships) and key files.
+**/.env
+**/.env.*
+!**/.env.example
+**/users_fallback.json
+**/*firebase-adminsdk*.json
+**/serviceAccount*.json
+**/*.pem
+**/*.key
+
+# Not needed at runtime: tests, backups and one-off scratch scripts/captures.
+backend/tests
+**/*.bak
+backend/*.cjs
+backend/*.mjs
+backend/*.html
+backend/*.png
+backend/test-*.js
+backend/test_*.js

@@ -1,5 +1,5 @@
 # Stage 1: Build React Frontend
-FROM node:20-bookworm-slim AS client-builder
+FROM node:22-bookworm-slim AS client-builder
 
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
@@ -8,7 +8,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Production Server
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 COPY backend/package*.json ./backend/
