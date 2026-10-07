@@ -61,7 +61,7 @@ function ChannelIcon({ channelKey, className = 'w-5 h-5' }) {
     );
   }
   return (
-    <span className={`inline-flex items-center justify-center rounded font-bold text-[10px] text-white bg-indigo-600 ${className}`}>
+    <span className={`inline-flex items-center justify-center rounded font-bold text-[10px] text-on-primary bg-primary ${className}`}>
       {key.charAt(0).toUpperCase()}
     </span>
   );
@@ -363,7 +363,7 @@ export default function OutstandingPaymentsPage() {
             <span className="material-symbols-outlined text-[16px]">download</span>
             Export Excel
           </button>
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#3525cd] text-xs font-bold text-white shadow-sm">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-bold text-on-primary shadow-sm">
             V
           </div>
         </div>
@@ -548,7 +548,7 @@ export default function OutstandingPaymentsPage() {
                     <tr
                       className={`group transition-colors ${
                         isChannelSelected
-                          ? 'bg-indigo-50/80 font-medium'
+                          ? 'bg-primary-container/80 font-medium'
                           : 'hover:bg-surface-container-low'
                       }`}
                     >
@@ -626,7 +626,7 @@ export default function OutstandingPaymentsPage() {
                         <tr
                           key={acc.account_key}
                           className={`bg-surface-container-low hover:bg-surface-container transition-colors border-l-4 ${
-                            isAccSelected ? 'border-primary bg-indigo-50/60 font-medium' : 'border-outline-variant'
+                            isAccSelected ? 'border-primary bg-primary-container/60 font-medium' : 'border-outline-variant'
                           }`}
                         >
                           <td className="py-3 px-4 pl-12">
@@ -894,7 +894,7 @@ export default function OutstandingPaymentsPage() {
 
           <div className="flex items-center gap-2 text-xs text-outline">
             {selectedChannel && (
-              <span className="inline-flex items-center gap-1.5 rounded-md bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-indigo-700 font-semibold capitalize">
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-primary-container border border-primary/30 px-2 py-0.5 text-primary font-semibold capitalize">
                 <span>{selectedChannel} {selectedAccount ? `· ${selectedAccount}` : ''}</span>
                 <button
                   type="button"
@@ -902,7 +902,7 @@ export default function OutstandingPaymentsPage() {
                     setSelectedChannel(null);
                     setSelectedAccount(null);
                   }}
-                  className="hover:text-indigo-900 rounded p-0.5 transition-colors"
+                  className="hover:text-indigo-dark rounded p-0.5 transition-colors"
                   title="Clear channel filter"
                 >
                   <span className="material-symbols-outlined text-[13px] block">close</span>

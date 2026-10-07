@@ -126,7 +126,7 @@ function UserMenu({ user, onLogout }) {
         aria-label="Open user menu"
         className="flex items-center gap-2 rounded-lg py-1 pl-1 pr-2 transition-colors hover:bg-surface-container-low focus-visible:ring-2 focus-visible:ring-primary/40"
       >
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-container text-on-primary font-sans text-body-sm font-semibold">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-container text-on-primary-container font-sans text-body-sm font-semibold">
           {user?.username?.charAt(0).toUpperCase() || 'U'}
         </div>
         <div className="hidden md:block text-left">
@@ -263,7 +263,7 @@ function AppContent() {
   if (!user.accessGranted) return <AccessNotGranted email={user.email} onSignOut={logout} />;
 
   return (
-    <div className="bg-canvas text-ink h-screen flex overflow-hidden font-sans selection:bg-primary-container selection:text-on-primary">
+    <div className="bg-canvas text-ink h-screen flex overflow-hidden font-sans selection:bg-primary-container selection:text-on-primary-container">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-on-primary">
         Skip to content
       </a>

@@ -166,6 +166,23 @@ SOR-specific invariants:
 
 Full design: [`docs/SOR_LEVEL_PAYMENT_RECO.md`](docs/SOR_LEVEL_PAYMENT_RECO.md).
 
+## Brand colour & contrast
+
+The palette is rooted on brand burgundy `#902A4A` and lives in
+`frontend/tailwind.config.js`.
+
+- **Token pairs** — light `bg-primary-container` (#fbe9f0) takes
+  `text-on-primary-container` (burgundy), never `text-on-primary`
+  (white — unreadable). Dark surfaces (`bg-primary`, `indigo-dark`,
+  the login hero, the calculator header) take `text-on-primary`.
+- **No old indigo** — do not add `#3525cd` or `*-indigo-<n>` utilities;
+  use brand tokens (`bg-primary`, `bg-primary-container/*`,
+  `text-primary`). Existing light-indigo row highlights on Sales,
+  Returns, Statement, Profit and a few other pages are a pending
+  tonal sweep, not a contrast bug.
+- **Focus ring** — `:focus-visible` in `frontend/src/index.css` uses
+  `#902A4A`.
+
 ## Security Audit Cadence
 
 - Every PR: AppSec + Code Reviewer skills.
