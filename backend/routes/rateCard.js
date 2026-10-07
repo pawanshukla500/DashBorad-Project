@@ -82,6 +82,28 @@ function validateRateRow(type, body) {
   return errors;
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// A rate-period date from the request: null when blank, otherwise a real
+// calendar date in YYYY-MM-DD (anything else used to reach PostgreSQL and
+// fail the save with a 500).
+function periodDate(value, label) {
+  if (value === undefined || value === null || value === '') return null;
+  const text = String(value).trim();
+  const parsed = ISO_DATE.test(text) ? new Date(`${text}T00:00:00Z`) : null;
+  if (!parsed || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== text) {
+    throw Object.assign(new Error(`${label} must be a date in YYYY-MM-DD format`), { status: 400 });
+  }
+  return text;
+}
+
+// The day before an ISO date — where an auto-closed period ends.
+export function dayBefore(isoDate) {
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
 function firstDefined(object, ...keys) {
   for (const key of keys) {
     if (object[key] !== undefined && object[key] !== null && object[key] !== '') return object[key];
@@ -470,7 +492,14 @@ router.post('/config/:type/save-period', async (req, res) => {
     const resolved = resolveMarketplaceAndAccount(req.body.marketplace, req.body.seller_account);
     const marketplace = resolved.marketplace;
     const seller_account = resolved.sellerAccount;
-    const { rows: slabRows, start_date, end_date, category, replaceIds } = req.body;
+    const { rows: slabRows, category, replaceIds } = req.body;
+    const start_date = periodDate(req.body.start_date, 'start_date');
+    const end_date = periodDate(req.body.end_date, 'end_date');
+    // "Auto-close current active rate": a new open-ended period ends every
+    // earlier period of the same category that is still running on its start
+    // date, on the day before. Otherwise both stayed active and the Rate Card
+    // page kept showing (and fee lookups could keep using) the old rates.
+    const autoClose = req.body.auto_close === true && Boolean(start_date) && !end_date;
 
     if (!Array.isArray(slabRows) || !slabRows.length) {
       return res.status(400).json({ error: 'No rate rows provided' });
@@ -533,6 +562,25 @@ router.post('/config/:type/save-period', async (req, res) => {
         );
       }
 
+      let closed = null;
+      if (autoClose) {
+        const closeOn = dayBefore(start_date);
+        const result = await client.query(
+          `UPDATE ${table}
+             SET end_date = $5::date, updated_at = NOW()
+           WHERE category = $1 AND marketplace = $2 AND seller_account = $3
+             AND (start_date IS NULL OR start_date < $4::date)
+             AND (end_date IS NULL OR end_date >= $4::date)
+           RETURNING TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date`,
+          [category || 'ALL', marketplace, seller_account, start_date, closeOn],
+        );
+        closed = {
+          rows: result.rowCount,
+          end_date: closeOn,
+          period_starts: [...new Set(result.rows.map(row => row.start_date))],
+        };
+      }
+
       const extraCols = TABLE_EXTRA_COLUMNS[type];
       const allCols = ['category', 'start_date', 'end_date', 'marketplace', 'seller_account', ...extraCols];
 
@@ -574,7 +622,7 @@ router.post('/config/:type/save-period', async (req, res) => {
       await client.query('COMMIT');
       clearRateCardCache();
       // Report the rows actually removed, not the number of ids requested.
-      res.json({ ok: true, inserted: slabRows.length, deleted });
+      res.json({ ok: true, inserted: slabRows.length, deleted, closed });
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       throw error;
@@ -589,6 +637,42 @@ router.post('/config/:type/save-period', async (req, res) => {
 
 
 
+
+// POST /api/rate-card/config/:type/close-period — end one existing period.
+// Used to resolve overlapping periods created before auto-close worked: the
+// earlier period is ended on the day before the later one starts.
+router.post('/config/:type/close-period', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const table = resolveTable(req.params.type);
+    const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.body.marketplace, req.body.seller_account);
+    const category = String(req.body.category || '').trim();
+    if (!category) return res.status(400).json({ error: 'category is required' });
+    const startDate = periodDate(req.body.start_date, 'start_date');
+    const endDate = periodDate(req.body.end_date, 'end_date');
+    const closeOn = periodDate(req.body.close_on, 'close_on');
+    if (!closeOn) return res.status(400).json({ error: 'close_on is required' });
+    if (startDate && closeOn < startDate) {
+      return res.status(400).json({ error: 'close_on cannot be before the period start date' });
+    }
+    if (endDate && closeOn >= endDate) {
+      return res.status(400).json({ error: 'close_on must be earlier than the current end date' });
+    }
+    const { rowCount } = await getPool().query(
+      `UPDATE ${table}
+         SET end_date = $6::date, updated_at = NOW()
+       WHERE category = $1 AND marketplace = $2 AND seller_account = $3
+         AND start_date IS NOT DISTINCT FROM $4::date AND end_date IS NOT DISTINCT FROM $5::date`,
+      [category, marketplace, sellerAccount, startDate, endDate, closeOn],
+    );
+    if (!rowCount) return res.status(404).json({ error: 'Rate period not found' });
+    clearRateCardCache();
+    res.json({ ok: true, updated: rowCount, end_date: closeOn });
+  } catch (e) {
+    console.error('[rate-card/close-period]', e);
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'Could not close the rate period' });
+  }
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  VERSION MANAGEMENT

@@ -157,9 +157,12 @@ async function loadFromDb(marketplace = 'flipkart', sellerAccount = 'default') {
     // Include 'default' as fallback for non-default accounts
     const accounts = sellerAccount !== 'default' ? [sellerAccount, 'default'] : ['default'];
 
+    // Account-specific rows first; then, when two periods of a category
+    // overlap (an earlier one that was never closed), the later start wins —
+    // the same rule as the SQL report paths. find() takes the first match.
     const orderBy = accounts.length > 1
-      ? `(CASE WHEN seller_account = $2[1] THEN 0 ELSE 1 END)`
-      : `1`;
+      ? `(CASE WHEN seller_account = $2[1] THEN 0 ELSE 1 END), start_date DESC NULLS LAST, id DESC`
+      : `start_date DESC NULLS LAST, id DESC`;
 
     // During rolling PostgreSQL schema upgrades, keep current rate-card
     // calculations working until the optional price-band columns are visible.
@@ -449,14 +452,19 @@ function reverseWeightUpperBound(weightSlab) {
 function findReverseShippingRow(rc, cat, price, weight, orderDate) {
   const w = parseFloat(weight) || 0.5;
   const p = parseFloat(price) || 0;
-  return (rc.reverseShipping || [])
+  const matching = (rc.reverseShipping || [])
     .filter(r => {
       if (r.category !== cat) return false;
       if (!inRange(orderDate, r.startDate, r.endDate)) return false;
       const min = Number.isFinite(Number(r.priceMin)) ? Number(r.priceMin) : 0;
       const max = Number.isFinite(Number(r.priceMax)) ? Number(r.priceMax) : 999999;
       return p >= min && p <= max && w <= reverseWeightUpperBound(r.weightSlab);
-    })
+    });
+  // Overlapping periods: only the latest effective period's slabs compete,
+  // so an older, never-closed period cannot win with a smaller slab.
+  const latestStart = matching.reduce((latest, r) => ((r.startDate || '') > latest ? (r.startDate || '') : latest), '');
+  return matching
+    .filter(r => (r.startDate || '') === latestStart)
     // Do not rely on lexical slab strings ("10 kg" sorts before "2 kg").
     .sort((a, b) => reverseWeightUpperBound(a.weightSlab) - reverseWeightUpperBound(b.weightSlab))[0];
 }
