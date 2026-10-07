@@ -69,7 +69,7 @@ describe('SOR routes — outstanding ledger', () => {
   it('pages the ledger and reports the total of the filtered set', async () => {
     respond = sql => (sql.includes('COUNT(*) OVER ()')
       ? { rows: [{ invoice_id: 9, invoice_no: 'AJ-9', total_count: '137' }] }
-      : sql.includes('GREATEST')
+      : sql.includes('FROM sor_upload_log')
         ? { rows: [{ lastUploadAt: '2026-10-05T10:00:00.000Z' }] }
         : { rows: [{ invoiceCount: 137, totalOutstanding: '5000.00' }] });
     const response = await get('/reliance-ajio/outstanding?page=3&pageSize=25');

@@ -1,12 +1,12 @@
 import SorPageShell from './SorPageShell';
-import { AWAITING_SAMPLE_BADGE, PENDING_UPLOAD_STREAMS } from './pendingStreams';
+import { LIVE_UPLOADS_BADGE, UPLOAD_SETUP_NOTE, sorUploadStreams } from './streams';
 
 /**
  * SOR Level Payment Reco · Zepto Limited.
  *
- * Data source confirmed (2026-10-03): Excel upload from the seller portal.
- * Phase 3 builds the Excel parsers + Data Hub upload card, then surfaces the
- * parsed rows in sor_invoice / sor_invoice_line.
+ * Data source: Excel upload from the seller portal. Invoice, payment, payment
+ * advice, return and deduction files upload through the generic SOR importer
+ * (backend/services/sorUpload.js); a sample export only tunes its aliases.
  */
 export default function SorZeptoPage() {
   return (
@@ -14,12 +14,12 @@ export default function SorZeptoPage() {
       portalId="zepto"
       portalLabel="SOR · Zepto Limited"
       legalName="Zepto Limited"
-      statusBadge={AWAITING_SAMPLE_BADGE}
+      statusBadge={LIVE_UPLOADS_BADGE}
       description="Excel upload from the Zepto seller portal"
-      setupNote="Data source confirmed: Excel upload from the Zepto seller portal. The invoice, payment, return and deduction parsers are built once a sample file (header row + 5–10 rows) is shared."
-      uploadStreams={PENDING_UPLOAD_STREAMS}
+      setupNote={UPLOAD_SETUP_NOTE}
+      uploadStreams={sorUploadStreams('Zepto')}
       openQuestions={[
-        'A sample XLSX (header row + 5–10 rows) for each of the invoice, payment, return and deduction files.',
+        'To tune the importer to the portal’s own exports: one sample of each file (invoice, payment, payment advice, return, deduction).',
         'Zepto seller-account identifier(s) — a single account or multiple brands?',
         'Invoice-number pattern (e.g. ZP/2025-26/000123) and the period_from / period_to columns.',
         'Fee lines — commission, fixed fee, collection fee, reverse shipping, TDS — or a different taxonomy?',

@@ -1,6 +1,6 @@
 # SOR Level Payment Reconciliation — Design Doc
 
-**Status:** Phase 0 live; Phase 0.5 ledger + Phase 2 (AJIO) in review; Phases 1 / 3 / 4 await sample files
+**Status:** Live — ledger, AJIO mirror, upload streams for all four portals, statement + ledger report
 **Owner:** Pawan Shukla
 **Last updated:** 2026-10-07
 
@@ -359,6 +359,69 @@ the mirror's one-at-a-time queue with live uploads.
 > Assumption to confirm with an AJIO sample file: reverse rows are
 > identifiable by a negative amount, a Return ID or an order-type column.
 
+## 6b. Upload streams, statement and ledger report
+
+Every portal page has five uploads (operator / admin), each with a
+downloadable XLSX template whose second sheet lists the accepted column
+names (`backend/services/sorUpload.js`):
+
+| Stream | Required columns | Ledger lines | Idempotency key |
+|---|---|---|---|
+| Invoice | Invoice No, Invoice Date, Invoice Amount (+ SKU, Quantity, Net Payable, PO / Order No) | header + `sale` per row; the declared net = Σ Net Payable | the invoice's own sale lines are **replaced** on re-upload |
+| Payment | Invoice No, Payment Date, Amount Paid (+ Payment Reference / UTR) | `payment` | `pay:<UTR>` per invoice |
+| Payment advice | Invoice No, Advice Date, Amount Paid and/or TDS · Commission · Discount · Penalty / Claims · Other Deductions | `payment` + one `deduction` per non-zero column | `pay:<UTR>` · `adv:<UTR>:<column>` |
+| Return | Invoice No, Return Date, Return Amount (+ Credit / Debit Note No, SKU, Quantity) | `return` | `ret:<note>:<sku>` |
+| Deductions | Invoice No, Deduction Date, Deduction Amount (+ Reference, Deduction Type) | `deduction` | `ded:<reference>:<type>` |
+
+- Parsing is deterministic (header aliases, case / punctuation
+  insensitive) — no value is guessed. A row with a bad date / number or a
+  missing required value is skipped with its reason; rows whose invoice is
+  not in the portal's ledger are skipped too ("upload the invoice file
+  first"). The response lists up to 200 skipped rows; the page offers them
+  as a CSV.
+- `UNIQUE (invoice_id, line_type, source_key)`: re-uploading a file
+  updates the same lines (a corrected amount replaces the old one).
+  Payments share the `pay:<UTR>` key across the payment file, the payment
+  advice **and** the AJIO mirror, so one payment is counted once wherever
+  it appears. Rows of one document inside a file are summed. An amount
+  re-uploaded as **0** removes the line that key posted earlier (only an
+  upload's own line; empty cells are ignored).
+- Account: the portal default (`ajio_main` for AJIO — the AJIO importer's
+  account — `default` elsewhere) unless the upload names one.
+- AJIO invoices keep coming through the AJIO `mp_invoices` importer (the
+  SOR page calls it directly); `POST …/reliance-ajio/upload/invoice` is
+  refused so sale lines have one source.
+- **AJIO component ownership:** the AJIO invoice file can also carry
+  payments (Amount Received), returns and fees (commission, TDS, TCS, other
+  deductions). Each money component of an invoice belongs to the source that
+  recorded it first — the AJIO file or the SOR uploads — and the other one
+  skips it ("Already recorded from the AJIO invoice file"), in both
+  directions. Discounts, penalties and standalone debit notes never collide.
+  An upload never takes over a line owned by the AJIO mirror.
+- Dates: the day/month order is decided once per column from all of its
+  values (a part above 12 settles it; otherwise DD-MM). A column that proves
+  both orders is refused.
+- Every upload writes `sor_upload_log` (→ Audit History via the trigger).
+
+**Statement** — `GET /api/sor/:portal/statement?from&to&page&pageSize`:
+one entry per document (an invoice's sale lines, one payment, one note,
+one deduction) dated by `sor_invoice_line.line_date`, debit = sale, credit
+= payment / return / deduction, with the running balance computed over the
+whole ledger so a date-filtered page shows the true balance, plus opening /
+closing balance and per-type totals, all read from one REPEATABLE READ
+snapshot. Undated entries count in the opening balance whenever a date
+filter is set. The page shows it under the Ledger's **Statement** toggle.
+
+**Ledger report** — `GET /api/sor/:portal/ledger-report?from&to` (XLSX):
+*Summary* (opening, invoiced, payments, returns, deductions, closing,
+outstanding, overdue > 60 days), *Ledger* (opening row, dated entries with
+running balance, closing row) and *Outstanding by invoice*. Capped at
+100,000 entries per report.
+
+Migration `2026.10.sor-streams-1` adds `line_date`, `reference_no`,
+`description`, `source_key` and the unique key index, and dates existing
+lines from their payload or invoice.
+
 ### REST contract (`/api/sor`, analyst+ read-only)
 
 | Endpoint | Notes |
@@ -366,6 +429,10 @@ the mirror's one-at-a-time queue with live uploads.
 | `GET /:portal/outstanding` | `page`, `pageSize` (≤ 500, default 50), `sort` (`invoice_date` · `invoice_no` · `outstanding` · `age_days` · `variance` · `sale_total`), `dir`, `status` (`open` · `settled` · `overpaid`), `invoice_no` (literal substring), `from` / `to` (YYYY-MM-DD), `portal_account`. Returns `{ rows, total, page, pageSize, kpis }`; `kpis` cover the whole filtered portal (status filter excluded) incl. aging buckets, `varianceInvoices`, `lastUploadAt`. |
 | `GET /:portal/invoices` | Paginated header list. |
 | `GET /:portal/invoice/:id` | Ledger row from `sor_outstanding` + lines grouped by `line_type`. |
+| `GET /:portal/statement` | Dated ledger entries with running balance (§6b). |
+| `GET /:portal/ledger-report` | XLSX ledger report (§6b). |
+| `GET /:portal/template/:stream` | XLSX upload template. |
+| `POST /:portal/upload/:stream` | **operator / admin** — upload one stream (§6b). |
 
 Unknown portals → 404 before any query; invalid filters → 400; server
 errors return a generic message (no database text).
@@ -379,6 +446,8 @@ errors return a generic message (no database text).
 | `2026.10.sor-ledger-2` | `line_type` + CHECK, `source` (tags lines left by the earlier mirror revision), FK-column and covering indexes. |
 | `2026.10.sor-fk-dedupe-1` | Drops the duplicate named FKs Phase 0 added on top of the inline ones (production had both). |
 | `2026.10.sor-ajio-mirror-2` | One-time AJIO backfill after startup; recorded only when every invoice synced. |
+| `2026.10.sor-ajio-mirror-3` | Re-runs the backfill after `sor-streams-1` so every mirrored line gets its key and date. |
+| `2026.10.sor-streams-1` | Upload-stream columns (`line_date`, `reference_no`, `description`, `source_key`) + `UNIQUE (invoice_id, line_type, source_key)`. |
 
 `-2` names: earlier unmerged revisions (PR #44 / #48) used `sor-ledger-1`
 and `sor-ajio-mirror-1` with different contents; a version name is never
@@ -386,8 +455,9 @@ reused once its contents change.
 
 Rules: each step runs in one transaction on one client with
 `lock_timeout` (5 s; 3 s for the FK step) and records its version only on
-success, so a failure is retried on the next start instead of being
-silently skipped. SOR steps run on both the full and the already-current
+success, so a failure is retried instead of being silently skipped — in
+the background every minute after startup (`finishSorSchema`), then on the
+next start. SOR steps run on both the full and the already-current
 startup paths and **must not bump `CURRENT_SCHEMA_VERSION`** — that would
 send production through the full DDL pass (dozens of `ALTER TABLE` on
 `orders` / `returns`) on the shared PostgreSQL server. Startup migrations

@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { mountApiRoutes } from './routes/index.js';
-import { initDb, ensureSorAjioBackfill, schemaMigrationsEnabled } from './db/initDb.js';
+import { initDb, finishSorSchema, schemaMigrationsEnabled } from './db/initDb.js';
 import {
   getDatabaseStatus,
   getPool,
@@ -261,7 +261,9 @@ async function initialiseDatabaseWhenReachable() {
       .catch(error => console.warn('[firebase roles] Startup sync failed:', error.message));
     // One-time SOR data backfill; never delays readiness. Same gate as the
     // schema migrations, so a development backend never writes it.
-    if (schemaMigrationsEnabled()) void ensureSorAjioBackfill(getPool());
+    if (schemaMigrationsEnabled()) {
+      void finishSorSchema(getPool()).catch(error => console.error('[db] SOR schema finish failed:', error.message));
+    }
   } catch (error) {
     // waitForDatabase normally does not return until success. Keep this guard
     // so a schema issue never brings down the HTTP process.

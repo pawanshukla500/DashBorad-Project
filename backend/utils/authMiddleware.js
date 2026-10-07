@@ -21,6 +21,82 @@ export function firebaseSessionFromToken(decodedToken = {}) {
   };
 }
 
+// Firebase ID tokens stay valid for up to an hour, carrying the role claim
+// they were issued with. Role changes and deletions revoke the user's
+// sessions (auth.js); a token issued before that is refused here. The
+// revocation time is cached per user for a minute so a request does not
+// always wait on Firebase.
+const REVOCATION_CACHE_MS = 60_000;
+const REVOCATION_LOOKUP_TIMEOUT_MS = 1_500;
+const revocationCache = new Map();
+const revocationLookups = new Map();
+// Bumped whenever a user's state is cleared (role change, deletion): a lookup
+// that started before the change must not write its stale answer back.
+const revocationGenerations = new Map();
+let allGeneration = 0;
+
+export function forgetRevocationState(uid) {
+  if (uid) {
+    revocationCache.delete(uid);
+    revocationLookups.delete(uid);
+    revocationGenerations.set(uid, (revocationGenerations.get(uid) || 0) + 1);
+  } else {
+    revocationCache.clear();
+    revocationLookups.clear();
+    allGeneration++;
+  }
+}
+
+const generationOf = uid => `${allGeneration}:${revocationGenerations.get(uid) || 0}`;
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(`revocation lookup timed out after ${ms} ms`), { code: 'timeout' })), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// One Firebase lookup per user at a time, at most once a minute, never
+// longer than the timeout. While Firebase is slow or down the last known
+// state (or "not revoked") is reused for the cache window, so requests do not
+// each wait on retries — and verified users are not locked out.
+function revocationState(uid) {
+  const cached = revocationCache.get(uid);
+  if (cached && Date.now() - cached.at <= REVOCATION_CACHE_MS) return Promise.resolve(cached);
+  if (revocationLookups.has(uid)) return revocationLookups.get(uid);
+  const generation = generationOf(uid);
+  const lookup = withTimeout(auth.getUser(uid), REVOCATION_LOOKUP_TIMEOUT_MS)
+    .then(
+      user => ({ validAfterMs: user.tokensValidAfterTime ? Date.parse(user.tokensValidAfterTime) : 0, deleted: false }),
+      error => {
+        if (error?.code === 'auth/user-not-found') return { validAfterMs: 0, deleted: true };
+        console.warn('[Auth Middleware] revocation check unavailable:', error?.message);
+        return { validAfterMs: cached?.validAfterMs ?? 0, deleted: cached?.deleted ?? false };
+      },
+    )
+    .then(state => {
+      const entry = { ...state, at: Date.now() };
+      // Cleared meanwhile: answer this request, but cache nothing stale.
+      if (generationOf(uid) === generation) revocationCache.set(uid, entry);
+      return entry;
+    })
+    .finally(() => {
+      if (revocationLookups.get(uid) === lookup) revocationLookups.delete(uid);
+    });
+  revocationLookups.set(uid, lookup);
+  return lookup;
+}
+
+async function sessionRevoked(decodedToken) {
+  const entry = await revocationState(decodedToken.uid);
+  if (entry.deleted) return true;
+  const issuedAtMs = Number(decodedToken.auth_time || decodedToken.iat || 0) * 1000;
+  return entry.validAfterMs > 0 && issuedAtMs < entry.validAfterMs;
+}
+
 export async function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -30,6 +106,12 @@ export async function authMiddleware(req, res, next) {
 
   try {
     const decodedToken = await auth.verifyIdToken(token);
+    if (await sessionRevoked(decodedToken)) {
+      return res.status(401).json({
+        error: 'Your access was changed. Please sign in again.',
+        code: 'SESSION_REVOKED',
+      });
+    }
     req.user = firebaseSessionFromToken(decodedToken);
   } catch (err) {
     console.error('[Auth Middleware]', err.message);

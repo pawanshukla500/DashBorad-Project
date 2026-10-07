@@ -124,6 +124,17 @@ describe('buildAjioSorInvoices — aggregation', () => {
     expect(invoice.fee_amount).toBe(172.5);
   });
 
+  it('keys every line for idempotent re-syncs and folds one UTR across SKU rows into one payment', () => {
+    const [invoice] = buildAjioSorInvoices([
+      storedRow({ id: 1, amount_received: '410', payment_reference: 'utr 77', payment_date: '2026-09-25' }),
+      storedRow({ id: 2, sku: 'SKU-B', amount_received: '410', payment_reference: 'UTR77', payment_date: '2026-09-25' }),
+    ]).values();
+    const payments = invoice.lines.filter(line => line.line_type === 'payment');
+    expect(payments).toEqual([expect.objectContaining({ source_key: 'pay:UTR77', gross_amount: 820, line_date: '2026-09-25', description: 'Payment' })]);
+    expect(invoice.lines.find(line => line.line_type === 'deduction').source_key).toBe('mp:1:commission');
+    expect(new Set(invoice.lines.map(line => `${line.line_type}:${line.source_key}`)).size).toBe(invoice.lines.length);
+  });
+
   it('turns amount_received into a payment line so outstanding drops once AJIO pays', () => {
     const [invoice] = buildAjioSorInvoices([
       storedRow({ amount_received: '820', payment_date: '2026-09-25', payment_reference: 'UTR123' }),
@@ -209,6 +220,7 @@ describe('mirrorAjioInvoicesToSor — persistence', () => {
       'BEGIN',
       'INSERT INTO sor_invoice',
       'DELETE FROM sor_invoice_line',
+      'SELECT invoice_id, line_type,', // components SOR uploads already own
       'INSERT INTO sor_invoice_line',
       'COMMIT',
     ]);
@@ -220,9 +232,11 @@ describe('mirrorAjioInvoicesToSor — persistence', () => {
     expect(remove.text).toContain('AND source = $2');
     expect(remove.params[1]).toBe(SOR_AJIO_LINE_SOURCE);
     const insert = statements.find(s => s.text.startsWith('INSERT INTO sor_invoice_line'));
-    expect(insert.params).toHaveLength(4 * 12); // sale + 3 deductions, 12 columns each
+    expect(insert.params).toHaveLength(4 * 16); // sale + 3 deductions, 16 columns each
     expect(insert.params[11]).toBe(SOR_AJIO_LINE_SOURCE);
+    expect(insert.params.slice(12, 16)).toEqual(['mp:1', '2026-09-10', 'AJ-001', 'Invoice']);
     expect(insert.text).toContain('$11::jsonb');
+    expect(insert.text).toContain('ON CONFLICT (invoice_id, line_type, source_key) DO NOTHING');
   });
 
   it('removes the mirrored lines and the emptied header when the AJIO rows are gone', async () => {
