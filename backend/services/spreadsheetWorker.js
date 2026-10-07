@@ -84,8 +84,10 @@ const defaultParser = createSpreadsheetParser({
  *
  * Resolves with `{ SheetNames, Sheets }`: every sheet name in the workbook,
  * and the rows of each returned sheet - the same rows sheet_to_json gives for
- * a non-dense XLSX.read with the same options. Row objects do not carry
- * sheet_to_json's hidden `__rowNum__` property.
+ * a non-dense XLSX.read with the same options, except that day-first date
+ * text SheetJS misreads (e.g. "05-04-2026" in an HTML table read as 1910) is
+ * returned as that text. Row objects do not carry sheet_to_json's hidden
+ * `__rowNum__` property.
  *
  * @param {Buffer|Uint8Array|ArrayBuffer} buffer
  * @param {SpreadsheetParseOptions} [options]

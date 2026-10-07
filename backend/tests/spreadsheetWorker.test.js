@@ -147,22 +147,23 @@ describe('spreadsheet worker: values mode', () => {
 
       for (const name of legacy.SheetNames) {
         const ws = legacy.Sheets[name];
+        const cells = ws['!data'];
         const rows = book.Sheets[name];
         const expected = [];
-        expected.length = Math.min(ws.length, XLSX.utils.decode_range(ws['!ref']).e.r + 1);
+        expected.length = Math.min(cells.length, XLSX.utils.decode_range(ws['!ref']).e.r + 1);
         for (let r = 0; r < expected.length; r++) {
-          if (ws[r]) expected[r] = ws[r].map(cell => (cell.v !== undefined && cell.v !== null ? cell.v : { ...cell }));
+          if (cells[r]) expected[r] = cells[r].map(cell => (cell.v !== undefined && cell.v !== null ? cell.v : { ...cell }));
         }
         expected['!ref'] = ws['!ref'];
         expect(rows).toStrictEqual(expected);
 
         const headers = headersOf(rows[0]);
-        expect(headers).toStrictEqual(headersOf(ws[0]));
+        expect(headers).toStrictEqual(headersOf(cells[0]));
         const idx = buildHeaderIndex(headers);
         for (let r = 1; r < expected.length; r++) {
-          if (!ws[r]) continue;
+          if (!cells[r]) continue;
           expect(parseAmazonSettlementLine(rows[r], idx, { fallbackSettlementId: 'S-0' }))
-            .toStrictEqual(parseAmazonSettlementLine(ws[r], idx, { fallbackSettlementId: 'S-0' }));
+            .toStrictEqual(parseAmazonSettlementLine(cells[r], idx, { fallbackSettlementId: 'S-0' }));
         }
       }
     },

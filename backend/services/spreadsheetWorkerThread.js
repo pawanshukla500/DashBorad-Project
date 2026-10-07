@@ -12,6 +12,12 @@ const XLSX = createRequire(import.meta.url)('xlsx');
 // few milliseconds.
 const CHUNK_CELLS = 50_000;
 
+// Day-first date text such as "05-04-2026" or "26-04-26 10:30", and the
+// default date format SheetJS gives a date it read from text; see
+// restoreMisreadDates. Declared before run() starts, which uses them.
+const DAY_FIRST_DATE = /^(\d{1,2})-(\d{1,2})-(\d{4}|\d{2})(?:[T ]|$)/;
+const TEXT_DATE_FORMAT = XLSX.SSF.get_table()[14];
+
 if (parentPort && workerData?.kind === 'spreadsheet-parse') {
   run(workerData).catch((error) => {
     parentPort.postMessage({
@@ -42,6 +48,7 @@ async function run(job) {
   for (const name of Object.keys(workbook.Sheets)) {
     if (!selected.includes(name)) delete workbook.Sheets[name];
   }
+  for (const name of selected) restoreMisreadDates(workbook.Sheets[name]);
 
   for (const name of selected) {
     const ref = workbook.Sheets[name]['!ref'];
@@ -85,20 +92,62 @@ function matchesSheetFilter(filter, name, index) {
 }
 
 function sheetRows(sheet, options) {
-  if (Array.isArray(sheet)) fillBlankRows(sheet, options);
+  fillBlankRows(sheet, options);
   return XLSX.utils.sheet_to_json(sheet, options);
 }
 
-// A dense sheet has no entry for a row without cells, and sheet_to_json then
-// emits [] where the sparse (non-dense) parse yields a row of `defval`s. Give
-// those rows an empty array so the output is identical to the sparse parse.
+// A dense sheet keeps its rows in `sheet['!data']`, with no entry for a row
+// without cells, and sheet_to_json then emits [] where the sparse (non-dense)
+// parse yields a row of `defval`s. Give those rows an empty array so the
+// output is identical to the sparse parse.
 function fillBlankRows(sheet, options) {
+  const rows = sheet['!data'];
   const keepsBlankRows = options.header === 1 ? options.blankrows !== false : Boolean(options.blankrows);
-  if (options.defval === undefined || !keepsBlankRows || sheet['!ref'] == null) return;
+  if (options.defval === undefined || !keepsBlankRows || !rows || sheet['!ref'] == null) return;
   const range = jsonRange(sheet, options);
   for (let r = range.s.r; r <= range.e.r; r++) {
-    if (!sheet[r]) sheet[r] = [];
+    if (!rows[r]) rows[r] = [];
   }
+}
+
+// SheetJS reads date text in HTML tables (the ".xls" some portals export) as
+// year-month-day even when it is day-first: "05-04-2026" becomes year 5 plus
+// 2026 days, 1910-10-17. Such a cell has the default date format and keeps
+// the text it was read from in `w`, so when its date falls in the year that
+// misreading of that text gives, keep the cell as that text; the upload's date
+// normalizer then reads it as it reads the same text elsewhere. XLSX/XLS date
+// cells carry their own format (or none), so one shown as "30-04-05"
+// (1930-04-05 as yy-mm-dd) is left alone.
+function restoreMisreadDates(sheet) {
+  const rows = sheet['!data'];
+  if (!rows) return;
+  for (const row of rows) {
+    if (!row) continue;
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c];
+      if (!cell || (cell.t !== 'd' && cell.t !== 'n') || cell.z !== TEXT_DATE_FORMAT || typeof cell.w !== 'string') continue;
+      // Cheap filter before the regex: day-first text has a '-' at index 1 or 2.
+      if (cell.w.charCodeAt(1) !== 45 && cell.w.charCodeAt(2) !== 45) continue;
+      const match = DAY_FIRST_DATE.exec(cell.w);
+      if (match && dateYears(cell).includes(misreadYear(match))) {
+        row[c] = { t: 's', v: cell.w, w: cell.w };
+      }
+    }
+  }
+}
+
+// The calendar year of a date cell, read both ways round so a date near New
+// Year in a non-UTC zone still matches.
+function dateYears(cell) {
+  if (cell.v instanceof Date) return [cell.v.getFullYear(), cell.v.getUTCFullYear()];
+  if (typeof cell.v === 'number') return [new Date(Math.round((cell.v - 25569) * 86_400_000)).getUTCFullYear()];
+  return [];
+}
+
+// The year SheetJS gets by reading "dd-mm-yyyy" as year-month-day: year 19dd
+// pushed on by yyyy days, 1900-1937 for any real date ("05-04-2026" gives 1910).
+function misreadYear([, first, second, third]) {
+  return new Date(Date.UTC(Number(first), Number(second) - 1, Number(third))).getUTCFullYear();
 }
 
 // The row range sheet_to_json reads for these options.
@@ -129,14 +178,15 @@ function* rowChunks(rows, perChunk) {
 // callers that check `'v' in cell` or fall back to the cell see what they saw
 // before. Worksheet rows are released as they are converted.
 function* cellValueChunks(sheet, perChunk) {
-  if (!Array.isArray(sheet) || sheet['!ref'] == null) return;
-  const rowCount = Math.min(sheet.length, XLSX.utils.decode_range(sheet['!ref']).e.r + 1);
+  const rows = sheet['!data'];
+  if (!rows || sheet['!ref'] == null) return;
+  const rowCount = Math.min(rows.length, XLSX.utils.decode_range(sheet['!ref']).e.r + 1);
   for (let start = 0; start < rowCount; start += perChunk) {
     const chunk = new Array(Math.min(perChunk, rowCount - start));
     for (let i = 0; i < chunk.length; i++) {
-      const row = sheet[start + i];
+      const row = rows[start + i];
       if (row) chunk[i] = row.map(cellValue);
-      sheet[start + i] = undefined;
+      rows[start + i] = undefined;
     }
     yield chunk;
   }
