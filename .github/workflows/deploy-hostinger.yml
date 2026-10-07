@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      skip_predeploy_backup:
+        description: Deploy without the pre-deploy pg_dump of paymentapp (only if the backup step blocks an urgent fix)
+        type: boolean
+        default: false
+      rollback_drill:
+        description: Rollback drill - deploy this commit, then deliberately roll back to the image that was running before
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,12 +45,19 @@ jobs:
         run: npm ci --prefix frontend
       - name: Build frontend
         run: npm run build --prefix frontend
+      - name: Check deploy script
+        run: |
+          shellcheck --severity=warning scripts/deploy/*.sh
+          bash scripts/deploy/test-hostinger-deploy.sh
 
   deploy:
     name: Deploy to Hostinger VPS
     needs: test
     if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    # Build + pg_dump + health checks take ~10 minutes; a hung step must not
+    # hold the production queue for GitHub's 6-hour default.
+    timeout-minutes: 45
     # Deploys queue one at a time and are never cancelled mid-flight.
     concurrency:
       group: reconcentral-production
@@ -76,6 +92,8 @@ jobs:
           HOSTINGER_USER: ${{ secrets.HOSTINGER_USER }}
           HOSTINGER_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
         run: |
+          # 0600 here means scp also creates the VPS copy as 0600.
+          umask 077
           # Create production .env file
           cat <<EOF > /tmp/hostinger.env
           NODE_ENV=production
@@ -120,75 +138,18 @@ jobs:
           HOSTINGER_HOST: ${{ secrets.HOSTINGER_HOST }}
           HOSTINGER_USER: ${{ secrets.HOSTINGER_USER }}
           HOSTINGER_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
+          # Always the literal string true/false (inputs are empty on push).
+          SKIP_PREDEPLOY_BACKUP: ${{ inputs.skip_predeploy_backup == true }}
+          ROLLBACK_DRILL: ${{ inputs.rollback_drill == true }}
         run: |
-          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 "${HOSTINGER_USER}@${HOSTINGER_HOST}" 'bash -s' <<'EOF'
-          set -euo pipefail
-
-          cd /opt/reconcentral
-          rm -rf ReconCentral
-          mkdir -p ReconCentral
-          tar -xzf reconcentral-source.tar.gz -C ReconCentral
-          cd ReconCentral
-          mv /opt/reconcentral/hostinger.env .env
-          chmod 600 .env
-          ln -sf docker-compose.production.yml docker-compose.yml
-
-          # Keep public traffic on Traefik/HTTPS only. The API container is
-          # reachable to Traefik through Docker's shared_infra network.
-          ufw delete allow 3001/tcp || true
-
-          # Remove old legacy collision folder if present
-          rm -rf /opt/reconcentral/app
-
-          echo "Deploying ReconCentral container via docker compose with project name reconcentral..."
-          docker compose -p reconcentral -f docker-compose.production.yml --env-file .env up -d --build --remove-orphans
-
-          # Symlink to /docker/reconcentral for native Hostinger Docker Manager hPanel detection
-          mkdir -p /docker
-          ln -sfn /opt/reconcentral/ReconCentral /docker/reconcentral
-
-          echo "Verifying private database route from inside the app container..."
-          docker exec ReconCentral node -e "const dns=require('node:dns').promises; const raw=process.env.DATABASE_URL || ''; const host=new URL(raw).hostname; const privateHost=host==='localhost'||host==='127.0.0.1'||host==='postgres'||host==='host.docker.internal'||host.endsWith('.docker.internal')||/^10\\./.test(host)||/^192\\.168\\./.test(host)||/^172\\.(1[6-9]|2[0-9]|3[0-1])\\./.test(host); if(!privateHost){console.error('DATABASE_URL host is not private for same-VPS deployment'); process.exit(1);} dns.lookup(host).then(({address})=>console.log(JSON.stringify({databaseHost:host,resolved:address}))).catch(error=>{console.error(error.message); process.exit(1);});"
-
-          echo "Verifying ReconCentral container health..."
-          sleep 10
-          docker ps --filter "name=ReconCentral"
-
-          # Health check retry loop
-          healthy=0
-          for i in {1..15}; do
-            if docker exec ReconCentral node -e "fetch('http://127.0.0.1:3001/health').then(async r=>{const body=await r.json().catch(()=>({})); const database=body.database || {}; if(!r.ok || !body.dbConnected || database.schemaReady !== true || database.transport?.productionReady !== true){console.error(JSON.stringify({status:r.status,dbConnected:body.dbConnected,schemaReady:database.schemaReady,transport:database.transport,pool:database.pool})); process.exit(1);} console.log(JSON.stringify({status:r.status,dbConnected:body.dbConnected,schemaReady:database.schemaReady,transport:database.transport,pool:database.pool}));}).catch(error=>{console.error(error.message); process.exit(1);})"; then
-              echo ""
-              echo "ReconCentral is live and healthy!"
-              healthy=1
-              break
-            fi
-            echo "Waiting for ReconCentral to report healthy ($i/15)..."
-            sleep 5
-          done
-
-          if [ "$healthy" -ne 1 ]; then
-            echo "ReconCentral did not become database-ready in time."
-            docker logs ReconCentral --tail=200
-            exit 1
-          fi
-
-          APP_DOMAIN="$(grep -E '^APP_DOMAIN=' .env | cut -d= -f2- || true)"
-          if [ -n "$APP_DOMAIN" ]; then
-            public_healthy=0
-            for i in {1..6}; do
-              if curl -fsS "https://${APP_DOMAIN}/health" >/dev/null; then
-                public_healthy=1
-                break
-              fi
-              echo "Waiting for public HTTPS health route ($i/6)..."
-              sleep 5
-            done
-            if [ "$public_healthy" -ne 1 ]; then
-              echo "Public HTTPS health route did not become healthy."
-              exit 1
-            fi
-          fi
-
-          docker image prune -f
-          EOF
+          # Builds reconcentral:$GITHUB_SHA, dumps paymentapp, starts the new
+          # container and rolls back to the previous image if it is unhealthy.
+          # Only these non-secret values travel on the command line; secrets
+          # stay in the .env file uploaded above. If this connection drops,
+          # the script keeps running on the VPS and logs to
+          # /opt/reconcentral/deploy-logs/.
+          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+            "${HOSTINGER_USER}@${HOSTINGER_HOST}" \
+            "IMAGE_TAG=${GITHUB_SHA} SKIP_PREDEPLOY_BACKUP=${SKIP_PREDEPLOY_BACKUP} ROLLBACK_DRILL=${ROLLBACK_DRILL} bash -s" \
+            < scripts/deploy/hostinger-deploy.sh

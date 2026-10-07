@@ -250,7 +250,8 @@ export function ConfirmDialog({
       open={open}
       onClose={busy ? undefined : onClose}
       title={title}
-      description={description}
+      // The description is rendered once, beside the icon in the body;
+      // passing it to Modal as well showed every confirmation twice.
       size="sm"
       closeOnBackdrop={!busy}
       initialFocusRef={cancelRef}

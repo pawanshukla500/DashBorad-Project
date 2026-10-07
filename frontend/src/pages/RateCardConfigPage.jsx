@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import PageHeader from '../components/PageHeader';
 import Modal, { ConfirmDialog } from '../components/Modal';
 import {
-  fetchRateCardConfig, fetchRateCardCategoryList, saveRateCardPeriod,
+  fetchRateCardConfig, fetchRateCardCategoryList, saveRateCardPeriod, closeRateCardPeriod,
   deleteRateCardRow, seedRateCard, parseRateCardImage,
   fetchMarketplaceAccounts, createMarketplaceAccount, deleteMarketplaceAccount,
   fetchFilters, backfillBrands, fetchRateCardVersions, createRateCardVersion,
@@ -284,6 +284,8 @@ function StatusBadge({ status }) {
     active:  { bg: 'bg-emerald-100', text: 'text-emerald-700', dot: 'bg-emerald-500', label: 'ACTIVE NOW' },
     expired: { bg: 'bg-surface-container',   text: 'text-secondary',   dot: 'bg-surface-container-highest',   label: 'EXPIRED' },
     future:  { bg: 'bg-blue-100',    text: 'text-blue-700',    dot: 'bg-blue-500',     label: 'UPCOMING' },
+    // Running today but overridden by a later period that overlaps it.
+    superseded: { bg: 'bg-amber-100', text: 'text-amber-800',  dot: 'bg-amber-500',    label: 'SUPERSEDED' },
   };
   const s = MAP[status] || MAP.expired;
   return (
@@ -339,25 +341,41 @@ function ModalSection({ step, title, children, className = '' }) {
   );
 }
 
-function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyPeriod, onDelete }) {
+// Largest row id of a period (BIGINT ids may exceed Number precision).
+function periodMaxId(rows) {
+  return rows.reduce((max, r) => {
+    try { const id = BigInt(r.id); return id > max ? id : max; } catch { return max; }
+  }, 0n);
+}
+
+function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyPeriod, onDelete, onClosePeriod }) {
   const [showHistory, setShowHistory] = useState(false);
 
-  // Group rows by start_date period
+  // Group rows into periods by start AND end date: a bounded period and an
+  // open one that share a start date are two different periods.
   const periodMap = {};
   allRows.forEach(r => {
-    const key = toDateStr(r.start_date) || 'no-date';
+    const key = `${toDateStr(r.start_date) || 'no-date'}|${toDateStr(r.end_date) || 'open'}`;
     if (!periodMap[key]) periodMap[key] = [];
     periodMap[key].push(r);
   });
-  const sortedPeriods = Object.keys(periodMap).sort().reverse(); // newest first
+  const periodStart = key => toDateStr(periodMap[key][0].start_date) || '';
+  // Latest start first (a period without a start date is the oldest); ties go
+  // to the most recently saved period — the same order fee lookups use.
+  const sortedPeriods = Object.keys(periodMap).sort((a, b) => {
+    const byStart = periodStart(b).localeCompare(periodStart(a));
+    if (byStart) return byStart;
+    return periodMaxId(periodMap[b]) > periodMaxId(periodMap[a]) ? 1 : -1;
+  });
 
-  const activeRows = allRows.filter(r => rowStatus(r) === 'active');
-  const activePeriodStart = activeRows.length > 0
-    ? activeRows.reduce((min, r) => {
-        const d = toDateStr(r.start_date);
-        return (!min || (d && d < min)) ? d : min;
-      }, null)
-    : null;
+  // Several periods can run today when an earlier one was never closed; the
+  // latest one is the rate that is applied, the others are superseded.
+  const activePeriods = sortedPeriods.filter(key => rowStatus(periodMap[key][0]) === 'active');
+  const effectiveKey = activePeriods[0] || null;
+  const supersededKeys = activePeriods.slice(1);
+  const activeRows = effectiveKey ? periodMap[effectiveKey] : [];
+  const activePeriodStart = effectiveKey ? (periodStart(effectiveKey) || null) : null;
+  const closeEarlierOn = activePeriodStart ? dateMinus1(activePeriodStart) : null;
 
   return (
     <div className="bg-surface rounded-xl border border-border/80 shadow-[0_2px_16px_-4px_rgba(15,23,42,0.06)] overflow-hidden hover:shadow-md transition-shadow">
@@ -412,6 +430,40 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
         </div>
       </div>
 
+      {supersededKeys.length > 0 && (
+        <div className="mx-5 mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900" role="status">
+          <p className="font-semibold">
+            {supersededKeys.length} earlier period{supersededKeys.length > 1 ? 's are' : ' is'} still open and overlap{supersededKeys.length > 1 ? '' : 's'} the current rate
+            {activePeriodStart ? ` from ${fmtDate(activePeriodStart)}` : ''}.
+          </p>
+          <p className="mt-0.5 text-amber-800">Fee calculations use the current rate. Close the earlier period so the history stays clean.</p>
+          <ul className="mt-2 space-y-1.5">
+            {supersededKeys.map(key => {
+              const pRows = periodMap[key];
+              const start = toDateStr(pRows[0].start_date);
+              const end = toDateStr(pRows[0].end_date);
+              const canClose = closeEarlierOn && (!start || closeEarlierOn >= start);
+              return (
+                <li key={key} className="flex flex-wrap items-center justify-between gap-2">
+                  <span>{start ? fmtDate(start) : 'No start date'} → {fmtDate(end)} · {pRows.length} row{pRows.length > 1 ? 's' : ''}</span>
+                  {canClose ? (
+                    <button
+                      type="button"
+                      onClick={() => onClosePeriod(category, pRows, closeEarlierOn)}
+                      className="rounded-lg border border-amber-300 bg-surface px-2.5 py-1 font-semibold text-amber-900 hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                    >
+                      Close on {fmtDate(closeEarlierOn)}
+                    </button>
+                  ) : (
+                    <span className="text-amber-800">Starts the same day — edit or delete it in History</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {/* Active rates */}
       {activeRows.length > 0 ? (
         <div className="px-5 py-4">
@@ -428,11 +480,11 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
         <div className="border-t border-border divide-y divide-border bg-surface-container-low/60">
           {sortedPeriods.map(periodKey => {
             const pRows  = periodMap[periodKey];
-            const st     = rowStatus(pRows[0]);
+            const st     = supersededKeys.includes(periodKey) ? 'superseded' : rowStatus(pRows[0]);
             const endStr = toDateStr(pRows[0].end_date);
-            const startLabel = periodKey === 'no-date'
-              ? 'No start date'
-              : fmtDate(pRows[0].start_date);
+            const startLabel = toDateStr(pRows[0].start_date)
+              ? fmtDate(pRows[0].start_date)
+              : 'No start date';
             return (
               <div key={periodKey} className={`transition-colors ${st === 'active' ? 'bg-emerald-50/50' : ''}`}>
                 <div className="px-5 py-3 flex items-center justify-between">
@@ -1274,6 +1326,7 @@ function RatePeriodDrawer({
         return brands.map(b => ({ ...s, brand_name: b }));
       });
 
+      const closedPeriods = [];
       // Rows the server saved but flagged as implausible (e.g. a percentage
       // on the wrong scale). Every category gets the same rows, so the first
       // response's warnings cover them all.
@@ -1301,12 +1354,16 @@ function RatePeriodDrawer({
           const result = await saveRateCardPeriod(type, {
             category: allCats[i], marketplace, seller_account: sellerAccount,
             start_date: effectiveFrom, end_date: endDate || null,
+            // The server ends every earlier period still running on the new
+            // start date, on the day before (only for open-ended periods).
+            auto_close: showAutoClose && autoClose,
             rows: expandedSlabs,
           });
+          if (result?.closed?.rows > 0) closedPeriods.push({ category: allCats[i], ...result.closed });
           if (i === 0) rowWarnings = result?.rowWarnings || [];
         }
       }
-      onSaved(rowWarnings);
+      onSaved({ closedPeriods, rowWarnings });
     } catch (e) {
       setErr(e.response?.data?.error || e.message);
     }
@@ -1789,7 +1846,7 @@ function RatePeriodDrawer({
     const [drawer, setDrawer]     = useState(null);
     // Toast-style banner for ephemeral success / error feedback, replacing
     // window.alert / window.confirm.
-    const [banner, setBanner]     = useState(null); // { tone: 'success' | 'error', text }
+    const [banner, setBanner]     = useState(null); // { tone: 'success' | 'warning' | 'error', text }
     // Confirm dialog state for destructive flows.
     const [confirm, setConfirm]   = useState(null); // { title, description, action, variant }
     const [confirmBusy, setConfirmBusy] = useState(false);
@@ -1817,6 +1874,35 @@ function RatePeriodDrawer({
   const visibleCategories = viewMode === 'active'
     ? allCategories.filter(cat => byCategory[cat].some(r => rowStatus(r) === 'active'))
     : allCategories;
+
+  function handleClosePeriod(category, periodRows, closeOn) {
+    const start = toDateStr(periodRows[0]?.start_date);
+    const end = toDateStr(periodRows[0]?.end_date);
+    setConfirm({
+      title: `Close the earlier ${category} period?`,
+      description: `${start ? fmtDate(start) : 'No start date'} → ${fmtDate(end)} (${periodRows.length} row${periodRows.length > 1 ? 's' : ''}) will end on ${fmtDate(closeOn)}, the day before the current rate starts. Rates are not changed.`,
+      confirmLabel: 'Close period',
+      variant: 'primary',
+      action: async () => {
+        setConfirmBusy(true);
+        try {
+          await closeRateCardPeriod(type, {
+            category, marketplace, seller_account: sellerAccount,
+            start_date: start, end_date: end, close_on: closeOn,
+          });
+          await load();
+          if (onCoverageDirty) onCoverageDirty();
+          setConfirm(null);
+          setBanner({ tone: 'success', text: `Earlier ${category} period closed on ${fmtDate(closeOn)}.` });
+        } catch (err) {
+          setConfirm(null);
+          setBanner({ tone: 'error', text: err.response?.data?.error || err.message });
+        } finally {
+          setConfirmBusy(false);
+        }
+      },
+    });
+  }
 
   async function handleDeletePeriod(ids) {
     if (!ids?.length) return;
@@ -2005,6 +2091,7 @@ function RatePeriodDrawer({
               onEditPeriod={handleEditPeriod}
               onCopyPeriod={handleCopyPeriod}
               onDelete={handleDeletePeriod}
+              onClosePeriod={handleClosePeriod}
             />
           ))}
         </div>
@@ -2025,14 +2112,24 @@ function RatePeriodDrawer({
           isCopy={drawer.isCopy}
           copyFromCategory={drawer.copyFromCat}
           onClose={() => setDrawer(null)}
-          onSaved={(rowWarnings = []) => {
-            setDrawer(null); load(); if (onCoverageDirty) onCoverageDirty();
+          onSaved={({ closedPeriods = [], rowWarnings = [] } = {}) => {
+            setDrawer(null);
+            load();
+            if (onCoverageDirty) onCoverageDirty();
+            const notes = [];
+            if (closedPeriods.length) {
+              const rowsClosed = closedPeriods.reduce((sum, item) => sum + item.rows, 0);
+              notes.push(`Previous rate auto-closed on ${fmtDate(closedPeriods[0].end_date)} (${rowsClosed} row${rowsClosed > 1 ? 's' : ''}${closedPeriods.length > 1 ? ` across ${closedPeriods.length} categories` : ''}).`);
+            }
             if (rowWarnings.length) {
-              setBanner({
-                tone: 'warning',
-                text: `Saved. ${rowWarnings.length} row${rowWarnings.length === 1 ? '' : 's'} look${rowWarnings.length === 1 ? 's' : ''} unusual — check and edit the period if needed:\n`
-                  + rowWarnings.map(w => `Row ${w.row}: ${w.warnings.join(' ')}`).join('\n'),
-              });
+              notes.push(
+                `${rowWarnings.length} row${rowWarnings.length === 1 ? '' : 's'} look${rowWarnings.length === 1 ? 's' : ''} unusual — check and edit the period if needed:`,
+                ...rowWarnings.map(w => `Row ${w.row}: ${w.warnings.join(' ')}`),
+              );
+            }
+            if (notes.length) {
+              // Warnings stay until dismissed; a plain auto-close note fades.
+              setBanner({ tone: rowWarnings.length ? 'warning' : 'success', text: `Saved. ${notes.join('\n')}` });
             }
           }}
         />
