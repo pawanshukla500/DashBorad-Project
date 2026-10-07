@@ -12,6 +12,7 @@ import {
   SCHEMA_DDL_LOCK_TIMEOUT,
   SCHEMA_DDL_STATEMENT_TIMEOUT,
   SCHEMA_INIT_LOCK_KEY,
+  SCHEMA_INIT_LOCK_POLL_MS,
   createSchemaInitQueryable,
   initDb,
   replaceViewIfChanged,
@@ -129,6 +130,32 @@ describe('startup schema queryable', () => {
       "ALTER TABLE sor_invoice_line ADD COLUMN IF NOT EXISTS line_type TEXT NOT NULL DEFAULT 'sale', ADD COLUMN IF NOT EXISTS source TEXT",
       'CREATE INDEX IF NOT EXISTS ix_a ON t (a); DROP INDEX ix_b',
     ]);
+  });
+
+  it.each([
+    ['a block comment', 'ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand TEXT /* (x */ , DROP COLUMN legacy /* ) */'],
+    ['a line comment', 'ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand TEXT -- (\n, DROP COLUMN legacy -- )'],
+    ['an E string', "ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand TEXT DEFAULT E'\\'(' , DROP COLUMN legacy"],
+    ['dollar quoting', 'ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand TEXT DEFAULT $$($$ , DROP COLUMN legacy'],
+  ])('never skips a statement containing %s, which can hide a second action', async (_name, sql) => {
+    const connection = recordingConnection(catalogResponder({ columns: [['orders', 'brand']] }));
+    const db = createSchemaInitQueryable(connection);
+
+    await db.query(sql);
+
+    expect(connection.texts()).toEqual([normalize(sql)]);
+  });
+
+  it('runs the statement when the catalog cannot be read', async () => {
+    const connection = recordingConnection(text => {
+      if (isCatalogRead(text)) throw sqlError('57014', 'canceling statement due to statement timeout');
+      return undefined;
+    });
+    const db = createSchemaInitQueryable(connection);
+
+    await db.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand TEXT');
+
+    expect(connection.texts().filter(text => !isCatalogRead(text))).toEqual(['ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand TEXT']);
   });
 
   it.each([
@@ -281,8 +308,10 @@ describe('initDb session, advisory lock and timeouts', () => {
 
   // Every sub-migration is already recorded; only the CURRENT_SCHEMA_VERSION
   // check (the first version lookup) follows `current`.
-  function stubDatabase({ current = true, tryLock = true, viewUnchanged = true, catalog = {}, clientRespond } = {}) {
+  // `tryLock` lists successive pg_try_advisory_lock results; the last repeats.
+  function stubDatabase({ current = true, tryLock = [true], viewUnchanged = true, catalog = {}, clientRespond } = {}) {
     let versionChecks = 0;
+    let lockAttempts = 0;
     const shared = text => {
       if (text.startsWith('SELECT 1 FROM schema_version')) {
         versionChecks += 1;
@@ -299,7 +328,9 @@ describe('initDb session, advisory lock and timeouts', () => {
     const client = recordingConnection(text => {
       const custom = clientRespond?.(text);
       if (custom !== undefined) return custom;
-      if (text.startsWith('SELECT pg_try_advisory_lock')) return { rows: [{ locked: tryLock }] };
+      if (text.startsWith('SELECT pg_try_advisory_lock')) {
+        return { rows: [{ locked: tryLock[Math.min(lockAttempts++, tryLock.length - 1)] }] };
+      }
       return shared(text);
     });
     client.release = vi.fn();
@@ -338,6 +369,9 @@ describe('initDb session, advisory lock and timeouts', () => {
     expect(all.some(text => /^DROP VIEW IF EXISTS order_items_summary/.test(text))).toBe(false);
     expect(all.some(text => /CREATE OR REPLACE VIEW (order_items_summary|unified_settlements)/.test(text))).toBe(false);
     expect(all.some(text => text.startsWith('ALTER TABLE'))).toBe(false);
+    // Index DDL (the Amazon rollups') runs on the lock_timeout session, never the pool.
+    expect(pool.texts().some(text => /^CREATE (UNIQUE )?INDEX/.test(text))).toBe(false);
+    expect(client.texts().some(text => text.startsWith('CREATE INDEX IF NOT EXISTS ix_amzn_reporting_rollup_posted_date'))).toBe(true);
   });
 
   it('replaces a changed order_items_summary atomically in a single statement batch', async () => {
@@ -351,16 +385,27 @@ describe('initDb session, advisory lock and timeouts', () => {
     expect(replacement[0]).toMatch(/^DROP VIEW IF EXISTS order_items_summary; CREATE OR REPLACE VIEW order_items_summary AS SELECT o\.order_id/);
   });
 
-  it('waits for a backend that already holds the lock before any DDL', async () => {
-    const { client } = stubDatabase({ tryLock: false });
+  it('polls for a lock another backend holds, never blocking inside a statement, before any DDL', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      const { client } = stubDatabase({ tryLock: [false, false, true] });
 
-    await initDb();
+      const run = initDb();
+      await vi.advanceTimersByTimeAsync(SCHEMA_INIT_LOCK_POLL_MS * 2);
+      await run;
 
-    expect(client.texts().slice(0, 3)).toEqual([
-      'SELECT pg_try_advisory_lock($1) AS locked',
-      'SELECT pg_advisory_lock($1)',
-      SET_TIMEOUTS,
-    ]);
+      expect(client.texts().slice(0, 4)).toEqual([
+        'SELECT pg_try_advisory_lock($1) AS locked',
+        'SELECT pg_try_advisory_lock($1) AS locked',
+        'SELECT pg_try_advisory_lock($1) AS locked',
+        SET_TIMEOUTS,
+      ]);
+      // A waiter blocked in pg_advisory_lock would hold a snapshot that the
+      // lock holder's CREATE INDEX CONCURRENTLY has to wait for.
+      expect(client.texts()).not.toContain('SELECT pg_advisory_lock($1)');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('runs the full pass on the client, skipping columns and indexes the catalog already has', async () => {

@@ -855,8 +855,10 @@ function sqlIdentifier(raw) {
 
 // True for one statement with one action. Literals and parenthesised groups
 // (NUMERIC(14,2), index column lists) are removed first, so a remaining comma
-// or semicolon marks a second ALTER action or a second statement.
+// or semicolon marks a second ALTER action or a second statement. Comments,
+// dollar quoting and E'' strings can hide either, so such text never counts.
 function isSingleSqlAction(sql) {
+  if (/--|\/\*|\$\w*\$|(^|\W)E'/i.test(sql)) return false;
   let flat = sql.replace(/'(?:[^']|'')*'/g, "''");
   for (let previous = ''; previous !== flat;) {
     previous = flat;
@@ -903,7 +905,17 @@ export function createSchemaInitQueryable(client) {
   const interrupted = [];
   let catalog = null;
 
+  // A failed catalog read only means "not known to be applied": the
+  // statement then runs, and its own outcome is what gets recorded.
   async function alreadyApplied(text) {
+    try {
+      return await matchesCatalog(text);
+    } catch {
+      return false;
+    }
+  }
+
+  async function matchesCatalog(text) {
     if (!isSingleSqlAction(text)) return false;
     let match = ADD_COLUMN_SQL.exec(text);
     if (match) {
@@ -981,12 +993,20 @@ export function createSchemaInitQueryable(client) {
   };
 }
 
-// Waits (without lock_timeout) while another backend runs initDb.
+// Waits while another backend runs initDb. The wait is a Node-side poll, not
+// a blocking pg_advisory_lock: a backend blocked inside a statement holds a
+// snapshot, and the lock holder's CREATE INDEX CONCURRENTLY waits for every
+// older snapshot to finish — a cycle through Node that PostgreSQL's deadlock
+// detector cannot see.
+export const SCHEMA_INIT_LOCK_POLL_MS = 1_000;
+
 async function acquireSchemaInitLock(client) {
-  const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [SCHEMA_INIT_LOCK_KEY]);
-  if (rows[0]?.locked) return;
-  console.log('[db] Another backend is applying startup migrations; waiting for it to finish…');
-  await client.query('SELECT pg_advisory_lock($1)', [SCHEMA_INIT_LOCK_KEY]);
+  for (let attempt = 0; ; attempt += 1) {
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [SCHEMA_INIT_LOCK_KEY]);
+    if (rows[0]?.locked) return;
+    if (attempt % 30 === 0) console.log('[db] Another backend is applying startup migrations; waiting for it to finish…');
+    await new Promise(resolve => setTimeout(resolve, SCHEMA_INIT_LOCK_POLL_MS));
+  }
 }
 
 // The pool's release only resets statement_timeout. If the session cannot be
@@ -1056,7 +1076,7 @@ export async function initDb() {
       await ensureLookupIndexes(pool);
       // A read-model migration changes the view definition as well as the
       // backing table, so it must run on already-current installations too.
-      await ensureAmazonSettlementReportingRollups(pool);
+      await ensureAmazonSettlementReportingRollups(pool, db);
       await ensureUnifiedSettlementsView(db);
       await ensureOrderSettlementTotals(pool, db);
       await ensureOrderItemsSummaryView(db);
@@ -1667,8 +1687,8 @@ export async function initDb() {
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_tax_desc   ON amazon_settlement_lines(amount_type, amount_description)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_sku  ON amazon_settlement_lines(order_id, sku)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_settle_date ON amazon_settlement_lines(settlement_id, posted_date DESC)`).catch(() => {});
-    await ensureAmazonSettlementRollups(pool).catch(e => console.warn('[db] Amazon settlement rollups:', e.message));
-    await ensureAmazonSettlementReportingRollups(pool).catch(e => console.warn('[db] Amazon reporting rollups:', e.message));
+    await ensureAmazonSettlementRollups(pool, db).catch(e => console.warn('[db] Amazon settlement rollups:', e.message));
+    await ensureAmazonSettlementReportingRollups(pool, db).catch(e => console.warn('[db] Amazon reporting rollups:', e.message));
 
     // ── Amazon: support Order Summary as primary sale source (no real order-item-id) ──
     // The Order Summary file has no order-item-id column. To make it usable as
