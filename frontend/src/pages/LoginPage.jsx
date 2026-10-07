@@ -113,10 +113,10 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="bg-canvas text-on-surface min-h-screen flex font-sans selection:bg-primary-container selection:text-on-primary">
+    <div className="bg-canvas text-on-surface min-h-screen flex font-sans selection:bg-primary-container selection:text-on-primary-container">
       <div className="flex w-full min-h-screen">
         
-        <div className="hidden lg:flex w-[45%] bg-primary-container flex-col justify-between p-12 lg:p-16 relative overflow-hidden">
+        <div className="hidden lg:flex w-[45%] bg-primary flex-col justify-between p-12 lg:p-16 relative overflow-hidden text-on-primary">
           <div className="z-10 flex items-center gap-3">
             <span
               className="h-9 w-9 rounded-lg bg-emerald-700 flex items-center justify-center shrink-0 shadow-sm"
@@ -127,31 +127,31 @@ export default function LoginPage() {
             <span className="font-display text-headline-md font-semibold text-on-primary">ReconCentral</span>
           </div>
           <div className="z-10 mt-auto pb-12">
-            <div className="mb-10 max-w-md rounded-xl border border-white/15 bg-white/10 p-4 text-on-primary shadow-2xl backdrop-blur" aria-hidden="true">
+            <div className="mb-10 max-w-md rounded-xl border border-white/20 bg-white/10 p-4 text-on-primary shadow-2xl backdrop-blur" aria-hidden="true">
               <div className="flex items-center justify-between border-b border-white/15 pb-3">
-                <span className="text-xs font-semibold text-on-primary-container">September payout</span>
-                <span className="rounded-full bg-emerald-400/20 px-2 py-0.5 text-[11px] font-semibold text-emerald-100">Live</span>
+                <span className="text-xs font-semibold text-on-primary">September payout</span>
+                <span className="rounded-full bg-emerald-400/30 px-2 py-0.5 text-[11px] font-semibold text-emerald-50">Live</span>
               </div>
               <div className="grid grid-cols-2 gap-4 py-4">
                 <div>
-                  <p className="text-[11px] text-on-primary-container">Net received</p>
+                  <p className="text-[11px] text-on-primary opacity-80">Net received</p>
                   <p className="mt-1 text-2xl font-semibold tabular-nums">₹28.4L</p>
                 </div>
                 <div>
-                  <p className="text-[11px] text-on-primary-container">Open exceptions</p>
+                  <p className="text-[11px] text-on-primary opacity-80">Open exceptions</p>
                   <p className="mt-1 text-2xl font-semibold tabular-nums">17</p>
                 </div>
               </div>
               <div className="space-y-2">
                 {[72, 48, 84, 62].map((width, index) => (
-                  <div key={index} className="h-2 rounded-full bg-white/10">
+                  <div key={index} className="h-2 rounded-full bg-white/15">
                     <div className="h-2 rounded-full bg-white" style={{ width: `${width}%` }} />
                   </div>
                 ))}
               </div>
             </div>
             <h1 className="font-display text-display-lg text-on-primary mb-4 max-w-md">Every payout, clearly accounted for.</h1>
-            <p className="font-sans text-body-lg text-on-primary-container mb-10 max-w-md opacity-90">
+            <p className="font-sans text-body-lg text-on-primary mb-10 max-w-md opacity-90">
                 The financial control room designed specifically for Indian marketplace sellers. Take command of your cash flow with absolute precision.
             </p>
             <ul className="space-y-4">

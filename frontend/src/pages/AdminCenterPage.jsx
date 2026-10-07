@@ -334,7 +334,7 @@ export default function AdminCenterPage() {
                   return (
                     <tr key={u.id} className="hover:bg-surface-container-lowest transition-colors">
                       <td className="px-6 py-4 flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-primary-container text-on-primary flex items-center justify-center font-bold text-xs">
+                        <div className="w-8 h-8 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center font-bold text-xs">
                           {u.username?.charAt(0).toUpperCase()}
                         </div>
                         <span className="font-semibold text-ink">
@@ -428,7 +428,7 @@ export default function AdminCenterPage() {
           <div className="bg-surface rounded-xl border border-border shadow-sm p-6">
             <h2 className="font-display text-headline-sm font-bold text-ink mb-4">Your Account Details</h2>
             <div className="flex items-center gap-4 mb-5">
-              <div className="w-16 h-16 rounded-full bg-primary-container flex items-center justify-center text-on-primary text-xl font-bold">
+              <div className="w-16 h-16 rounded-full bg-primary-container flex items-center justify-center text-on-primary-container text-xl font-bold">
                 {currentUser?.username?.charAt(0) || 'U'}
               </div>
               <div>

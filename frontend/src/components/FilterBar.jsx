@@ -88,7 +88,7 @@ export default function FilterBar() {
                   className={`rounded-full border px-3 py-1 font-sans text-label-md uppercase transition-all focus-visible:ring-2 focus-visible:ring-primary/40 ${
                     isActive
                       ? (MP_ACTIVE[mp.id] || MP_ACTIVE[''])
-                      : 'bg-surface text-secondary border-border hover:border-outline hover:text-ink'
+                      : 'bg-surface text-ink border-border hover:bg-surface-container-low hover:border-outline'
                   }`}
                 >
                   {mp.label}

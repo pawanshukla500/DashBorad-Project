@@ -300,16 +300,16 @@ function FeeResult({ result, loading, price, error }) {
       {staleError}
       <div className="bg-surface rounded-xl border border-border overflow-hidden">
         {/* Header bar */}
-        <div className="bg-gradient-to-r from-indigo-600 to-indigo-500 px-6 py-5 text-white">
+        <div className="bg-gradient-to-r from-primary to-indigo-dark px-6 py-5 text-on-primary">
           <div className="flex items-start justify-between">
             <div>
-              <p className="text-indigo-200 text-xs font-semibold uppercase tracking-wide">Sale Price</p>
+              <p className="text-on-primary text-xs font-semibold uppercase tracking-wide opacity-90">Sale Price</p>
               <p className="text-3xl font-bold mt-0.5">{currencyFull(price)}</p>
             </div>
             <div className="text-right">
-              <p className="text-indigo-200 text-xs font-semibold uppercase tracking-wide">Net to You</p>
+              <p className="text-on-primary text-xs font-semibold uppercase tracking-wide opacity-90">Net to You</p>
               <p className="text-3xl font-bold mt-0.5">{currencyFull(net)}</p>
-              <p className="text-indigo-200 text-sm">{result.marginPct?.toFixed(1)}% margin</p>
+              <p className="text-on-primary text-sm opacity-90">{result.marginPct?.toFixed(1)}% margin</p>
           </div>
         </div>
         {/* Visual bar */}
