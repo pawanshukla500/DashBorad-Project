@@ -1223,7 +1223,7 @@ Rules:
     let modelUsed = null;
     for (const modelName of GEMINI_VISION_MODELS) {
       try {
-        const model = genAI.getGenerativeModel({ model: modelName });
+        const model = genAI.getGenerativeModel({ model: modelName }, { timeout: 60_000 });
         const result = await model.generateContent([
           { text: prompt },
           { inlineData: { data: imageBase64, mimeType } },

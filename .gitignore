@@ -19,6 +19,10 @@ frontend/.env.local
 **/users_fallback.json
 **/serviceAccount*.json
 **/*credentials*.json
+# Firebase Admin key downloads keep their default name, and private keys
+**/*firebase-adminsdk*.json
+*.pem
+*.key
 
 # OS / IDE
 .DS_Store

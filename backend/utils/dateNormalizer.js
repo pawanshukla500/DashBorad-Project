@@ -136,7 +136,8 @@ async function inferWithGemini(header, sample) {
   if (!apiKey || apiKey === 'your_gemini_api_key_here') return null;
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: process.env.GEMINI_DATE_MODEL || 'gemini-2.5-flash' });
+  // A date-format hint must never hold an upload open for minutes.
+  const model = genAI.getGenerativeModel({ model: process.env.GEMINI_DATE_MODEL || 'gemini-2.5-flash' }, { timeout: 15_000 });
   const prompt = `Identify the date format used by this one uploaded file column sample.
 
 Column header: ${header}

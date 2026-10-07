@@ -1,6 +1,6 @@
 import { auth } from './firebaseAdmin.js';
 import { FIREBASE_ROLE_CLAIM } from '../services/firebaseRoleClaims.js';
-import { VALID_ROLES, normalizedRole } from './accessRole.js';
+import { VALID_ROLES, normalizedRole, roleFromClaim } from './accessRole.js';
 
 export { VALID_ROLES, normalizedRole };
 
@@ -16,7 +16,7 @@ export function firebaseSessionFromToken(decodedToken = {}) {
     firebase_uid: firebaseUid,
     email,
     username: String(decodedToken.name || decodedToken.email.split('@')[0]).trim(),
-    role: normalizedRole(decodedToken[FIREBASE_ROLE_CLAIM]),
+    role: roleFromClaim(decodedToken[FIREBASE_ROLE_CLAIM]),
     authentication_provider: 'firebase',
   };
 }
@@ -31,11 +31,19 @@ export async function authMiddleware(req, res, next) {
   try {
     const decodedToken = await auth.verifyIdToken(token);
     req.user = firebaseSessionFromToken(decodedToken);
-    next();
   } catch (err) {
     console.error('[Auth Middleware]', err.message);
     return res.status(403).json({ error: 'Invalid or expired Firebase token' });
   }
+  // A valid Firebase account outside the team directory (e.g. a self sign-up
+  // with the public web API key) carries no role claim and gets no access.
+  if (!req.user.role) {
+    return res.status(403).json({
+      error: 'This account has not been granted access. Ask an administrator to add it in Admin Center.',
+      code: 'ACCESS_NOT_GRANTED',
+    });
+  }
+  return next();
 }
 
 export function requireRole(...allowedRoles) {

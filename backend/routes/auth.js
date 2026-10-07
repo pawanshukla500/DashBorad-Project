@@ -3,7 +3,7 @@ import { getPool } from '../db/index.js';
 import { authMiddleware, requireAdmin, VALID_ROLES, normalizedRole } from '../utils/authMiddleware.js';
 import { auth } from '../utils/firebaseAdmin.js';
 import { identityFromFirebaseToken } from '../utils/firebaseIdentity.js';
-import { IdentityConflictError, syncFirebaseUser } from '../services/userSync.js';
+import { AccessNotGrantedError, IdentityConflictError, syncFirebaseUser } from '../services/userSync.js';
 import { setFirebaseRole } from '../services/firebaseRoleClaims.js';
 
 const router = express.Router();
@@ -26,9 +26,8 @@ router.post('/sync-user', async (req, res) => {
     }
 
     const pool = getPool();
-    const { uid, email, displayName } = identity;
-    const user = await syncFirebaseUser(pool, { uid, email, displayName });
-    await setFirebaseRole(uid, user.role);
+    const user = await syncFirebaseUser(pool, identity);
+    await setFirebaseRole(identity.uid, user.role);
 
     // No local JWT is returned because the frontend relies solely on Firebase tokens now.
     res.json({
@@ -43,6 +42,9 @@ router.post('/sync-user', async (req, res) => {
   } catch (err) {
     if (err instanceof IdentityConflictError) {
       return res.status(409).json({ error: err.message });
+    }
+    if (err instanceof AccessNotGrantedError) {
+      return res.status(403).json({ error: err.message, code: 'ACCESS_NOT_GRANTED' });
     }
     console.error('[auth/sync-user error]', err.message);
     res.status(500).json({ error: 'Internal server error' });

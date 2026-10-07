@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { mountApiRoutes } from './routes/index.js';
-import { initDb }          from './db/initDb.js';
+import { initDb, ensureSorAjioBackfill, schemaMigrationsEnabled } from './db/initDb.js';
 import {
   getDatabaseStatus,
   getPool,
@@ -46,6 +46,10 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  // Production is only served over HTTPS (Traefik terminates TLS).
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  }
   next();
 });
 
@@ -110,7 +114,9 @@ app.use(compression({
   },
 }));
 
-app.use(express.json({ limit: '50mb' }));
+// JSON bodies are parsed in routes/index.js: small bodies for the auth routes,
+// and the 50 MB limit only after the Firebase token is verified, so an
+// anonymous client cannot make the API buffer and parse huge request bodies.
 
 // Weak ETag for GET /api/* responses that did not set their own. The body is
 // hashed after the handler runs, so a matching If-None-Match saves the
@@ -149,7 +155,25 @@ app.use((req, res, next) => {
   next();
 });
 
-async function healthCheckHandler(_, res) {
+// The container's own loopback (Docker HEALTHCHECK, the deploy job's
+// `docker exec`) gets pool and transport detail. Every other caller — the
+// endpoint is public — gets the status without raw PostgreSQL error text.
+function isLoopbackRequest(req) {
+  const address = req.socket?.remoteAddress || '';
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+function publicDatabaseStatus(database) {
+  return {
+    configured: database.configured,
+    connected: database.connected,
+    lastSuccessAt: database.lastSuccessAt,
+    schemaReady: database.schemaReady,
+    engine: database.engine,
+  };
+}
+
+async function healthCheckHandler(req, res) {
   const configured = await isDbConfigured();
   let dbConnected = false;
   if (configured) {
@@ -165,11 +189,12 @@ async function healthCheckHandler(_, res) {
   }
   const database = getDatabaseStatus();
   const databaseEngine = 'PostgreSQL';
+  const databaseDetail = { ...database, schemaReady: databaseSchemaReady, engine: databaseEngine.toLowerCase() };
   res.status(configured && dbConnected ? 200 : 503).json({
     status: configured && dbConnected ? 'ok' : 'degraded',
     dataSource: 'sql',
     dbConnected,
-    database: { ...database, schemaReady: databaseSchemaReady, engine: databaseEngine.toLowerCase() },
+    database: isLoopbackRequest(req) ? databaseDetail : publicDatabaseStatus(databaseDetail),
     message: dbConnected
       ? `${databaseEngine} connected`
       : `${databaseEngine} is unavailable; automatic reconnection is active. No empty-data fallback is used.`,
@@ -234,6 +259,9 @@ async function initialiseDatabaseWhenReachable() {
     void syncFirebaseRoleClaims(getPool())
       .then(result => console.log(`[firebase roles] checked ${result.checked}; updated ${result.updated}; unchanged ${result.unchanged}; skipped ${result.skipped}.`))
       .catch(error => console.warn('[firebase roles] Startup sync failed:', error.message));
+    // One-time SOR data backfill; never delays readiness. Same gate as the
+    // schema migrations, so a development backend never writes it.
+    if (schemaMigrationsEnabled()) void ensureSorAjioBackfill(getPool());
   } catch (error) {
     // waitForDatabase normally does not return until success. Keep this guard
     // so a schema issue never brings down the HTTP process.

@@ -5,7 +5,19 @@ export class IdentityConflictError extends Error {
   }
 }
 
-export async function syncFirebaseUser(pool, { uid, email, displayName }) {
+export class AccessNotGrantedError extends Error {
+  constructor(message = 'This account has not been granted access. Ask an administrator to add it in Admin Center.') {
+    super(message);
+    this.name = 'AccessNotGrantedError';
+  }
+}
+
+// Link a Firebase identity to its team-directory row. Users are added by an
+// admin (Admin Center creates the Firebase account, its role claim and the row
+// together), so an unknown email is refused rather than provisioned, and a
+// pre-created row is only claimed by a Firebase account that has proved it
+// owns the email — otherwise an unverified sign-up could inherit its role.
+export async function syncFirebaseUser(pool, { uid, email, displayName, emailVerified = false }) {
   let result = await pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
   if (result.rows.length > 0) return result.rows[0];
 
@@ -16,22 +28,17 @@ export async function syncFirebaseUser(pool, { uid, email, displayName }) {
     throw new IdentityConflictError('This email is already linked to another Firebase account');
   }
 
-  if (emailUser) {
-    const updateResult = await pool.query(
-      `UPDATE users
-       SET firebase_uid = $1, username = COALESCE(NULLIF(username, ''), $2)
-       WHERE id = $3
-       RETURNING *`,
-      [uid, displayName, emailUser.id],
-    );
-    return updateResult.rows[0];
+  if (!emailUser) throw new AccessNotGrantedError();
+  if (!emailVerified) {
+    throw new AccessNotGrantedError('Verify this email address with Firebase before it can be linked to its team-directory account.');
   }
 
-  const insertResult = await pool.query(
-    `INSERT INTO users (username, email, firebase_uid, role)
-     VALUES ($1, $2, $3, 'viewer')
+  const updateResult = await pool.query(
+    `UPDATE users
+     SET firebase_uid = $1, username = COALESCE(NULLIF(username, ''), $2)
+     WHERE id = $3
      RETURNING *`,
-    [displayName, email, uid],
+    [uid, displayName, emailUser.id],
   );
-  return insertResult.rows[0];
+  return updateResult.rows[0];
 }
