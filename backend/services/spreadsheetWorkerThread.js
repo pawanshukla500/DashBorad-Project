@@ -12,9 +12,11 @@ const XLSX = createRequire(import.meta.url)('xlsx');
 // few milliseconds.
 const CHUNK_CELLS = 50_000;
 
-// Day-first date text such as "05-04-2026" or "26-04-26 10:30"; see
-// restoreMisreadDates. Declared before run() starts, which uses it.
+// Day-first date text such as "05-04-2026" or "26-04-26 10:30", and the
+// default date format SheetJS gives a date it read from text; see
+// restoreMisreadDates. Declared before run() starts, which uses them.
 const DAY_FIRST_DATE = /^(\d{1,2})-(\d{1,2})-(\d{4}|\d{2})(?:[T ]|$)/;
+const TEXT_DATE_FORMAT = XLSX.SSF.get_table()[14];
 
 if (parentPort && workerData?.kind === 'spreadsheet-parse') {
   run(workerData).catch((error) => {
@@ -110,11 +112,12 @@ function fillBlankRows(sheet, options) {
 
 // SheetJS reads date text in HTML tables (the ".xls" some portals export) as
 // year-month-day even when it is day-first: "05-04-2026" becomes year 5 plus
-// 2026 days, 1910-10-17. The cell keeps the text it was read from in `w`, so
-// when a cell's date falls in the year that misreading of its own text gives,
-// keep the cell as that text; the upload's date normalizer then reads it as it
-// reads the same text elsewhere. Any other date, such as an XLSX date shown as
-// "26-04-05" (yy-mm-dd), is left alone.
+// 2026 days, 1910-10-17. Such a cell has the default date format and keeps
+// the text it was read from in `w`, so when its date falls in the year that
+// misreading of that text gives, keep the cell as that text; the upload's date
+// normalizer then reads it as it reads the same text elsewhere. XLSX/XLS date
+// cells carry their own format (or none), so one shown as "30-04-05"
+// (1930-04-05 as yy-mm-dd) is left alone.
 function restoreMisreadDates(sheet) {
   const rows = sheet['!data'];
   if (!rows) return;
@@ -122,7 +125,7 @@ function restoreMisreadDates(sheet) {
     if (!row) continue;
     for (let c = 0; c < row.length; c++) {
       const cell = row[c];
-      if (!cell || (cell.t !== 'd' && cell.t !== 'n') || typeof cell.w !== 'string') continue;
+      if (!cell || (cell.t !== 'd' && cell.t !== 'n') || cell.z !== TEXT_DATE_FORMAT || typeof cell.w !== 'string') continue;
       // Cheap filter before the regex: day-first text has a '-' at index 1 or 2.
       if (cell.w.charCodeAt(1) !== 45 && cell.w.charCodeAt(2) !== 45) continue;
       const match = DAY_FIRST_DATE.exec(cell.w);

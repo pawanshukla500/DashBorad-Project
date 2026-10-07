@@ -140,12 +140,15 @@ describe('upload parsing: XLSX dates and numbers', () => {
   });
 
   it('leaves XLSX dates alone when their display text only looks day-first', async () => {
-    // "26-04-05" is 2026-04-05 shown as yy-mm-dd, not a misread 5 April 2026.
-    const file = workbookFile([['Posted'], [{ t: 'n', v: 46117, z: 'yy-mm-dd' }]]);
-    const ledger = await parseSpreadsheet(file, LEDGER_UPLOAD);
-    expect(wallClock(ledger.Sheets.Orders[0].Posted)).toStrictEqual([2026, 4, 5, 0, 0, 0]);
+    // "26-04-05" and "30-04-05" are 2026-04-05 and 1930-04-05 shown as
+    // yy-mm-dd, not misread day-first text; 11053 = 1930-04-05.
+    const file = workbookFile([['Posted'], [{ t: 'n', v: 46117, z: 'yy-mm-dd' }], [{ t: 'n', v: 11053, z: 'yy-mm-dd' }]]);
+    for (const read of [LEDGER_UPLOAD.read, { ...LEDGER_UPLOAD.read, cellNF: true }]) {
+      const ledger = await parseSpreadsheet(file, { ...LEDGER_UPLOAD, read });
+      expect(ledger.Sheets.Orders.map(row => wallClock(row.Posted))).toStrictEqual([[2026, 4, 5, 0, 0, 0], [1930, 4, 5, 0, 0, 0]]);
+    }
     const values = await parseSpreadsheet(file, AMAZON_SETTLEMENT);
-    expect(values.Sheets.Orders[1][0]).toBe(46117);
+    expect(values.Sheets.Orders.slice(1).map(row => row[0])).toStrictEqual([46117, 11053]);
   });
 });
 
