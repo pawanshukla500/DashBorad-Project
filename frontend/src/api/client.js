@@ -284,8 +284,11 @@ export const pushSettlementReport = () => api.post('/settlement/push-report').th
 // Full P&L from SQL orders, returns, and settlements
 export const fetchProfitLoss = (f) => api.get('/profit-loss', { params: pWithGroupBy(f) }).then(r => r.data);
 
-// Monthly Statement (PDF upload + SQL save)
+// Monthly Statement (PDF upload + SQL save). Uploading only parses the PDF and
+// returns a preview; nothing is written until the preview is committed.
 export const uploadStatement      = (formData) => api.post('/statement/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data);
+// body: { previewId, replace?: true, acceptUnverified?: true }
+export const commitStatement      = (body)      => api.post('/statement/commit', body).then(r => r.data);
 export const fetchStatementData   = ()          => api.get('/statement/data').then(r => r.data);
 // Monthly Statement computed from FK Settlement SQL tables
 export const fetchMonthlyStatement = (filters = {})    => api.get('/settlement/monthly-statement', { params: p(filters) }).then(r => r.data);

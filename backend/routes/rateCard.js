@@ -14,6 +14,7 @@ import { clearRateCardCache } from '../services/rateCard.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import { checkRateRow } from '../utils/rateCardRowChecks.js';
 
 const router = express.Router();
 
@@ -39,6 +40,9 @@ const TABLE_EXTRA_COLUMNS = {
 
 // Column defaults of the rc_* tables for numeric cells left blank in a save.
 // `rate` is not here: a blank rate is rejected instead.
+// null counts as blank: the screenshot parser returns price_max null for "no
+// upper limit", and a stored NULL price_max reads as 0 in the fee engine, so
+// the slab never matched an order.
 const NUMERIC_BLANK_DEFAULTS = {
   price_min: 0,
   price_max: 999999,
@@ -49,6 +53,22 @@ const NUMERIC_BLANK_DEFAULTS = {
   national_fee: 0,
 };
 
+function columnValue(col, value) {
+  if (col in NUMERIC_BLANK_DEFAULTS && (value == null || (typeof value === 'string' && value.trim() === ''))) {
+    return NUMERIC_BLANK_DEFAULTS[col];
+  }
+  return value ?? null;
+}
+
+// rate is NOT NULL, so a blank rate is an error rather than a silent 0 (or a
+// 500 from PostgreSQL). A partial update may leave rate out altogether.
+function blankRateError(type, row, { partial = false } = {}) {
+  if (!TABLE_EXTRA_COLUMNS[type]?.includes('rate')) return null;
+  const rate = row?.rate;
+  if (partial && rate === undefined) return null;
+  return rate === undefined || rate === null || String(rate).trim() === '' ? 'rate is required' : null;
+}
+
 function resolveTable(type) {
   const table = TABLE_MAP[type];
   if (!table) throw Object.assign(new Error(`Unknown rate card type: ${type}`), { status: 400 });
@@ -56,31 +76,7 @@ function resolveTable(type) {
 }
 
 // ── Input validation helpers ─────────────────────────────────────────────────
-function validateRateRow(type, body) {
-  const errors = [];
-  if (body.price_min !== undefined && body.price_max !== undefined) {
-    const min = Number(body.price_min);
-    const max = Number(body.price_max);
-    if (!isNaN(min) && !isNaN(max) && min > max) {
-      errors.push('price_min must be ≤ price_max');
-    }
-  }
-  if (body.rate !== undefined && body.rate !== null && body.rate !== '') {
-    const rate = Number(body.rate);
-    if (isNaN(rate) || rate < 0) {
-      errors.push('rate must be a non-negative number');
-    }
-  }
-  if (body.prepaid !== undefined && body.prepaid !== null && body.prepaid !== '') {
-    const v = Number(body.prepaid);
-    if (isNaN(v) || v < 0) errors.push('prepaid must be non-negative');
-  }
-  if (body.postpaid !== undefined && body.postpaid !== null && body.postpaid !== '') {
-    const v = Number(body.postpaid);
-    if (isNaN(v) || v < 0) errors.push('postpaid must be non-negative');
-  }
-  return errors;
-}
+// Per-row range checks (errors and warnings) live in utils/rateCardRowChecks.js.
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -393,10 +389,10 @@ router.post('/config/:type', async (req, res) => {
     const type = req.params.type;
     const table = resolveTable(type);
     const pool = getPool();
-    const body = req.body;
 
-    // Validate input
-    const errors = validateRateRow(type, body);
+    const { errors, warnings, row: body } = checkRateRow(type, req.body);
+    const rateError = blankRateError(type, body);
+    if (rateError) errors.push(rateError);
     if (errors.length) return res.status(400).json({ error: errors.join('; ') });
 
     const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(body.marketplace, body.seller_account);
@@ -410,7 +406,7 @@ router.post('/config/:type', async (req, res) => {
       body.end_date || null,
       marketplace,
       sellerAccount,
-      ...extraCols.map(col => body[col] ?? null),
+      ...extraCols.map(col => columnValue(col, body[col])),
     ];
     const placeholders = allCols.map((_, i) => `$${i + 1}`);
 
@@ -419,7 +415,7 @@ router.post('/config/:type', async (req, res) => {
       values,
     );
     clearRateCardCache();
-    res.json({ ok: true, row: rows[0] });
+    res.json({ ok: true, row: rows[0], warnings });
   } catch (e) {
     console.error('[rate-card/config POST]', e);
     res.status(e.status || 500).json({ error: e.message });
@@ -433,10 +429,10 @@ router.put('/config/:type/:id', async (req, res) => {
     const type = req.params.type;
     const table = resolveTable(type);
     const pool = getPool();
-    const body = req.body;
 
-    // Validate input
-    const errors = validateRateRow(type, body);
+    const { errors, warnings, row: body } = checkRateRow(type, req.body);
+    const rateError = blankRateError(type, body, { partial: true });
+    if (rateError) errors.push(rateError);
     if (errors.length) return res.status(400).json({ error: errors.join('; ') });
 
     const extraCols = TABLE_EXTRA_COLUMNS[type];
@@ -449,7 +445,7 @@ router.put('/config/:type/:id', async (req, res) => {
     for (const col of fields) {
       if (body[col] !== undefined) {
         updates.push(`${col} = $${idx++}`);
-        values.push(body[col]);
+        values.push(columnValue(col, body[col]));
       }
     }
     updates.push(`updated_at = NOW()`);
@@ -460,7 +456,7 @@ router.put('/config/:type/:id', async (req, res) => {
       values,
     );
     clearRateCardCache();
-    res.json({ ok: true, row: rows[0] || null });
+    res.json({ ok: true, row: rows[0] || null, warnings });
   } catch (e) {
     console.error('[rate-card/config PUT]', e);
     res.status(e.status || 500).json({ error: e.message });
@@ -511,18 +507,21 @@ router.post('/config/:type/save-period', async (req, res) => {
       return res.status(400).json({ error: 'end_date must be on or after start_date' });
     }
 
-    // Validate all rows
-    const extraColumnsForType = TABLE_EXTRA_COLUMNS[type] || [];
+    // Validate all rows. Warnings (implausible but storable values) are
+    // returned with the result rather than blocking the save.
+    const checkedRows = [];
+    const rowWarnings = [];
     for (let i = 0; i < slabRows.length; i++) {
-      const errors = validateRateRow(type, slabRows[i]);
+      const { errors, warnings, row } = checkRateRow(type, slabRows[i]);
       // A blank rate reached PostgreSQL as '' and failed the whole save with
       // "invalid input syntax for type numeric" (HTTP 500).
-      if (extraColumnsForType.includes('rate') && (slabRows[i]?.rate === undefined || slabRows[i]?.rate === null || String(slabRows[i].rate).trim() === '')) {
-        errors.push('rate is required');
-      }
+      const rateError = blankRateError(type, slabRows[i]);
+      if (rateError) errors.push(rateError);
       if (errors.length) {
         return res.status(400).json({ error: `Row ${i + 1}: ${errors.join('; ')}` });
       }
+      if (warnings.length) rowWarnings.push({ row: i + 1, warnings });
+      checkedRows.push(row);
     }
 
     // Rate-card ids are BIGINT and, for rows migrated from CockroachDB, larger
@@ -593,22 +592,16 @@ router.post('/config/:type/save-period', async (req, res) => {
 
       // Batch insert using forEachDbBatch to stay under PostgreSQL's 65,535
       // parameter limit when a rate period has many slabs.
-      const slabData = slabRows.map(slab => [
+      // A blank numeric cell reached PostgreSQL as '' ("invalid input syntax
+      // for type numeric", HTTP 500). It now takes the column's default, as if
+      // the cell had been omitted. Text cells are unchanged.
+      const slabData = checkedRows.map(slab => [
         slab.category || category || 'ALL',
         start_date || null,
         end_date || null,
         marketplace,
         seller_account,
-        ...extraCols.map(col => {
-          const value = slab[col] ?? null;
-          // A blank numeric cell reached PostgreSQL as '' ("invalid input
-          // syntax for type numeric", HTTP 500). It now takes the column's
-          // default, as if the cell had been omitted. Text cells are unchanged.
-          if (col in NUMERIC_BLANK_DEFAULTS && typeof value === 'string' && value.trim() === '') {
-            return NUMERIC_BLANK_DEFAULTS[col];
-          }
-          return value;
-        }),
+        ...extraCols.map(col => columnValue(col, slab[col])),
       ]);
 
       await forEachDbBatch(slabData, allCols.length, async batch => {
@@ -629,7 +622,7 @@ router.post('/config/:type/save-period', async (req, res) => {
       await client.query('COMMIT');
       clearRateCardCache();
       // Report the rows actually removed, not the number of ids requested.
-      res.json({ ok: true, inserted: slabRows.length, deleted, closed });
+      res.json({ ok: true, inserted: slabRows.length, deleted, closed, rowWarnings });
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       throw error;
@@ -1269,20 +1262,49 @@ router.get('/intelligence', (req, res) => res.json({ orderFees: [], nonOrderFees
 // extracts structured slab data using Google Gemini's vision model.
 const GEMINI_VISION_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-1.5-pro'];
 
+// Screenshots only. Each type is checked against the decoded file signature,
+// so a renamed PDF or HTML file cannot be sent to the model as an image.
+const PARSE_IMAGE_SIGNATURES = {
+  'image/png': bytes => bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  'image/jpeg': bytes => bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff,
+  'image/webp': bytes => bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP',
+};
+// A rate-card screenshot is a few hundred KB; the JSON body parser alone
+// would accept 50 MB. Base64 carries 3 bytes in every 4 characters.
+const MAX_PARSE_IMAGE_MB = 6;
+export const MAX_PARSE_IMAGE_BASE64_CHARS = (MAX_PARSE_IMAGE_MB * 1024 * 1024 / 3) * 4;
+
+export function parseImageInput(body) {
+  const { imageBase64, mimeType } = body || {};
+  const fail = (status, message) => Object.assign(new Error(message), { status });
+  if (typeof imageBase64 !== 'string' || !imageBase64) throw fail(400, 'No image provided');
+  if (typeof mimeType !== 'string' || !mimeType.trim()) throw fail(400, 'Image MIME type is required');
+  const type = mimeType.trim().toLowerCase();
+  const matchesSignature = PARSE_IMAGE_SIGNATURES[type];
+  if (!matchesSignature) throw fail(400, 'Screenshot must be a PNG, JPEG, or WebP image');
+  if (imageBase64.length > MAX_PARSE_IMAGE_BASE64_CHARS) {
+    throw fail(413, `Screenshot is too large (limit ${MAX_PARSE_IMAGE_MB} MB). Crop it to the rate table.`);
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(imageBase64)) throw fail(400, 'Image data must be base64 encoded');
+  if (!matchesSignature(Buffer.from(imageBase64.slice(0, 24), 'base64'))) {
+    throw fail(400, `Image data is not a ${type.slice('image/'.length).toUpperCase()} file`);
+  }
+  return { imageBase64, mimeType: type };
+}
+
 const FEE_TYPE_PROMPTS = {
   commission: `Extract commission rate slabs. Each slab has: brand_name (string, null if "All brands" or generic), price_min (number, from price range start), price_max (number, null if no upper limit), rate (decimal: 0.14 = 14%, 0.05 = 5%).`,
   fixed_fee: `Extract fixed fee slabs. Each slab has: fulfilment_type (string: Bronze/Silver/Gold/Diamond/All), price_min (number), price_max (number, null if infinite), rate (flat rupee amount, e.g. 6).`,
   collection_fee: `Extract collection fee slabs. Each slab has: fulfilment_type (string: All/FBF/Non-FBF/Self-Ship), price_min (number), price_max (number, null if infinite), prepaid (number), prepaid_type ("pct" or "flat"), postpaid (number), postpaid_type ("pct" or "flat"). For percentage values, use decimal (0.003 = 0.3%).`,
   pick_pack: `Extract pick & pack fee slabs. Each slab has: fulfilment_type (string: FBF/Non-FBF/Flex/ALL), price_min (number), price_max (number, null if infinite), rate (flat rupee amount).`,
   reverse_shipping: `Extract reverse shipping fee slabs. Each slab has: price_min (number), price_max (number, null if infinite), weight_slab (number in kg), local_fee (rupee amount), zonal_fee (rupee amount), national_fee (rupee amount).`,
-  franchise_fee: `Extract franchise fee slabs. Each slab has: brand_name (string, null if generic), price_min (number), price_max (number, null if infinite), rate (decimal: 0.02 = 2%).`,
+  franchise_fee: `Extract franchise fee slabs. Each slab has: brand_name (string, null if generic), price_min (number), price_max (number, null if infinite), rate (flat rupee amount per order, e.g. 25.5).`,
 };
 
 router.post('/parse-image', async (req, res) => {
   try {
-    const { imageBase64, mimeType, type } = req.body;
-    if (!imageBase64) return res.status(400).json({ error: 'No image provided' });
-    if (!mimeType) return res.status(400).json({ error: 'Image MIME type is required' });
+    const { type } = req.body || {};
+    const { imageBase64, mimeType } = parseImageInput(req.body);
 
     const feeType = Object.keys(FEE_TYPE_PROMPTS).includes(type) ? type : 'commission';
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -1295,12 +1317,8 @@ router.post('/parse-image', async (req, res) => {
 
 ${extractionGuide}
 
-Return ONLY valid JSON (no markdown, no explanation):
-{
-  "slabs": [
-    { "brand_name": null, "price_min": 0, "price_max": 300, "rate": 0.14 }
-  ]
-}
+Return ONLY valid JSON (no markdown, no explanation), with one object per table row holding exactly the fields listed above:
+{ "slabs": [ ... ] }
 
 Rules:
 1. Extract every visible row from the rate card table in the screenshot.
@@ -1322,10 +1340,19 @@ Rules:
         const raw = result.response.text().trim();
         const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/i, '').trim();
         const parsed = JSON.parse(jsonStr.startsWith('{') ? jsonStr : (jsonStr.match(/\{[\s\S]*\}/)?.[0] ?? '{"slabs":[]}'));
-        const slabs = Array.isArray(parsed.slabs) ? parsed.slabs : [];
+        const rawSlabs = Array.isArray(parsed.slabs) ? parsed.slabs.filter(slab => slab && typeof slab === 'object') : [];
+        // The admin reviews these before saving; each check lines up with its
+        // slab so the editor can show what looks wrong on that row.
+        const checked = rawSlabs.map(slab => checkRateRow(feeType, slab));
+        const slabs = checked.map(check => check.row);
         modelUsed = modelName;
         console.log(`[rate-card/parse-image] extracted ${slabs.length} slabs with model: ${modelName}`);
-        return res.json({ slabs, count: slabs.length, modelUsed });
+        return res.json({
+          slabs,
+          checks: checked.map(({ errors, warnings }) => ({ errors, warnings })),
+          count: slabs.length,
+          modelUsed,
+        });
       } catch (err) {
         const is404 = err.message?.includes('404') || err.message?.includes('not found') || err.message?.includes('no longer available');
         if (is404) {
@@ -1339,7 +1366,7 @@ Rules:
     throw new Error(`All Gemini models unavailable. Last error: ${lastErr?.message}`);
   } catch (err) {
     console.error('[rate-card/parse-image]', err.message);
-    res.status(500).json({ error: err.message, slabs: [], count: 0 });
+    res.status(err.status || 500).json({ error: err.message, slabs: [], count: 0 });
   }
 });
 

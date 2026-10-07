@@ -1,14 +1,15 @@
+import crypto from 'crypto';
 import express from 'express';
 import multer from 'multer';
-import { createRequire } from 'module';
+// The package entry point (pdf-parse/index.js) only re-exports this file,
+// plus a debug branch that reads a test PDF when it has no parent module.
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber, optionalString } from '../utils/valueParsers.js';
+import { forEachDbBatch } from '../utils/dbBatch.js';
 import { logUpload } from '../services/uploadLog.js';
-
-const require = createRequire(import.meta.url);
-const pdfParse = require('pdf-parse');
 
 const router = express.Router();
 const upload = multer({
@@ -24,6 +25,16 @@ const GEMINI_TIMEOUT_MS = 60_000;
 // not a statement at all and would only burn tokens.
 const MIN_STATEMENT_TEXT_CHARS = 200;
 const MAX_STATEMENT_TEXT_CHARS = 200_000;
+
+// A parsed statement waits here, unwritten, until the uploader reviews it and
+// commits it. The API runs as a single container, so process memory is shared
+// by every request; a restart drops pending previews and the PDF is uploaded
+// again. Previews are single-use and bound to the user who uploaded them.
+const PREVIEW_TTL_MS = 30 * 60 * 1000;
+const MAX_PENDING_PREVIEWS = 50;
+const pendingPreviews = new Map();
+
+const STATEMENT_COLUMNS = ['month', 'period', 'description', 'credits', 'debits', 'net', 'amount', 'pct', 'category'];
 
 class StatementInputError extends Error {
   constructor(message) {
@@ -141,22 +152,151 @@ export function parseStatementPayload(payload = {}) {
   const totalSettled = statementNumber(payload.totalSettled, 'Total settled');
   const saleItem = items.find(item => item.description.toLowerCase().includes('sale amount'));
   if (!saleItem || saleItem.net <= 0) throw new StatementInputError('Statement needs a positive Sale Amount line to calculate financial percentages.');
+  // statements.pct is NUMERIC(10,6). A line 100 times the Sale Amount is not
+  // a real statement (the Sale Amount was misread), and would only fail the
+  // commit after the reviewer had approved it.
+  const lines = [...items.map((item, index) => [`Line ${index + 1}`, item.net]), ['Total settled', totalSettled]];
+  for (const [label, value] of lines) {
+    if (Math.abs(percentOfSales(value, saleItem.net)) >= 10000) {
+      throw new StatementInputError(`${label} is more than 100 times the Sale Amount; check that the Sale Amount was read correctly.`);
+    }
+  }
   return { month, period, items, totalSettled, saleAmount: saleItem.net };
 }
 
-async function replaceMonthData(month, rows) {
+function percentOfSales(value, saleAmount) {
+  return +((value / saleAmount) * 100).toFixed(2);
+}
+
+// The model reads the PDF text and returns figures; nothing stops it from
+// inventing, rounding, or "correcting" one. Every amount it returns must
+// appear as a whole number in the comma-stripped PDF text and every
+// description in the text itself, or the row is flagged for the reviewer.
+// Descriptions are compared without case, whitespace, or commas, which
+// pdf-parse reflows inside table cells. Zero needs no proof: blank cells are 0.
+
+// The numbers in the comma-stripped text, in paise. A substring match let a
+// figure with a dropped digit through (1530587 is inside "15305872.00"), so
+// amounts must match a whole number. pdf-parse joins the cells of a row
+// without spaces ("15305872.0015305872.00"), so a number ends after two
+// decimals and the next cell's digits start a new one.
+function amountsInText(pdfText) {
+  const amounts = new Set();
+  for (const [token] of String(pdfText ?? '').replace(/,/g, '').matchAll(/\d+(?:\.\d{1,2})?/g)) {
+    amounts.add(Math.round(Number(token) * 100));
+  }
+  return amounts;
+}
+
+function amountInText(amount, amounts) {
+  return amount === 0 || amounts.has(Math.round(Math.abs(amount) * 100));
+}
+
+function squashText(value) {
+  return String(value ?? '').toLowerCase().replace(/[\s,]+/g, '');
+}
+
+export function checkStatementProvenance(parsed, pdfText) {
+  const amounts = amountsInText(pdfText);
+  const descriptionText = squashText(pdfText);
+  const items = parsed.items.map(item => {
+    const issues = [];
+    if (!descriptionText.includes(squashText(item.description))) {
+      issues.push('Description is not in the PDF text');
+    }
+    for (const [field, label] of [['credits', 'Credits'], ['debits', 'Debits'], ['net', 'Net']]) {
+      if (!amountInText(item[field], amounts)) issues.push(`${label} ${item[field]} is not in the PDF text`);
+    }
+    return issues;
+  });
+  const totalSettled = amountInText(parsed.totalSettled, amounts)
+    ? []
+    : [`Total settled ${parsed.totalSettled} is not in the PDF text`];
+  return { items, totalSettled };
+}
+
+function buildStatementRows(parsed) {
+  // parseStatementPayload guarantees a positive Sale Amount and in-range percentages.
+  const pctOfSales = value => percentOfSales(value, parsed.saleAmount);
+  const base = { month: parsed.month, period: parsed.period };
+  const rows = parsed.items.map(item => ({
+    ...base,
+    description: item.description,
+    credits: item.credits,
+    debits: item.debits,
+    net: item.net,
+    pct: pctOfSales(item.net),
+    category: categorize(item.description),
+  }));
+  rows.push({
+    ...base,
+    description: 'TOTAL SETTLED',
+    credits: 0,
+    debits: 0,
+    net: parsed.totalSettled,
+    pct: pctOfSales(parsed.totalSettled),
+    category: 'Total',
+  });
+  return rows;
+}
+
+function previewOwner(req) {
+  return req.user?.id || null;
+}
+
+function storePreview(preview) {
+  const now = Date.now();
+  for (const [id, entry] of pendingPreviews) {
+    if (entry.expiresAt <= now) pendingPreviews.delete(id);
+  }
+  // A Map iterates in insertion order, so the first key is the oldest preview.
+  while (pendingPreviews.size >= MAX_PENDING_PREVIEWS) {
+    pendingPreviews.delete(pendingPreviews.keys().next().value);
+  }
+  const entry = { ...preview, id: crypto.randomUUID(), expiresAt: now + PREVIEW_TTL_MS };
+  pendingPreviews.set(entry.id, entry);
+  return entry;
+}
+
+function findPreview(id, owner) {
+  const entry = pendingPreviews.get(String(id ?? ''));
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    pendingPreviews.delete(entry.id);
+    return null;
+  }
+  return entry.owner === owner ? entry : null;
+}
+
+async function countMonthRows(db, month) {
+  const { rows } = await db.query('SELECT COUNT(*)::int AS count FROM statements WHERE month = $1', [month]);
+  return Number(rows[0]?.count) || 0;
+}
+
+// A month that already has rows is replaced only when the caller asks for it.
+// The advisory lock keeps two commits for the same month from interleaving
+// their DELETE and INSERTs.
+async function writeStatementMonth(month, rows, { replace }) {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
-    await client.query('DELETE FROM statements WHERE month = $1', [month]);
-    for (const row of rows) {
-      await client.query(
-        `INSERT INTO statements (month,period,description,credits,debits,net,amount,pct,category)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [row.month, row.period, row.description, row.credits, row.debits, row.net, row.net, row.pct, row.category]
-      );
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`statements:${month}`]);
+    const existingRows = await countMonthRows(client, month);
+    if (existingRows > 0 && !replace) {
+      await client.query('ROLLBACK');
+      return { conflict: true, existingRows };
     }
+    if (existingRows > 0) await client.query('DELETE FROM statements WHERE month = $1', [month]);
+    await forEachDbBatch(rows, STATEMENT_COLUMNS.length, async batch => {
+      const params = [];
+      const tuples = batch.map(row => {
+        const values = [row.month, row.period, row.description, row.credits, row.debits, row.net, row.net, row.pct, row.category];
+        return `(${values.map(value => `$${params.push(value)}`).join(',')})`;
+      });
+      await client.query(`INSERT INTO statements (${STATEMENT_COLUMNS.join(',')}) VALUES ${tuples.join(',')}`, params);
+    });
     await client.query('COMMIT');
+    return { conflict: false, replacedRows: existingRows };
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch {}
     throw e;
@@ -165,8 +305,9 @@ async function replaceMonthData(month, rows) {
   }
 }
 
+// Step 1 of 2: parse the PDF and return what would be written, without writing
+// anything. The reviewer commits the returned previewId with POST /commit.
 router.post('/upload', upload.single('pdf'), async (req, res) => {
-  let logId = null;
   try {
     if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
     if (!req.file) return res.status(400).json({ error: 'No PDF file uploaded' });
@@ -184,59 +325,97 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
       throw new StatementInputError('This PDF is much larger than a settlement statement. Upload the monthly statement PDF only.');
     }
     const parsed = parseStatementPayload(await parseWithAI(statementText));
-    const saleAmt = parsed.saleAmount;
+    const rows = buildStatementRows(parsed);
+    const provenance = checkStatementProvenance(parsed, statementText);
+    // One issue list per row; TOTAL SETTLED is the last row.
+    const issues = [...provenance.items, provenance.totalSettled];
+    const flaggedRows = issues.filter(list => list.length).length;
+    const existingRows = await countMonthRows(getPool(), parsed.month);
 
-    const rows = parsed.items.map(item => {
-      const net = item.net;
-      const pct = saleAmt !== 0 ? +((net / saleAmt) * 100).toFixed(2) : 0;
-      return {
-        month: parsed.month,
-        period: parsed.period,
-        description: item.description,
-        credits: item.credits,
-        debits: item.debits,
-        net,
-        pct,
-        category: categorize(item.description),
-      };
-    });
-
-    const totalSettled = parsed.totalSettled;
-    const totalPct = saleAmt !== 0 ? +((totalSettled / saleAmt) * 100).toFixed(2) : 0;
-    rows.push({
+    const preview = storePreview({
+      owner: previewOwner(req),
+      filename: req.file.originalname,
       month: parsed.month,
       period: parsed.period,
-      description: 'TOTAL SETTLED',
-      credits: 0,
-      debits: 0,
-      net: totalSettled,
-      pct: totalPct,
-      category: 'Total',
+      rows,
+      flaggedRows,
     });
-
-    await replaceMonthData(parsed.month, rows);
-    logId = await logUpload(getPool(), 'statement_pdf', req.file.originalname, 'flipkart', rows.length, 0, 0, 'ok');
 
     res.json({
-      success: true,
+      previewId: preview.id,
+      expiresAt: new Date(preview.expiresAt).toISOString(),
       month: parsed.month,
       period: parsed.period,
-      rowsWritten: rows.length,
-      totalSettled,
-      saleAmount: saleAmt,
-      logId,
-      items: rows.map(r => ({
+      totalSettled: parsed.totalSettled,
+      saleAmount: parsed.saleAmount,
+      existingRows,
+      monthExists: existingRows > 0,
+      flaggedRows,
+      items: rows.map((r, index) => ({
         description: r.description,
         credits: r.credits,
         debits: r.debits,
         net: r.net,
         pct: r.pct,
         category: r.category,
+        issues: issues[index],
       })),
     });
   } catch (err) {
     try { await logUpload(getPool(), 'statement_pdf', req.file?.originalname, 'flipkart', 0, 0, 0, 'error', err.message); } catch {}
     console.error('[statement/upload]', err);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Step 2 of 2: write a reviewed preview. Replacing a month that already has a
+// statement needs replace=true, and saving rows that failed the provenance
+// check needs acceptUnverified=true; both are explicit choices in the review UI.
+router.post('/commit', async (req, res) => {
+  const body = req.body || {};
+  const preview = findPreview(body.previewId, previewOwner(req));
+  try {
+    if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+    if (!preview) {
+      return res.status(404).json({ error: 'This statement preview has expired or was already saved. Upload the PDF again.' });
+    }
+    if (preview.committing) return res.status(409).json({ error: 'This statement is already being saved.' });
+    if (preview.flaggedRows > 0 && body.acceptUnverified !== true) {
+      return res.status(422).json({
+        error: `${preview.flaggedRows} row${preview.flaggedRows === 1 ? '' : 's'} could not be matched to the PDF text. Check them against the PDF, then confirm to save anyway.`,
+        flaggedRows: preview.flaggedRows,
+      });
+    }
+
+    preview.committing = true;
+    let result;
+    try {
+      result = await writeStatementMonth(preview.month, preview.rows, { replace: body.replace === true });
+    } finally {
+      preview.committing = false;
+    }
+    if (result.conflict) {
+      return res.status(409).json({
+        error: `A statement for ${preview.month} is already saved (${result.existingRows} rows). Confirm to replace it.`,
+        month: preview.month,
+        monthExists: true,
+        existingRows: result.existingRows,
+      });
+    }
+    pendingPreviews.delete(preview.id);
+    const logId = await logUpload(getPool(), 'statement_pdf', preview.filename, 'flipkart', preview.rows.length, 0, 0, 'ok');
+
+    res.json({
+      success: true,
+      month: preview.month,
+      period: preview.period,
+      rowsWritten: preview.rows.length,
+      replacedRows: result.replacedRows,
+      logId,
+    });
+  } catch (err) {
+    try { await logUpload(getPool(), 'statement_pdf', preview?.filename, 'flipkart', 0, 0, 0, 'error', err.message); } catch {}
+    console.error('[statement/commit]', err);
     res.status(err.status || 500).json({ error: err.message });
   }
 });
