@@ -12,7 +12,7 @@ vi.mock('../utils/firebaseAdmin.js', () => ({
   },
 }));
 
-const { authMiddleware, forgetRevocationState, requireRole } = await import('../utils/authMiddleware.js');
+const { authMiddleware, forgetRevocationState, pruneRevocationCache, revocationCacheSize, requireRole } = await import('../utils/authMiddleware.js');
 
 beforeEach(() => {
   firebaseUser = { tokensValidAfterTime: null };
@@ -121,6 +121,17 @@ describe('authMiddleware — revoked sessions (role change / user removed)', () 
     await authMiddleware(request(), res, vi.fn());
     expect(auth.getUser).toHaveBeenCalledTimes(2); // looked up again, not served from the stale cache
     expect(res.statusCode).toBe(401);
+  });
+
+  it('drops expired entries once the cache grows, so departed users do not accumulate', async () => {
+    firebaseUser = { tokensValidAfterTime: null };
+    for (let i = 0; i < 520; i++) {
+      decodedToken = { uid: `u${i}`, email: `u${i}@example.com`, recon_role: 'viewer', auth_time: issuedAt };
+      await authMiddleware(request(), response(), vi.fn());
+    }
+    expect(revocationCacheSize()).toBe(520);
+    pruneRevocationCache(Date.now() + 61_000);
+    expect(revocationCacheSize()).toBe(0);
   });
 
   it('keeps serving verified tokens when Firebase cannot be reached', async () => {

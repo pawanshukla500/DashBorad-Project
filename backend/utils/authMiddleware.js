@@ -49,6 +49,20 @@ export function forgetRevocationState(uid) {
 
 const generationOf = uid => `${allGeneration}:${revocationGenerations.get(uid) || 0}`;
 
+// Entries are only refreshed when their user returns, so drop expired ones
+// once the map grows: users who stop signing in do not accumulate.
+const REVOCATION_CACHE_PRUNE_SIZE = 500;
+export function pruneRevocationCache(now = Date.now()) {
+  if (revocationCache.size < REVOCATION_CACHE_PRUNE_SIZE) return;
+  for (const [uid, entry] of revocationCache) {
+    if (now - entry.at > REVOCATION_CACHE_MS) revocationCache.delete(uid);
+  }
+}
+
+export function revocationCacheSize() {
+  return revocationCache.size;
+}
+
 function withTimeout(promise, ms) {
   let timer;
   return Promise.race([
@@ -80,7 +94,10 @@ function revocationState(uid) {
     .then(state => {
       const entry = { ...state, at: Date.now() };
       // Cleared meanwhile: answer this request, but cache nothing stale.
-      if (generationOf(uid) === generation) revocationCache.set(uid, entry);
+      if (generationOf(uid) === generation) {
+        pruneRevocationCache(entry.at);
+        revocationCache.set(uid, entry);
+      }
       return entry;
     })
     .finally(() => {
