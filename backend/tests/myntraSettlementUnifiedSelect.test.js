@@ -74,7 +74,7 @@ describe('Myntra unified_settlements branch', () => {
     const source = (await readFile(path, 'utf8')).replace(/\r\n/g, '\n');
     expect(source).toContain('UNION ALL\n${myntraInvoicesUnifiedSelect()}');
     // The order_type migration runs on already-current installations too.
-    expect(source).toContain('await ensureMyntraOrderTypeSchema(pool);');
+    expect(source).toContain('await ensureMyntraOrderTypeSchema(db);');
   });
 
   it('refreshes the per-order settlement read model after a Myntra payment import', async () => {
