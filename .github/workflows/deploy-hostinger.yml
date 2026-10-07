@@ -92,6 +92,8 @@ jobs:
           HOSTINGER_USER: ${{ secrets.HOSTINGER_USER }}
           HOSTINGER_PORT: ${{ secrets.HOSTINGER_SSH_PORT || 22 }}
         run: |
+          # 0600 here means scp also creates the VPS copy as 0600.
+          umask 077
           # Create production .env file
           cat <<EOF > /tmp/hostinger.env
           NODE_ENV=production
@@ -143,7 +145,11 @@ jobs:
           # Builds reconcentral:$GITHUB_SHA, dumps paymentapp, starts the new
           # container and rolls back to the previous image if it is unhealthy.
           # Only these non-secret values travel on the command line; secrets
-          # stay in the .env file uploaded above.
-          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 "${HOSTINGER_USER}@${HOSTINGER_HOST}" \
+          # stay in the .env file uploaded above. If this connection drops,
+          # the script keeps running on the VPS and logs to
+          # /opt/reconcentral/deploy-logs/.
+          ssh -p "$HOSTINGER_PORT" -i ~/.ssh/id_ed25519 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+            "${HOSTINGER_USER}@${HOSTINGER_HOST}" \
             "IMAGE_TAG=${GITHUB_SHA} SKIP_PREDEPLOY_BACKUP=${SKIP_PREDEPLOY_BACKUP} ROLLBACK_DRILL=${ROLLBACK_DRILL} bash -s" \
             < scripts/deploy/hostinger-deploy.sh

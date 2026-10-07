@@ -141,9 +141,11 @@ connected, schema-ready PostgreSQL runtime before CI/CD passes.
 
 Each deploy runs these steps in order:
 
-1. Records the image the `ReconCentral` container is running. If that image
-   is not already under a commit-SHA tag, it is pinned as
-   `reconcentral:rollback-<image id>`.
+1. Records the rollback target. This is the image the `ReconCentral`
+   container is running if Docker reports it healthy. If the container is
+   missing or unhealthy, the target is `reconcentral:latest` instead, the
+   last release that passed its checks. A target that is not already under a
+   commit-SHA tag is pinned as `reconcentral:rollback-<image id>`.
 2. Moves the current `/opt/reconcentral/ReconCentral` to
    `ReconCentral.prev` and unpacks the new release in its place.
 3. Builds `reconcentral:<commit SHA>`. The old container keeps serving during
@@ -152,8 +154,9 @@ Each deploy runs these steps in order:
    `/opt/backups/reconcentral-predeploy/paymentapp_<UTC time>_<sha12>.dump`
    (directory `700`, files `600`). The dump runs through `docker exec` on
    the shared Postgres container's local socket, so no password is used and
-   the container is never restarted. The dump is checked with
-   `pg_restore --list`. The last 5 dumps are kept.
+   the container is never restarted. The whole archive is read back with
+   `pg_restore -f /dev/null` to catch truncation. The last 5 dumps are
+   kept.
    - Before dumping, the script checks free disk space against the database
      size plus 2 GB of headroom. If space is short, or the dump fails, the
      deploy **aborts before the new container starts** and production is
@@ -165,17 +168,34 @@ Each deploy runs these steps in order:
    startup migrations.
 6. Runs the private-DB-route, `/health` and public HTTPS checks. If any check
    fails, the script:
-   - prints the failed container's logs;
+   - saves the failed container's last 500 log lines to
+     `/opt/reconcentral/deploy-logs/<time>_<sha12>.app.log` (root-only,
+     last 10 kept). They are not printed, because Actions logs on a public
+     repository are public;
    - restores `ReconCentral.prev` (the compose file and `.env` the previous
-     container was created from);
+     container was created from). If that `.env` differs from the newly
+     uploaded one, for example after a secret rotation, the job adds a
+     warning without printing either file;
    - points `latest` back at the previous image;
    - runs `up -d --no-build --force-recreate` with
      `IMAGE_TAG=<previous tag>`, re-checks health, and **fails the job**.
      The `::error::` annotation states which tag production is on.
 7. On success, the script points `reconcentral:latest` at the new release
-   ("last known good") and keeps the newest 3 release images. Only
+   ("last known good") and records it in `/opt/reconcentral/good-releases`.
+   It then keeps the images of the last 3 releases that passed their checks,
+   plus the running image and the rollback target. Failed builds are removed
+   at the next successful deploy; their logs stay in `deploy-logs/`. Only
    commit-SHA and `rollback-*` tags are managed; other images on the host
    are not touched. There is no `docker image prune` anymore.
+
+Each run's full output is also written to
+`/opt/reconcentral/deploy-logs/<time>_<sha12>.deploy.log` (last 20 kept).
+Every probe has a time limit. The script ignores SIGHUP and keeps logging to
+that file if its SSH session disappears, for example when the job is
+cancelled or times out. So a deploy that has already started still finishes
+its checks and, if needed, its rollback. In that case, read the outcome from
+the log file. A lock (`/opt/reconcentral/.deploy.lock`) makes the next
+deploy wait for it.
 
 `latest` always means the last release that passed its checks, so a plain
 `docker compose up -d` from Hostinger Docker Manager (no `IMAGE_TAG`) starts a
@@ -218,10 +238,18 @@ start the container again. Dumps written through a pipe do not support
 #### Testing the rollback path safely
 
 - **No server needed:** `bash scripts/deploy/test-hostinger-deploy.sh` runs the
-  real script against a fake `docker`. It covers the healthy deploy, the
-  unhealthy release that rolls back, low disk, a failed `pg_dump`, a failed
-  build, retention and the drill. CI runs it, plus `shellcheck`, on every
-  PR.
+  real script against a fake `docker`. It covers:
+  - a healthy deploy, and an unhealthy one (`/health` or the public HTTPS
+    check fails) that rolls back;
+  - the first deploy on a legacy `latest`-only server, both success and
+    failure;
+  - rollback to `latest` when there is no running container;
+  - low disk, a failed `pg_dump`, a failed build and an unreadable bundle;
+  - retention when some releases failed;
+  - the drill, including the roll-forward case;
+  - an SSH session that disappears mid-deploy.
+
+  CI runs it, plus `shellcheck`, on every PR.
 - **Real drill on the VPS:** in a quiet window, run the workflow manually on
   `master` with **rollback_drill** checked. It deploys the current commit,
   checks it, then deliberately rolls back to the image that was running.
@@ -233,8 +261,9 @@ start the container again. Dumps written through a pipe do not support
     `reconcentral:rollback-…` or the previous SHA.
   - The drill code equals the running code, so nothing needs undoing. The
     next normal deploy moves forward again.
-  - If the drill fails, re-run the workflow without the box checked to
-    redeploy the same commit.
+  - If the rollback target turns out to be unhealthy, the drill rolls
+    forward to the release it just verified, so production is not left
+    down. The job then fails with `Rollback drill failed ... rolled forward`.
 
 #### Host image-prune cron
 
