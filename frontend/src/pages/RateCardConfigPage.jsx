@@ -1082,6 +1082,10 @@ function MultiBrandSelect({ value = [], onChange, brandList, onRefreshBrands, pl
   );
 }
 
+// Mirrors POST /rate-card/parse-image: PNG, JPEG, or WebP screenshots up to 6 MB.
+const AI_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const AI_IMAGE_MAX_MB = 6;
+
 /* ─── Rate Period Drawer ──────────────────────────────────────────
    Modes:
    1. Add new period  — initialCategory='', editPeriodIds=null
@@ -1152,9 +1156,22 @@ function RatePeriodDrawer({
   const [aiMime, setAiMime]         = useState('image/png');
   const [aiParsing, setAiParsing]   = useState(false);
   const [aiMsg, setAiMsg]           = useState(null);   // { ok, text }
+  // Server range checks for each parsed slab ({ errors, warnings }), in slab
+  // order. A slab's entry is cleared once the admin edits it.
+  const [slabChecks, setSlabChecks] = useState([]);
 
   function loadImageFile(file) {
-    if (!file || !file.type.startsWith('image/')) return;
+    if (!file) return;
+    if (!AI_IMAGE_TYPES.includes(file.type)) {
+      setAiMsg({ ok: false, text: 'Use a PNG, JPEG, or WebP screenshot.' });
+      setAiOpen(true);
+      return;
+    }
+    if (file.size > AI_IMAGE_MAX_MB * 1024 * 1024) {
+      setAiMsg({ ok: false, text: `Screenshot is larger than ${AI_IMAGE_MAX_MB} MB. Crop it to the rate table.` });
+      setAiOpen(true);
+      return;
+    }
     setAiMime(file.type);
     const reader = new FileReader();
     reader.onload = e => {
@@ -1189,7 +1206,7 @@ function RatePeriodDrawer({
     if (!aiImageB64) return;
     setAiParsing(true); setAiMsg(null);
     try {
-      const { slabs: parsed, count, modelUsed } = await parseRateCardImage({
+      const { slabs: parsed, checks, count, modelUsed } = await parseRateCardImage({
         imageBase64: aiImageB64,
         mimeType:    aiMime,
         type,
@@ -1219,8 +1236,12 @@ function RatePeriodDrawer({
         return slab;
       });
       setSlabs(mapped);
+      const parsedChecks = Array.isArray(checks) ? checks : [];
+      setSlabChecks(parsedChecks);
+      const flagged = parsedChecks.filter(c => c?.errors?.length || c?.warnings?.length).length;
       const modelLabel = modelUsed ? ` · via ${modelUsed}` : '';
-      setAiMsg({ ok: true, text: `✓ ${count} slabs extracted${modelLabel} — check & adjust before saving` });
+      const flaggedLabel = flagged ? ` — ${flagged} need${flagged === 1 ? 's' : ''} a closer look (notes under each slab)` : '';
+      setAiMsg({ ok: true, text: `✓ ${count} slabs extracted${modelLabel}${flaggedLabel} — check & adjust before saving` });
     } catch (e) {
       setAiMsg({ ok: false, text: e.response?.data?.error || e.message });
     }
@@ -1229,8 +1250,14 @@ function RatePeriodDrawer({
   // ─────────────────────────────────────────────────────────────
 
   function addSlab()             { setSlabs(s => [...s, config.defaultSlab()]); }
-  function removeSlab(i)         { setSlabs(s => s.filter((_, j) => j !== i)); }
-  function setSlabField(i, k, v) { setSlabs(s => s.map((row, j) => j === i ? { ...row, [k]: v } : row)); }
+  function removeSlab(i) {
+    setSlabs(s => s.filter((_, j) => j !== i));
+    setSlabChecks(c => c.filter((_, j) => j !== i));
+  }
+  function setSlabField(i, k, v) {
+    setSlabs(s => s.map((row, j) => j === i ? { ...row, [k]: v } : row));
+    setSlabChecks(c => c.map((check, j) => (j === i ? null : check)));
+  }
 
   async function handleSave() {
     setErr(null);
@@ -1247,11 +1274,15 @@ function RatePeriodDrawer({
         return brands.map(b => ({ ...s, brand_name: b }));
       });
 
+      // Rows the server saved but flagged as implausible (e.g. a percentage
+      // on the wrong scale). Every category gets the same rows, so the first
+      // response's warnings cover them all.
+      let rowWarnings = [];
       if (isEditPeriod) {
         // The server deletes and re-inserts in one transaction, so a validation
         // or network error never leaves an edited rate period half deleted.
         setSaveProgress('Saving revised period…');
-        await saveRateCardPeriod(type, {
+        const result = await saveRateCardPeriod(type, {
           category: category.trim(), marketplace, seller_account: sellerAccount,
           // Backend reads `start_date` / `end_date`. Renaming on the client
           // keeps the API contract consistent and stops every "edit" from
@@ -1261,19 +1292,21 @@ function RatePeriodDrawer({
           replaceIds: editPeriodIds,
           rows: expandedSlabs,
         });
+        rowWarnings = result?.rowWarnings || [];
       } else {
         // Build full category list — primary + any extras selected for multi-apply
         const allCats = [...new Set([category.trim(), ...extraCategories])].filter(Boolean);
         for (let i = 0; i < allCats.length; i++) {
           setSaveProgress(allCats.length > 1 ? `Saving ${i + 1} / ${allCats.length}: ${allCats[i]}…` : '');
-          await saveRateCardPeriod(type, {
+          const result = await saveRateCardPeriod(type, {
             category: allCats[i], marketplace, seller_account: sellerAccount,
             start_date: effectiveFrom, end_date: endDate || null,
             rows: expandedSlabs,
           });
+          if (i === 0) rowWarnings = result?.rowWarnings || [];
         }
       }
-      onSaved();
+      onSaved(rowWarnings);
     } catch (e) {
       setErr(e.response?.data?.error || e.message);
     }
@@ -1532,13 +1565,16 @@ function RatePeriodDrawer({
                     <p className="text-sm font-semibold text-secondary">
                       Paste <kbd className="bg-surface-container px-1.5 py-0.5 rounded text-[10px] font-mono">Ctrl+V</kbd> or click to upload
                     </p>
-                    <p className="text-[11px] text-outline mt-1">Screenshot your marketplace rate card table</p>
+                    <p className="text-[11px] text-outline mt-1">Screenshot your marketplace rate card table (PNG, JPEG, or WebP, up to {AI_IMAGE_MAX_MB} MB)</p>
+                    {aiMsg && !aiMsg.ok && (
+                      <p className="mt-2 text-xs font-medium text-rose-700">{aiMsg.text}</p>
+                    )}
                   </div>
                 )}
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept={AI_IMAGE_TYPES.join(',')}
                   className="hidden"
                   onChange={e => loadImageFile(e.target.files[0])}
                 />
@@ -1558,8 +1594,13 @@ function RatePeriodDrawer({
             )}
 
             <div className="space-y-3">
-              {slabs.map((slab, i) => (
-                <div key={i} className="rounded-2xl border-2 border-border bg-surface-container-low/60 overflow-hidden">
+              {slabs.map((slab, i) => {
+                const check = slabChecks[i];
+                const slabErrors = check?.errors || [];
+                const slabWarnings = check?.warnings || [];
+                const borderClass = slabErrors.length ? 'border-rose-300' : slabWarnings.length ? 'border-amber-300' : 'border-border';
+                return (
+                <div key={i} className={`rounded-2xl border-2 ${borderClass} bg-surface-container-low/60 overflow-hidden`}>
                   {/* Slab header */}
                   <div className="flex items-center justify-between px-4 py-2 bg-surface border-b border-border">
                     <span className="text-[11px] font-bold text-secondary uppercase tracking-wide">Slab {i + 1}</span>
@@ -1657,8 +1698,15 @@ function RatePeriodDrawer({
                       );
                     })}
                   </div>
+                  {(slabErrors.length > 0 || slabWarnings.length > 0) && (
+                    <ul className="px-4 pb-3 space-y-1 text-[11px] leading-snug" aria-label={`Checks for slab ${i + 1}`}>
+                      {slabErrors.map(message => <li key={message} className="text-rose-700">✕ {message}</li>)}
+                      {slabWarnings.map(message => <li key={message} className="text-amber-700">⚠ {message}</li>)}
+                    </ul>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* ── Add slab button — at the bottom ── */}
@@ -1839,6 +1887,8 @@ function RatePeriodDrawer({
   useEffect(() => {
     if (!banner) return undefined;
     if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+    // Warnings list rows the admin may need to fix, so they stay until dismissed.
+    if (banner.tone === 'warning') return undefined;
     bannerTimerRef.current = setTimeout(() => setBanner(null), 4500);
     return () => { if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current); };
   }, [banner]);
@@ -1854,7 +1904,9 @@ function RatePeriodDrawer({
 
   const bannerPalette = banner?.tone === 'success'
     ? { ring: 'border-emerald-200', bg: 'bg-emerald-50', text: 'text-emerald-800', icon: 'text-emerald-600' }
-    : { ring: 'border-rose-200',   bg: 'bg-rose-50',   text: 'text-rose-800',   icon: 'text-rose-600' };
+    : banner?.tone === 'warning'
+      ? { ring: 'border-amber-200', bg: 'bg-amber-50', text: 'text-amber-900', icon: 'text-amber-600' }
+      : { ring: 'border-rose-200',   bg: 'bg-rose-50',   text: 'text-rose-800',   icon: 'text-rose-600' };
 
   return (
     <div className="space-y-4">
@@ -1973,7 +2025,16 @@ function RatePeriodDrawer({
           isCopy={drawer.isCopy}
           copyFromCategory={drawer.copyFromCat}
           onClose={() => setDrawer(null)}
-          onSaved={() => { setDrawer(null); load(); if (onCoverageDirty) onCoverageDirty(); }}
+          onSaved={(rowWarnings = []) => {
+            setDrawer(null); load(); if (onCoverageDirty) onCoverageDirty();
+            if (rowWarnings.length) {
+              setBanner({
+                tone: 'warning',
+                text: `Saved. ${rowWarnings.length} row${rowWarnings.length === 1 ? '' : 's'} look${rowWarnings.length === 1 ? 's' : ''} unusual — check and edit the period if needed:\n`
+                  + rowWarnings.map(w => `Row ${w.row}: ${w.warnings.join(' ')}`).join('\n'),
+              });
+            }
+          }}
         />
       )}
 

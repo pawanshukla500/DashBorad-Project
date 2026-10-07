@@ -9,6 +9,9 @@ import useFetch from '../hooks/useFetch';
 import { useFilters } from '../context/FilterContext';
 import { currencyFull, currency } from '../utils/format';
 import EmptyState from '../components/EmptyState';
+import StatementPdfUpload from '../components/StatementPdfUpload';
+import { useAuth } from '../context/AuthContext';
+import { hasRole } from '../utils/roles';
 import KPICard from '../components/KPICard';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -30,6 +33,9 @@ const STATEMENT_TABS = [
 
 export default function StatementPage() {
   const [tab, setTab] = useState('sale');
+  const { user } = useAuth();
+  // POST /api/statement/* is limited to operators and admins.
+  const canUploadStatement = hasRole(user?.role, ['operator', 'admin']);
 
   const { filters, refreshKey } = useFilters();
   const dep = [JSON.stringify(filters), refreshKey];
@@ -114,6 +120,8 @@ export default function StatementPage() {
           Return Tracking
         </Link>
       </div>
+
+      {tab === 'summary' && canUploadStatement && <StatementPdfUpload />}
 
       {activeError && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">

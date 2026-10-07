@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseStatementPayload } from '../routes/statement.js';
+import { checkStatementProvenance, parseStatementPayload } from '../routes/statement.js';
 
 const validStatement = {
   period: '2026-08-01 to 2026-08-31',
@@ -29,5 +29,34 @@ describe('statement PDF extraction validation', () => {
       ...validStatement,
       items: [{ description: 'Sale Amount', credits: 100, debits: 0, net: 99 }],
     })).toThrow('Line 1 net must equal credits minus debits');
+  });
+});
+
+describe('statement PDF provenance check', () => {
+  const pdfText = 'Sale\nAmount 1,53,05,872.00  Commission Fee (50.00)  Shipping Fee 1,234.5  Total Settled 1,53,04,587.50';
+  const parsed = items => ({ items, totalSettled: 15304587.5 });
+
+  it('matches amounts in the comma-stripped text and descriptions across reflowed whitespace and case', () => {
+    expect(checkStatementProvenance(parsed([
+      { description: 'Sale Amount', credits: 15305872, debits: 0, net: 15305872 },
+      { description: 'COMMISSION FEE', credits: 0, debits: 50, net: -50 },
+      { description: 'Shipping Fee', credits: 0, debits: 1234.5, net: -1234.5 },
+    ]), pdfText)).toEqual({ items: [[], [], []], totalSettled: [] });
+  });
+
+  it('flags figures and descriptions the model did not read from the PDF', () => {
+    const result = checkStatementProvenance({
+      items: [
+        { description: 'Sale Amount', credits: 15305827, debits: 0, net: 15305827 },
+        { description: 'Promotional Rebate', credits: 0, debits: 0, net: 0 },
+      ],
+      totalSettled: 99,
+    }, pdfText);
+    expect(result.items[0]).toEqual([
+      'Credits 15305827 is not in the PDF text',
+      'Net 15305827 is not in the PDF text',
+    ]);
+    expect(result.items[1]).toEqual(['Description is not in the PDF text']);
+    expect(result.totalSettled).toEqual(['Total settled 99 is not in the PDF text']);
   });
 });
