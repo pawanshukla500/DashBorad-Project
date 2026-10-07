@@ -53,6 +53,28 @@ function FullScreenLoader() {
   );
 }
 
+function AccessNotGranted({ email, onSignOut }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-canvas px-4" role="alert">
+      <div className="w-full max-w-md rounded-xl border border-border bg-surface p-6 text-center shadow-sm">
+        <span className="material-symbols-outlined text-[32px] text-outline" aria-hidden="true">lock</span>
+        <h1 className="mt-2 font-display text-lg font-semibold text-ink">Access not granted yet</h1>
+        <p className="mt-2 text-sm text-secondary">
+          <span className="font-semibold text-ink">{email}</span> is signed in but is not in the ReconCentral team directory.
+          Ask an administrator to add this account in Admin Center, then sign in again.
+        </p>
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="mt-5 inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-on-primary hover:bg-indigo-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2"
+        >
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function PageLoader() {
   // A token-driven skeleton that mirrors the layout of the heaviest pages
   // (Dashboard, ProfitAnalysis, OutstandingPayments). Showing a real-shaped
@@ -237,6 +259,8 @@ function AppContent() {
       </Suspense>
     );
   }
+
+  if (!user.accessGranted) return <AccessNotGranted email={user.email} onSignOut={logout} />;
 
   return (
     <div className="bg-canvas text-ink h-screen flex overflow-hidden font-sans selection:bg-primary-container selection:text-on-primary">

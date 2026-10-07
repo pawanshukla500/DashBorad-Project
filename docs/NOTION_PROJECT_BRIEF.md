@@ -105,26 +105,40 @@ the full design doc.
 
 - New top-level workspace **"SOR Level Payment Reco"** with four
   portal sub-tabs:
-  - **Myntra Jabong India Private Limited** (invoice-level on top of
-    existing Myntra pipeline)
-  - **Zepto Limited** *(data source TBD)*
-  - **Reliance Retail Ltd (AJIO)** (invoice-level on top of AJIO
-    pipeline)
-  - **Cocoblu Retails** *(data source TBD)*
+  - **Myntra Jabong India Private Limited** — separate legal entity
+    (not the regular Myntra marketplace); Excel upload from seller
+    portal. Phase 1.
+  - **Zepto Limited** — Excel upload from seller portal. Phase 3.
+  - **Reliance Retail Ltd (AJIO)** — separate AJIO upload path already
+    exists; Phase 2 wires it into `sor_invoice`.
+  - **Cocoblu Retails** — Excel upload from seller portal. Phase 4.
 - New tables: `sor_invoice` (header) + `sor_invoice_line` (line items
-  linking invoice ↔ order ↔ settlement).
+  linking invoice ↔ order ↔ settlement) + `sor_upload_log` (audit).
+- `sor_invoice_line` has FK references to `settlements(id)` and
+  `orders(id)` with `ON DELETE SET NULL` for referential integrity.
+- `sor_upload_log` is mirrored into `upload_log` via the
+  `trg_sor_upload_log_mirror` trigger so existing Audit History
+  surfaces SOR uploads.
 - Per-portal reconciliation rules:
   `expected_net_payable = gross − returns − fees − tds`.
 - Variance surfaced in the UI per invoice with drilldown to lines.
+- **Role gate:** analyst+ only — viewers cannot see the workspace in
+  the Sidebar and direct URL access redirects to the Dashboard.
 
 **Phases:**
 
-- Phase 0 — Scaffold (workspace, sub-tabs, route stubs, migration).
-- Phase 1 — Myntra end-to-end.
-- Phase 2 — AJIO end-to-end.
-- Phase 3 — Zepto end-to-end (Pawan's data source).
-- Phase 4 — Cocoblu end-to-end (Pawan's data source).
-- Phase 5 — Cross-portal insights.
+- **Phase 0 — Scaffold** *(PR #42, merged in `6d95313`)* — workspace,
+  sub-tabs, route stubs, migration, FK constraints, audit mirror
+  trigger, role gate.
+- **Phase 1** — Myntra Jabong India Pvt Ltd end-to-end (parser +
+  Data Hub upload card). Pending sample XLSX from Pawan.
+- **Phase 2** — Reliance Retail / AJIO end-to-end (wire existing
+  upload path). Unblocked.
+- **Phase 3** — Zepto Limited end-to-end (parser + upload card).
+  Pending sample XLSX.
+- **Phase 4** — Cocoblu Retails end-to-end (parser + upload card).
+  Pending sample XLSX.
+- **Phase 5** — Cross-portal insights.
 
 ---
 
@@ -150,6 +164,30 @@ for the full report.
 **Fix PRs planned** — each follows branch-off-`master`, squash, delete,
 CodeAnt follow-up.
 
+### PR #42 follow-up commits (2026-10-03)
+
+CodeAnt's review on PR #42 surfaced 5 additional nits (1 security +
+2 API mismatch + 1 comment mismatch + 1 logic error). All resolved in
+two follow-up commits:
+
+- `57202b0` — `fix(security): redact live TaskFlow PAT` (the one
+  CodeAnt flagged as Security severity).
+- `2245e31` — `fix(review): resolve CodeAnt nits` — adds FK
+  constraints on `sor_invoice_line`, adds the `sor_upload_log` →
+  `upload_log` mirror trigger, rewrites SOR §5.1 to drop the 10708/45833
+  reference for MJIPL, restricts SOR workspace to `EXPORT_ROLES` with
+  per-route viewer redirects, and adds the `dataSourceConfirmed` prop
+  on `SorPageShell` so AJIO/Zepto/Cocoblu no longer show the
+  contradictory "data source needed" copy.
+
+### Pre-existing PAT leak (separate concern)
+
+The same `tfp_pat_…` token is in `docs/TASKFLOW_INTEGRATION.md:79`,
+committed 2026-09-10 in `db37fd7` — pre-existed before PR #42 and is
+NOT fixed by the follow-up commits above. Recommended actions:
+1. Rotate the TaskFlow PAT on the project settings page.
+2. Redact the token in `docs/TASKFLOW_INTEGRATION.md` (separate small PR).
+
 ---
 
 ## Page 8 — TaskFlow Integration
@@ -165,20 +203,24 @@ CodeAnt follow-up.
 
 ## Page 10 — Roadmap (next 6 weeks)
 
-1. **SOR Phase 0** — Scaffold (PR open, in review).
-2. **SOR Phase 1** — Myntra invoice-level end-to-end.
+1. **SOR Phase 0** — Scaffold (PR #42 in review, 3 commits).
+2. **SOR Phase 2** — AJIO wire-up (unblocked, can start after merge).
 3. **Security Fix PRs** — H1–H4, H7, H10 (roll-up into 1–2 PRs).
-4. **Zepto** data source confirmation + Phase 3.
-5. **AJIO** invoice file parsing + Phase 2.
-6. **Cocoblu** data source confirmation + Phase 4.
-7. **Cross-portal insights** + quarterly security review.
+4. **Pre-existing PAT leak** — redact `docs/TASKFLOW_INTEGRATION.md`
+   + rotate TaskFlow PAT.
+5. **SOR Phase 1** — Myntra Jabong invoice-level end-to-end (pending
+   sample XLSX from Pawan).
+6. **SOR Phase 3** — Zepto end-to-end (pending sample XLSX).
+7. **SOR Phase 4** — Cocoblu end-to-end (pending sample XLSX).
+8. **Cross-portal insights** + quarterly security review.
 
 ---
 
 ## Action items (copy into Notion To-Do block)
 
-- [ ] Pawan — confirm Myntra invoice file source/columns
-- [ ] Pawan — confirm Zepto data source (Excel/email/SFTP)
-- [ ] Pawan — confirm AJIO invoice file source
-- [ ] Pawan — confirm Cocoblu data source
+- [ ] Pawan — share sample XLSX for Myntra Jabong (Phase 1)
+- [ ] Pawan — share sample XLSX for Zepto (Phase 3)
+- [ ] Pawan — share sample XLSX for Cocoblu (Phase 4)
+- [ ] Pawan — rotate TaskFlow PAT + redact `docs/TASKFLOW_INTEGRATION.md`
 - [ ] Pawan — provide Notion integration token (optional — auto-sync)
+- [ ] Pawan — squash-merge PR #42

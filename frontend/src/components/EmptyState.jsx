@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 
 /**
  * Marketplace-aware empty state with optional deep-link to Data Hub.
+ * Pass `actionTo={null}` to omit the link (e.g. for roles that cannot upload).
  */
 export default function EmptyState({
   title = 'No data yet',
@@ -27,6 +28,7 @@ export default function EmptyState({
       </div>
       <h3 className="text-sm font-semibold text-ink">{title}</h3>
       <p className="mt-1.5 text-xs text-secondary max-w-md mx-auto">{message || hint}</p>
+      {actionTo && (
       <Link
         to={actionTo}
         className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-xs font-bold text-on-primary transition-colors hover:bg-indigo-dark focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2"
@@ -34,6 +36,7 @@ export default function EmptyState({
         {actionLabel}
         <span className="material-symbols-outlined text-[16px]" aria-hidden="true">arrow_forward</span>
       </Link>
+      )}
     </div>
   );
 }

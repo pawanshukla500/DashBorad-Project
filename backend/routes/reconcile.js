@@ -392,9 +392,25 @@ router.get('/outstanding/config', async (req, res) => {
 // ── PUT /api/reconcile/outstanding/config/:channelKey ─────────────────────────
 router.put('/outstanding/config/:channelKey', async (req, res) => {
   if (!(await isDbConfigured())) return res.json({ configured: false });
+  const body = req.body || {};
+  const dayField = key => {
+    const value = body[key];
+    if (value === undefined || value === null || value === '') return { value: null };
+    const n = Number(value);
+    return Number.isInteger(n) && n >= 0 && n <= 365 ? { value: n } : { error: `${key} must be a whole number of days between 0 and 365` };
+  };
+  const grace = dayField('grace_period_days');
+  const cycle = dayField('payment_cycle_days');
+  const invalid = grace.error || cycle.error
+    || (body.is_active !== undefined && body.is_active !== null && typeof body.is_active !== 'boolean' ? 'is_active must be true or false' : null);
+  if (invalid) return res.status(400).json({ error: invalid });
   try {
     const pool = getPool();
-    const updated = await updateOutstandingConfig(pool, req.params.channelKey, req.body);
+    const updated = await updateOutstandingConfig(pool, req.params.channelKey, {
+      grace_period_days: grace.value,
+      payment_cycle_days: cycle.value,
+      is_active: typeof body.is_active === 'boolean' ? body.is_active : null,
+    });
     if (!updated) {
       return res.status(404).json({ error: `Channel configuration not found for '${req.params.channelKey}'` });
     }

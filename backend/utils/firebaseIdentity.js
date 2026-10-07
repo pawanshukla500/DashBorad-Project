@@ -9,5 +9,6 @@ export function identityFromFirebaseToken(decodedToken = {}) {
     uid,
     email,
     displayName: String(decodedToken.name || email.split('@')[0]).trim(),
+    emailVerified: decodedToken.email_verified === true,
   };
 }

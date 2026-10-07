@@ -1,3 +1,4 @@
+import express from 'express';
 import dataRoutes from './data.js';
 import { invalidateReportCache } from '../services/reportCache.js';
 import statementRoutes from './statement.js';
@@ -19,6 +20,7 @@ import exceptionsRoutes from './exceptions.js';
 import disputesRoutes from './disputes.js';
 import exportRoutes from './export.js';
 import uploadHealthRoutes from './uploadHealth.js';
+import sorRoutes from './sor.js';
 import {
   authMiddleware,
   mutationAccessGuard,
@@ -33,6 +35,7 @@ function protectMutations(app, path) {
 
 export function mountApiRoutes(app) {
   app.use('/api', auditMutationMiddleware);
+  app.use('/api/auth', express.json({ limit: '1mb' }));
   app.use('/api/auth', authRoutes);
 
   // Everything below this line requires a valid Firebase identity (except public health checks).
@@ -40,6 +43,9 @@ export function mountApiRoutes(app) {
     if (req.path === '/health' || req.originalUrl === '/api/health') return next();
     return authMiddleware(req, res, next);
   });
+  // Large JSON bodies (bulk rate-card / catalog saves, screenshots) are only
+  // buffered for requests whose Firebase token has already been verified.
+  app.use('/api', express.json({ limit: '50mb' }));
 
   // The report cache is safe only until a successful write. Invalidate it
   // after every mutation so an upload, rate change, or correction is visible
@@ -93,10 +99,21 @@ export function mountApiRoutes(app) {
   app.use('/api/upload', uploadRoutes);
   app.use('/api/upload/flipkart-settlement', flipkartSettlementRoutes);
 
+  // Reports are read-only; the outstanding-config PUT changes the payment
+  // matrix for everyone, so it needs operator / admin like other writes.
+  protectMutations(app, '/api/reconcile');
   app.use('/api/reconcile', reconcileRoutes);
   app.use('/api/charges', chargesRoutes);
   app.use('/api/insights', insightsRoutes);
 
   protectMutations(app, '/api/mp-settlement');
   app.use('/api/mp-settlement', mpSettlementRoutes);
+
+  // SOR (Sales Order Reconciliation) — invoice-grain outstanding ledger
+  // across Myntra Jabong, Zepto, AJIO, Cocoblu. Read-only endpoints —
+  // the four upload streams (invoice/payment/return/deduction) live in
+  // portal-specific routes added in Phases 1–4. Role-gated to analyst+
+  // (matches the workspace's nav-level gate in frontend/src/navigation.js).
+  app.use('/api/sor', requireRole('analyst', 'operator', 'admin'));
+  app.use('/api/sor', sorRoutes);
 }

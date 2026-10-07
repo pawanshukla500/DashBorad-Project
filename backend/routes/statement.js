@@ -17,6 +17,13 @@ const upload = multer({
 });
 
 const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-1.5-pro'];
+const GEMINI_TIMEOUT_MS = 60_000;
+// A real settlement statement carries a few KB of table text. Less means a
+// scanned PDF with no text layer — the model would then invent figures (e.g.
+// echo the prompt's example) that replace a month's statement. Far more is
+// not a statement at all and would only burn tokens.
+const MIN_STATEMENT_TEXT_CHARS = 200;
+const MAX_STATEMENT_TEXT_CHARS = 200_000;
 
 class StatementInputError extends Error {
   constructor(message) {
@@ -58,7 +65,7 @@ ${text}`;
   let lastErr;
   for (const modelName of GEMINI_MODELS) {
     try {
-      const model = genAI.getGenerativeModel({ model: modelName });
+      const model = genAI.getGenerativeModel({ model: modelName }, { timeout: GEMINI_TIMEOUT_MS });
       const result = await model.generateContent(prompt);
       const raw = result.response.text().trim();
       const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/i, '').trim();
@@ -169,7 +176,14 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
     }
 
     const pdfData = await pdfParse(req.file.buffer);
-    const parsed = parseStatementPayload(await parseWithAI(pdfData.text));
+    const statementText = String(pdfData.text || '').trim();
+    if (statementText.length < MIN_STATEMENT_TEXT_CHARS) {
+      throw new StatementInputError('This PDF has no readable text (it may be a scanned image). Upload the statement PDF downloaded from the seller portal.');
+    }
+    if (statementText.length > MAX_STATEMENT_TEXT_CHARS) {
+      throw new StatementInputError('This PDF is much larger than a settlement statement. Upload the monthly statement PDF only.');
+    }
+    const parsed = parseStatementPayload(await parseWithAI(statementText));
     const saleAmt = parsed.saleAmount;
 
     const rows = parsed.items.map(item => {

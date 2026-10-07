@@ -1,8 +1,8 @@
 # SOR Level Payment Reconciliation — Design Doc
 
-**Status:** Draft, scope to be filled per portal by Pawan
+**Status:** Phase 0 live; Phase 0.5 ledger + Phase 2 (AJIO) in review; Phases 1 / 3 / 4 await sample files
 **Owner:** Pawan Shukla
-**Last updated:** 2026-10-03
+**Last updated:** 2026-10-07
 
 ---
 
@@ -62,54 +62,155 @@ WORKSPACES
 
 `/sor` itself redirects to `/sor/myntra-jabong` (the largest portal).
 
+**Role gate (Phase 0):** SOR is `EXPORT_ROLES` (analyst, operator, admin)
+only. Viewers do not see the workspace in the Sidebar; direct URL
+access redirects to the Dashboard). Enforced both in
+`frontend/src/navigation.js` (`roles: EXPORT_ROLES`) and in
+`frontend/src/App.jsx` (per-route `hasRole(user.role, EXPORT_ROLES)`
+check on every `/sor/*` route).
+
 ---
 
-## 4. Invoice-level schema (planned)
+## 4. Invoice-level schema (live in Phase 0)
+
+Phase 0 (PR #42) created these tables; `backend/db/initDb.js` is the
+single source of truth — reproduced below for reference, including the
+Phase 0.5 columns (`line_type`, `source`). See §6a for the migration
+versions and how they run.
 
 ```sql
 -- Header per portal invoice
-CREATE TABLE sor_invoice (
+CREATE TABLE IF NOT EXISTS sor_invoice (
   id              BIGSERIAL PRIMARY KEY,
-  portal          TEXT NOT NULL,        -- 'myntra_jabong' | 'zepto' | 'reliance_ajio' | 'cocoblu'
-  portal_account  TEXT NOT NULL,        -- '10708' | '45833' | 'zepto_main' | 'ajio_main' | 'cocoblu_main'
+  portal          TEXT NOT NULL,
+  portal_account  TEXT NOT NULL DEFAULT 'default',
   invoice_no      TEXT NOT NULL,
-  invoice_date    DATE NOT NULL,
+  invoice_date    DATE,
   period_from     DATE,
   period_to       DATE,
-  invoice_type    TEXT NOT NULL,        -- 'sale' | 'return' | 'settlement' | 'credit_note' | 'debit_note'
+  invoice_type    TEXT NOT NULL,
   gross_amount    NUMERIC(14,2),
   fee_amount      NUMERIC(14,2),
   tds_amount      NUMERIC(14,2),
   net_payable     NUMERIC(14,2),
-  raw_payload     JSONB NOT NULL,       -- full parsed row, audit-safe
+  raw_payload     JSONB NOT NULL,
   uploaded_by     TEXT,
-  uploaded_at     TIMESTAMPTZ DEFAULT now(),
-  UNIQUE (portal, portal_account, invoice_no, invoice_type)
+  uploaded_at     TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT uq_sor_invoice_portal_account_no_type UNIQUE (portal, portal_account, invoice_no, invoice_type)
 );
 
--- Line items linking invoice ↔ order
-CREATE TABLE sor_invoice_line (
+-- Line items linking invoice ↔ order ↔ settlement.
+-- settlement_id and order_row_id are FK references with ON DELETE SET NULL
+-- so clearing the parent settlement or order preserves the audit row.
+-- line_type is the SOR accounting-ledger discriminator: 'sale' | 'payment' | 'return' | 'deduction'.
+-- source is the lineage of the line (e.g. 'mp_invoices:ajio'); a re-sync
+-- replaces only the lines its own pipeline owns.
+CREATE TABLE IF NOT EXISTS sor_invoice_line (
   id              BIGSERIAL PRIMARY KEY,
-  invoice_id      BIGINT REFERENCES sor_invoice(id) ON DELETE CASCADE,
-  order_id        TEXT,                 -- marketplace order id
-  sku             TEXT,                 -- marketplace SKU
-  vb_export_sku   TEXT,                 -- master SKU (per AGENTS.md invariant)
+  invoice_id      BIGINT NOT NULL REFERENCES sor_invoice(id) ON DELETE CASCADE,
+  line_type       TEXT NOT NULL DEFAULT 'sale',
+  order_id        TEXT,
+  sku             TEXT,
+  vb_export_sku   TEXT,
   quantity        INT,
   gross_amount    NUMERIC(14,2),
   fee_amount      NUMERIC(14,2),
-  settlement_id   BIGINT REFERENCES settlement_items(id), -- when present
-  order_row_id    BIGINT REFERENCES orders(id),           -- when present
-  raw_payload     JSONB NOT NULL
+  settlement_id   BIGINT REFERENCES settlements(id) ON DELETE SET NULL,
+  order_row_id    BIGINT REFERENCES orders(id)      ON DELETE SET NULL,
+  raw_payload     JSONB NOT NULL,
+  source          TEXT,
+  CONSTRAINT sor_invoice_line_line_type_check
+    CHECK (line_type IN ('sale', 'payment', 'return', 'deduction'))
 );
 
-CREATE INDEX idx_sor_invoice_portal     ON sor_invoice(portal, portal_account);
-CREATE INDEX idx_sor_invoice_period     ON sor_invoice(portal, invoice_date);
-CREATE INDEX idx_sor_invoice_line_order ON sor_invoice_line(order_id);
-CREATE INDEX idx_sor_invoice_line_sku   ON sor_invoice_line(vb_export_sku);
+-- Audit trail per uploaded file.
+CREATE TABLE IF NOT EXISTS sor_upload_log (
+  id            SERIAL PRIMARY KEY,
+  portal        TEXT NOT NULL,
+  portal_account TEXT NOT NULL DEFAULT 'default',
+  filename      TEXT,
+  rows_inserted INT DEFAULT 0,
+  rows_updated  INT DEFAULT 0,
+  rows_skipped  INT DEFAULT 0,
+  status        TEXT,
+  error_msg     TEXT,
+  remark        TEXT,
+  uploaded_by   TEXT,
+  uploaded_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 7 covering indexes shipped with Phase 0:
+-- IX_sor_invoice_portal        ON sor_invoice(portal, portal_account)
+-- IX_sor_invoice_date          ON sor_invoice(invoice_date DESC)
+-- IX_sor_invoice_period        ON sor_invoice(period_from, period_to)
+-- IX_sor_invoice_line_order    ON sor_invoice_line(order_id) WHERE order_id IS NOT NULL
+-- IX_sor_invoice_line_sku      ON sor_invoice_line(vb_export_sku) WHERE vb_export_sku IS NOT NULL
+-- IX_sor_invoice_line_invoice  ON sor_invoice_line(invoice_id)
+-- IX_sor_upload_log_portal_date ON sor_upload_log(portal, uploaded_at DESC)
+-- Phase 0.5 (ensureSorLedgerSchema):
+-- IX_sor_invoice_line_invoice_cover ON sor_invoice_line(invoice_id) INCLUDE (line_type, gross_amount)
+-- IX_sor_invoice_line_order_row     ON sor_invoice_line(order_row_id)  WHERE order_row_id IS NOT NULL
+-- IX_sor_invoice_line_settlement    ON sor_invoice_line(settlement_id) WHERE settlement_id IS NOT NULL
+```
+
+### Audit mirror trigger (Phase 0)
+
+Every `sor_upload_log` row is mirrored into `upload_log` via the
+`trg_sor_upload_log_mirror` AFTER INSERT trigger (function
+`sor_upload_log_mirror()`). The mirror row uses `marketplace=portal`
+(e.g. `'myntra'`, `'zepto'`) and `data_type='sor_invoice'`, so the
+existing Audit History query surfaces SOR uploads alongside marketplace
+uploads with **no** Audit History code change.
+
+```sql
+CREATE OR REPLACE FUNCTION sor_upload_log_mirror() RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO upload_log (
+    data_type, filename, marketplace, rows_inserted, rows_updated,
+    rows_skipped, status, error_msg, remark, uploaded_at
+  ) VALUES (
+    'sor_invoice', NEW.filename, NEW.portal, NEW.rows_inserted,
+    NEW.rows_updated, NEW.rows_skipped, NEW.status, NEW.error_msg,
+    COALESCE(NEW.remark, '') || ' | portal_account=' || NEW.portal_account,
+    NEW.uploaded_at
+  );
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_sor_upload_log_mirror
+  AFTER INSERT ON sor_upload_log
+  FOR EACH ROW EXECUTE FUNCTION sor_upload_log_mirror();
+```
+
+### FK constraint hardening
+
+For installs that pre-date the FK references in `sor_invoice_line`,
+`ensureSorInvoiceSchema()` adds the constraints idempotently using a
+`pg_constraint` lookup guard:
+
+```sql
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_settlement'
+  ) THEN
+    ALTER TABLE sor_invoice_line
+      ADD CONSTRAINT fk_sor_invoice_line_settlement
+      FOREIGN KEY (settlement_id) REFERENCES settlements(id) ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_order'
+  ) THEN
+    ALTER TABLE sor_invoice_line
+      ADD CONSTRAINT fk_sor_invoice_line_order
+      FOREIGN KEY (order_row_id) REFERENCES orders(id) ON DELETE SET NULL;
+  END IF;
+END $$;
 ```
 
 All `JSONB` writes go through `forEachDbBatch` and any change to
-`orders` / `settlement_items` triggers `refreshOrderSettlementTotals`
+`orders` / `settlements` triggers `refreshOrderSettlementTotals`
 (per AGENTS.md invariants).
 
 ---
@@ -185,6 +286,114 @@ Each sub-tab page reuses the existing ReconCentral design system:
 Design tokens stay on-brand (burgundy `#902A4A`, Inter + Geist +
 JetBrains Mono, tabular-nums on financial values).
 
+As built (`frontend/src/pages/Sor/SorPageShell.jsx`): KPI tiles
+(outstanding, invoices, overdue > 60 days, invoices with variance, last
+upload), the sale − payment − return − deduction breakdown, open
+outstanding by age (0–30 / 31–60 / 61–90 / 90+ days), the four upload
+streams with their real status, the Outstanding Ledger (server-side
+invoice search, status filter, sortable columns, 50-row pages, honours the
+global date filter and Refresh), and the invoice drilldown (accessible
+`Modal`, lines grouped by type, fee type / payment reference labels).
+Upload links are shown to operators and admins only; analysts see who
+uploads instead of a link that would bounce them off `/upload`.
+
+---
+
+## 6a. Accounting ledger (`sor_outstanding`)
+
+Every SOR line is one of four streams (`sor_invoice_line.line_type`):
+`sale`, `payment`, `return`, `deduction`. All amounts live in
+`gross_amount` (deduction lines too; `fee_amount` is 0 on ledger lines).
+The `sor_outstanding` view is the single source of truth for the KPI grid
+and the ledger table — one row per `sor_invoice`:
+
+| Column | Definition |
+|---|---|
+| `sale_total` / `payment_total` / `return_total` / `deduction_total` | Σ `gross_amount` per `line_type` (0 when a stream has no lines) |
+| `outstanding` | `sale − payment − return − deduction` |
+| `expected_net_payable` | `sale − return − deduction` — what the portal owes before payment |
+| `declared_net_payable` | `sor_invoice.net_payable` — the net the portal itself declared |
+| `variance` | `declared_net_payable − expected_net_payable`. **Payments are excluded**, so a fully paid invoice whose components agree with the portal has 0 variance. NULL when the portal declares no net. |
+| `ledger_status` | `open` (outstanding ≥ ₹1), `overpaid` (≤ −₹1), else `settled` |
+| `age_days` | `CURRENT_DATE − invoice_date` |
+| `last_activity_at` | `sor_invoice.uploaded_at` (refreshed on every re-sync) |
+
+The view is replaced on every start (`ensureSorOutstandingView`); new
+columns may only be appended.
+
+### Line ownership
+
+`sor_invoice_line.source` names the pipeline that wrote a line. A pipeline
+re-sync deletes and re-inserts **only its own lines** on an invoice, so a
+payment file uploaded later for the same invoice is never wiped by a
+re-upload of the invoice file. A header is deleted only once no line from
+any source remains.
+
+### Reliance Retail Ltd (AJIO) — Phase 2 mapping
+
+AJIO invoices are imported through the existing Data Hub `mp_invoices`
+pipeline (`POST /api/mp-settlement/invoices/upload?marketplace=ajio`).
+After every upload — and after `DELETE /invoices/:id` or a scoped AJIO
+clear — `backend/services/sorMirror.js` re-reads the **stored** AJIO rows
+of each touched invoice and rebuilds its ledger (`source =
+'mp_invoices:ajio'`). The upload response carries `sor: { mirrored,
+removed, errors }`; a sync failure never fails the upload.
+
+| Stored `mp_invoices` value (per row) | SOR line |
+|---|---|
+| `invoice_amount` (forward row) | `sale` |
+| \|`invoice_amount`\| when the row is a reverse (negative amount, a Return ID, or `order_type` reverse/return). A reverse row written with a **positive** amount has every money field sign-flipped (fees and declared net become refunds), as the Myntra parser does. | `return` |
+| `commission_amount`, `other_deductions`, `tcs_amount`, `tds_amount` (each, when ≠ 0, signed) | `deduction` (`raw_payload.fee_type`) |
+| `amount_received` (≠ 0) | `payment` (with `payment_date`, `payment_reference`) |
+
+Header: `gross / fee / tds` are sums of the stored rows and `net_payable`
+is Σ AJIO's declared `net_payable`. Lines link to AJIO orders only
+(`orders.marketplace = 'ajio'`) by `order_line_id`, then
+`order_release_id`. Rows of other marketplaces with the same invoice
+number are never read. Manual add / edit of an AJIO row re-syncs too (an
+edit refreshes both the old and the new invoice number). The one-time
+backfill `2026.10.sor-ajio-mirror-2` covers AJIO invoices stored before
+the hook existed; it runs after the API is ready (`server.js`) and shares
+the mirror's one-at-a-time queue with live uploads.
+
+> Assumption to confirm with an AJIO sample file: reverse rows are
+> identifiable by a negative amount, a Return ID or an order-type column.
+
+### REST contract (`/api/sor`, analyst+ read-only)
+
+| Endpoint | Notes |
+|---|---|
+| `GET /:portal/outstanding` | `page`, `pageSize` (≤ 500, default 50), `sort` (`invoice_date` · `invoice_no` · `outstanding` · `age_days` · `variance` · `sale_total`), `dir`, `status` (`open` · `settled` · `overpaid`), `invoice_no` (literal substring), `from` / `to` (YYYY-MM-DD), `portal_account`. Returns `{ rows, total, page, pageSize, kpis }`; `kpis` cover the whole filtered portal (status filter excluded) incl. aging buckets, `varianceInvoices`, `lastUploadAt`. |
+| `GET /:portal/invoices` | Paginated header list. |
+| `GET /:portal/invoice/:id` | Ledger row from `sor_outstanding` + lines grouped by `line_type`. |
+
+Unknown portals → 404 before any query; invalid filters → 400; server
+errors return a generic message (no database text).
+
+### Migrations
+
+| Version | Step |
+|---|---|
+| `2026.10.sor-invoice-1` | Phase 0 (PR #42, applied in production). |
+| `2026.10.sor-invoice-2` | Same Phase 0 steps made transactional; on production it only re-creates the audit trigger. |
+| `2026.10.sor-ledger-2` | `line_type` + CHECK, `source` (tags lines left by the earlier mirror revision), FK-column and covering indexes. |
+| `2026.10.sor-fk-dedupe-1` | Drops the duplicate named FKs Phase 0 added on top of the inline ones (production had both). |
+| `2026.10.sor-ajio-mirror-2` | One-time AJIO backfill after startup; recorded only when every invoice synced. |
+
+`-2` names: earlier unmerged revisions (PR #44 / #48) used `sor-ledger-1`
+and `sor-ajio-mirror-1` with different contents; a version name is never
+reused once its contents change.
+
+Rules: each step runs in one transaction on one client with
+`lock_timeout` (5 s; 3 s for the FK step) and records its version only on
+success, so a failure is retried on the next start instead of being
+silently skipped. SOR steps run on both the full and the already-current
+startup paths and **must not bump `CURRENT_SCHEMA_VERSION`** — that would
+send production through the full DDL pass (dozens of `ALTER TABLE` on
+`orders` / `returns`) on the shared PostgreSQL server. Startup migrations
+only run with `NODE_ENV=production` or `RUN_SCHEMA_MIGRATIONS=true`, so a
+local backend pointed at production cannot apply an unmerged branch's DDL.
+
 ---
 
 ## 7. Implementation phases
@@ -193,12 +402,17 @@ Each Phase has its own TaskFlow task (assigned to Pawan).
 
 | Phase | Sub-tab | Scope | TaskFlow task |
 |---|---|---|---|
-| **Phase 0 — Scaffold** *(done)* | All 4 | Workspace + routes + DB migration + page stubs | `c5be7da4-0f4f-4127-af8e-8b15f5499050` |
-| **Phase 1** | Myntra Jabong India Pvt Ltd | Excel parser + Data Hub upload card + KPI / table / drilldown | `060d4c84-8a8b-4602-8fc9-b5e918812ab6` |
-| **Phase 2** | Reliance Retail Ltd (AJIO) | Wire existing AJIO upload path → `sor_invoice` | `1e7418dc-e901-45c4-a042-161779961148` |
-| **Phase 3** | Zepto Limited | Excel parser + Data Hub upload card + KPI / table / drilldown | `da3de148-8e7a-4bdc-a1f4-b8d6c1c8db1d` |
-| **Phase 4** | Cocoblu Retails | Excel parser + Data Hub upload card + KPI / table / drilldown | `ec570612-a290-4ea5-8fc4-bdad27692043` |
-| **Phase 5** | Cross-portal | Insights ("Invoices with variance > ₹X", "Invoices not present in settlement", etc.) | TBD |
+| **Phase 0 — Scaffold** *(merged)* | All 4 | Workspace + routes + DB migration + page stubs | `c5be7da4-0f4f-4127-af8e-8b15f5499050` |
+| **Phase 0.5 — Accounting ledger extension** *(PR #44, in review; commit `6d1092d`)* | All 4 | Add `sor_invoice_line.line_type` (sale/payment/return/deduction) + `sor_outstanding` view + outstanding endpoint + KPI grid refactor | `c5be7da4-…` (parent) → `9393b4d6-…` (this PR) |
+| **Phase 1** | Myntra Jabong India Pvt Ltd | Excel parsers × 4 (invoice, payment, return, deduction) + upload cards + outstanding ledger + drilldown | `060d4c84-8a8b-4602-8fc9-b5e918812ab6` |
+| **Phase 2** | Reliance Retail Ltd (AJIO) | **In review.** AJIO uploads / deletes re-sync the ledger from the stored `mp_invoices` rows (all four streams from the one invoice file — see §6a), with a one-time backfill (`2026.10.sor-ajio-mirror-2`). Data Hub gains an AJIO source button and `/upload?marketplace=ajio` deep link. | `1e7418dc-…` (plan) + `3d8a33dd-…` (impl) |
+| **Phase 3** | Zepto Limited | Excel parsers × 4 + upload cards + outstanding ledger + drilldown | `da3de148-8e7a-4bdc-a1f4-b8d6c1c8db1d` |
+| **Phase 4** | Cocoblu Retails | Excel parsers × 4 + upload cards + outstanding ledger + drilldown | `ec570612-a290-4ea5-8fc4-bdad27692043` |
+| **Phase 5** | Cross-portal | Insights ("Invoices with outstanding > ₹X", "Aging buckets", "Outstanding payments not yet uploaded", etc.) | TBD |
+
+Each per-portal Phase ships **4 upload streams** (invoice / payment /
+return / deduction) and the Outstanding Ledger UI for that portal —
+never just the invoice stream alone.
 
 ---
 
@@ -234,14 +448,24 @@ Each Phase has its own TaskFlow task (assigned to Pawan).
 
 ## 10. Acceptance criteria
 
-- [ ] Workspace `SOR Level Payment Reco` is reachable from the
+- [x] Workspace `SOR Level Payment Reco` is reachable from the
       Sidebar (analyst+).
-- [ ] Each portal sub-tab has its own URL and renders without crashing
+- [x] Each portal sub-tab has its own URL and renders without crashing
       even when empty.
-- [ ] Myntra sub-tab reconciles invoice-level variances (Phase 1).
-- [ ] AJIO sub-tab reconciles invoice-level variances (Phase 2).
-- [ ] Zepto + Cocoblu sub-tabs work end-to-end once data sources are
-      provided (Phase 3 / 4).
+- [x] **Phase 0.5** — `sor_invoice_line.line_type` column + CHECK
+      constraint; `sor_outstanding` view returns one row per invoice
+      with `outstanding = sale − payment − return − deduction`; KPI
+      grid on every sub-tab reads from `sor_outstanding` (in review).
+- [ ] **Phase 1 (Myntra Jabong)** — 4 upload streams (invoice /
+      payment / return / deduction) + Outstanding Ledger + drilldown
+      drawer showing all 4 streams per invoice.
+- [ ] **Phase 2 (AJIO)** — same shape; existing AJIO upload path wired
+      for all 4 streams.
+- [ ] **Phase 3 / 4 (Zepto / Cocoblu)** — same shape once data
+      sources are confirmed.
+- [ ] **Phase 5 (cross-portal)** — Insights cards: total outstanding
+      per portal, aging buckets, invoices with outstanding > ₹X but
+      no recent payment upload.
 - [ ] No regression in existing reconciliation pages.
 - [ ] All new endpoints pass `auditLogSanitization`, `uploadSecurity`,
       `dbBatch` tests.

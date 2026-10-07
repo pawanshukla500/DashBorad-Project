@@ -5,12 +5,27 @@ import { amazonReportingRollupUnifiedSelect, ensureAmazonSettlementReportingRoll
 import { myntraInvoicesUnifiedSelect } from '../services/myntraSettlementReportingRollups.js';
 import { meeshoSettlementUnifiedSelect } from '../services/meeshoSettlementReportingRollups.js';
 import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { rebuildAjioSorLedger } from '../services/sorMirror.js';
 
 // Every item below this version is idempotent but not free: ALTER TABLE takes
 // a table lock even when the column already exists. Record completion so a
 // normal backend restart is a quick health check rather than a full DDL pass.
+//
+// Bumping CURRENT_SCHEMA_VERSION sends every installation through the full DDL
+// pass (dozens of ALTER TABLE orders/returns statements) on the next boot. The
+// SOR migrations below are self-versioned and also run on the already-current
+// path, so they deliberately do NOT bump it.
 const CURRENT_SCHEMA_VERSION = '2026.10.sor-invoice-1';
-const SOR_INVOICE_SCHEMA_VERSION = '2026.10.sor-invoice-1';
+// sor-invoice-2: same Phase 0 steps as sor-invoice-1, now transactional. A
+// distinct string from CURRENT_SCHEMA_VERSION, so a failed SOR step on a fresh
+// install can never be marked done by the full pass's final version insert.
+const SOR_INVOICE_SCHEMA_VERSION = '2026.10.sor-invoice-2';
+// -2 suffixes: earlier unmerged revisions of these steps (PR #44 / #48) used
+// the -1 names with different contents, so a database where one of them ran
+// must still get the current steps.
+const SOR_LEDGER_SCHEMA_VERSION = '2026.10.sor-ledger-2';
+const SOR_FK_DEDUPE_SCHEMA_VERSION = '2026.10.sor-fk-dedupe-1';
+const SOR_AJIO_MIRROR_SCHEMA_VERSION = '2026.10.sor-ajio-mirror-2';
 const MYNTRA_UPLOAD_SCHEMA_VERSION = '2026.08.myntra-ej-vb-order-return-1';
 const MYNTRA_SELLER_ID_SCHEMA_VERSION = '2026.08.myntra-seller-id-guard-1';
 const UPLOAD_AUDIT_RETENTION_SCHEMA_VERSION = '2026.08.upload-audit-retention-1';
@@ -666,9 +681,15 @@ const TABLES = [`
   // settlement_id and order_row_id protect referential integrity — deleting
   // the parent settlement or order cascades into NULLs (not the lines
   // themselves) so audit history is preserved.
+  // `line_type` is the SOR accounting-ledger discriminator (Phase 0.5):
+  //   'sale'        — invoice sale line (qty × unit_price per SKU)
+  //   'payment'     — payment line applied to this invoice
+  //   'return'      — return line applied to this invoice
+  //   'deduction'   — TDS / GST / reverse-charge / other debit note
   `CREATE TABLE IF NOT EXISTS sor_invoice_line (
     id              BIGSERIAL PRIMARY KEY,
     invoice_id      BIGINT NOT NULL REFERENCES sor_invoice(id) ON DELETE CASCADE,
+    line_type       TEXT NOT NULL DEFAULT 'sale',
     order_id        TEXT,
     sku             TEXT,
     vb_export_sku   TEXT,
@@ -677,7 +698,12 @@ const TABLES = [`
     fee_amount      NUMERIC(14,2),
     settlement_id   BIGINT REFERENCES settlements(id) ON DELETE SET NULL,
     order_row_id    BIGINT REFERENCES orders(id)      ON DELETE SET NULL,
-    raw_payload     JSONB NOT NULL
+    raw_payload     JSONB NOT NULL,
+    -- Lineage: which pipeline owns the line (e.g. 'mp_invoices:ajio'). A
+    -- re-sync replaces only its own lines on an invoice.
+    source          TEXT,
+    CONSTRAINT sor_invoice_line_line_type_check
+        CHECK (line_type IN ('sale', 'payment', 'return', 'deduction'))
   )`,
   // Audit trail for SOR uploads. One row per uploaded file. The
   // ensureSorInvoiceSchema() migration below adds a trigger that mirrors
@@ -783,12 +809,29 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_order ON sor_invoice_line(order_id) WHERE order_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_sku   ON sor_invoice_line(vb_export_sku) WHERE vb_export_sku IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_invoice ON sor_invoice_line(invoice_id)`,
+  // Phase 0.5 — the line_type covering index and the FK-column indexes are
+  // created INSIDE ensureSorLedgerSchema after the columns are added, so
+  // existing installs that pre-date the columns don't crash on this DDL.
   `CREATE INDEX IF NOT EXISTS IX_sor_upload_log_portal_date ON sor_upload_log(portal, uploaded_at DESC)`,
 ];
+
+// Startup DDL runs where the schema is owned: the production container (CI
+// deploy) or a database a developer explicitly opts in. A development backend
+// usually points at the shared production database — directly or through the
+// SSH tunnel on 127.0.0.1, so the host cannot tell them apart — and an
+// unmerged branch's migrations must never reach it before review.
+export function schemaMigrationsEnabled(env = process.env) {
+  if (env.NODE_ENV === 'production') return true;
+  return /^(1|true|yes)$/i.test(String(env.RUN_SCHEMA_MIGRATIONS || '').trim());
+}
 
 export async function initDb() {
   if (!(await isDbConfigured())) {
     console.log('[db] PostgreSQL not configured — skipping schema init');
+    return;
+  }
+  if (!schemaMigrationsEnabled()) {
+    console.warn('[db] Schema migrations skipped: NODE_ENV is not "production". Set RUN_SCHEMA_MIGRATIONS=true to apply this branch\'s migrations to the configured database (never the shared production database).');
     return;
   }
   try {
@@ -823,7 +866,7 @@ export async function initDb() {
       await ensureMyntraBlankTrackingRtoFix(pool);
       await ensureMyntraBlankTrackingCancelledFix(pool);
       await ensureMyntraEjRateCardsSeed(pool);
-      await ensureSorInvoiceSchema(pool);
+      await ensureSorSchema(pool);
       await ensureDbConnectionOptimization(pool);
       await ensureLookupIndexes(pool);
       // A read-model migration changes the view definition as well as the
@@ -1517,7 +1560,7 @@ export async function initDb() {
     await ensureMyntraBlankTrackingRtoFix(pool);
     await ensureMyntraBlankTrackingCancelledFix(pool);
     await ensureMyntraEjRateCardsSeed(pool);
-    await ensureSorInvoiceSchema(pool);
+    await ensureSorSchema(pool);
     await ensureDbConnectionOptimization(pool);
     await ensureLookupIndexes(pool);
 
@@ -1786,68 +1829,308 @@ async function ensureMyntraPaymentLinkageSchema(pool) {
  * Per-portal reconciliation rules live in docs/SOR_LEVEL_PAYMENT_RECO.md.
  */
 async function ensureSorInvoiceSchema(pool) {
+  return runVersionedMigration(pool, SOR_INVOICE_SCHEMA_VERSION, async client => {
+    // FK constraints on sor_invoice_line. CREATE TABLE on a fresh install
+    // already declares them inline; only a table that pre-dates the inline
+    // declaration (no FK to the parent at all) gets one added here. SET NULL
+    // preserves audit rows when the parent settlement or order is later cleared.
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'sor_invoice_line'::regclass AND contype = 'f'
+            AND confrelid = 'settlements'::regclass
+        ) THEN
+          ALTER TABLE sor_invoice_line
+            ADD CONSTRAINT fk_sor_invoice_line_settlement
+            FOREIGN KEY (settlement_id) REFERENCES settlements(id) ON DELETE SET NULL;
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'sor_invoice_line'::regclass AND contype = 'f'
+            AND confrelid = 'orders'::regclass
+        ) THEN
+          ALTER TABLE sor_invoice_line
+            ADD CONSTRAINT fk_sor_invoice_line_order
+            FOREIGN KEY (order_row_id) REFERENCES orders(id) ON DELETE SET NULL;
+        END IF;
+      END $$;
+    `);
+
+    // Mirror SOR upload events into upload_log so the existing Audit History
+    // query surfaces them without a code change. data_type = 'sor_invoice'
+    // makes them filterable; marketplace = portal keeps the column truthful.
+    await client.query(`
+      CREATE OR REPLACE FUNCTION sor_upload_log_mirror() RETURNS TRIGGER AS $$
+      BEGIN
+        INSERT INTO upload_log (
+          data_type, filename, marketplace, rows_inserted, rows_updated,
+          rows_skipped, status, error_msg, remark, uploaded_at
+        ) VALUES (
+          'sor_invoice', NEW.filename, NEW.portal, NEW.rows_inserted,
+          NEW.rows_updated, NEW.rows_skipped, NEW.status, NEW.error_msg,
+          COALESCE(NEW.remark, '') || ' | portal_account=' || NEW.portal_account,
+          NEW.uploaded_at
+        );
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    await client.query(`
+      DROP TRIGGER IF EXISTS trg_sor_upload_log_mirror ON sor_upload_log;
+      CREATE TRIGGER trg_sor_upload_log_mirror
+        AFTER INSERT ON sor_upload_log
+        FOR EACH ROW EXECUTE FUNCTION sor_upload_log_mirror();
+    `);
+  });
+}
+
+
+/**
+ * All SOR schema steps, in dependency order. Called from both the full and
+ * the already-current initDb paths. Each step is self-versioned; a failing
+ * step logs and leaves its version unrecorded (retried next boot) without
+ * gating the rest of the API on an optional workspace.
+ */
+export async function ensureSorSchema(pool) {
+  await ensureSorInvoiceSchema(pool);
+  const ledgerReady = await ensureSorLedgerSchema(pool);
+  await ensureSorForeignKeyDedupe(pool);
+  if (!ledgerReady) return;
+  await ensureSorOutstandingView(pool);
+  // The AJIO backfill is data, not schema: server.js runs
+  // ensureSorAjioBackfill() after the API is ready so it never delays startup.
+}
+
+/**
+ * Run a versioned migration as one transaction on one client. A failing step
+ * rolls the whole migration back and leaves its version unrecorded, so the
+ * next boot retries it instead of silently skipping a half-applied change.
+ * `lock_timeout` keeps DDL from queueing every other session on the shared
+ * PostgreSQL server behind a lock it cannot get quickly.
+ */
+async function runVersionedMigration(pool, version, migrate, { lockTimeout = '5s' } = {}) {
   const { rowCount } = await pool.query(
     `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
-    [SOR_INVOICE_SCHEMA_VERSION],
+    [version],
   );
-  if (rowCount) return;
+  if (rowCount) return true;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('lock_timeout', $1, true)`, [lockTimeout]);
+    await client.query(`SELECT set_config('statement_timeout', '120s', true)`);
+    await client.query(`SELECT set_config('idle_in_transaction_session_timeout', '120s', true)`);
+    await migrate(client);
+    await client.query(
+      `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+      [version],
+    );
+    await client.query('COMMIT');
+    console.log(`[db] Schema ${version} applied.`);
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(`[db] Schema ${version} failed; it will be retried on the next start:`, error.message);
+    return false;
+  } finally {
+    client.release();
+  }
+}
 
-  // FK constraints on sor_invoice_line. CREATE TABLE on a fresh install
-  // already declares them; on an existing install that pre-dates the FK
-  // declaration we add them idempotently. SET NULL preserves audit rows
-  // when the parent settlement or order is later cleared.
-  await pool.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_settlement'
-      ) THEN
-        ALTER TABLE sor_invoice_line
-          ADD CONSTRAINT fk_sor_invoice_line_settlement
-          FOREIGN KEY (settlement_id) REFERENCES settlements(id) ON DELETE SET NULL;
-      END IF;
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'fk_sor_invoice_line_order'
-      ) THEN
-        ALTER TABLE sor_invoice_line
-          ADD CONSTRAINT fk_sor_invoice_line_order
-          FOREIGN KEY (order_row_id) REFERENCES orders(id) ON DELETE SET NULL;
-      END IF;
-    END $$;
-  `).catch(e => console.warn('[db] sor_invoice_line FK:', e.message));
+/**
+ * SOR accounting ledger — Phase 0.5.
+ *
+ * Adds the `line_type` discriminator on `sor_invoice_line` (sale /
+ * payment / return / deduction), the `source` lineage column, and the
+ * indexes the ledger view and the FK `ON DELETE SET NULL` actions need.
+ * Forward-portable: works on installs that pre-date the columns (Phase 0
+ * on master) and installs that already declare them (fresh TABLES DDL).
+ */
+async function ensureSorLedgerSchema(pool) {
+  return runVersionedMigration(pool, SOR_LEDGER_SCHEMA_VERSION, async client => {
+    await client.query(`
+      ALTER TABLE sor_invoice_line
+        ADD COLUMN IF NOT EXISTS line_type   TEXT NOT NULL DEFAULT 'sale',
+        ADD COLUMN IF NOT EXISTS source      TEXT,
+        ADD COLUMN IF NOT EXISTS raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+    `);
+    // Lines written by the earlier AJIO mirror revision carry no source; tag
+    // them so the current mirror replaces them instead of counting them twice.
+    await client.query(`
+      UPDATE sor_invoice_line l
+      SET source = 'mp_invoices:ajio'
+      FROM sor_invoice i
+      WHERE l.invoice_id = i.id
+        AND i.portal = 'reliance-ajio'
+        AND l.source IS NULL
+        AND l.raw_payload->>'source' = 'mp_invoices'
+    `);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conrelid = 'sor_invoice_line'::regclass
+            AND conname = 'sor_invoice_line_line_type_check'
+        ) THEN
+          ALTER TABLE sor_invoice_line
+            ADD CONSTRAINT sor_invoice_line_line_type_check
+            CHECK (line_type IN ('sale', 'payment', 'return', 'deduction'));
+        END IF;
+      END $$;
+    `);
+    // Payment / return / deduction lines carry no settlement or order link.
+    await client.query(`
+      ALTER TABLE sor_invoice_line
+        ALTER COLUMN settlement_id DROP NOT NULL,
+        ALTER COLUMN order_row_id  DROP NOT NULL
+    `);
+    // sor_outstanding joins lines by invoice_id and sums gross_amount per
+    // line_type; INCLUDE lets that run as an index-only scan.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_invoice_cover
+        ON sor_invoice_line(invoice_id) INCLUDE (line_type, gross_amount)
+    `);
+    // Deleting an order or settlement runs ON DELETE SET NULL against these
+    // columns; without an index every deleted parent row scans the table.
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_order_row
+        ON sor_invoice_line(order_row_id) WHERE order_row_id IS NOT NULL
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_settlement
+        ON sor_invoice_line(settlement_id) WHERE settlement_id IS NOT NULL
+    `);
+  });
+}
 
-  // Mirror SOR upload events into upload_log so the existing Audit History
-  // query surfaces them without a code change. data_type = 'sor_invoice'
-  // makes them filterable; marketplace = portal keeps the column truthful.
-  await pool.query(`
-    CREATE OR REPLACE FUNCTION sor_upload_log_mirror() RETURNS TRIGGER AS $$
-    BEGIN
-      INSERT INTO upload_log (
-        data_type, filename, marketplace, rows_inserted, rows_updated,
-        rows_skipped, status, error_msg, remark, uploaded_at
-      ) VALUES (
-        'sor_invoice', NEW.filename, NEW.portal, NEW.rows_inserted,
-        NEW.rows_updated, NEW.rows_skipped, NEW.status, NEW.error_msg,
-        COALESCE(NEW.remark, '') || ' | portal_account=' || NEW.portal_account,
-        NEW.uploaded_at
-      );
-      RETURN NEW;
-    END;
-    $$ LANGUAGE plpgsql;
-  `).catch(e => console.warn('[db] sor_upload_log_mirror function:', e.message));
+/**
+ * Phase 0 added named FKs (fk_sor_invoice_line_order / _settlement) on top of
+ * the inline REFERENCES the table already declares, so every order or
+ * settlement delete ran each SET NULL action twice. Drop a named FK only when
+ * an equivalent FK on the same column remains. Short lock_timeout: dropping
+ * an FK briefly locks the referenced orders / settlements table.
+ */
+async function ensureSorForeignKeyDedupe(pool) {
+  return runVersionedMigration(pool, SOR_FK_DEDUPE_SCHEMA_VERSION, async client => {
+    await client.query(`
+      DO $$
+      DECLARE duplicate record;
+      BEGIN
+        FOR duplicate IN
+          SELECT con.conname
+          FROM pg_constraint con
+          WHERE con.conrelid = 'sor_invoice_line'::regclass
+            AND con.contype = 'f'
+            AND con.conname IN ('fk_sor_invoice_line_order', 'fk_sor_invoice_line_settlement')
+            AND EXISTS (
+              SELECT 1 FROM pg_constraint other
+              WHERE other.conrelid = con.conrelid
+                AND other.contype = 'f'
+                AND other.conname <> con.conname
+                AND other.conkey = con.conkey
+                AND other.confrelid = con.confrelid
+            )
+        LOOP
+          EXECUTE format('ALTER TABLE sor_invoice_line DROP CONSTRAINT %I', duplicate.conname);
+        END LOOP;
+      END $$;
+    `);
+  }, { lockTimeout: '3s' });
+}
 
-  await pool.query(`
-    DROP TRIGGER IF EXISTS trg_sor_upload_log_mirror ON sor_upload_log;
-    CREATE TRIGGER trg_sor_upload_log_mirror
-      AFTER INSERT ON sor_upload_log
-      FOR EACH ROW EXECUTE FUNCTION sor_upload_log_mirror();
-  `).catch(e => console.warn('[db] trg_sor_upload_log_mirror:', e.message));
+/**
+ * The sor_outstanding view — single source of truth for the per-portal KPI
+ * grid and the Outstanding Ledger UI. One row per sor_invoice:
+ *   outstanding          = sale − payment − return − deduction
+ *   expected_net_payable = sale − return − deduction (what the portal owes)
+ *   variance             = declared net_payable − expected_net_payable
+ *                          (payments are excluded: a fully paid invoice whose
+ *                          components agree with the portal has 0 variance)
+ *   ledger_status        = open / settled / overpaid at a ₹1 rounding band
+ * Read model: replaced on every start (new columns are only ever appended),
+ * like the other reporting views.
+ */
+async function ensureSorOutstandingView(pool) {
+  const sale = `COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'sale'), 0)`;
+  const payment = `COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'payment'), 0)`;
+  const returned = `COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'return'), 0)`;
+  const deduction = `COALESCE(SUM(s.gross_amount) FILTER (WHERE s.line_type = 'deduction'), 0)`;
+  const outstanding = `(${sale} - ${payment} - ${returned} - ${deduction})`;
+  const expected = `(${sale} - ${returned} - ${deduction})`;
+  try {
+    await pool.query(`
+      CREATE OR REPLACE VIEW sor_outstanding AS
+      SELECT
+          i.id                                     AS invoice_id,
+          i.portal,
+          i.portal_account,
+          i.invoice_no,
+          i.invoice_date,
+          i.period_from,
+          i.period_to,
+          i.invoice_type,
+          ${sale}                                  AS sale_total,
+          ${payment}                               AS payment_total,
+          ${returned}                              AS return_total,
+          ${deduction}                             AS deduction_total,
+          ${outstanding}                           AS outstanding,
+          (CURRENT_DATE - i.invoice_date)          AS age_days,
+          i.net_payable                            AS declared_net_payable,
+          (i.net_payable - ${expected})            AS variance,
+          ${expected}                              AS expected_net_payable,
+          CASE
+            WHEN ${outstanding} >= 1  THEN 'open'
+            WHEN ${outstanding} <= -1 THEN 'overpaid'
+            ELSE 'settled'
+          END                                      AS ledger_status,
+          i.uploaded_at                            AS last_activity_at
+      FROM sor_invoice i
+      LEFT JOIN sor_invoice_line s ON s.invoice_id = i.id
+      GROUP BY i.id, i.portal, i.portal_account, i.invoice_no, i.invoice_date,
+               i.period_from, i.period_to, i.invoice_type, i.net_payable, i.uploaded_at
+    `);
+    return true;
+  } catch (error) {
+    console.error('[db] sor_outstanding view could not be created:', error.message);
+    return false;
+  }
+}
 
-  await pool.query(
-    `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
-    [SOR_INVOICE_SCHEMA_VERSION],
-  );
-  console.log(`[db] Schema ${SOR_INVOICE_SCHEMA_VERSION} applied.`);
+/**
+ * SOR Phase 2 — AJIO mirror backfill.
+ *
+ * The mpSettlement AJIO upload / edit / delete routes keep the SOR ledger in
+ * sync through services/sorMirror.js. AJIO rows imported before that hook
+ * existed would never reach the ledger, so this one-time step rebuilds the
+ * AJIO SOR ledger from every stored AJIO mp_invoices row. It runs after the
+ * API is ready (server.js, like the Firebase role sync), shares the mirror's
+ * one-at-a-time queue with live uploads, and is recorded only when every
+ * invoice synced, so a partial backfill is retried on the next start.
+ */
+export async function ensureSorAjioBackfill(pool) {
+  try {
+    const { rowCount } = await pool.query(
+      `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+      [SOR_AJIO_MIRROR_SCHEMA_VERSION],
+    );
+    if (rowCount) return;
+    const result = await rebuildAjioSorLedger(pool);
+    if (result.errors.length) {
+      console.error(`[db] Schema ${SOR_AJIO_MIRROR_SCHEMA_VERSION} backfill had ${result.errors.length} error(s); retrying next start:`, result.errors.slice(0, 3));
+      return;
+    }
+    await pool.query(
+      `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+      [SOR_AJIO_MIRROR_SCHEMA_VERSION],
+    );
+    console.log(`[db] Schema ${SOR_AJIO_MIRROR_SCHEMA_VERSION} applied (${result.mirrored} AJIO invoice(s) mirrored).`);
+  } catch (error) {
+    console.error(`[db] Schema ${SOR_AJIO_MIRROR_SCHEMA_VERSION} failed; it will be retried on the next start:`, error.message);
+  }
 }
 
 /**

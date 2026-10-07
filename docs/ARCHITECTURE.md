@@ -79,6 +79,16 @@ remark contract are documented in `docs/DATA_CENTER_UPLOADS.md`. Keep its
 single allow-list in `UploadPage.jsx`; do not restore individual visibility
 flags that can leak another marketplace's file type into the current selection.
 
+The **SOR Level Payment Reco** workspace (invoice-grain reconciliation
+across Myntra Jabong India Pvt Ltd, Zepto Limited, Reliance Retail Ltd
+(AJIO), Cocoblu Retails) is documented in
+[`docs/SOR_LEVEL_PAYMENT_RECO.md`](SOR_LEVEL_PAYMENT_RECO.md). Workspace
+is `EXPORT_ROLES` (analyst+) only — enforced both in
+`frontend/src/navigation.js` and per-route in `frontend/src/App.jsx`.
+Audit integration piggybacks on the existing `upload_log` via the
+`trg_sor_upload_log_mirror` trigger so Audit History surfaces SOR
+uploads without a code change.
+
 ## Verification
 
 From `backend/`, run `npm test`. From `frontend/`, run `npm run build`. Add a

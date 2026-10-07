@@ -140,6 +140,19 @@ weekly cron.
 
 ---
 
+## ✅ Findings already addressed (PR #42 follow-up commits)
+
+The PR #42 follow-up commits resolved security-adjacent concerns that
+fell outside the original ten-finding list:
+
+| Concern | Resolution | Where |
+|---|---|---|
+| Plaintext TaskFlow PAT in `docs/NOTION_PROJECT_BRIEF.md` (PAT was on line 160 at PR #42 time; the placeholder currently sits on line 198 after later additions) | Replaced live PAT with `<TASKFLOW_PAT — load from local MCP config>` placeholder | PR #42, commit `57202b0` |
+| SOR workspace reachable by viewers | Workspace hidden in Sidebar (`roles: EXPORT_ROLES`); each `/sor/*` route redirects viewers to `/` | `frontend/src/navigation.js`, `frontend/src/App.jsx` (PR #42, commit `2245e31`) |
+| Pre-existing PAT leak in `docs/TASKFLOW_INTEGRATION.md:79` (committed 2026-09-10 in `db37fd7`) | **Still open** — flagged for separate PR + token rotation in TaskFlow project settings | Not yet addressed |
+
+---
+
 ## Fix Plan (PRs)
 
 | PR | Title | Files |
@@ -153,6 +166,33 @@ weekly cron.
 
 Each PR follows the existing workflow: branch off `master`, squash,
 delete after merge, CodeAnt follow-up.
+
+---
+
+## Follow-up review — 2026-10-07
+
+Skills: AppSec Engineer, Database Reliability Engineer, DevOps Automator,
+AI Engineer / Email Intelligence Engineer, Frontend Developer / UX.
+Fixed on branch `sor/ledger-hardening-security` unless marked open.
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| F1 | High | Any Firebase account without a `recon_role` claim was treated as `viewer`, and `POST /api/auth/sync-user` auto-created viewers for unknown emails and linked a pre-created row (e.g. the seeded admin) by email alone — an unverified sign-up could inherit that role. | **Fixed:** claimless tokens get 403 `ACCESS_NOT_GRANTED`; sync-user refuses unknown emails and links by email only when `email_verified`. **Owner action:** untick Firebase Console → Authentication → Settings → *Enable create (sign-up)*. |
+| F2 | Medium | `PUT /api/reconcile/outstanding/config/:channelKey` had no role gate (any viewer could change the payment matrix). | **Fixed:** operator/admin via `protectMutations`; body validated. |
+| F3 | Medium | 50 MB JSON bodies were parsed before authentication. | **Fixed:** 1 MB on `/api/auth`; 50 MB only after the Firebase token is verified. |
+| F4 | Medium | Public `/health` returned the raw PostgreSQL error, pool and TLS settings. | **Fixed:** trimmed for non-loopback callers (deploy `docker exec` check keeps full detail). |
+| F5 | Medium | SOR routes returned `detail: err.message`; invalid filters caused 500s. | **Fixed:** validated filters (400), generic 500 bodies. 173 older handlers still echo `err.message` to authenticated users — **open**, low impact. |
+| F6 | Medium | A development backend (START.bat) pointed at production applied its branch's migrations to the live DB on every boot. | **Fixed:** startup DDL only with `NODE_ENV=production` or `RUN_SCHEMA_MIGRATIONS=true`. |
+| F7 | High | A PR push could cancel a queued production deploy (one workflow-wide concurrency group). | **Fixed:** per-ref CI group; deploy-only production group. |
+| F8 | High | Node 20 is end-of-life (2026-04-30). | **Fixed:** Node 22 in CI and both Dockerfiles. |
+| F9 | Medium | No dependency audit in CI (H10); frontend `axios` < 1.20 (high). | **Partly fixed:** monthly `dependency-audit.yml`; `axios` → 1.20.0. **Open:** `xlsx@0.18.5` (backend + frontend) has high advisories with no npm fix — move to SheetJS 0.20.3 from `cdn.sheetjs.com` in a separate PR with parser regression checks; backend transitive advisories (`proxy-addr` critical — not reachable without a subnet `trust proxy`; `undici`, `@fastify/busboy`, `@grpc/grpc-js`, `brace-expansion`) need a dedicated `npm audit fix` PR because it reshuffles the `firebase-admin` / Google Cloud tree. |
+| F10 | Medium | Statement PDF upload: a scanned PDF (no text layer) let Gemini invent a month's figures that replace the stored month; Gemini calls had no timeout. | **Partly fixed:** text-length guard + 60 s / 15 s timeouts. **Open:** preview-then-commit step; server-side range checks on AI-parsed rate slabs. |
+| F11 | Low | `.gitignore` did not cover `*firebase-adminsdk*.json`, `*.pem`, `*.key`; `.dockerignore` did not exclude `.env.*` variants or scratch files for manual builds. | **Fixed.** |
+| F12 | High (DB) | `sor_invoice_line` had duplicate FKs per column and no index on `order_row_id` / `settlement_id` (verified on production). | **Fixed:** `sor-fk-dedupe-1` + indexes. |
+| — | High | TaskFlow PAT in `docs/TASKFLOW_INTEGRATION.md` (still in history). | **Open:** PR #47 redacts; the token must be **rotated** in TaskFlow. |
+| — | High | VPS network exposure of the database service. | **Open — owner action** (details shared privately with the owner). |
+| — | Medium | Deploy has no image rollback / pre-migration backup; deploy credential scope and host-key pinning need tightening. | **Open:** DevOps follow-up. |
+| — | Low | No `checkRevoked` on ID tokens; no rate limiting; no CSP. | **Open** (H3, H7). |
 
 ---
 

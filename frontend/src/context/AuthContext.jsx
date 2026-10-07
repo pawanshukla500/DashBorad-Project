@@ -7,7 +7,7 @@ import {
   updatePassword as firebaseUpdatePassword 
 } from '../api/firebase';
 import { formatAuthError } from '../utils/authErrors';
-import { withNormalizedRole } from '../utils/roles';
+import { VALID_ROLES, normalizeRole, withNormalizedRole } from '../utils/roles';
 import { invalidateApiReadCache } from '../api/client';
 
 const AuthContext = createContext(null);
@@ -18,7 +18,11 @@ export function AuthProvider({ children }) {
 
   const sessionFromFirebase = useCallback(async (firebaseUser, forceRefresh = false) => {
     const tokenResult = await firebaseUser.getIdTokenResult(forceRefresh);
+    const roleClaim = tokenResult.claims.recon_role;
     return withNormalizedRole({
+      // The API refuses tokens without a known role claim (accounts outside
+      // the team directory); the app shows an access screen for them.
+      accessGranted: Boolean(roleClaim) && VALID_ROLES.includes(normalizeRole(roleClaim)),
       id: firebaseUser.uid,
       firebase_uid: firebaseUser.uid,
       email: firebaseUser.email || '',
@@ -56,7 +60,7 @@ export function AuthProvider({ children }) {
             // happened meanwhile must not be undone by this late result.
             setUser(previous => {
               if (!previous || previous.firebase_uid !== fresh.firebase_uid) return previous;
-              return previous.role === fresh.role ? previous : fresh;
+              return previous.role === fresh.role && previous.accessGranted === fresh.accessGranted ? previous : fresh;
             });
           })
           .catch(err => console.warn('[Firebase claims refresh failed]', err.message));

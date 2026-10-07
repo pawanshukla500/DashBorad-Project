@@ -694,4 +694,17 @@ export const fetchOutstandingConfig = () =>
 export const updateOutstandingConfig = (channelKey, body) =>
   api.put(`/reconcile/outstanding/config/${channelKey}`, body).then(r => r.data);
 
+// ── SOR (Sales Order Reconciliation) ────────────────────────────────────
+// Per-portal invoice-grain outstanding ledger for Myntra Jabong, Zepto,
+// Reliance Retail (AJIO), Cocoblu. Reads from the `sor_outstanding` view
+// defined by `ensureSorLedgerSchema` in backend/db/initDb.js.
+export const fetchSorOutstanding = (portal, params = {}) =>
+  api.get(`/sor/${portal}/outstanding`, { params }).then(r => r.data);
+
+export const fetchSorInvoices = (portal, params = {}) =>
+  api.get(`/sor/${portal}/invoices`, { params }).then(r => r.data);
+
+export const fetchSorInvoiceDetail = (portal, id) =>
+  api.get(`/sor/${portal}/invoice/${id}`).then(r => r.data);
+
 

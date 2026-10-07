@@ -1,0 +1,29 @@
+name: Dependency audit
+
+# AGENTS.md security cadence: monthly `npm audit --omit=dev --audit-level=high`
+# for both packages. Runs on the 1st of every month and on demand.
+on:
+  schedule:
+    - cron: '30 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: npm audit (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high --prefix ${{ matrix.package }}

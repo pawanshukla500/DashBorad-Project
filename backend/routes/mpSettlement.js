@@ -25,6 +25,7 @@ import { optionalNumber, optionalString } from '../utils/valueParsers.js';
 import { MYNTRA_SELLER_IDS } from './myntraUpload.js';
 import { classifyMyntraNod } from '../services/myntraNodClassification.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
+import { mirrorAjioInvoicesToSor, rebuildAjioSorLedger } from '../services/sorMirror.js';
 
 const router = express.Router();
 const upload = multer({
@@ -384,6 +385,26 @@ function inputError(message) {
   const error = new Error(message);
   error.status = 400;
   return error;
+}
+
+const INVOICE_SELLER_ACCOUNT_INDEX = INVOICE_STORAGE_COLUMNS.indexOf('seller_account');
+const INVOICE_NUMBER_INDEX = INVOICE_STORAGE_COLUMNS.indexOf('invoice_number');
+
+// Rebuild the SOR ledger rows of the AJIO invoices touched by an upload or a
+// delete. SOR is a derived read model, so a sync failure is logged and
+// reported instead of failing the mp_invoices write that already committed.
+async function syncAjioSorLedger(pool, recordsOrKeys, uploadedBy = null) {
+  const keys = recordsOrKeys.map(entry => (Array.isArray(entry)
+    ? { seller_account: entry[INVOICE_SELLER_ACCOUNT_INDEX], invoice_no: entry[INVOICE_NUMBER_INDEX] }
+    : entry));
+  try {
+    const result = await mirrorAjioInvoicesToSor(pool, keys, { uploadedBy });
+    if (result.errors.length) console.warn('[sorMirror] AJIO sync errors:', result.errors.slice(0, 5));
+    return { mirrored: result.mirrored, removed: result.removed, errors: result.errors.length };
+  } catch (error) {
+    console.warn('[sorMirror] AJIO sync failed:', error.message);
+    return { mirrored: 0, removed: 0, errors: keys.length, failed: true };
+  }
 }
 
 // A Myntra payment file must be imported under the account that owns its rows,
@@ -910,7 +931,8 @@ router.post('/invoices', async (req, res) => {
       RETURNING id, (xmax = 0) AS inserted
     `, values);
     clearSkuSettlementBenchmarkCache(marketplace);
-    res.json({ ok: true, id: rows[0].id, created: rows[0].inserted });
+    const sor = marketplace === 'ajio' ? await syncAjioSorLedger(pool, [values]) : null;
+    res.json({ ok: true, id: rows[0].id, created: rows[0].inserted, ...(sor ? { sor } : {}) });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -946,11 +968,19 @@ router.put('/invoices/:id', async (req, res) => {
       .concat('updated_at = NOW()');
     values.push(id);
     const result = await pool.query(
-      `UPDATE mp_invoices SET ${sets.join(', ')} WHERE id = $${values.length} RETURNING marketplace`,
+      `UPDATE mp_invoices SET ${sets.join(', ')} WHERE id = $${values.length} RETURNING marketplace, seller_account, invoice_number`,
       values,
     );
-    clearSkuSettlementBenchmarkCache(result.rows[0].marketplace);
-    res.json({ ok: true });
+    const updated = result.rows[0];
+    clearSkuSettlementBenchmarkCache(updated.marketplace);
+    // An edit can move the row to another invoice number: refresh both.
+    const sor = updated.marketplace === 'ajio'
+      ? await syncAjioSorLedger(pool, [
+        { seller_account: current.seller_account, invoice_no: current.invoice_number },
+        { seller_account: updated.seller_account, invoice_no: updated.invoice_number },
+      ])
+      : null;
+    res.json({ ok: true, ...(sor ? { sor } : {}) });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -959,10 +989,17 @@ router.delete('/invoices/:id', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'DB not configured' });
   try {
     if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid invoice ID' });
-    const { rows } = await getPool().query(`DELETE FROM mp_invoices WHERE id = $1 RETURNING marketplace`, [req.params.id]);
+    const pool = getPool();
+    const { rows } = await pool.query(
+      `DELETE FROM mp_invoices WHERE id = $1 RETURNING marketplace, seller_account, invoice_number`,
+      [req.params.id],
+    );
     if (!rows[0]) return res.status(404).json({ error: 'Invoice not found' });
     if (rows[0]?.marketplace) clearSkuSettlementBenchmarkCache(rows[0].marketplace);
-    res.json({ ok: true });
+    const sor = rows[0].marketplace === 'ajio'
+      ? await syncAjioSorLedger(pool, [{ seller_account: rows[0].seller_account, invoice_no: rows[0].invoice_number }])
+      : null;
+    res.json({ ok: true, ...(sor ? { sor } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -973,12 +1010,22 @@ router.delete('/invoices', async (req, res) => {
   if (!mp) return res.status(400).json({ error: 'marketplace required' });
   try {
     const account = str(req.query.seller_account);
-    const { rowCount } = await getPool().query(
+    const pool = getPool();
+    const { rowCount } = await pool.query(
       `DELETE FROM mp_invoices WHERE marketplace = $1${account ? ' AND seller_account = $2' : ''}`,
       account ? [mp, account] : [mp]
     );
     clearSkuSettlementBenchmarkCache(mp);
-    res.json({ ok: true, deleted: rowCount });
+    let sor = null;
+    if (mp === 'ajio') {
+      sor = await rebuildAjioSorLedger(pool)
+        .then(result => ({ mirrored: result.mirrored, removed: result.removed, errors: result.errors.length }))
+        .catch(error => {
+          console.warn('[sorMirror] AJIO rebuild after clear failed:', error.message);
+          return { mirrored: 0, removed: 0, errors: 1, failed: true };
+        });
+    }
+    res.json({ ok: true, deleted: rowCount, ...(sor ? { sor } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1242,6 +1289,13 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
       void notifySkuSettlementBenchmarkAfterImport(pool, mp)
         .catch(error => console.warn('[sku settlement notification]', error.message));
     }
+    // AJIO invoices feed the SOR ledger for Reliance Retail Ltd (AJIO). The
+    // sync re-reads the stored rows of every invoice in this file; a failure
+    // is reported in the response but never fails the upload itself.
+    let sor = null;
+    if (mp === 'ajio' && (inserted || updated)) {
+      sor = await syncAjioSorLedger(pool, records, req.user?.email || null);
+    }
     // Myntra payments feed the unified_settlements view, so the per-order
     // settlement read model must be rebuilt exactly like Flipkart/Amazon do
     // after their settlement imports.
@@ -1263,6 +1317,7 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
     res.json({
       ok: true, marketplace: mp, seller_account: sellerAccount,
       inserted, updated, skipped, total: raw.length, batch, logId,
+      ...(sor ? { sor } : {}),
     });
   } catch (e) {
     if (pool) {
