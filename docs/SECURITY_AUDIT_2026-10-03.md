@@ -149,7 +149,7 @@ fell outside the original ten-finding list:
 |---|---|---|
 | Plaintext TaskFlow PAT in `docs/NOTION_PROJECT_BRIEF.md` (PAT was on line 160 at PR #42 time; the placeholder currently sits on line 198 after later additions) | Replaced live PAT with `<TASKFLOW_PAT — load from local MCP config>` placeholder | PR #42, commit `57202b0` |
 | SOR workspace reachable by viewers | Workspace hidden in Sidebar (`roles: EXPORT_ROLES`); each `/sor/*` route redirects viewers to `/` | `frontend/src/navigation.js`, `frontend/src/App.jsx` (PR #42, commit `2245e31`) |
-| Pre-existing PAT leak in `docs/TASKFLOW_INTEGRATION.md:79` (committed 2026-09-10 in `db37fd7`) | **Still open** — flagged for separate PR + token rotation in TaskFlow project settings | Not yet addressed |
+| Pre-existing PAT leak in `docs/TASKFLOW_INTEGRATION.md:79` (committed 2026-09-10 in `db37fd7`) | **Redacted** from the current tree (PR #47). The token is still in git history (public repo) — **rotate it** in TaskFlow project settings. | `docs/TASKFLOW_INTEGRATION.md` |
 
 ---
 
@@ -189,7 +189,7 @@ Fixed on branch `sor/ledger-hardening-security` unless marked open.
 | F10 | Medium | Statement PDF upload: a scanned PDF (no text layer) let Gemini invent a month's figures that replace the stored month; Gemini calls had no timeout. | **Fixed:** text-length guard + 60 s / 15 s timeouts; `POST /api/statement/upload` now only returns a preview, and `POST /api/statement/commit` writes it (single-use, uploader-bound, `replace=true` required to overwrite a saved month); every amount/description the model returns must appear in the PDF text or the row is flagged and needs `acceptUnverified=true`. Rate-card `parse-image` accepts only PNG/JPEG/WebP (signature-checked, ≤ 6 MB) and every parsed or saved slab gets per-fee-type range checks (`utils/rateCardRowChecks.js`: errors for impossible values, warnings for implausible ones). |
 | F11 | Low | `.gitignore` did not cover `*firebase-adminsdk*.json`, `*.pem`, `*.key`; `.dockerignore` did not exclude `.env.*` variants or scratch files for manual builds. | **Fixed.** |
 | F12 | High (DB) | `sor_invoice_line` had duplicate FKs per column and no index on `order_row_id` / `settlement_id` (verified on production). | **Fixed:** `sor-fk-dedupe-1` + indexes. |
-| — | High | TaskFlow PAT in `docs/TASKFLOW_INTEGRATION.md` (still in history). | **Open:** PR #47 redacts; the token must be **rotated** in TaskFlow. |
+| — | High | TaskFlow PAT in `docs/TASKFLOW_INTEGRATION.md` (still in history). | **Partly fixed:** redacted from the current tree (PR #47). **Open — owner action:** the token is still in history and must be **rotated** in TaskFlow. |
 | — | High | VPS network exposure of the database service. | **Open — owner action** (details shared privately with the owner). |
 | — | Medium | Deploy has no image rollback / pre-migration backup; deploy credential scope and host-key pinning need tightening. | **Open:** DevOps follow-up. |
 | — | Low | No `checkRevoked` on ID tokens; no rate limiting; no CSP. | **Open** (H3, H7). |

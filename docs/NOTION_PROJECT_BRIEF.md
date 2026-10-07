@@ -182,11 +182,10 @@ two follow-up commits:
 
 ### Pre-existing PAT leak (separate concern)
 
-The same `tfp_pat_…` token is in `docs/TASKFLOW_INTEGRATION.md:79`,
-committed 2026-09-10 in `db37fd7` — pre-existed before PR #42 and is
-NOT fixed by the follow-up commits above. Recommended actions:
-1. Rotate the TaskFlow PAT on the project settings page.
-2. Redact the token in `docs/TASKFLOW_INTEGRATION.md` (separate small PR).
+A `tfp_pat_…` token was committed in `docs/TASKFLOW_INTEGRATION.md`
+on 2026-09-10 (`db37fd7`) — pre-existed before PR #42. PR #47 redacted
+it from the current tree; it remains in git history. Remaining action:
+rotate the TaskFlow PAT on the project settings page.
 
 ---
 

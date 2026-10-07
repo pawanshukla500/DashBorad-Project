@@ -2,6 +2,16 @@
 
 This document outlines how work on the **DashBorad Project** (ReconCentral) is tracked and managed on **TaskFlow Pro**.
 
+> **Security note (2026-10-04):** Earlier revisions of this document
+> committed a live TaskFlow PAT in §3.3 (line 79). The PAT was
+> committed on 2026-09-10 in `db37fd7` and remained in master until
+> the security/redact-taskflow-pat PR. The PAT is replaced below
+> with `<TASKFLOW_PAT — …>` placeholder. The original token is still
+> valid in git history — rotate it in TaskFlow project settings and
+> optionally scrub history with `git filter-repo` if a full revocation
+> is required. See [`docs/SECURITY_AUDIT_2026-10-03.md`](SECURITY_AUDIT_2026-10-03.md)
+> for the audit finding.
+
 ---
 
 ## 1. Overview
@@ -76,7 +86,7 @@ When verification is complete, all tests pass, and work is delivered:
      "url": "https://nekdjoquirhecmejuoba.supabase.co/functions/v1/mcp-server",
      "serverUrl": "https://nekdjoquirhecmejuoba.supabase.co/functions/v1/mcp-server",
      "headers": {
-       "Authorization": "tfp_pat_70446977b019aacb725dfaf4b486e92fe8f277610a805e5110814a9a45a8e620"
+       "Authorization": "<TASKFLOW_PAT — load from your local MCP config (~/.gemini/config/mcp_config.json) or ~/.minimax/mcp.json. NEVER commit a live PAT to the repo.>"
      }
    }
    ```
