@@ -482,9 +482,9 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
             const pRows  = periodMap[periodKey];
             const st     = supersededKeys.includes(periodKey) ? 'superseded' : rowStatus(pRows[0]);
             const endStr = toDateStr(pRows[0].end_date);
-            const startLabel = periodKey === 'no-date'
-              ? 'No start date'
-              : fmtDate(pRows[0].start_date);
+            const startLabel = toDateStr(pRows[0].start_date)
+              ? fmtDate(pRows[0].start_date)
+              : 'No start date';
             return (
               <div key={periodKey} className={`transition-colors ${st === 'active' ? 'bg-emerald-50/50' : ''}`}>
                 <div className="px-5 py-3 flex items-center justify-between">

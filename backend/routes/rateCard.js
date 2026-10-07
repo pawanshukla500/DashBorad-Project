@@ -541,6 +541,13 @@ router.post('/config/:type/save-period', async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // One save per (fee type, marketplace, account, category) at a time:
+      // two concurrent saves would otherwise each miss the other's new
+      // period and both stay open.
+      await client.query(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        [`rate-period:${table}:${marketplace}:${seller_account}:${category || 'ALL'}`],
+      );
 
       // Two delete paths:
       //  (a) replaceIds — surgical IN-list delete. Use this for edit mode so

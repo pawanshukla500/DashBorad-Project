@@ -145,4 +145,25 @@ describe('fee lookups on overlapping periods', () => {
     const before = calculateFees(rc, { category: 'kurta', price: 400, weight: 0.4, zone: 'local', isReturn: true, orderDate: '2026-05-05' });
     expect(before.reverseShipping).toBe(60);
   });
+
+  it('reverse shipping keeps a seller-account rate ahead of a newer default-account period', () => {
+    const rc = {
+      commission: [], fixedFee: [], collectionFee: [], pickAndPack: [], franchiseFee: [],
+      reverseShipping: [
+        // the loader returns the account's own rows first
+        { category: 'kurta', sellerAccount: 'myntra_vb', startDate: '2026-04-01', endDate: null, priceMin: 0, priceMax: 999999, weightSlab: '0-1 kg', local: 70, zonal: 70, national: 70 },
+        { category: 'kurta', sellerAccount: 'default', startDate: '2026-09-01', endDate: null, priceMin: 0, priceMax: 999999, weightSlab: '0-1 kg', local: 95, zonal: 95, national: 95 },
+      ],
+    };
+    const fees = calculateFees(rc, { category: 'kurta', price: 400, weight: 0.4, zone: 'local', isReturn: true, orderDate: '2026-10-05' });
+    expect(fees.reverseShipping).toBe(70);
+  });
+
+  it('serializes concurrent saves of the same category with a transaction lock', async () => {
+    await post('/config/commission/save-period', { ...newPeriod, auto_close: true });
+    const lock = statements.find(s => s.sql.includes('pg_advisory_xact_lock'));
+    expect(lock.params).toEqual(['rate-period:rc_commission:flipkart:default:kurta']);
+    const order = statements.map(s => s.sql.split(' ')[0]);
+    expect(order.indexOf('SELECT')).toBe(order.indexOf('BEGIN') + 1);
+  });
 });
