@@ -1,6 +1,6 @@
 import express from 'express';
 import { getPool } from '../db/index.js';
-import { authMiddleware, requireAdmin, VALID_ROLES, normalizedRole } from '../utils/authMiddleware.js';
+import { authMiddleware, forgetRevocationState, requireAdmin, VALID_ROLES, normalizedRole } from '../utils/authMiddleware.js';
 import { auth } from '../utils/firebaseAdmin.js';
 import { identityFromFirebaseToken } from '../utils/firebaseIdentity.js';
 import { AccessNotGrantedError, IdentityConflictError, syncFirebaseUser } from '../services/userSync.js';
@@ -155,6 +155,10 @@ router.put('/users/:id/role', requireAdmin, async (req, res) => {
     }
 
     await setFirebaseRole(target.rows[0].firebase_uid, role);
+    // Tokens issued before this change still carry the old role claim:
+    // revoke them so the new role applies on the user's next request.
+    await auth.revokeRefreshTokens(target.rows[0].firebase_uid);
+    forgetRevocationState(target.rows[0].firebase_uid);
     const result = await pool.query(
       'UPDATE users SET role = $1 WHERE id = $2 RETURNING id, username, email, role, firebase_uid',
       [role, id]
@@ -191,6 +195,7 @@ router.delete('/users/:id', requireAdmin, async (req, res) => {
     if (deletedUser.firebase_uid) {
       try {
         await auth.deleteUser(deletedUser.firebase_uid);
+        forgetRevocationState(deletedUser.firebase_uid);
       } catch (fbErr) {
         return res.status(502).json({ error: `Firebase account removal failed: ${fbErr.message}` });
       }

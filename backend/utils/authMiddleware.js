@@ -21,6 +21,42 @@ export function firebaseSessionFromToken(decodedToken = {}) {
   };
 }
 
+// Firebase ID tokens stay valid for up to an hour, carrying the role claim
+// they were issued with. Role changes and deletions revoke the user's
+// sessions (auth.js); a token issued before that is refused here. The
+// revocation time is cached per user for a minute so a request does not
+// always wait on Firebase.
+const REVOCATION_CACHE_MS = 60_000;
+const revocationCache = new Map();
+
+export function forgetRevocationState(uid) {
+  if (uid) revocationCache.delete(uid);
+  else revocationCache.clear();
+}
+
+async function sessionRevoked(decodedToken) {
+  const uid = decodedToken.uid;
+  let entry = revocationCache.get(uid);
+  if (!entry || Date.now() - entry.at > REVOCATION_CACHE_MS) {
+    try {
+      const user = await auth.getUser(uid);
+      entry = { at: Date.now(), validAfterMs: user.tokensValidAfterTime ? Date.parse(user.tokensValidAfterTime) : 0, deleted: false };
+    } catch (error) {
+      if (error?.code !== 'auth/user-not-found') {
+        // Firebase unreachable: keep serving verified tokens rather than
+        // locking every user out; the next request retries the lookup.
+        console.warn('[Auth Middleware] revocation check skipped:', error?.message);
+        return false;
+      }
+      entry = { at: Date.now(), validAfterMs: 0, deleted: true };
+    }
+    revocationCache.set(uid, entry);
+  }
+  if (entry.deleted) return true;
+  const issuedAtMs = Number(decodedToken.auth_time || decodedToken.iat || 0) * 1000;
+  return entry.validAfterMs > 0 && issuedAtMs < entry.validAfterMs;
+}
+
 export async function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -30,6 +66,12 @@ export async function authMiddleware(req, res, next) {
 
   try {
     const decodedToken = await auth.verifyIdToken(token);
+    if (await sessionRevoked(decodedToken)) {
+      return res.status(401).json({
+        error: 'Your access was changed. Please sign in again.',
+        code: 'SESSION_REVOKED',
+      });
+    }
     req.user = firebaseSessionFromToken(decodedToken);
   } catch (err) {
     console.error('[Auth Middleware]', err.message);
