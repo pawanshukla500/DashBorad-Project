@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, pollAmazonSettlementProgress, uploadMeeshoSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData, invalidateApiReadCache } from '../api/client';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ const DATA_TYPES = [
   { key: 'myntra-invoices', label: 'Invoice / Payment', icon: '🧾', uniqueKey: 'Invoice Number',
     blurb: 'Myntra invoice/payment file. The selected Data Center account is stored on every row and can never mix with the other Myntra account.' },
   { key: 'mp-invoices', label: 'AJIO Invoices', icon: '🧾', uniqueKey: 'Invoice Number',
-    blurb: 'AJIO invoice file (Reliance Retail Ltd — Ajio seller portal export). Each row is mirrored into the SOR ledger after upload via the sorMirror service.' },
+    blurb: 'AJIO invoice file (Reliance Retail Ltd — AJIO seller portal export). Every upload refreshes the SOR ledger under SOR Level Payment Reco → Reliance Retail Ltd (AJIO).' },
   { key: 'settlements', label: 'Settlement (Payment)', icon: '📊', uniqueKey: 'settlement_id',
     blurb: 'Generic settlement / payment file upload.' },
 ];
@@ -115,6 +115,25 @@ const dataTypesForMarketplace = marketplace => {
   const allowed = new Set(DATA_TYPE_KEYS_BY_MARKETPLACE[marketplace] || []);
   return DATA_TYPES.filter(type => allowed.has(type.key));
 };
+const firstDataTypeKey = marketplace => dataTypesForMarketplace(marketplace)[0]?.key || 'orders';
+
+// The marketplace / account buttons of the "Select Dataset Type" card.
+const UPLOAD_SOURCES = [
+  { marketplace: 'flipkart', sellerAccount: '', label: 'Flipkart', active: 'bg-blue-50 border-blue-200 text-blue-700' },
+  { marketplace: 'amazon', sellerAccount: '', label: 'Amazon', active: 'bg-orange-50 border-orange-200 text-orange-700' },
+  ...MYNTRA_ACCOUNT_TABS,
+  { marketplace: 'meesho', sellerAccount: '', label: 'Meesho', active: 'bg-purple-50 border-purple-200 text-purple-700' },
+  { marketplace: 'ajio', sellerAccount: '', label: 'AJIO', active: 'bg-rose-50 border-rose-200 text-rose-700' },
+];
+const DEFAULT_UPLOAD_SOURCE = UPLOAD_SOURCES[0];
+
+function sourceFromSearchParams(searchParams) {
+  const marketplace = (searchParams.get('marketplace') || '').toLowerCase();
+  const account = (searchParams.get('account') || '').toLowerCase();
+  const source = UPLOAD_SOURCES.find(item => item.marketplace === marketplace
+    && (item.marketplace !== 'myntra' || item.sellerAccount === account));
+  return source || DEFAULT_UPLOAD_SOURCE;
+}
 const myntraLogType = (sellerAccount, dataType) => {
   const suffix = {
     'myntra-orders': 'orders',
@@ -130,15 +149,14 @@ export default function UploadPage() {
   const [linkage, setLinkage]   = useState(null);
 
   // Read ?marketplace= from the URL so deep links like
-  // /upload?marketplace=ajio open the right uploader. Default to
-  // 'flipkart' when the param is missing or unknown.
-  const [searchParams] = useSearchParams();
-  const urlMarketplace = (searchParams.get('marketplace') || '').toLowerCase();
-  const allowedMarketplaces = new Set(['flipkart', 'amazon', 'myntra', 'meesho', 'ajio', 'custom']);
-  const initialMarketplace = allowedMarketplaces.has(urlMarketplace) ? urlMarketplace : 'flipkart';
-  const [marketplace, setMarketplace] = useState(initialMarketplace);
-  const [sellerAccount, setSellerAccount] = useState('');
-  const [dataType, setDataType]       = useState('orders');
+  // /upload?marketplace=ajio open the right uploader with its first dataset
+  // selected. Myntra is account-scoped, so a Myntra link only applies with an
+  // explicit &account=myntra_ej|myntra_vb. Default to Flipkart otherwise.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlSource = sourceFromSearchParams(searchParams);
+  const [marketplace, setMarketplace] = useState(urlSource.marketplace);
+  const [sellerAccount, setSellerAccount] = useState(urlSource.sellerAccount);
+  const [dataType, setDataType]       = useState(() => firstDataTypeKey(urlSource.marketplace));
   const [step, setStep]               = useState('drop'); // 'drop' | 'map' | 'result'
   const [file, setFile]               = useState(null);
   const [uploading, setUploading]     = useState(false);
@@ -174,6 +192,28 @@ export default function UploadPage() {
     setDataType(key);
     resetFlow();
   };
+
+  const selectSource = useCallback((source, { syncUrl = true } = {}) => {
+    setMarketplace(source.marketplace);
+    setSellerAccount(source.sellerAccount);
+    setDataType(firstDataTypeKey(source.marketplace));
+    resetFlow();
+    if (syncUrl) {
+      const params = { marketplace: source.marketplace };
+      if (source.sellerAccount) params.account = source.sellerAccount;
+      setSearchParams(params, { replace: true });
+    }
+  }, [resetFlow, setSearchParams]);
+
+  // Follow later deep links to this same page (e.g. a SOR "Upload invoices"
+  // link clicked while /upload is already open) without fighting the buttons,
+  // which keep the URL in sync themselves.
+  useEffect(() => {
+    if (uploading || !searchParams.get('marketplace')) return;
+    if (urlSource.marketplace === marketplace && urlSource.sellerAccount === sellerAccount) return;
+    selectSource(urlSource, { syncUrl: false });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlSource.marketplace, urlSource.sellerAccount]);
 
   const handleFileDrop = useCallback(async (f) => {
     if (!f) return;
@@ -212,6 +252,13 @@ export default function UploadPage() {
     // Preserve the selection that initiated this upload. The user can navigate
     // after completion, but that must never change the endpoint or its result label.
     const uploadContext = { marketplace, sellerAccount, dataType };
+    if (!dataTypesForMarketplace(uploadContext.marketplace).some(type => type.key === uploadContext.dataType)) {
+      // Never fall through to the generic importer with a dataset that does
+      // not belong to the selected marketplace.
+      setError('Select a dataset type for this marketplace before uploading.');
+      setStep('drop');
+      return;
+    }
     if (!uploadFile) {
       setError('No file provided');
       setStep('uploading');
@@ -313,7 +360,9 @@ export default function UploadPage() {
   };
   const logTypeKey = MYNTRA_DATA_TYPES.has(dataType)
     ? myntraLogType(sellerAccount, dataType)
-    : (LOG_TYPE_MAP[dataType] || dataType);
+    : dataType === 'mp-invoices'
+      ? `${marketplace}_invoices` // mpSettlement logs non-Myntra invoice imports as <marketplace>_invoices
+      : (LOG_TYPE_MAP[dataType] || dataType);
   const lastUpload = dbStatus?.logs?.find(l =>
     (l.marketplace || '').toLowerCase() === marketplace && l.data_type === logTypeKey
   ) || null;
@@ -378,18 +427,10 @@ export default function UploadPage() {
             Select Dataset Type
           </h2>
           <div className="flex flex-wrap gap-2">
-            {[
-              { marketplace: 'flipkart', sellerAccount: '', label: 'Flipkart', active: 'bg-blue-50 border-blue-200 text-blue-700' },
-              { marketplace: 'amazon', sellerAccount: '', label: 'Amazon', active: 'bg-orange-50 border-orange-200 text-orange-700' },
-              ...MYNTRA_ACCOUNT_TABS,
-            ].map(source => (
+            {UPLOAD_SOURCES.map(source => (
               <button key={`${source.marketplace}:${source.sellerAccount || 'default'}`} onClick={() => {
                 if (uploading) return;
-                setMarketplace(source.marketplace);
-                setSellerAccount(source.sellerAccount);
-                const first = dataTypesForMarketplace(source.marketplace)[0];
-                if (first) setDataType(first.key);
-                resetFlow();
+                selectSource(source);
               }}
                 disabled={uploading}
                 className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all border disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -430,13 +471,13 @@ export default function UploadPage() {
           })()}
 
           {/* Template download with sample rows */}
-          {['orders','returns','amazon-sale-orders','amazon-fba-returns','amazon-flex-returns','amazon-settlement', ...MYNTRA_DATA_TYPES].includes(dataType) && (
+          {['orders','returns','amazon-sale-orders','amazon-fba-returns','amazon-flex-returns','amazon-settlement','mp-invoices', ...MYNTRA_DATA_TYPES].includes(dataType) && (
             <button
               type="button"
               onClick={async () => {
                 try {
-                  const blob = dataType === 'myntra-invoices'
-                    ? await downloadMpInvoiceTemplate('myntra')
+                  const blob = dataType === 'myntra-invoices' || dataType === 'mp-invoices'
+                    ? await downloadMpInvoiceTemplate(dataType === 'mp-invoices' ? marketplace : 'myntra')
                     : dataType === 'myntra-orders' || dataType === 'myntra-returns'
                       ? await downloadMyntraTemplate(dataType === 'myntra-orders' ? 'orders' : 'returns')
                       : await downloadTemplate(dataType);
@@ -445,6 +486,8 @@ export default function UploadPage() {
                   a.href = url;
                   a.download = dataType === 'myntra-invoices'
                     ? `Myntra_${sellerAccount === 'myntra_ej' ? 'EJ' : 'VB'}_Invoice_Payment_Template.xlsx`
+                    : dataType === 'mp-invoices'
+                      ? `${marketplace.toUpperCase()}_Invoice_Template.xlsx`
                     : dataType === 'myntra-orders' || dataType === 'myntra-returns'
                       ? `Myntra_${sellerAccount === 'myntra_ej' ? 'EJ' : 'VB'}_${dataType === 'myntra-orders' ? 'Order' : 'Return'}_Template.xlsx`
                       : `template_${dataType}_sample.xlsx`;
@@ -1066,6 +1109,20 @@ function ResultPanel({ result, dataType, marketplace, sellerAccount, onReset, on
       {result.dateFormats && <DateFormatSummary formats={result.dateFormats} />}
       {result.skipped > 0 && result.logId && <SkippedRowsPanel logId={result.logId} total={result.skipped} />}
       {result.logId && <RemarkBox logId={result.logId} onSaved={onRemarkSaved} />}
+      {dataType === 'mp-invoices' && marketplace === 'ajio' && (
+        <div className="flex flex-col items-center gap-2">
+          {result.sor && (
+            <p className={`text-xs ${result.sor.errors ? 'text-amber-700' : 'text-secondary'}`}>
+              {result.sor.errors
+                ? `SOR ledger refreshed for ${result.sor.mirrored} invoice(s); ${result.sor.errors} could not be refreshed — re-upload the file to retry.`
+                : `SOR ledger refreshed for ${result.sor.mirrored} invoice(s).`}
+            </p>
+          )}
+          <Link to="/sor/reliance-ajio" className="rounded-lg bg-primary px-4 py-2.5 text-xs font-bold text-on-primary hover:bg-indigo-dark">
+            View the AJIO SOR ledger
+          </Link>
+        </div>
+      )}
       {dataType === 'amazon-settlement' && (
         <a href="/amazon-reconciliation" className="rounded-lg bg-amber-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-amber-700">
           Review Amazon payment parameters
