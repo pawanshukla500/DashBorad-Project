@@ -25,7 +25,7 @@ sub-system that uses it.
 | # | Skill (display) | Canonical path | Used by in ReconCentral |
 |---|---|---|---|
 | 1 | Frontend Developer | `engineering/engineering-frontend-developer.md` | React + Vite + Tailwind pages (`frontend/src/pages/**`), component primitives, design-token usage |
-| 3 | Backend Architect | `engineering/engineering-backend-architect.md` | Express + PostgreSQL services (`backend/services/**`), route structure |
+| 2 | Backend Architect | `engineering/engineering-backend-architect.md` | Express + PostgreSQL services (`backend/services/**`), route structure |
 | 3 | AI Engineer | `engineering/engineering-ai-engineer.md` | Email-intelligence parsing pipeline, Gemini rate-card parser, auto-mapping prompts |
 | 4 | DevOps Automator | `engineering/engineering-devops-automator.md` | Hostinger VPS Docker deploy, GitHub Actions CI, `.dockerignore`, `START.bat` |
 | 5 | Senior Developer | `engineering/engineering-senior-developer.md` | End-to-end feature merges, multi-file refactors, PR review hand-off |

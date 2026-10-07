@@ -97,16 +97,25 @@ order-level pipeline. Four portal sub-tabs:
 SOR-specific invariants:
 
 - **Schema** lives in `sor_invoice` (header) + `sor_invoice_line`
-  (line items) + `sor_upload_log` (audit). Idempotent migration
-  `2026.10.sor-ledger-1` (current; supersedes `2026.10.sor-invoice-1`)
-  is wired into `backend/db/initDb.js`.
-  UNIQUE constraint is `(portal, portal_account, invoice_no, invoice_type)`
-  so re-uploads are idempotent.
+  (line items) + `sor_upload_log` (audit), migrated by
+  `ensureSorSchema()` in `backend/db/initDb.js` (versions
+  `2026.10.sor-invoice-2`, `sor-ledger-2`, `sor-fk-dedupe-1`; the AJIO
+  data backfill `sor-ajio-mirror-2` runs after the API is ready). Never
+  reuse a version name whose contents changed. UNIQUE constraint is
+  `(portal, portal_account, invoice_no, invoice_type)` so re-uploads are
+  idempotent.
+- **SOR migrations** run through `runVersionedMigration()` (one
+  transaction, `lock_timeout`, version recorded only on success), run on
+  both startup paths, and must **not** bump `CURRENT_SCHEMA_VERSION`
+  (that sends production through the full DDL pass on the shared
+  PostgreSQL server). Startup DDL only runs with `NODE_ENV=production` or
+  `RUN_SCHEMA_MIGRATIONS=true`.
 - **Referential integrity** — `sor_invoice_line.settlement_id` and
   `sor_invoice_line.order_row_id` are foreign keys to `settlements(id)`
-  and `orders(id)` with `ON DELETE SET NULL`. Constraints are added
-  idempotently by `ensureSorInvoiceSchema()` for installs that pre-date
-  the FK declarations. Audit rows survive parent clears.
+  and `orders(id)` with `ON DELETE SET NULL` (one FK per column — the
+  duplicate named FKs are dropped by `sor-fk-dedupe-1`), both indexed so
+  the SET NULL actions never scan the table. Audit rows survive parent
+  clears.
 - **Audit integration** — `sor_upload_log` mirrors into `upload_log` via
   the `trg_sor_upload_log_mirror` AFTER INSERT trigger (function
   `sor_upload_log_mirror()`). `data_type='sor_invoice'` and
@@ -117,9 +126,17 @@ SOR-specific invariants:
   `sor_outstanding` view computes
   `outstanding = sale − payment − return − deduction` per invoice and
   is the single source of truth for the per-portal KPI grid and the
-  Outstanding Ledger UI. Sale lines link to `orders` via
-  `order_row_id`; payment / return / deduction lines only need
-  `invoice_id`. See [`docs/SOR_LEVEL_PAYMENT_RECO.md` §6a](docs/SOR_LEVEL_PAYMENT_RECO.md).
+  Outstanding Ledger UI. `variance = declared net_payable − (sale −
+  return − deduction)` — payments never create variance. Sale lines
+  link to `orders` via `order_row_id`; payment / return / deduction
+  lines only need `invoice_id`. See
+  [`docs/SOR_LEVEL_PAYMENT_RECO.md` §6a](docs/SOR_LEVEL_PAYMENT_RECO.md).
+- **Line ownership** — `sor_invoice_line.source` names the pipeline that
+  wrote a line (e.g. `mp_invoices:ajio`). A re-sync replaces only its own
+  lines, never another stream's.
+- **AJIO (Phase 2)** — the ledger is a derived read model of the stored
+  AJIO `mp_invoices` rows (`services/sorMirror.js`), re-synced on every
+  AJIO upload and delete; never build it from the in-flight file.
 - **Myntra** keeps the strict 10708 / 45833 split **only** for the
   regular Myntra marketplace pipeline (`myntraUpload.js`); MJIPL is a
   separate legal entity and **does not** use this gate.
