@@ -157,19 +157,22 @@ async function loadFromDb(marketplace = 'flipkart', sellerAccount = 'default') {
     // Include 'default' as fallback for non-default accounts
     const accounts = sellerAccount !== 'default' ? [sellerAccount, 'default'] : ['default'];
 
+    // Account-specific rows first; then, when two periods of a category
+    // overlap (an earlier one that was never closed), the later start wins —
+    // the same rule as the SQL report paths. find() takes the first match.
     const orderBy = accounts.length > 1
-      ? `(CASE WHEN seller_account = $2[1] THEN 0 ELSE 1 END)`
-      : `1`;
+      ? `(CASE WHEN seller_account = $2[1] THEN 0 ELSE 1 END), start_date DESC NULLS LAST, id DESC`
+      : `start_date DESC NULLS LAST, id DESC`;
 
     // During rolling PostgreSQL schema upgrades, keep current rate-card
     // calculations working until the optional price-band columns are visible.
     const reverseShippingQuery = pool.query(
-      `SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, weight_slab, local_fee, zonal_fee, national_fee FROM rc_reverse_shipping WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, price_min, weight_slab`,
+      `SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, seller_account, price_min, price_max, weight_slab, local_fee, zonal_fee, national_fee FROM rc_reverse_shipping WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, price_min, weight_slab`,
       [marketplace, accounts]
     ).catch(async error => {
       if (!/price_(?:min|max)/i.test(error.message || '')) throw error;
       return pool.query(
-        `SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, weight_slab, local_fee, zonal_fee, national_fee FROM rc_reverse_shipping WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, weight_slab`,
+        `SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, seller_account, weight_slab, local_fee, zonal_fee, national_fee FROM rc_reverse_shipping WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, weight_slab`,
         [marketplace, accounts]
       );
     });
@@ -187,7 +190,7 @@ async function loadFromDb(marketplace = 'flipkart', sellerAccount = 'default') {
     const fixedFee        = fixRes.rows.map(r  => ({ category: normalizeCategory(r.category), startDate: r.start_date, endDate: r.end_date, fulfilmentType: r.fulfilment_type || 'ALL', priceMin: +r.price_min, priceMax: +r.price_max, rate: +r.rate }));
     const collectionFee   = colRes.rows.map(r  => ({ category: normalizeCategory(r.category), startDate: r.start_date, endDate: r.end_date, priceMin: +r.price_min, priceMax: +r.price_max, prepaid: +r.prepaid, postpaid: +r.postpaid, prepaidType: r.prepaid_type, postpaidType: r.postpaid_type }));
     const pickAndPack     = ppRes.rows.map(r   => ({ category: normalizeCategory(r.category), startDate: r.start_date, endDate: r.end_date, fulfilmentType: r.fulfilment_type || 'ALL', priceMin: +r.price_min, priceMax: +r.price_max, rate: +r.rate }));
-    const reverseShipping = revRes.rows.map(r  => ({ category: normalizeCategory(r.category), startDate: r.start_date, endDate: r.end_date, priceMin: Number(r.price_min ?? 0), priceMax: Number(r.price_max ?? 999999), weightSlab: r.weight_slab, local: +r.local_fee, zonal: +r.zonal_fee, national: +r.national_fee }));
+    const reverseShipping = revRes.rows.map(r  => ({ category: normalizeCategory(r.category), sellerAccount: r.seller_account, startDate: r.start_date, endDate: r.end_date, priceMin: Number(r.price_min ?? 0), priceMax: Number(r.price_max ?? 999999), weightSlab: r.weight_slab, local: +r.local_fee, zonal: +r.zonal_fee, national: +r.national_fee }));
     const franchiseFee    = franRes.rows.map(r => ({ category: normalizeCategory(r.category) || 'all', brandName: r.brand_name || null, startDate: r.start_date, endDate: r.end_date, priceMin: +r.price_min, priceMax: +r.price_max, rate: +r.rate }));
     return { commission, fixedFee, collectionFee, pickAndPack, reverseShipping, franchiseFee };
   } catch { return null; }
@@ -449,14 +452,23 @@ function reverseWeightUpperBound(weightSlab) {
 function findReverseShippingRow(rc, cat, price, weight, orderDate) {
   const w = parseFloat(weight) || 0.5;
   const p = parseFloat(price) || 0;
-  return (rc.reverseShipping || [])
+  const matching = (rc.reverseShipping || [])
     .filter(r => {
       if (r.category !== cat) return false;
       if (!inRange(orderDate, r.startDate, r.endDate)) return false;
       const min = Number.isFinite(Number(r.priceMin)) ? Number(r.priceMin) : 0;
       const max = Number.isFinite(Number(r.priceMax)) ? Number(r.priceMax) : 999999;
       return p >= min && p <= max && w <= reverseWeightUpperBound(r.weightSlab);
-    })
+    });
+  // Account-specific rows come first from the loader and win over the
+  // 'default' fallback; within that account, only the latest effective
+  // period's slabs compete, so an older, never-closed period cannot win
+  // with a smaller slab.
+  const account = matching[0]?.sellerAccount;
+  const sameAccount = matching.filter(r => r.sellerAccount === account);
+  const latestStart = sameAccount.reduce((latest, r) => ((r.startDate || '') > latest ? (r.startDate || '') : latest), '');
+  return sameAccount
+    .filter(r => (r.startDate || '') === latestStart)
     // Do not rely on lexical slab strings ("10 kg" sorts before "2 kg").
     .sort((a, b) => reverseWeightUpperBound(a.weightSlab) - reverseWeightUpperBound(b.weightSlab))[0];
 }

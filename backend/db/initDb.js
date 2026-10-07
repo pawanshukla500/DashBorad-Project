@@ -836,6 +836,202 @@ export function schemaMigrationsEnabled(env = process.env) {
   return /^(1|true|yes)$/i.test(String(env.RUN_SCHEMA_MIGRATIONS || '').trim());
 }
 
+// Session-level advisory lock held for the whole initDb run. Two backends
+// booting together (a deploy overlapping a restart) otherwise raced the same
+// DDL; the second now waits, then finds the schema current and takes the fast
+// path. Advisory locks are per database, so the other databases on the shared
+// server are unaffected.
+export const SCHEMA_INIT_LOCK_KEY = 7_140_231_100;
+// Limits for the startup DDL session. A table lock request queues every later
+// session behind it, so no statement may wait longer than lock_timeout for one;
+// a timed-out step is retried on the next attempt. statement_timeout matches
+// runVersionedMigration.
+export const SCHEMA_DDL_LOCK_TIMEOUT = '3s';
+export const SCHEMA_DDL_STATEMENT_TIMEOUT = '120s';
+
+// SQLSTATEs of a statement cancelled by lock_timeout / statement_timeout.
+const INTERRUPTED_SQLSTATES = new Set(['55P03', '57014']);
+const SQL_IDENTIFIER = String.raw`("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
+const ADD_COLUMN_SQL = new RegExp(String.raw`^\s*ALTER\s+TABLE\s+${SQL_IDENTIFIER}\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+${SQL_IDENTIFIER}\s`, 'i');
+const DROP_NOT_NULL_SQL = new RegExp(String.raw`^\s*ALTER\s+TABLE\s+${SQL_IDENTIFIER}\s+ALTER\s+COLUMN\s+${SQL_IDENTIFIER}\s+DROP\s+NOT\s+NULL\s*$`, 'i');
+// Any other statement that can remove a column or relation (DROP CONSTRAINT
+// drops its index too) makes the catalog snapshot stale.
+const REMOVES_SCHEMA_OBJECTS_SQL = /\bDROP\s+(INDEX|CONSTRAINT|COLUMN|TABLE)\b|\bRENAME\b/i;
+const CREATE_INDEX_SQL = new RegExp(String.raw`^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+${SQL_IDENTIFIER}\s+ON\s`, 'i');
+const SCHEMA_VERSION_INSERT_SQL = /^\s*INSERT\s+INTO\s+schema_version\b/i;
+
+function sqlIdentifier(raw) {
+  return raw.startsWith('"') ? raw.slice(1, -1).replace(/""/g, '"') : raw.toLowerCase();
+}
+
+// True for one statement with one action. Literals and parenthesised groups
+// (NUMERIC(14,2), index column lists) are removed first, so a remaining comma
+// or semicolon marks a second ALTER action or a second statement. Comments,
+// dollar quoting and E'' strings can hide either, so such text never counts.
+function isSingleSqlAction(sql) {
+  if (/--|\/\*|\$\w*\$|(^|\W)E'/i.test(sql)) return false;
+  let flat = sql.replace(/'(?:[^']|'')*'/g, "''");
+  for (let previous = ''; previous !== flat;) {
+    previous = flat;
+    flat = flat.replace(/\([^()]*\)/g, '');
+  }
+  return !/[,;]/.test(flat.trim().replace(/;$/, ''));
+}
+
+async function loadSchemaCatalog(client) {
+  const columns = new Map();
+  const { rows: columnRows } = await client.query(`
+    SELECT table_name, column_name, is_nullable = 'YES' AS nullable
+    FROM information_schema.columns
+    WHERE table_schema = current_schema()
+  `);
+  for (const row of columnRows) {
+    if (!columns.has(row.table_name)) columns.set(row.table_name, new Map());
+    columns.get(row.table_name).set(row.column_name, row.nullable);
+  }
+  const { rows: relationRows } = await client.query(`
+    SELECT relname FROM pg_class WHERE relnamespace = current_schema()::regnamespace
+  `);
+  return { columns, relations: new Set(relationRows.map(row => row.relname)) };
+}
+
+/**
+ * The queryable the startup schema pass runs on: one dedicated client, so the
+ * advisory lock and the session's lock_timeout cover every statement.
+ *
+ * ADD COLUMN IF NOT EXISTS, ALTER COLUMN ... DROP NOT NULL and CREATE INDEX IF
+ * NOT EXISTS lock their table (ACCESS EXCLUSIVE or SHARE) even when they change
+ * nothing. They are skipped when a catalog snapshot already shows the end
+ * state; otherwise the unchanged statement runs and its IF NOT EXISTS still
+ * decides. The snapshot is read on first use and again after any statement
+ * that drops or renames objects, so it can only be stale towards "missing",
+ * which just means the statement runs as before.
+ *
+ * Many startup statements swallow their errors. A statement cancelled by
+ * lock_timeout or statement_timeout is remembered, and from then on no
+ * schema_version row is written in this run, so a step that did not finish is
+ * retried on the next attempt instead of being recorded as applied.
+ */
+export function createSchemaInitQueryable(client) {
+  const interrupted = [];
+  let catalog = null;
+
+  // A failed catalog read only means "not known to be applied": the
+  // statement then runs, and its own outcome is what gets recorded.
+  async function alreadyApplied(text) {
+    try {
+      return await matchesCatalog(text);
+    } catch {
+      return false;
+    }
+  }
+
+  async function matchesCatalog(text) {
+    if (!isSingleSqlAction(text)) return false;
+    let match = ADD_COLUMN_SQL.exec(text);
+    if (match) {
+      catalog ??= await loadSchemaCatalog(client);
+      return catalog.columns.get(sqlIdentifier(match[1]))?.has(sqlIdentifier(match[2])) ?? false;
+    }
+    match = DROP_NOT_NULL_SQL.exec(text);
+    if (match) {
+      catalog ??= await loadSchemaCatalog(client);
+      return catalog.columns.get(sqlIdentifier(match[1]))?.get(sqlIdentifier(match[2])) === true;
+    }
+    match = CREATE_INDEX_SQL.exec(text);
+    if (match) {
+      catalog ??= await loadSchemaCatalog(client);
+      return catalog.relations.has(sqlIdentifier(match[1]));
+    }
+    return false;
+  }
+
+  // Keep the snapshot true after a statement this run applied itself.
+  function recordApplied(text) {
+    if (!catalog) return;
+    if (!isSingleSqlAction(text)) {
+      if (REMOVES_SCHEMA_OBJECTS_SQL.test(text)) catalog = null;
+      return;
+    }
+    let match = ADD_COLUMN_SQL.exec(text);
+    if (match) {
+      const table = sqlIdentifier(match[1]);
+      if (!catalog.columns.has(table)) catalog.columns.set(table, new Map());
+      // Nullability unknown: a later DROP NOT NULL still runs.
+      catalog.columns.get(table).set(sqlIdentifier(match[2]), null);
+      return;
+    }
+    match = DROP_NOT_NULL_SQL.exec(text);
+    if (match) {
+      catalog.columns.get(sqlIdentifier(match[1]))?.set(sqlIdentifier(match[2]), true);
+      return;
+    }
+    match = CREATE_INDEX_SQL.exec(text);
+    if (match) {
+      catalog.relations.add(sqlIdentifier(match[1]));
+      return;
+    }
+    if (REMOVES_SCHEMA_OBJECTS_SQL.test(text)) catalog = null;
+  }
+
+  function interruptedError() {
+    return new Error(
+      `${interrupted.length} startup schema statement(s) timed out (first: "${interrupted[0]}"); `
+      + 'no schema version is recorded so the next attempt retries them.',
+    );
+  }
+
+  return {
+    async query(text, params) {
+      if (typeof text === 'string') {
+        if (interrupted.length && SCHEMA_VERSION_INSERT_SQL.test(text)) throw interruptedError();
+        if (await alreadyApplied(text)) return { rows: [], rowCount: 0, skipped: true };
+      }
+      try {
+        const result = await client.query(text, params);
+        if (typeof text === 'string') recordApplied(text);
+        return result;
+      } catch (error) {
+        if (INTERRUPTED_SQLSTATES.has(error?.code)) {
+          interrupted.push(String(text?.text ?? text).replace(/\s+/g, ' ').trim().slice(0, 120));
+        }
+        throw error;
+      }
+    },
+    throwIfInterrupted() {
+      if (interrupted.length) throw interruptedError();
+    },
+  };
+}
+
+// Waits while another backend runs initDb. The wait is a Node-side poll, not
+// a blocking pg_advisory_lock: a backend blocked inside a statement holds a
+// snapshot, and the lock holder's CREATE INDEX CONCURRENTLY waits for every
+// older snapshot to finish — a cycle through Node that PostgreSQL's deadlock
+// detector cannot see.
+export const SCHEMA_INIT_LOCK_POLL_MS = 1_000;
+
+async function acquireSchemaInitLock(client) {
+  for (let attempt = 0; ; attempt += 1) {
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [SCHEMA_INIT_LOCK_KEY]);
+    if (rows[0]?.locked) return;
+    if (attempt % 30 === 0) console.log('[db] Another backend is applying startup migrations; waiting for it to finish…');
+    await new Promise(resolve => setTimeout(resolve, SCHEMA_INIT_LOCK_POLL_MS));
+  }
+}
+
+// The pool's release only resets statement_timeout. If the session cannot be
+// cleaned up, destroying it releases the advisory lock server-side.
+async function releaseSchemaInitClient(client) {
+  try {
+    await client.query('RESET lock_timeout; RESET statement_timeout');
+    await client.query('SELECT pg_advisory_unlock($1)', [SCHEMA_INIT_LOCK_KEY]);
+    client.release();
+  } catch (error) {
+    client.release(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
 export async function initDb() {
   if (!(await isDbConfigured())) {
     console.log('[db] PostgreSQL not configured — skipping schema init');
@@ -845,73 +1041,85 @@ export async function initDb() {
     console.warn('[db] Schema migrations skipped: NODE_ENV is not "production". Set RUN_SCHEMA_MIGRATIONS=true to apply this branch\'s migrations to the configured database (never the shared production database).');
     return;
   }
+  let client = null;
   try {
     const pool = getPool();
+    client = await pool.connect();
+    await acquireSchemaInitLock(client);
+    await client.query(`SET lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'; SET statement_timeout = '${SCHEMA_DDL_STATEMENT_TIMEOUT}'`);
+    // Schema work goes through `db`. `pool` is only passed to steps that own
+    // their own transaction (they connect a client and BEGIN) and to
+    // ensureLookupIndexes, whose CONCURRENTLY builds take no blocking lock but
+    // do wait out older transactions, which a 3 s lock_timeout would fail.
+    const db = createSchemaInitQueryable(client);
 
     // schema_version is deliberately created before the rest of the schema so
     // established installations can skip startup DDL entirely. On a fresh or
     // older database the full migration below still runs once as before.
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS schema_version (
         id SERIAL PRIMARY KEY,
         version TEXT NOT NULL UNIQUE,
         applied_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    const { rowCount: alreadyCurrent } = await pool.query(
+    const { rowCount: alreadyCurrent } = await db.query(
       `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
       [CURRENT_SCHEMA_VERSION],
     );
     if (alreadyCurrent) {
-      await ensureMyntraUploadSchema(pool);
-      await ensureMyntraSellerIdSchema(pool);
-      await ensureUploadAuditRetentionSchema(pool);
-      await ensureNormalizedRateCardSchema(pool);
-      await ensureMpInvoiceIdempotencySchema(pool);
-      await ensureMpLedgerIdempotencySchema(pool);
-      await ensureMyntraPaymentLinkageSchema(pool);
-      await ensureMyntraOrderTypeSchema(pool);
-      await ensureMyntraItemizedFeesSchema(pool);
-      await ensureMyntraRtoReturnDateFix(pool);
-      await ensureMyntraPartnerWarehouseSchema(pool);
-      await ensureMyntraBlankTrackingRtoFix(pool);
-      await ensureMyntraBlankTrackingCancelledFix(pool);
-      await ensureMyntraEjRateCardsSeed(pool);
+      await ensureMyntraUploadSchema(db);
+      await ensureMyntraSellerIdSchema(db);
+      await ensureUploadAuditRetentionSchema(db);
+      await ensureNormalizedRateCardSchema(db);
+      await ensureMpInvoiceIdempotencySchema(db);
+      await ensureMpLedgerIdempotencySchema(db);
+      await ensureMyntraPaymentLinkageSchema(db);
+      await ensureMyntraOrderTypeSchema(db);
+      await ensureMyntraItemizedFeesSchema(db);
+      await ensureMyntraRtoReturnDateFix(db);
+      await ensureMyntraPartnerWarehouseSchema(db);
+      await ensureMyntraBlankTrackingRtoFix(db);
+      await ensureMyntraBlankTrackingCancelledFix(db);
+      await ensureMyntraEjRateCardsSeed(db);
       await ensureSorSchema(pool);
-      await ensureDbConnectionOptimization(pool);
+      await ensureDbConnectionOptimization(db);
       await ensureLookupIndexes(pool);
       // A read-model migration changes the view definition as well as the
       // backing table, so it must run on already-current installations too.
-      await ensureAmazonSettlementReportingRollups(pool);
-      await ensureUnifiedSettlementsView(pool);
-      await ensureOrderSettlementTotals(pool);
-      await ensureOrderItemsSummaryView(pool);
+      await ensureAmazonSettlementReportingRollups(pool, db);
+      await ensureUnifiedSettlementsView(db);
+      await ensureOrderSettlementTotals(pool, db);
+      await ensureOrderItemsSummaryView(db);
+      // A view replacement that timed out (and was logged) would otherwise
+      // leave the previous definition in place until the next restart.
+      db.throwIfInterrupted();
       console.log(`[db] Schema ${CURRENT_SCHEMA_VERSION} already ready; skipping startup DDL.`);
       return;
     }
 
-    for (const ddl of TABLES)   { await pool.query(ddl); }
-    for (const ddl of INDEXES)  { await pool.query(ddl); }
+    for (const ddl of TABLES)   { await db.query(ddl); }
+    for (const ddl of INDEXES)  { await db.query(ddl); }
     
     // Column migrations – safe to run on existing tables
-    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand TEXT`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_cancellation_reason TEXT`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS tech_visit_sla TEXT`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS tech_visit_by_date DATE`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS tech_visit_completion_datetime TEXT`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS tech_visit_completion_breach TEXT`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_completion_sla TEXT`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_complete_by_date DATE`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_completion_date DATE`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_completion_breach TEXT`);
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_cancellation_date DATE`);
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand TEXT`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_cancellation_reason TEXT`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS tech_visit_sla TEXT`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS tech_visit_by_date DATE`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS tech_visit_completion_datetime TEXT`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS tech_visit_completion_breach TEXT`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_completion_sla TEXT`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_complete_by_date DATE`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_completion_date DATE`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_completion_breach TEXT`);
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_cancellation_date DATE`);
 
-    await pool.query(`ALTER TABLE upload_skipped_rows ADD COLUMN IF NOT EXISTS skip_reason TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE upload_skipped_rows ADD COLUMN IF NOT EXISTS skip_reason TEXT`).catch(() => {});
     // Key migration: returns now keyed by order_item_id, not return_id
-    await pool.query(`ALTER TABLE returns ALTER COLUMN return_id DROP NOT NULL`).catch(() => {});
-    await pool.query(`ALTER TABLE returns DROP CONSTRAINT IF EXISTS uq_return_id`).catch(() => {});
-    await pool.query(`ALTER TABLE returns DROP CONSTRAINT IF EXISTS "UQ_return_id"`).catch(() => {});
-    await pool.query(`
+    await db.query(`ALTER TABLE returns ALTER COLUMN return_id DROP NOT NULL`).catch(() => {});
+    await db.query(`ALTER TABLE returns DROP CONSTRAINT IF EXISTS uq_return_id`).catch(() => {});
+    await db.query(`ALTER TABLE returns DROP CONSTRAINT IF EXISTS "UQ_return_id"`).catch(() => {});
+    await db.query(`
       DO $$ BEGIN
         IF NOT EXISTS (
           SELECT 1 FROM pg_constraint
@@ -924,29 +1132,29 @@ export async function initDb() {
 
     // RC table migrations — add marketplace column so rates are scoped per marketplace
     for (const t of ['rc_commission','rc_fixed_fee','rc_collection_fee','rc_pick_pack','rc_reverse_shipping']) {
-      await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS marketplace TEXT NOT NULL DEFAULT 'flipkart'`).catch(() => {});
+      await db.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS marketplace TEXT NOT NULL DEFAULT 'flipkart'`).catch(() => {});
     }
     // Collection fee: mixed flat-₹ / % per slab + FBF vs Non-FBF fulfilment distinction
-    await pool.query(`ALTER TABLE rc_collection_fee ADD COLUMN IF NOT EXISTS fulfilment_type TEXT DEFAULT 'All'`).catch(() => {});
+    await db.query(`ALTER TABLE rc_collection_fee ADD COLUMN IF NOT EXISTS fulfilment_type TEXT DEFAULT 'All'`).catch(() => {});
     // Pick & Pack: add fulfilment_type so FBA vs Flex can have different rates (Amazon)
-    await pool.query(`ALTER TABLE rc_pick_pack ADD COLUMN IF NOT EXISTS fulfilment_type TEXT NOT NULL DEFAULT 'ALL'`).catch(() => {});
-    await pool.query(`ALTER TABLE rc_collection_fee ADD COLUMN IF NOT EXISTS prepaid_type    TEXT DEFAULT 'pct'`).catch(() => {});
-    await pool.query(`ALTER TABLE rc_collection_fee ADD COLUMN IF NOT EXISTS postpaid_type   TEXT DEFAULT 'pct'`).catch(() => {});
+    await db.query(`ALTER TABLE rc_pick_pack ADD COLUMN IF NOT EXISTS fulfilment_type TEXT NOT NULL DEFAULT 'ALL'`).catch(() => {});
+    await db.query(`ALTER TABLE rc_collection_fee ADD COLUMN IF NOT EXISTS prepaid_type    TEXT DEFAULT 'pct'`).catch(() => {});
+    await db.query(`ALTER TABLE rc_collection_fee ADD COLUMN IF NOT EXISTS postpaid_type   TEXT DEFAULT 'pct'`).catch(() => {});
     // seller_account — scopes rate cards per seller account / brand (e.g. Myntra brand names)
     for (const t of ['rc_commission','rc_fixed_fee','rc_collection_fee','rc_pick_pack','rc_reverse_shipping']) {
-      await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS seller_account TEXT NOT NULL DEFAULT 'default'`).catch(() => {});
+      await db.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS seller_account TEXT NOT NULL DEFAULT 'default'`).catch(() => {});
     }
     // Reverse shipping is rate-carded by both order item value and weight.
     // Existing rows retain their previous behaviour through this unrestricted range.
-    await pool.query(`ALTER TABLE rc_reverse_shipping ADD COLUMN IF NOT EXISTS price_min NUMERIC(12,2) NOT NULL DEFAULT 0`).catch(() => {});
-    await pool.query(`ALTER TABLE rc_reverse_shipping ADD COLUMN IF NOT EXISTS price_max NUMERIC(12,2) NOT NULL DEFAULT 999999`).catch(() => {});
-    await pool.query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'viewer'`).catch(() => {});
-    await pool.query(`UPDATE users SET role = 'operator' WHERE role = 'user'`).catch(() => {});
+    await db.query(`ALTER TABLE rc_reverse_shipping ADD COLUMN IF NOT EXISTS price_min NUMERIC(12,2) NOT NULL DEFAULT 0`).catch(() => {});
+    await db.query(`ALTER TABLE rc_reverse_shipping ADD COLUMN IF NOT EXISTS price_max NUMERIC(12,2) NOT NULL DEFAULT 999999`).catch(() => {});
+    await db.query(`ALTER TABLE users ALTER COLUMN role SET DEFAULT 'viewer'`).catch(() => {});
+    await db.query(`UPDATE users SET role = 'operator' WHERE role = 'user'`).catch(() => {});
     // seller_account on orders — identifies which brand/account an order belongs to (Myntra brand etc.)
-    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS seller_account TEXT NOT NULL DEFAULT 'default'`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_orders_market_account_date ON orders(marketplace, seller_account, order_date DESC)`).catch(() => {});
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS seller_account TEXT NOT NULL DEFAULT 'default'`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_orders_market_account_date ON orders(marketplace, seller_account, order_date DESC)`).catch(() => {});
     // marketplace_accounts — stores named accounts/brands per marketplace
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS marketplace_accounts (
         id           SERIAL PRIMARY KEY,
         marketplace  TEXT NOT NULL,
@@ -961,7 +1169,7 @@ export async function initDb() {
     // into its two operating accounts below; its legacy default stays only for
     // old data and is deactivated once it no longer contains invoice rows.
     for (const [mp, name] of [['flipkart','Flipkart'],['amazon','Amazon'],['myntra','Myntra'],['meesho','Meesho'],['jiomart','JioMart']]) {
-      await pool.query(
+      await db.query(
         `INSERT INTO marketplace_accounts (marketplace, account_id, display_name) VALUES ($1,'default',$2) ON CONFLICT DO NOTHING`,
         [mp, name]
       ).catch(() => {});
@@ -970,7 +1178,7 @@ export async function initDb() {
       ['myntra_vb', 'Myntra (VB)'],
       ['myntra_ej', 'Myntra (EJ)'],
     ]) {
-      await pool.query(
+      await db.query(
         `INSERT INTO marketplace_accounts (marketplace, account_id, display_name)
          VALUES ('myntra', $1, $2)
          ON CONFLICT (marketplace, account_id)
@@ -998,7 +1206,7 @@ export async function initDb() {
       ['fk_storage',              'Storage & Recall Fees',         'storage',         15],
     ];
     for (const [key, label, category, sortOrder] of DEFAULT_CHARGES) {
-      await pool.query(
+      await db.query(
         `INSERT INTO charges_config (key, label, category, source, sort_order)
          VALUES ($1,$2,$3,'data',$4) ON CONFLICT (key) DO NOTHING`,
         [key, label, category, sortOrder]
@@ -1006,25 +1214,25 @@ export async function initDb() {
     }
 
     // SKU master — add lifecycle fields (safe on existing tables)
-    await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS launch_date DATE`).catch(() => {});
-    await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS product_name TEXT`).catch(() => {});
-    await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS weight_slab NUMERIC(6,2)`).catch(() => {});
+    await db.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS launch_date DATE`).catch(() => {});
+    await db.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS product_name TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS weight_slab NUMERIC(6,2)`).catch(() => {});
     // SKU master — brand_name: master brand column, backfills orders.brand_name automatically
-    await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS brand_name TEXT`).catch(() => {});
-    await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS category TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS brand_name TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS category TEXT`).catch(() => {});
 
     // Orders — add vb_export_sku and vb_export_category
-    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_sku TEXT`).catch(() => {});
-    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_category TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_sku TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS vb_export_category TEXT`).catch(() => {});
 
     // Returns — add return_date column (used by Amazon returns report)
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_date DATE`).catch(() => {});
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS return_date DATE`).catch(() => {});
 
     // Orders — add brand_name (mapped from 'Brand' column in FK/Amazon order report)
-    await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand_name TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS brand_name TEXT`).catch(() => {});
     // Amazon is a single-brand account. Apply the business identity at the
     // canonical order layer so every dashboard and rate comparison agrees.
-    await pool.query(`
+    await db.query(`
       UPDATE orders
       SET brand_name = $1, brand = $1
       WHERE marketplace = 'amazon'
@@ -1032,7 +1240,7 @@ export async function initDb() {
     `, [AMAZON_BRAND]).catch(e => console.warn('[db] Amazon brand backfill:', e.message));
 
     // RC commission — brand-specific rates: brand_name NULL = applies to all brands (fallback)
-    await pool.query(`ALTER TABLE rc_commission ADD COLUMN IF NOT EXISTS brand_name TEXT DEFAULT NULL`).catch(() => {});
+    await db.query(`ALTER TABLE rc_commission ADD COLUMN IF NOT EXISTS brand_name TEXT DEFAULT NULL`).catch(() => {});
 
     // ── Rate Card schema hardening ────────────────────────────────────────────
     // Add CHECK constraints, UNIQUE constraints, and covering indexes for the
@@ -1047,7 +1255,7 @@ export async function initDb() {
     const RC_TABLES = ['rc_commission', 'rc_fixed_fee', 'rc_collection_fee', 'rc_pick_pack', 'rc_reverse_shipping'];
     for (const tbl of RC_TABLES) {
       // Date-range sanity
-      await pool.query(
+      await db.query(
         `DO $$ BEGIN
           ALTER TABLE ${tbl}
             ADD CONSTRAINT ${tbl}_dates_ok
@@ -1056,19 +1264,19 @@ export async function initDb() {
         END $$;`
       ).catch(() => {});
       // Prevent accidental duplicate rules per marketplace+account+category+brand+date+price-band
-      await pool.query(
+      await db.query(
         `CREATE UNIQUE INDEX IF NOT EXISTS ${tbl}_uniq_period
          ON ${tbl} (marketplace, seller_account, category, COALESCE(brand_name, ''),
                     start_date, end_date, price_min, price_max)`
       ).catch(() => {});
       // Covering index for the dominant query shape: active rules per
       // marketplace + account + category, sorted by recency.
-      await pool.query(
+      await db.query(
         `CREATE INDEX IF NOT EXISTS ${tbl}_match
          ON ${tbl} (marketplace, seller_account, category, start_date DESC NULLS LAST, end_date DESC NULLS LAST)`
       ).catch(() => {});
       // Partial index for the "currently active" subset (end_date IS NULL).
-      await pool.query(
+      await db.query(
         `CREATE INDEX IF NOT EXISTS ${tbl}_active_null_end
          ON ${tbl} (marketplace, seller_account, category)
          WHERE end_date IS NULL`
@@ -1076,7 +1284,7 @@ export async function initDb() {
     }
     // franchise fee has the same shape (not in RC_TABLES because of different
     // declaration order, but identical hot-path query)
-    await pool.query(
+    await db.query(
       `DO $$ BEGIN
         ALTER TABLE rc_franchise_fee
           ADD CONSTRAINT rc_franchise_fee_dates_ok
@@ -1084,23 +1292,23 @@ export async function initDb() {
       EXCEPTION WHEN duplicate_object THEN NULL;
       END $$;`
     ).catch(() => {});
-    await pool.query(
+    await db.query(
       `CREATE UNIQUE INDEX IF NOT EXISTS rc_franchise_fee_uniq_period
        ON rc_franchise_fee (marketplace, seller_account, category, COALESCE(brand_name, ''),
                             start_date, end_date, price_min, price_max)`
     ).catch(() => {});
-    await pool.query(
+    await db.query(
       `CREATE INDEX IF NOT EXISTS rc_franchise_fee_match
        ON rc_franchise_fee (marketplace, seller_account, category, start_date DESC NULLS LAST, end_date DESC NULLS LAST)`
     ).catch(() => {});
-    await pool.query(
+    await db.query(
       `CREATE INDEX IF NOT EXISTS rc_franchise_fee_active_null_end
        ON rc_franchise_fee (marketplace, seller_account, category)
        WHERE end_date IS NULL`
     ).catch(() => {});
 
     // Franchise fee rate card table (FK charges flat ₹/order for certain brands/categories)
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS rc_franchise_fee (
         id             SERIAL PRIMARY KEY,
         category       TEXT NOT NULL DEFAULT 'ALL',
@@ -1117,16 +1325,16 @@ export async function initDb() {
     `).catch(() => {});
 
     // Migration: add SPF received tracking columns
-    await pool.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received BOOLEAN DEFAULT FALSE`).catch(() => {});
-    await pool.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received_date DATE`).catch(() => {});
-    await pool.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received_amount NUMERIC(14,2) DEFAULT 0`).catch(() => {});
-    await pool.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received_neft_id TEXT`).catch(() => {});
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS is_received BOOLEAN DEFAULT FALSE`).catch(() => {});
-    await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS received_date DATE`).catch(() => {});
-      await pool.query(`ALTER TABLE meesho_settlement_items ADD COLUMN IF NOT EXISTS reverse_shipping NUMERIC(10,2) DEFAULT 0`).catch(() => {});
+    await db.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received BOOLEAN DEFAULT FALSE`).catch(() => {});
+    await db.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received_date DATE`).catch(() => {});
+    await db.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received_amount NUMERIC(14,2) DEFAULT 0`).catch(() => {});
+    await db.query(`ALTER TABLE fk_settlement_orders ADD COLUMN IF NOT EXISTS spf_received_neft_id TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS is_received BOOLEAN DEFAULT FALSE`).catch(() => {});
+    await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS received_date DATE`).catch(() => {});
+      await db.query(`ALTER TABLE meesho_settlement_items ADD COLUMN IF NOT EXISTS reverse_shipping NUMERIC(10,2) DEFAULT 0`).catch(() => {});
 
     // order_spf_tracking: track SPF received vs not received per order
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS order_spf_tracking (
         id SERIAL PRIMARY KEY,
         order_item_id TEXT NOT NULL,
@@ -1145,7 +1353,7 @@ export async function initDb() {
 
     // ── Multi-marketplace settlement ─────────────────────────────────────────
     // mp_config: registry of all marketplaces + their reconciliation type
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS mp_config (
         marketplace   VARCHAR(50)  PRIMARY KEY,
         display_name  VARCHAR(100) NOT NULL,
@@ -1158,7 +1366,7 @@ export async function initDb() {
     `).catch(() => {});
 
     // Seed known marketplaces (idempotent)
-    await pool.query(`
+    await db.query(`
       INSERT INTO mp_config (marketplace, display_name, reco_type, color) VALUES
         ('flipkart',  'Flipkart',    'order',   'indigo'),
         ('shopsy',    'Shopsy',      'order',   'violet'),
@@ -1171,7 +1379,7 @@ export async function initDb() {
     `).catch(() => {});
 
     // mp_invoices: invoice-based reconciliation (Myntra SOR, Cocoblue, etc.)
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS mp_invoices (
         id                  SERIAL PRIMARY KEY,
         marketplace         VARCHAR(50)  NOT NULL,
@@ -1212,18 +1420,18 @@ export async function initDb() {
         updated_at          TIMESTAMPTZ   DEFAULT NOW()
       )
     `).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_mp    ON mp_invoices(marketplace)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_date  ON mp_invoices(invoice_date)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_sku   ON mp_invoices(sku)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_mp    ON mp_invoices(marketplace)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_date  ON mp_invoices(invoice_date)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_sku   ON mp_invoices(sku)`).catch(() => {});
     // The account is always selected before a Myntra import. These composite
     // indexes keep account-specific payment checks from reading the other
     // account's rows as the invoice table grows.
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_market_account_date ON mp_invoices(marketplace, seller_account, invoice_date DESC)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_market_account_status ON mp_invoices(marketplace, seller_account, status)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_market_account_date ON mp_invoices(marketplace, seller_account, invoice_date DESC)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_mp_inv_market_account_status ON mp_invoices(marketplace, seller_account, status)`).catch(() => {});
     // Settlement benchmark reads only Paid rows for two months at a time.
     // This partial index avoids scanning an account's historical open invoices
     // as imported payment data grows.
-    await pool.query(`
+    await db.query(`
       CREATE INDEX IF NOT EXISTS IX_mp_inv_benchmark_paid
       ON mp_invoices (marketplace, payment_date DESC, seller_account, sku)
       WHERE payment_date IS NOT NULL
@@ -1233,7 +1441,7 @@ export async function initDb() {
     `).catch(() => {});
     // Do not hide an existing legacy account that still owns data. New Myntra
     // imports must use VB or EJ, so a clean database exposes only those two.
-    await pool.query(`
+    await db.query(`
       UPDATE marketplace_accounts account
       SET is_active = FALSE
       WHERE account.marketplace = 'myntra'
@@ -1247,7 +1455,7 @@ export async function initDb() {
     `).catch(() => {});
 
     // mp_ledger_entries: ledger-based reconciliation (Zepto, etc.)
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS mp_ledger_entries (
         id               SERIAL PRIMARY KEY,
         marketplace      VARCHAR(50)  NOT NULL,
@@ -1268,11 +1476,11 @@ export async function initDb() {
         updated_at       TIMESTAMPTZ   DEFAULT NOW()
       )
     `).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_led_mp    ON mp_ledger_entries(marketplace)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_mp_led_date  ON mp_ledger_entries(entry_date)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_mp_led_mp    ON mp_ledger_entries(marketplace)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_mp_led_date  ON mp_ledger_entries(entry_date)`).catch(() => {});
 
     // returns_received: track received returns upload
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS returns_received (
         id SERIAL PRIMARY KEY,
         order_item_id TEXT NOT NULL,
@@ -1288,7 +1496,7 @@ export async function initDb() {
     // Data cleanup: round floating-point noise in rc_commission.rate to exactly 0
     // (AI image parser occasionally saves -0.0007 instead of 0.000000)
     // Threshold 0.005 = 0.5% — no legitimate commission rate exists below 1%
-    await pool.query(
+    await db.query(
       `UPDATE rc_commission SET rate = 0.000000 WHERE ABS(rate) < 0.005 AND rate <> 0`
     ).catch(() => {});
 
@@ -1331,11 +1539,11 @@ export async function initDb() {
       ['sale_gift_amount',        'NUMERIC(14,2)'], // customer-paid gift-wrap revenue
     ];
     for (const [col, type] of ORDER_COLS) {
-      await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
+      await db.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
     }
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_orders_composite ON orders(composite_key)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_orders_order_id  ON orders(order_id)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_orders_sku       ON orders(sku)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_orders_composite ON orders(composite_key)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_orders_order_id  ON orders(order_id)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_orders_sku       ON orders(sku)`).catch(() => {});
 
     // returns: extra columns sourced from FBA and Flex return reports
     const RETURN_COLS = [
@@ -1358,21 +1566,21 @@ export async function initDb() {
       ['asin',                       'TEXT'],          // for cross-reference (separate from fsn=ASIN per FK semantics)
     ];
     for (const [col, type] of RETURN_COLS) {
-      await pool.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
+      await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
     }
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_returns_composite ON returns(composite_key)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_returns_order_id  ON returns(order_id)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_returns_order_sku ON returns(order_id, sku)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_composite ON returns(composite_key)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_order_id  ON returns(order_id)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_order_sku ON returns(order_id, sku)`).catch(() => {});
 
     // sku_master: cross-link Amazon identifiers (fnsku + asin) so FBA returns
     // (which carry seller SKU directly) and other sources can resolve via FNSKU/ASIN.
-    await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS fnsku TEXT`).catch(() => {});
-    await pool.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS asin  TEXT`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_sku_master_fnsku ON sku_master(fnsku)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_sku_master_asin  ON sku_master(asin)`).catch(() => {});
+    await db.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS fnsku TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS asin  TEXT`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_sku_master_fnsku ON sku_master(fnsku)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_sku_master_asin  ON sku_master(asin)`).catch(() => {});
 
     // ── Amazon FC Master ───────────────────────────────────────────────────────
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS amazon_fc_master (
         fc_code VARCHAR(50) PRIMARY KEY,
         city VARCHAR(100),
@@ -1382,7 +1590,7 @@ export async function initDb() {
     `).catch(() => {});
     
     // Seed default Amazon FCs
-    await pool.query(`
+    await db.query(`
       INSERT INTO amazon_fc_master (fc_code, city, state) VALUES
         ('DEX3', 'New Delhi', 'DELHI'),
         ('PNQ2', 'New Delhi', 'DELHI'),
@@ -1436,7 +1644,7 @@ export async function initDb() {
     // ── Amazon Settlement — long format (envelope + line items) ────────────────
     // Replaces the old single-table amazon_settlement_items model. Old table is
     // kept around for back-compat reads but no new writes go to it.
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS amazon_settlements (
         settlement_id           TEXT PRIMARY KEY,
         settlement_start_date   DATE,
@@ -1450,7 +1658,7 @@ export async function initDb() {
       )
     `).catch(() => {});
 
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS amazon_settlement_lines (
         id                     SERIAL PRIMARY KEY,
         settlement_id          TEXT,
@@ -1478,20 +1686,20 @@ export async function initDb() {
         uploaded_at            TIMESTAMPTZ DEFAULT NOW()
       )
     `).catch(() => {});
-    await pool.query(`ALTER TABLE amazon_settlement_lines ADD COLUMN IF NOT EXISTS brand_name TEXT`).catch(() => {});
-    await pool.query(`UPDATE amazon_settlement_lines SET brand_name = $1 WHERE brand_name IS DISTINCT FROM $1`, [AMAZON_BRAND]).catch(e => console.warn('[db] Amazon settlement brand backfill:', e.message));
-    await pool.query(`ALTER TABLE fk_spf_claims ADD COLUMN IF NOT EXISTS order_item_id TEXT`).catch(() => {});
-    await pool.query(`ALTER TABLE fk_spf_claims ADD COLUMN IF NOT EXISTS status TEXT`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_settlement ON amazon_settlement_lines(settlement_id)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_item ON amazon_settlement_lines(order_item_code)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_id   ON amazon_settlement_lines(order_id)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_composite  ON amazon_settlement_lines(composite_key)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_posted     ON amazon_settlement_lines(posted_date)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_tax_desc   ON amazon_settlement_lines(amount_type, amount_description)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_sku  ON amazon_settlement_lines(order_id, sku)`).catch(() => {});
-    await pool.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_settle_date ON amazon_settlement_lines(settlement_id, posted_date DESC)`).catch(() => {});
-    await ensureAmazonSettlementRollups(pool).catch(e => console.warn('[db] Amazon settlement rollups:', e.message));
-    await ensureAmazonSettlementReportingRollups(pool).catch(e => console.warn('[db] Amazon reporting rollups:', e.message));
+    await db.query(`ALTER TABLE amazon_settlement_lines ADD COLUMN IF NOT EXISTS brand_name TEXT`).catch(() => {});
+    await db.query(`UPDATE amazon_settlement_lines SET brand_name = $1 WHERE brand_name IS DISTINCT FROM $1`, [AMAZON_BRAND]).catch(e => console.warn('[db] Amazon settlement brand backfill:', e.message));
+    await db.query(`ALTER TABLE fk_spf_claims ADD COLUMN IF NOT EXISTS order_item_id TEXT`).catch(() => {});
+    await db.query(`ALTER TABLE fk_spf_claims ADD COLUMN IF NOT EXISTS status TEXT`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_settlement ON amazon_settlement_lines(settlement_id)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_item ON amazon_settlement_lines(order_item_code)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_id   ON amazon_settlement_lines(order_id)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_composite  ON amazon_settlement_lines(composite_key)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_posted     ON amazon_settlement_lines(posted_date)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_tax_desc   ON amazon_settlement_lines(amount_type, amount_description)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_sku  ON amazon_settlement_lines(order_id, sku)`).catch(() => {});
+    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_settle_date ON amazon_settlement_lines(settlement_id, posted_date DESC)`).catch(() => {});
+    await ensureAmazonSettlementRollups(pool, db).catch(e => console.warn('[db] Amazon settlement rollups:', e.message));
+    await ensureAmazonSettlementReportingRollups(pool, db).catch(e => console.warn('[db] Amazon reporting rollups:', e.message));
 
     // ── Amazon: support Order Summary as primary sale source (no real order-item-id) ──
     // The Order Summary file has no order-item-id column. To make it usable as
@@ -1499,10 +1707,10 @@ export async function initDb() {
     // (b) add a partial UNIQUE on (order_id, sku) WHERE marketplace='amazon'
     // as the natural key for upserts. Order Reports uploads can later UPDATE
     // the order_item_id column on matching rows.
-    await pool.query(`ALTER TABLE orders ALTER COLUMN order_item_id DROP NOT NULL`).catch(e => {
+    await db.query(`ALTER TABLE orders ALTER COLUMN order_item_id DROP NOT NULL`).catch(e => {
       console.warn('[db] orders.order_item_id DROP NOT NULL:', e.message);
     });
-    await pool.query(`
+    await db.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_amazon_natural
         ON orders (order_id, sku)
         WHERE marketplace = 'amazon'
@@ -1512,7 +1720,7 @@ export async function initDb() {
     // deterministic internal key lets settlement and return reports join on
     // (order_id, sku) without changing either marketplace source value. This
     // only fills missing values; a later Order Report can still replace it.
-    await pool.query(`
+    await db.query(`
       UPDATE orders
       SET order_item_id = 'AMZ:' || order_id || ':' || sku
       WHERE marketplace = 'amazon'
@@ -1527,7 +1735,7 @@ export async function initDb() {
     const adminPass  = process.env.ADMIN_SEED_PASSWORD;
     if (adminEmail && adminPass) {
       const hashedPass = await bcrypt.hash(adminPass, 10);
-      const { rowCount } = await pool.query(
+      const { rowCount } = await db.query(
         `INSERT INTO users (username, email, password_hash, role)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (email) DO NOTHING`,
@@ -1539,7 +1747,7 @@ export async function initDb() {
     }
 
     // Schema version tracking
-    await pool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS schema_version (
         id SERIAL PRIMARY KEY,
         version TEXT NOT NULL UNIQUE,
@@ -1548,37 +1756,38 @@ export async function initDb() {
     `).catch(() => {});
 
     // ── order_returns view (deduplicates returns per order item) ─────────────
-    await ensureOrderReturnsView(pool);
+    await ensureOrderReturnsView(db);
 
     // ── unified_settlements view (owned by app boot — not ad-hoc scripts) ─────
-    await ensureUnifiedSettlementsView(pool);
-    await ensureOrderSettlementTotals(pool);
+    await ensureUnifiedSettlementsView(db);
+    await ensureOrderSettlementTotals(pool, db);
 
     // ── order_items_summary view (unified order lifecycle: order + return + settlement + COGS) ──
-    await ensureOrderItemsSummaryView(pool);
+    await ensureOrderItemsSummaryView(db);
 
-    await ensureMyntraUploadSchema(pool);
-    await ensureMyntraSellerIdSchema(pool);
-    await ensureUploadAuditRetentionSchema(pool);
-    await ensureNormalizedRateCardSchema(pool);
-    await ensureMpInvoiceIdempotencySchema(pool);
-    await ensureMpLedgerIdempotencySchema(pool);
-    await ensureMyntraPaymentLinkageSchema(pool);
-    await ensureMyntraOrderTypeSchema(pool);
-    await ensureMyntraItemizedFeesSchema(pool);
-    await ensureMyntraRtoReturnDateFix(pool);
-    await ensureMyntraPartnerWarehouseSchema(pool);
-    await ensureMyntraBlankTrackingRtoFix(pool);
-    await ensureMyntraBlankTrackingCancelledFix(pool);
-    await ensureMyntraEjRateCardsSeed(pool);
+    await ensureMyntraUploadSchema(db);
+    await ensureMyntraSellerIdSchema(db);
+    await ensureUploadAuditRetentionSchema(db);
+    await ensureNormalizedRateCardSchema(db);
+    await ensureMpInvoiceIdempotencySchema(db);
+    await ensureMpLedgerIdempotencySchema(db);
+    await ensureMyntraPaymentLinkageSchema(db);
+    await ensureMyntraOrderTypeSchema(db);
+    await ensureMyntraItemizedFeesSchema(db);
+    await ensureMyntraRtoReturnDateFix(db);
+    await ensureMyntraPartnerWarehouseSchema(db);
+    await ensureMyntraBlankTrackingRtoFix(db);
+    await ensureMyntraBlankTrackingCancelledFix(db);
+    await ensureMyntraEjRateCardsSeed(db);
     await ensureSorSchema(pool);
-    await ensureDbConnectionOptimization(pool);
+    await ensureDbConnectionOptimization(db);
     await ensureLookupIndexes(pool);
 
-    await pool.query(
+    db.throwIfInterrupted();
+    await db.query(
       `INSERT INTO schema_version (version) VALUES ('2026.07.longterm-1') ON CONFLICT (version) DO NOTHING`
     ).catch(() => {});
-    await pool.query(
+    await db.query(
       `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
       [CURRENT_SCHEMA_VERSION],
     );
@@ -1589,6 +1798,8 @@ export async function initDb() {
     // fails. Reporting a partially initialized schema as ready caused the
     // browser to appear disconnected even though PostgreSQL was reachable.
     throw e;
+  } finally {
+    if (client) await releaseSchemaInitClient(client);
   }
 }
 
@@ -2946,19 +3157,44 @@ async function ensureLookupIndexes(pool) {
 }
 
 /**
+ * Replace a startup-owned view only when its definition changed. DROP VIEW
+ * and CREATE OR REPLACE VIEW take an ACCESS EXCLUSIVE lock on the view, which
+ * queues every dashboard query behind any report already reading it; on a
+ * normal restart the definition is unchanged and no lock is taken at all.
+ *
+ * The candidate is compiled as a session-private temp view so PostgreSQL's own
+ * pg_get_viewdef() normalizes both sides. `replaceSql` is sent as one
+ * multi-statement query, which PostgreSQL runs as a single implicit
+ * transaction: readers never see the view missing, and a failed CREATE keeps
+ * the previous definition. Returns whether the view was replaced.
+ */
+export async function replaceViewIfChanged(db, name, selectSql, replaceSql) {
+  const probe = `${name}_definition_probe`;
+  let unchanged = false;
+  try {
+    await db.query(`DROP VIEW IF EXISTS pg_temp.${probe}; CREATE TEMP VIEW ${probe} AS ${selectSql}`);
+    const { rows } = await db.query(
+      `SELECT pg_get_viewdef(to_regclass($1)) = pg_get_viewdef(to_regclass($2)) AS unchanged`,
+      [name, `pg_temp.${probe}`],
+    );
+    unchanged = rows[0]?.unchanged === true;
+  } catch {
+    // A definition that cannot compile yet: the replacement below reports it.
+  } finally {
+    await db.query(`DROP VIEW IF EXISTS pg_temp.${probe}`).catch(() => {});
+  }
+  if (unchanged) return false;
+  await db.query(replaceSql);
+  return true;
+}
+
+/**
  * Bridges physical Amazon return rows to one reporting row per order item.
  * Every LPN/RMA event remains intact in `returns`; this view deliberately
  * selects the newest event only so joins cannot multiply order revenue.
  */
 async function ensureOrderReturnsView(pool) {
-  // order_items_summary selects from order_returns, so a plain DROP of
-  // order_returns fails once it exists and the whole batch (including the
-  // CREATE) is silently skipped. Every caller recreates order_items_summary
-  // immediately afterwards via ensureOrderItemsSummaryView.
-  const sql = `
-DROP VIEW IF EXISTS order_items_summary;
-DROP VIEW IF EXISTS order_returns;
-CREATE OR REPLACE VIEW order_returns AS
+  const select = `
       SELECT 
           id, return_id, order_item_id, fulfilment_type, return_requested_date, 
           return_approval_date, return_status, return_reason, return_sub_reason, 
@@ -2995,10 +3231,18 @@ CREATE OR REPLACE VIEW order_returns AS
         JOIN orders o ON o.order_id = r.order_id AND o.sku = r.sku AND o.marketplace = 'amazon'
         WHERE r.marketplace = 'amazon'
         ORDER BY o.order_item_id, r.return_date_time DESC NULLS LAST, r.uploaded_at DESC
-      ) amazon_returns;`;
+      ) amazon_returns`;
+  // order_items_summary selects from order_returns, so a plain DROP of
+  // order_returns fails once it exists and the whole batch (including the
+  // CREATE) is silently skipped. Every caller recreates order_items_summary
+  // immediately afterwards via ensureOrderItemsSummaryView.
+  const sql = `
+DROP VIEW IF EXISTS order_items_summary;
+DROP VIEW IF EXISTS order_returns;
+CREATE OR REPLACE VIEW order_returns AS${select};`;
   try {
-    await pool.query(sql);
-    console.log('[db] order_returns view ensured');
+    const replaced = await replaceViewIfChanged(pool, 'order_returns', select, sql);
+    console.log(replaced ? '[db] order_returns view ensured' : '[db] order_returns view unchanged');
   } catch (e) {
     console.warn('[db] order_returns view:', e.message);
   }
@@ -3006,8 +3250,7 @@ CREATE OR REPLACE VIEW order_returns AS
 
 /** Keep unified_settlements in sync on every boot so mp_other_fee etc. cannot drift. */
 async function ensureUnifiedSettlementsView(pool) {
-  const sql = `
-CREATE OR REPLACE VIEW unified_settlements AS
+  const select = `
 SELECT
     neft_id, neft_type, payment_date,
     COALESCE(bank_settlement, 0) AS bank_settlement,
@@ -3059,8 +3302,8 @@ UNION ALL
 ${meeshoSettlementUnifiedSelect()}
 `;
   try {
-    await pool.query(sql);
-    console.log('[db] unified_settlements view ensured (with mp_other_fee)');
+    const replaced = await replaceViewIfChanged(pool, 'unified_settlements', select, `CREATE OR REPLACE VIEW unified_settlements AS${select}`);
+    console.log(replaced ? '[db] unified_settlements view ensured (with mp_other_fee)' : '[db] unified_settlements view unchanged');
   } catch (e) {
     console.warn('[db] unified_settlements view:', e.message);
   }
@@ -3073,8 +3316,7 @@ ${meeshoSettlementUnifiedSelect()}
  * full order lifecycle" model using our own existing identifiers.
  */
 async function ensureOrderItemsSummaryView(pool) {
-  const sql = `
-CREATE OR REPLACE VIEW order_items_summary AS
+  const select = `
 SELECT
   o.order_id,
   o.order_item_id,
@@ -3137,10 +3379,14 @@ LEFT JOIN sku_master sm_mp ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = 
 LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
 LEFT JOIN vb_sku_master vsm ON vsm.vb_export_sku = COALESCE(sm_mp.master_sku, sm_all.master_sku, o.vb_export_sku)
 `;
+  // DROP first: CREATE OR REPLACE cannot change a column's type (weight_slab
+  // once did). Both statements go in one query, i.e. one transaction, so the
+  // view never disappears for readers and a failed CREATE keeps the old one.
+  const sql = `DROP VIEW IF EXISTS order_items_summary;
+CREATE OR REPLACE VIEW order_items_summary AS${select}`;
   try {
-    await pool.query('DROP VIEW IF EXISTS order_items_summary');
-    await pool.query(sql);
-    console.log('[db] order_items_summary view ensured');
+    const replaced = await replaceViewIfChanged(pool, 'order_items_summary', select, sql);
+    console.log(replaced ? '[db] order_items_summary view ensured' : '[db] order_items_summary view unchanged');
   } catch (e) {
     console.warn('[db] order_items_summary view:', e.message);
   }

@@ -44,16 +44,17 @@ function columnDefinition(column) {
 /**
  * Keeps payment reconciliation proportional to order/SKU/month rows instead of
  * source-ledger rows. The original Amazon lines remain the audit source; this
- * table is a fully reproducible, replaceable read model.
+ * table is a fully reproducible, replaceable read model. Schema statements
+ * run on `ddl` (initDb's lock_timeout-limited session).
  */
-export async function ensureAmazonSettlementRollups(pool) {
-  await pool.query(`
+export async function ensureAmazonSettlementRollups(pool, ddl = pool) {
+  await ddl.query(`
     CREATE TABLE IF NOT EXISTS amazon_order_settlement_rollups (
       ${ALL_COLUMNS.map(columnDefinition).join(',\n      ')},
       PRIMARY KEY (settlement_id, posted_month, order_id, sku)
     )
   `);
-  await pool.query(`
+  await ddl.query(`
     CREATE INDEX IF NOT EXISTS ix_amzn_rollup_month_order
       ON amazon_order_settlement_rollups(posted_month DESC, order_id, sku)
   `);

@@ -81,9 +81,13 @@ function sourceSql(settlementScope = '') {
   `;
 }
 
-/** Build or backfill the compact Amazon read model. Safe on every boot. */
-export async function ensureAmazonSettlementReportingRollups(pool) {
-  await pool.query(`
+/**
+ * Build or backfill the compact Amazon read model. Safe on every boot. Schema
+ * statements run on `ddl` (initDb's lock_timeout-limited session); the
+ * backfill needs `pool` to run in its own transaction.
+ */
+export async function ensureAmazonSettlementReportingRollups(pool, ddl = pool) {
+  await ddl.query(`
     CREATE TABLE IF NOT EXISTS ${AMAZON_REPORTING_ROLLUP_TABLE} (
       settlement_id TEXT NOT NULL,
       posted_date_key DATE NOT NULL,
@@ -114,11 +118,11 @@ export async function ensureAmazonSettlementReportingRollups(pool) {
       PRIMARY KEY (settlement_id, posted_date_key, order_id, sku, order_item_code)
     )
   `);
-  await pool.query(`
+  await ddl.query(`
     CREATE INDEX IF NOT EXISTS ix_amzn_reporting_rollup_order_date
       ON ${AMAZON_REPORTING_ROLLUP_TABLE}(order_id, sku, posted_date DESC)
   `);
-  await pool.query(`
+  await ddl.query(`
     CREATE INDEX IF NOT EXISTS ix_amzn_reporting_rollup_posted_date
       ON ${AMAZON_REPORTING_ROLLUP_TABLE}(posted_date DESC)
   `);
