@@ -137,6 +137,14 @@ SOR-specific invariants:
 - **AJIO (Phase 2)** — the ledger is a derived read model of the stored
   AJIO `mp_invoices` rows (`services/sorMirror.js`), re-synced on every
   AJIO upload and delete; never build it from the in-flight file.
+- **Upload streams** — invoice / payment / payment_advice / return /
+  deduction for every portal through `services/sorUpload.js`
+  (deterministic header aliases, no guessed values, per-row skip reasons).
+  Every line carries `source_key`; `UNIQUE (invoice_id, line_type,
+  source_key)` makes re-uploads idempotent, and payments are keyed
+  `pay:<UTR>` everywhere (uploads and the AJIO mirror) so a payment is
+  counted once. AJIO invoices only come through the AJIO importer. Uploads
+  are operator / admin (`protectMutations('/api/sor')`).
 - **Myntra** keeps the strict 10708 / 45833 split **only** for the
   regular Myntra marketplace pipeline (`myntraUpload.js`); MJIPL is a
   separate legal entity and **does not** use this gate.

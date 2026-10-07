@@ -48,14 +48,19 @@ export const SOR_AJIO_PORTAL = 'reliance-ajio';
 export const SOR_AJIO_LINE_SOURCE = 'mp_invoices:ajio';
 const SOR_INVOICE_TYPE = 'sale';
 const KEY_CHUNK_SIZE = 500;
-const LINE_COLUMN_COUNT = 12;
+const LINE_COLUMN_COUNT = 16;
 
 const DEDUCTION_FIELDS = [
-  ['commission_amount', 'commission'],
-  ['other_deductions', 'other_deductions'],
-  ['tcs_amount', 'tcs'],
-  ['tds_amount', 'tds'],
+  ['commission_amount', 'commission', 'Commission'],
+  ['other_deductions', 'other_deductions', 'Other deductions'],
+  ['tcs_amount', 'tcs', 'TCS'],
+  ['tds_amount', 'tds', 'TDS'],
 ];
+
+// Payment lines are keyed by the payment reference (UTR) per invoice — the
+// same key services/sorUpload.js uses — so a payment that also arrives in an
+// AJIO payment-advice upload is counted once.
+const paymentKey = reference => `pay:${String(reference).toUpperCase().replace(/\s+/g, '')}`;
 
 /**
  * Sync the SOR ledger for specific AJIO invoices.
@@ -207,6 +212,7 @@ export function buildAjioSorInvoices(storedRows, orderRowIds = new Map()) {
     const orderId = row.order_line_id || row.order_release_id || null;
     const orderRowId = orderId ? orderRowIds.get(orderId) ?? null : null;
     const base = { mp_invoice_id: row.id };
+    const rowDate = isoDate(row.invoice_date);
     invoice.lines.push({
       line_type: isReturn ? 'return' : 'sale',
       order_id: orderId,
@@ -214,6 +220,10 @@ export function buildAjioSorInvoices(storedRows, orderRowIds = new Map()) {
       quantity: row.quantity ?? null,
       gross_amount: isReturn ? Math.abs(amount) : amount,
       order_row_id: orderRowId,
+      source_key: `mp:${row.id}`,
+      line_date: rowDate,
+      reference_no: isReturn ? (row.return_id || row.invoice_number) : row.invoice_number,
+      description: isReturn ? 'Return' : 'Invoice',
       raw_payload: {
         ...base,
         return_id: row.return_id || undefined,
@@ -221,7 +231,7 @@ export function buildAjioSorInvoices(storedRows, orderRowIds = new Map()) {
         sign_flipped: sign < 0 || undefined,
       },
     });
-    for (const [field, feeType] of DEDUCTION_FIELDS) {
+    for (const [field, feeType, label] of DEDUCTION_FIELDS) {
       const value = money(field);
       if (value === 0) continue;
       invoice.lines.push({
@@ -231,24 +241,42 @@ export function buildAjioSorInvoices(storedRows, orderRowIds = new Map()) {
         quantity: null,
         gross_amount: value,
         order_row_id: orderRowId,
+        source_key: `mp:${row.id}:${feeType}`,
+        line_date: rowDate,
+        reference_no: row.invoice_number,
+        description: label,
         raw_payload: { ...base, fee_type: feeType },
       });
     }
     const received = money('amount_received');
     if (received !== 0) {
-      invoice.lines.push({
-        line_type: 'payment',
-        order_id: orderId,
-        sku: row.sku || null,
-        quantity: null,
-        gross_amount: received,
-        order_row_id: orderRowId,
-        raw_payload: {
-          ...base,
-          payment_date: isoDate(row.payment_date) || undefined,
-          payment_reference: row.payment_reference || undefined,
-        },
-      });
+      const reference = row.payment_reference ? String(row.payment_reference).trim() : '';
+      const key = reference ? paymentKey(reference) : `mp:${row.id}:payment`;
+      // One UTR usually pays every SKU row of the invoice: one payment line.
+      const existing = reference ? invoice.lines.find(line => line.line_type === 'payment' && line.source_key === key) : null;
+      if (existing) {
+        existing.gross_amount = round2(existing.gross_amount + received);
+        existing.raw_payload.mp_invoice_ids.push(row.id);
+      } else {
+        invoice.lines.push({
+          line_type: 'payment',
+          order_id: orderId,
+          sku: row.sku || null,
+          quantity: null,
+          gross_amount: received,
+          order_row_id: orderRowId,
+          source_key: key,
+          line_date: isoDate(row.payment_date) || rowDate,
+          reference_no: reference || null,
+          description: 'Payment',
+          raw_payload: {
+            ...base,
+            mp_invoice_ids: [row.id],
+            payment_date: isoDate(row.payment_date) || undefined,
+            payment_reference: reference || undefined,
+          },
+        });
+      }
     }
   }
   for (const invoice of invoices.values()) {
@@ -318,17 +346,25 @@ async function writeInvoice(client, invoice, uploadedBy) {
         line.order_row_id,
         JSON.stringify(line.raw_payload),
         SOR_AJIO_LINE_SOURCE,
+        line.source_key,
+        line.line_date ?? null,
+        line.reference_no ?? null,
+        line.description ?? null,
       );
       const params = Array.from({ length: LINE_COLUMN_COUNT }, (_, i) => `$${start + i + 1}`);
       params[10] += '::jsonb';
+      params[13] += '::date';
       return `(${params.join(',')})`;
     });
+    // A payment already recorded by a SOR payment / payment-advice upload
+    // (same invoice, same UTR) is kept rather than counted twice.
     await client.query(
       `INSERT INTO sor_invoice_line (
          invoice_id, line_type, order_id, sku, vb_export_sku,
          quantity, gross_amount, fee_amount, settlement_id, order_row_id,
-         raw_payload, source
-       ) VALUES ${groups.join(',')}`,
+         raw_payload, source, source_key, line_date, reference_no, description
+       ) VALUES ${groups.join(',')}
+       ON CONFLICT (invoice_id, line_type, source_key) DO NOTHING`,
       values,
     );
   });

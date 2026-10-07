@@ -196,6 +196,45 @@ Fixed on branch `sor/ledger-hardening-security` unless marked open.
 
 ---
 
+## Threat model — SOR upload streams (2026-10-07)
+
+Required by AGENTS.md before portal upload code lands. Scope:
+`POST /api/sor/:portal/upload/:stream`, `GET …/template/:stream`,
+`GET …/statement`, `GET …/ledger-report` (`routes/sorUpload.js`,
+`routes/sor.js`, `services/sorUpload.js`) for Myntra Jabong, Zepto, AJIO
+and Cocoblu.
+
+| STRIDE | Threat | Mitigation |
+|---|---|---|
+| Spoofing | Anonymous or self-signed-up caller | Firebase token + role claim required (F1); uploads need operator / admin, reads analyst+. |
+| Tampering | Crafted file overwrites another portal's or account's ledger | Portal allow-list; every write is scoped to `(portal, portal_account)`; account restricted to `[A-Za-z0-9_.-]{1,64}`; lines only attach to invoices that exist in that portal's ledger. |
+| Tampering | Re-upload or duplicate rows double-count money | `UNIQUE (invoice_id, line_type, source_key)` upserts; payments keyed by UTR across all sources; one transaction per invoice. |
+| Tampering | SQL injection via headers / cells | Values only as bind parameters; headers only select from a fixed column map. |
+| Repudiation | Who uploaded what | `sor_upload_log` (user, file, counts, status) mirrored into Audit History; `uploaded_by` on headers. |
+| Information disclosure | DB error text in responses | Generic 500 bodies; validation errors are 400 with our own messages. |
+| Information disclosure | Formula injection in the XLSX report | Report cells are written as typed values (strings are never formulas in XLSX). |
+| Denial of service | Huge / zip-bomb spreadsheets | 20 MB, 1 file, extension allow-list; parsed on the worker thread; 50,000-row cap per upload; 100,000-entry cap per report. |
+| Elevation of privilege | Analyst uploads by calling the API directly | `protectMutations('/api/sor')` (POST → operator / admin) in addition to the UI gate. |
+
+Residual: portal files are trusted operator input (no PII beyond
+invoice / payment references); the spreadsheet library advisory (F9)
+still applies to every upload path until the SheetJS upgrade.
+
+### CodeAnt follow-ups on PR #49 (fixed with the upload streams)
+
+- **Critical** — role changes kept working until the old token expired:
+  role changes now revoke the user's sessions and the API refuses tokens
+  issued before the revocation (cached 60 s per user; deleted users are
+  refused; a Firebase outage does not lock users out). The app signs out
+  on `SESSION_REVOKED`.
+- **Major** — `POST /api/health` skipped auth and reached the 50 MB parser:
+  the health bypass is GET / HEAD only and the large parser runs only for
+  authenticated requests.
+- **Major** — future-dated invoices fell into the 0–30 day aging bucket
+  implicitly: stated explicitly (`GREATEST(age_days, 0)`).
+
+---
+
 ## Re-test cadence
 
 - **After each fix PR:** targeted test (`tests/*`) must pass.

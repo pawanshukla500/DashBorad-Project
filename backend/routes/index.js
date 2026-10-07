@@ -21,6 +21,7 @@ import disputesRoutes from './disputes.js';
 import exportRoutes from './export.js';
 import uploadHealthRoutes from './uploadHealth.js';
 import sorRoutes from './sor.js';
+import sorUploadRoutes from './sorUpload.js';
 import {
   authMiddleware,
   mutationAccessGuard,
@@ -40,12 +41,15 @@ export function mountApiRoutes(app) {
 
   // Everything below this line requires a valid Firebase identity (except public health checks).
   app.use('/api', (req, res, next) => {
-    if (req.path === '/health' || req.originalUrl === '/api/health') return next();
+    const isHealthCheck = (req.method === 'GET' || req.method === 'HEAD')
+      && (req.path === '/health' || req.originalUrl === '/api/health');
+    if (isHealthCheck) return next();
     return authMiddleware(req, res, next);
   });
   // Large JSON bodies (bulk rate-card / catalog saves, screenshots) are only
   // buffered for requests whose Firebase token has already been verified.
-  app.use('/api', express.json({ limit: '50mb' }));
+  const largeJson = express.json({ limit: '50mb' });
+  app.use('/api', (req, res, next) => (req.user ? largeJson(req, res, next) : next()));
 
   // The report cache is safe only until a successful write. Invalidate it
   // after every mutation so an upload, rate change, or correction is visible
@@ -114,6 +118,11 @@ export function mountApiRoutes(app) {
   // the four upload streams (invoice/payment/return/deduction) live in
   // portal-specific routes added in Phases 1–4. Role-gated to analyst+
   // (matches the workspace's nav-level gate in frontend/src/navigation.js).
+  // Reads (ledger, statement, report, templates) are analyst+; uploads
+  // (POST /api/sor/:portal/upload/:stream) need operator / admin like every
+  // other data upload.
   app.use('/api/sor', requireRole('analyst', 'operator', 'admin'));
+  protectMutations(app, '/api/sor');
   app.use('/api/sor', sorRoutes);
+  app.use('/api/sor', sorUploadRoutes);
 }

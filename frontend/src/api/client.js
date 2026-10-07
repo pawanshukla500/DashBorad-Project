@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { auth } from './firebase';
+import { auth, signOut } from './firebase';
 
 const api = axios.create({
   baseURL: `${import.meta.env.VITE_API_BASE_URL || ''}/api`.replace(/([^:]\/)\/+/g, '$1'),
@@ -159,6 +159,12 @@ api.interceptors.response.use(
     return response;
   },
   async error => {
+    // The API revoked this session (role changed or account removed): sign
+    // out so the user signs in again with a token that carries the new role.
+    if (error.response?.status === 401 && error.response?.data?.code === 'SESSION_REVOKED') {
+      await signOut(auth).catch(() => {});
+      return Promise.reject(error);
+    }
     // A development restart or a short VPS/database network interruption
     // should not turn a dashboard page into an error state. Retry only safe
     // reads: replaying a write after a broken connection could duplicate an
@@ -706,5 +712,19 @@ export const fetchSorInvoices = (portal, params = {}) =>
 
 export const fetchSorInvoiceDetail = (portal, id) =>
   api.get(`/sor/${portal}/invoice/${id}`).then(r => r.data);
+
+// SOR upload streams: invoice | payment | payment_advice | return | deduction.
+export const uploadSorFile = (portal, stream, formData) =>
+  api.post(`/sor/${portal}/upload/${stream}`, formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 }).then(r => r.data);
+
+export const downloadSorTemplate = (portal, stream) =>
+  api.get(`/sor/${portal}/template/${stream}`, { responseType: 'blob' }).then(r => r.data);
+
+// Ledger statement (opening / running / closing balance) and the XLSX report.
+export const fetchSorStatement = (portal, params = {}) =>
+  api.get(`/sor/${portal}/statement`, { params }).then(r => r.data);
+
+export const downloadSorLedgerReport = (portal, params = {}) =>
+  api.get(`/sor/${portal}/ledger-report`, { params, responseType: 'blob', timeout: 300000 }).then(r => r.data);
 
 

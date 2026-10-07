@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import PageHeader from '../../components/PageHeader';
 import EmptyState from '../../components/EmptyState';
 import Modal from '../../components/Modal';
-import { fetchSorOutstanding, fetchSorInvoiceDetail } from '../../api/client';
+import {
+  fetchSorOutstanding, fetchSorInvoiceDetail, fetchSorStatement,
+  uploadSorFile, downloadSorTemplate, downloadSorLedgerReport,
+  uploadMpInvoices, downloadMpInvoiceTemplate,
+} from '../../api/client';
 import { useAuth } from '../../context/AuthContext';
 import { useFilters } from '../../context/FilterContext';
 import useFetch from '../../hooks/useFetch';
@@ -44,9 +47,12 @@ const FEE_LABELS = {
  * Every portal reads the `sor_outstanding` view through
  * GET /api/sor/:portal/outstanding and renders:
  *   - KPI tiles + the sale − payment − return − deduction breakdown and aging
- *   - the 4 upload streams with their real status for this portal
+ *   - the upload streams (invoice, payment, payment advice, return,
+ *     deduction): upload + template per stream, with per-row skip reasons
  *   - the Outstanding Ledger (server-side search, status filter, sort, paging;
  *     honours the global date filter and Refresh button)
+ *   - the ledger statement (opening / running / closing balance) and the
+ *     XLSX ledger report
  *   - the invoice drilldown, lines grouped by line_type
  *
  * Token drift between the four sub-tabs is impossible because every portal
@@ -88,6 +94,68 @@ export default function SorPageShell({
     }),
     [filterKey, page, refreshKey],
   );
+
+  const [ledgerView, setLedgerView] = useState('invoices'); // invoices | statement
+  const [ledgerVersion, setLedgerVersion] = useState(0);
+  const [uploading, setUploading] = useState(null); // stream key
+  const [uploadResult, setUploadResult] = useState(null);
+  const [reportState, setReportState] = useState({ busy: false, error: null });
+
+  async function handleUpload(stream, file) {
+    setUploading(stream.key);
+    setUploadResult(null);
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      let result;
+      if (stream.mode === 'ajio-invoice') {
+        // AJIO invoices go through the AJIO importer, which mirrors the SOR ledger.
+        const response = await uploadMpInvoices('ajio', form, 'ajio_main');
+        result = {
+          ok: true, inserted: response.inserted, updated: response.updated, skipped: response.skipped, skippedRows: [],
+          note: response.sor ? `SOR ledger refreshed for ${response.sor.mirrored} invoice(s).` : null,
+        };
+      } else {
+        result = await uploadSorFile(portalId, stream.key, form);
+      }
+      // The API echoes `stream` as a key; keep the stream config object.
+      setUploadResult({ ...result, stream, filename: file.name });
+      setLedgerVersion(version => version + 1);
+      refetch();
+    } catch (err) {
+      setUploadResult({ stream, filename: file.name, error: err?.response?.data?.error || err?.message || 'Upload failed' });
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  async function handleTemplate(stream) {
+    try {
+      const blob = stream.mode === 'ajio-invoice'
+        ? await downloadMpInvoiceTemplate('ajio')
+        : await downloadSorTemplate(portalId, stream.key);
+      saveBlob(blob, `SOR_${portalId}_${stream.key}_template.xlsx`);
+    } catch (err) {
+      setUploadResult({ stream, error: err?.response?.data?.error || err?.message || 'Template download failed' });
+    }
+  }
+
+  async function handleReport() {
+    setReportState({ busy: true, error: null });
+    try {
+      const blob = await downloadSorLedgerReport(portalId, {
+        portal_account: portalAccount || undefined,
+        from: filters.startDate || undefined,
+        to: filters.endDate || undefined,
+      });
+      const range = [filters.startDate, filters.endDate].filter(Boolean).join('_to_') || 'all';
+      saveBlob(blob, `SOR_ledger_${portalId}_${range}.xlsx`);
+      setReportState({ busy: false, error: null });
+    } catch (err) {
+      const message = await blobErrorMessage(err);
+      setReportState({ busy: false, error: message });
+    }
+  }
 
   const rows = data?.rows || [];
   const kpis = data?.kpis || null;
@@ -212,11 +280,28 @@ export default function SorPageShell({
         </section>
       )}
 
-      {/* Upload streams — what feeds this portal's ledger today. */}
-      <section aria-label="Upload streams" className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {uploadStreams.map(stream => (
-          <UploadStream key={stream.key} stream={stream} canUpload={canUpload} />
-        ))}
+      {/* Upload streams — every file that feeds this portal's ledger. */}
+      <section aria-labelledby={`${portalId}-uploads`} className="space-y-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id={`${portalId}-uploads`} className="font-sans text-sm font-semibold text-ink">Upload data</h2>
+          <p className="text-xs text-outline">
+            {canUpload ? 'Upload the invoice file first; the other files can follow in any order.' : 'Uploads are done by operators. Templates show the expected columns.'}
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {uploadStreams.map(stream => (
+            <UploadStream
+              key={stream.key}
+              stream={stream}
+              canUpload={canUpload}
+              busy={uploading === stream.key}
+              disabled={Boolean(uploading)}
+              onUpload={file => handleUpload(stream, file)}
+              onTemplate={() => handleTemplate(stream)}
+            />
+          ))}
+        </div>
+        {uploadResult && <UploadResult result={uploadResult} onClose={() => setUploadResult(null)} />}
       </section>
 
       {setupNote && (
@@ -228,10 +313,40 @@ export default function SorPageShell({
       {/* Outstanding Ledger */}
       <section aria-label="Outstanding ledger" className="rounded-xl border border-border bg-surface">
         <header className="flex flex-col gap-3 border-b border-border px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h2 className="font-sans text-sm font-semibold text-ink">Outstanding Ledger</h2>
-            <p className="text-xs text-outline">Per invoice: sale − payment − return − deduction</p>
+          <div className="flex flex-wrap items-center gap-3">
+            <div>
+              <h2 className="font-sans text-sm font-semibold text-ink">Ledger</h2>
+              <p className="text-xs text-outline">
+                {ledgerView === 'invoices' ? 'Per invoice: sale − payment − return − deduction' : 'Dated entries with running balance'}
+              </p>
+            </div>
+            <div role="group" aria-label="Ledger view" className="inline-flex rounded-lg border border-border p-0.5">
+              {[['invoices', 'By invoice'], ['statement', 'Statement']].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={ledgerView === key}
+                  onClick={() => setLedgerView(key)}
+                  className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                    ledgerView === key ? 'bg-primary text-on-primary' : 'text-secondary hover:bg-surface-container-low'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={handleReport}
+              disabled={reportState.busy}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-primary hover:bg-surface-container-low disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            >
+              <span className="material-symbols-outlined text-[16px]" aria-hidden="true">download</span>
+              {reportState.busy ? 'Preparing report…' : 'Download ledger report'}
+            </button>
+            {reportState.error && <span className="text-xs text-primary" role="alert">{reportState.error}</span>}
           </div>
+          {ledgerView === 'invoices' && (
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div role="group" aria-label="Filter by status" className="inline-flex rounded-lg border border-border p-0.5">
               {STATUS_FILTERS.map(option => (
@@ -257,9 +372,20 @@ export default function SorPageShell({
               aria-label="Search invoice number"
             />
           </div>
+          )}
         </header>
 
-        {loading ? (
+        {ledgerView === 'statement' ? (
+          <StatementView
+            portalId={portalId}
+            portalAccount={portalAccount}
+            from={filters.startDate}
+            to={filters.endDate}
+            refreshKey={refreshKey}
+            version={ledgerVersion}
+            legalName={legalName}
+          />
+        ) : loading ? (
           <div className="px-4 py-12 text-center" role="status">
             <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-primary/20 border-t-primary" aria-hidden="true" />
             <p className="mt-2 text-sm text-outline">Loading outstanding ledger…</p>
@@ -296,10 +422,11 @@ export default function SorPageShell({
             ) : (
               <EmptyState
                 title="No invoices in the ledger yet"
-                message={`Invoices for ${legalName} appear here once their file is imported.`}
+                message={canUpload
+                  ? `Upload the ${legalName} invoice file above to start the ledger.`
+                  : `Invoices for ${legalName} appear here once an operator uploads the invoice file.`}
                 uploadHint={null}
-                actionTo={canUpload ? uploadStreams.find(stream => stream.to)?.to || null : null}
-                actionLabel="Upload invoices"
+                actionTo={null}
               />
             )}
           </div>
@@ -466,36 +593,218 @@ function AgingBars({ buckets }) {
   );
 }
 
-function UploadStream({ stream, canUpload }) {
-  const live = stream.state === 'live';
-  // Live streams without their own upload are derived from another file.
-  const icon = !live ? 'schedule' : stream.to ? 'upload' : 'task_alt';
-  const body = (
-    <>
-      <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${live ? 'bg-primary-container text-on-primary-container' : 'bg-surface-container text-outline'}`}>
-        <span className="material-symbols-outlined text-[16px]" aria-hidden="true">{icon}</span>
-      </span>
-      <p className="font-sans text-sm font-semibold text-ink">{stream.label}</p>
-      <p className="text-[11px] text-outline">{stream.note}</p>
-    </>
+function UploadStream({ stream, canUpload, busy, disabled, onUpload, onTemplate }) {
+  const inputRef = useRef(null);
+  const inputId = `sor-upload-${stream.key}`;
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-border bg-surface p-4">
+      <div className="flex items-start gap-2.5">
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary-container text-on-primary-container">
+          <span className="material-symbols-outlined text-[16px]" aria-hidden="true">{stream.icon || 'upload'}</span>
+        </span>
+        <div className="min-w-0">
+          <p className="font-sans text-sm font-semibold text-ink">{stream.label}</p>
+          <p className="text-[11px] text-outline">{stream.note}</p>
+        </div>
+      </div>
+      <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
+        {canUpload && (
+          <>
+            <input
+              ref={inputRef}
+              id={inputId}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="sr-only"
+              disabled={disabled}
+              onChange={event => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) onUpload(file);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={disabled}
+              aria-label={`Upload ${stream.label} file`}
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-on-primary hover:bg-indigo-dark disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            >
+              <span className="material-symbols-outlined text-[14px]" aria-hidden="true">{busy ? 'hourglass_top' : 'upload'}</span>
+              {busy ? 'Uploading…' : 'Upload file'}
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          onClick={onTemplate}
+          aria-label={`Download ${stream.label} template`}
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-primary hover:bg-surface-container-low focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+        >
+          <span className="material-symbols-outlined text-[14px]" aria-hidden="true">description</span>
+          Template
+        </button>
+      </div>
+    </div>
   );
-  const base = 'flex flex-col items-start gap-1 rounded-xl border p-4 text-left';
-  if (live && stream.to && canUpload) {
+}
+
+function UploadResult({ result, onClose }) {
+  const failed = Boolean(result.error) || result.ok === false;
+  const saved = Number(result.inserted || 0) + Number(result.updated || 0);
+  const skippedRows = result.skippedRows || [];
+  const downloadSkipped = () => {
+    const csv = ['Row,Reason', ...skippedRows.map(row => `${row.rowNum},"${String(row.reason).replace(/"/g, '""')}"`)].join('\r\n');
+    saveBlob(new Blob([csv], { type: 'text/csv' }), `skipped_rows_${result.stream.key}.csv`);
+  };
+  return (
+    <div
+      className={`rounded-xl border px-4 py-3 text-sm ${failed ? 'border-primary/30 bg-primary-container/40' : 'border-emerald-200 bg-emerald-50'}`}
+      role={failed ? 'alert' : 'status'}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-semibold text-ink">
+            {result.stream.label}{result.filename ? ` · ${result.filename}` : ''}
+          </p>
+          {result.error ? (
+            <p className="mt-0.5 text-secondary">{result.error}</p>
+          ) : (
+            <p className="mt-0.5 text-secondary">
+              {saved} line{saved === 1 ? '' : 's'} saved ({formatCount(result.inserted)} new, {formatCount(result.updated)} updated)
+              {result.invoices != null ? ` across ${formatCount(result.invoices)} invoice${Number(result.invoices) === 1 ? '' : 's'}` : ''}
+              {Number(result.skipped) > 0 ? ` · ${formatCount(result.skipped)} row${Number(result.skipped) === 1 ? '' : 's'} skipped` : ''}.
+              {result.note ? ` ${result.note}` : ''}
+            </p>
+          )}
+        </div>
+        <button type="button" onClick={onClose} aria-label="Dismiss upload result" className="rounded p-0.5 text-outline hover:text-ink">
+          <span className="material-symbols-outlined text-[18px]" aria-hidden="true">close</span>
+        </button>
+      </div>
+      {skippedRows.length > 0 && (
+        <div className="mt-2">
+          <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-secondary">
+            {skippedRows.slice(0, 20).map(row => (
+              <li key={`${row.rowNum}-${row.reason}`}><span className="font-mono text-ink">Row {row.rowNum}</span> — {row.reason}</li>
+            ))}
+          </ul>
+          <button type="button" onClick={downloadSkipped} className="mt-2 text-xs font-semibold text-primary hover:underline">
+            Download skipped rows ({skippedRows.length}{Number(result.skipped) > skippedRows.length ? ` of ${result.skipped}` : ''})
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ENTRY_TYPES = { sale: 'Invoice', payment: 'Payment', return: 'Return', deduction: 'Deduction' };
+
+function StatementView({ portalId, portalAccount, from, to, refreshKey, version, legalName }) {
+  const statementKey = JSON.stringify([portalId, portalAccount, from, to, version]);
+  const [page, setPage] = useResettingPage(statementKey);
+  const { data, loading, error, refetch } = useFetch(
+    () => fetchSorStatement(portalId, {
+      portal_account: portalAccount || undefined,
+      from: from || undefined,
+      to: to || undefined,
+      page,
+      pageSize: PAGE_SIZE,
+      _refresh: refreshKey || undefined,
+    }),
+    [statementKey, page, refreshKey],
+  );
+  const rows = data?.rows || [];
+  const totals = data?.totals || null;
+  const total = Number(data?.total || 0);
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  if (loading) {
+    return <p className="px-4 py-12 text-center text-sm text-outline" role="status">Loading statement…</p>;
+  }
+  if (error && !data) {
     return (
-      <Link
-        to={stream.to}
-        className={`${base} border-border bg-surface transition-colors hover:border-primary/40 hover:bg-surface-container-low focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40`}
-      >
-        {body}
-      </Link>
+      <div className="px-4 py-12 text-center" role="alert">
+        <p className="text-sm text-secondary">{error}</p>
+        <button type="button" onClick={refetch} className="mt-3 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-primary">Retry</button>
+      </div>
     );
   }
   return (
-    <div className={`${base} ${live ? 'border-border bg-surface' : 'border-dashed border-border bg-surface-container-low/60'}`}>
-      {body}
-      {live && stream.to && !canUpload && <p className="text-[11px] text-outline">Uploads are done by operators.</p>}
-    </div>
+    <>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-b border-border px-4 py-3 text-xs sm:grid-cols-4">
+        <SummaryItem label={from ? `Opening balance (${formatLedgerDate(from)})` : 'Opening balance'} value={formatSignedINR(totals?.opening_balance)} />
+        <SummaryItem label="Invoiced (debit)" value={formatSignedINR(totals?.debits)} />
+        <SummaryItem label="Paid / returned / deducted (credit)" value={formatSignedINR(totals?.credits)} />
+        <SummaryItem label="Closing balance" value={formatSignedINR(totals?.closing_balance)} strong />
+      </dl>
+      {rows.length === 0 ? (
+        <p className="px-4 py-10 text-center text-sm text-secondary" role="status">No ledger entries {from || to ? 'in this date range' : 'yet'}.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <caption className="sr-only">Ledger statement for {legalName}</caption>
+            <thead className="bg-surface-container-low/60">
+              <tr className="text-left font-sans text-xs font-semibold uppercase tracking-wide text-outline">
+                <th scope="col" className="px-3 py-2">Date</th>
+                <th scope="col" className="px-3 py-2">Type</th>
+                <th scope="col" className="px-3 py-2">Invoice</th>
+                <th scope="col" className="px-3 py-2">Reference</th>
+                <th scope="col" className="px-3 py-2">Description</th>
+                <th scope="col" className="px-3 py-2 text-right">Debit ₹</th>
+                <th scope="col" className="px-3 py-2 text-right">Credit ₹</th>
+                <th scope="col" className="px-3 py-2 text-right">Balance ₹</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border tabular-nums">
+              {rows.map(row => (
+                <tr key={row.seq} className="hover:bg-surface-container-low/40">
+                  <td className="whitespace-nowrap px-3 py-2 text-outline">{formatLedgerDate(row.entry_date)}</td>
+                  <td className="px-3 py-2">{ENTRY_TYPES[row.line_type] || row.line_type}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-ink">{row.invoice_no}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-secondary">{row.reference_no || '—'}</td>
+                  <td className="px-3 py-2 text-secondary">{row.description || '—'}</td>
+                  <td className="px-3 py-2 text-right">{Number(row.debit) ? formatSignedINR(row.debit) : ''}</td>
+                  <td className="px-3 py-2 text-right">{Number(row.credit) ? formatSignedINR(row.credit) : ''}</td>
+                  <td className="px-3 py-2 text-right font-semibold text-ink">{formatSignedINR(row.balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="flex items-center justify-between border-t border-border bg-surface-container-low px-4 py-2.5 text-xs text-secondary">
+        <span>{formatCount(total)} entr{total === 1 ? 'y' : 'ies'}</span>
+        {pages > 1 && (
+          <div className="flex items-center gap-1">
+            <button type="button" disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))} className="rounded px-2.5 py-1 hover:bg-surface-container disabled:opacity-40">Previous</button>
+            <span className="px-2 font-semibold text-ink" aria-live="polite">{page} / {pages}</span>
+            <button type="button" disabled={page >= pages} onClick={() => setPage(p => Math.min(pages, p + 1))} className="rounded px-2.5 py-1 hover:bg-surface-container disabled:opacity-40">Next</button>
+          </div>
+        )}
+      </div>
+    </>
   );
+}
+
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Error bodies of blob requests arrive as a Blob; read the JSON message.
+async function blobErrorMessage(err) {
+  const data = err?.response?.data;
+  if (data instanceof Blob) {
+    try { return JSON.parse(await data.text()).error || 'Report failed'; } catch { return 'Report failed'; }
+  }
+  return data?.error || err?.message || 'Report failed';
 }
 
 function SortableHeader({ label, sortKey, sort, onSort, align = 'left' }) {
