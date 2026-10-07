@@ -38,9 +38,13 @@ const COLUMNS = [
   'reverse_shipping', 'franchise_fee', 'tcs', 'tds', 'gst_on_mp_fees',
 ];
 
-/** Create the table and build it once for an existing database. */
-export async function ensureOrderSettlementTotals(pool) {
-  await pool.query(`
+/**
+ * Create the table and build it once for an existing database. Schema
+ * statements run on `ddl` (initDb's lock_timeout-limited session); the
+ * rebuild needs `pool` to run in its own transaction.
+ */
+export async function ensureOrderSettlementTotals(pool, ddl = pool) {
+  await ddl.query(`
     CREATE TABLE IF NOT EXISTS ${ORDER_SETTLEMENT_TOTALS_TABLE} (
       order_item_id TEXT PRIMARY KEY,
       net_bank NUMERIC(14,2) NOT NULL DEFAULT 0,
@@ -65,7 +69,7 @@ export async function ensureOrderSettlementTotals(pool) {
   // This model evolves independently of the broader schema version. Detect
   // columns before adding them so an established model is rebuilt exactly once
   // after a shape change rather than returning a default-filled new metric.
-  const { rows: existingColumns } = await pool.query(`
+  const { rows: existingColumns } = await ddl.query(`
     SELECT column_name
     FROM information_schema.columns
     WHERE table_schema = current_schema()
@@ -74,8 +78,14 @@ export async function ensureOrderSettlementTotals(pool) {
   `, [ORDER_SETTLEMENT_TOTALS_TABLE]);
   const existingColumnNames = new Set(existingColumns.map(row => row.column_name));
   const needsMetricBackfill = existingColumnNames.size < 2;
-  await pool.query(`ALTER TABLE ${ORDER_SETTLEMENT_TOTALS_TABLE} ADD COLUMN IF NOT EXISTS settled_row_count BIGINT NOT NULL DEFAULT 0`);
-  await pool.query(`ALTER TABLE ${ORDER_SETTLEMENT_TOTALS_TABLE} ADD COLUMN IF NOT EXISTS negative_bank_amount NUMERIC(14,2) NOT NULL DEFAULT 0`);
+  // ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the column exists,
+  // and every dashboard report joins this table, so only add what is missing.
+  if (!existingColumnNames.has('settled_row_count')) {
+    await ddl.query(`ALTER TABLE ${ORDER_SETTLEMENT_TOTALS_TABLE} ADD COLUMN IF NOT EXISTS settled_row_count BIGINT NOT NULL DEFAULT 0`);
+  }
+  if (!existingColumnNames.has('negative_bank_amount')) {
+    await ddl.query(`ALTER TABLE ${ORDER_SETTLEMENT_TOTALS_TABLE} ADD COLUMN IF NOT EXISTS negative_bank_amount NUMERIC(14,2) NOT NULL DEFAULT 0`);
+  }
   const { rows } = await pool.query(`
     SELECT COUNT(*) AS count, COALESCE(SUM(settled_row_count), 0) AS settled_rows
     FROM ${ORDER_SETTLEMENT_TOTALS_TABLE}
