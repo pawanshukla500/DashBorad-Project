@@ -111,9 +111,13 @@ export default function SorPageShell({
       if (stream.mode === 'ajio-invoice') {
         // AJIO invoices go through the AJIO importer, which mirrors the SOR ledger.
         const response = await uploadMpInvoices('ajio', form, 'ajio_main');
+        const sor = response.sor;
+        const sorProblem = sor && (sor.failed || Number(sor.errors) > 0);
         result = {
-          ok: true, inserted: response.inserted, updated: response.updated, skipped: response.skipped, skippedRows: [],
-          note: response.sor ? `SOR ledger refreshed for ${response.sor.mirrored} invoice(s).` : null,
+          ok: !sorProblem, inserted: response.inserted, updated: response.updated, skipped: response.skipped, skippedRows: [],
+          note: !sor ? null : sorProblem
+            ? `The invoices were saved, but the SOR ledger could not be refreshed for ${sor.failed ? 'this file' : `${sor.errors} invoice(s)`} — upload the file again to retry.`
+            : `SOR ledger refreshed for ${sor.mirrored} invoice(s).`,
         };
       } else {
         result = await uploadSorFile(portalId, stream.key, form);
@@ -651,7 +655,7 @@ function UploadStream({ stream, canUpload, busy, disabled, onUpload, onTemplate 
 
 function UploadResult({ result, onClose }) {
   const failed = Boolean(result.error) || result.ok === false;
-  const saved = Number(result.inserted || 0) + Number(result.updated || 0);
+  const saved = Number(result.inserted || 0) + Number(result.updated || 0) + Number(result.removed || 0);
   const skippedRows = result.skippedRows || [];
   const downloadSkipped = () => {
     const csv = ['Row,Reason', ...skippedRows.map(row => `${row.rowNum},"${String(row.reason).replace(/"/g, '""')}"`)].join('\r\n');
@@ -671,7 +675,8 @@ function UploadResult({ result, onClose }) {
             <p className="mt-0.5 text-secondary">{result.error}</p>
           ) : (
             <p className="mt-0.5 text-secondary">
-              {saved} line{saved === 1 ? '' : 's'} saved ({formatCount(result.inserted)} new, {formatCount(result.updated)} updated)
+              {saved} line{saved === 1 ? '' : 's'} saved ({formatCount(result.inserted)} new, {formatCount(result.updated)} updated
+              {Number(result.removed) > 0 ? `, ${formatCount(result.removed)} removed` : ''})
               {result.invoices != null ? ` across ${formatCount(result.invoices)} invoice${Number(result.invoices) === 1 ? '' : 's'}` : ''}
               {Number(result.skipped) > 0 ? ` · ${formatCount(result.skipped)} row${Number(result.skipped) === 1 ? '' : 's'} skipped` : ''}.
               {result.note ? ` ${result.note}` : ''}

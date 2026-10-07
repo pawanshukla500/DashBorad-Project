@@ -105,6 +105,24 @@ describe('authMiddleware — revoked sessions (role change / user removed)', () 
     expect(auth.getUser).toHaveBeenCalledTimes(1);
   });
 
+  it('does not let a lookup that started before a role change cache stale state', async () => {
+    const { auth } = await import('../utils/firebaseAdmin.js');
+    auth.getUser.mockClear();
+    decodedToken = { uid: 'racer', email: 'ops@example.com', recon_role: 'admin', auth_time: issuedAt };
+    let answer;
+    auth.getUser.mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
+    const inFlight = authMiddleware(request(), response(), vi.fn());
+    await new Promise(resolve => setTimeout(resolve, 10));
+    forgetRevocationState('racer'); // the admin changed the role and revoked sessions
+    answer({ tokensValidAfterTime: null }); // the old, pre-revocation answer arrives
+    await inFlight;
+    firebaseUser = { tokensValidAfterTime: '2026-10-07T09:00:00Z' };
+    const res = response();
+    await authMiddleware(request(), res, vi.fn());
+    expect(auth.getUser).toHaveBeenCalledTimes(2); // looked up again, not served from the stale cache
+    expect(res.statusCode).toBe(401);
+  });
+
   it('keeps serving verified tokens when Firebase cannot be reached', async () => {
     decodedToken = { uid: 'member', email: 'ops@example.com', recon_role: 'viewer', auth_time: issuedAt };
     firebaseUser = Object.assign(new Error('network down'), { code: 'app/network-error' });

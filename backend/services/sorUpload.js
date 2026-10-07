@@ -252,8 +252,8 @@ export function parseSorUploadRows(stream, rows) {
     if (values.quantity !== null && values.quantity !== undefined && (!Number.isInteger(values.quantity) || values.quantity < 0)) {
       problems.push('Quantity must be a whole number');
     }
-    if (stream === 'payment_advice' && !values.paid_amount && ADVICE_DEDUCTIONS.every(([column]) => !values[column])) {
-      problems.push('Nothing to post: Amount Paid and every deduction are empty or zero');
+    if (stream === 'payment_advice' && values.paid_amount === null && ADVICE_DEDUCTIONS.every(([column]) => values[column] === null || values[column] === undefined)) {
+      problems.push('Nothing to post: Amount Paid and every deduction are empty');
     }
     if (problems.length) {
       skipped.push({ rowNum, reason: problems.join('; ') });
@@ -294,7 +294,8 @@ export function buildSorLines(stream, records) {
       });
     } else if (stream === 'payment_advice') {
       const ref = normRef(record.reference) || `${record.advice_date}`;
-      if (record.paid_amount !== null && record.paid_amount !== 0) {
+      // An explicit 0 is kept: it removes a previously posted amount (below).
+      if (record.paid_amount !== null) {
         add(record, {
           line_type: 'payment',
           source_key: `pay:${ref}`,
@@ -305,7 +306,7 @@ export function buildSorLines(stream, records) {
         });
       }
       for (const [column, label] of ADVICE_DEDUCTIONS) {
-        if (!record[column]) continue;
+        if (record[column] === null || record[column] === undefined) continue;
         add(record, {
           line_type: 'deduction',
           source_key: `adv:${ref}:${column}`,
@@ -340,7 +341,9 @@ export function buildSorLines(stream, records) {
       });
     }
   }
-  return [...lines.values()];
+  // A line that nets to zero (a corrected amount of 0) removes the line this
+  // key posted earlier instead of writing a zero entry.
+  return [...lines.values()].map(line => (line.gross_amount === 0 ? { ...line, remove: true } : line));
 }
 
 /**
@@ -393,7 +396,7 @@ export async function ownedComponents(client, headerIds, sourceCondition, params
  */
 export async function applySorUpload(pool, { portal, account, stream, records, uploadedBy = null }) {
   const source = `sor_upload:${stream}`;
-  const result = { invoices: 0, inserted: 0, updated: 0, skipped: [], errors: [] };
+  const result = { invoices: 0, inserted: 0, updated: 0, removed: 0, skipped: [], errors: [] };
   if (records.length === 0) return result;
   const skipLine = (line, reason) => {
     for (const rowNum of line.rows) result.skipped.push({ rowNum, reason });
@@ -442,7 +445,7 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
         continue;
       }
       const component = lineComponent(line);
-      if (mirrorOwned.get(headerId)?.has(component)) {
+      if (!line.remove && mirrorOwned.get(headerId)?.has(component)) {
         skipLine(line, `Already recorded from the AJIO invoice file (${COMPONENT_LABELS[component] || component}) — not posted twice`);
         continue;
       }
@@ -452,7 +455,17 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
     for (const [headerId, invoiceLines] of byInvoice) {
       try {
         await client.query('BEGIN');
-        const outcome = await upsertLines(client, headerId, invoiceLines, source);
+        const removals = invoiceLines.filter(line => line.remove);
+        const outcome = await upsertLines(client, headerId, invoiceLines.filter(line => !line.remove), source);
+        for (const line of removals) {
+          // Only an upload's own line is removed, never one the AJIO file owns.
+          const { rowCount } = await client.query(
+            `DELETE FROM sor_invoice_line
+             WHERE invoice_id = $1 AND line_type = $2 AND source_key = $3 AND source LIKE 'sor_upload:%'`,
+            [headerId, line.line_type, line.source_key],
+          );
+          result.removed += rowCount;
+        }
         await client.query(`UPDATE sor_invoice SET uploaded_at = NOW() WHERE id = $1`, [headerId]);
         await client.query('COMMIT');
         result.invoices++;

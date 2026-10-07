@@ -383,7 +383,9 @@ names (`backend/services/sorUpload.js`):
   updates the same lines (a corrected amount replaces the old one).
   Payments share the `pay:<UTR>` key across the payment file, the payment
   advice **and** the AJIO mirror, so one payment is counted once wherever
-  it appears. Rows of one document inside a file are summed.
+  it appears. Rows of one document inside a file are summed. An amount
+  re-uploaded as **0** removes the line that key posted earlier (only an
+  upload's own line; empty cells are ignored).
 - Account: the portal default (`ajio_main` for AJIO — the AJIO importer's
   account — `default` elsewhere) unless the upload names one.
 - AJIO invoices keep coming through the AJIO `mp_invoices` importer (the
@@ -406,8 +408,9 @@ one entry per document (an invoice's sale lines, one payment, one note,
 one deduction) dated by `sor_invoice_line.line_date`, debit = sale, credit
 = payment / return / deduction, with the running balance computed over the
 whole ledger so a date-filtered page shows the true balance, plus opening /
-closing balance and per-type totals. The page shows it under the Ledger's
-**Statement** toggle.
+closing balance and per-type totals, all read from one REPEATABLE READ
+snapshot. Undated entries count in the opening balance whenever a date
+filter is set. The page shows it under the Ledger's **Statement** toggle.
 
 **Ledger report** — `GET /api/sor/:portal/ledger-report?from&to` (XLSX):
 *Summary* (opening, invoiced, payments, returns, deductions, closing,

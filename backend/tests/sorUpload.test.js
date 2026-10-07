@@ -36,7 +36,7 @@ describe('parseSorUploadRows — column mapping and validation', () => {
       { 'Invoice No': 'INV-2', 'Advice Date': '2026-10-05' },
     ]);
     expect(records).toHaveLength(1);
-    expect(skipped[0].reason).toBe('Nothing to post: Amount Paid and every deduction are empty or zero');
+    expect(skipped[0].reason).toBe('Nothing to post: Amount Paid and every deduction are empty');
   });
 
   it('decides the day/month order once per date column, from all of its values', () => {
@@ -106,6 +106,14 @@ describe('buildSorLines — ledger lines and idempotency keys', () => {
     expect(lineComponent({ line_type: 'deduction', source_key: 'adv:UTR1:other_deduction' })).toBe('deduction:other_deductions');
     expect(lineComponent({ line_type: 'deduction', source_key: null, fee_type: 'commission' })).toBe('deduction:commission');
     expect(lineComponent({ line_type: 'deduction', source_key: 'ded:DN-7:SHORTAGE' })).toBe('deduction:debit_note');
+  });
+
+  it('turns an amount corrected to 0 into a removal of the line posted earlier', () => {
+    const lines = buildSorLines('payment_advice', [{ rowNum: 2, invoice_no: 'INV-1', advice_date: '2026-10-05', reference: 'UTR1', paid_amount: 100, tds: 0, commission: null, discount: null, penalty: null, other_deduction: null }]);
+    expect(lines.map(line => [line.source_key, line.gross_amount, Boolean(line.remove)])).toEqual([
+      ['pay:UTR1', 100, false],
+      ['adv:UTR1:tds', 0, true],
+    ]);
   });
 
   it('keys deductions by reference and type', () => {
@@ -227,6 +235,15 @@ describe('POST /api/sor/:portal/upload/:stream', () => {
     expect(body).toMatchObject({ inserted: 0, updated: 0, skipped: 1 });
     const insert = statements.find(s => s.sql.startsWith('INSERT INTO sor_invoice_line'));
     expect(insert.sql).toContain("WHERE sor_invoice_line.source LIKE 'sor_upload:%'");
+  });
+
+  it('removes an upload line whose amount was corrected to 0 (never a mirror line)', async () => {
+    sheetRows = [{ 'Invoice No': 'INV-1', 'Advice Date': '2026-10-05', 'Payment Reference': 'UTR1', 'Amount Paid': '500', TDS: '0' }];
+    const body = await (await uploadFile('/zepto/upload/payment_advice')).json();
+    const removal = statements.find(s => s.sql.startsWith('DELETE FROM sor_invoice_line WHERE invoice_id = $1 AND line_type = $2'));
+    expect(removal.sql).toContain("source LIKE 'sor_upload:%'");
+    expect(removal.params).toEqual(['10', 'deduction', 'adv:UTR1:tds']);
+    expect(body).toMatchObject({ inserted: 1, skipped: 0 });
   });
 
   it('counts a re-uploaded invoice as updated, not new', async () => {

@@ -378,8 +378,25 @@ function statementQuery(req, portal) {
   return { cte, values, inRange, beforeRange, from, to, account: accountFilter };
 }
 
-async function statementTotals(pool, query) {
-  const { rows } = await pool.query(
+// Statement entries, totals and the outstanding sheet are read from one
+// snapshot, so an upload landing in between cannot make them disagree.
+async function withReadSnapshot(pool, read) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const result = await read(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function statementTotals(db, query) {
+  const { rows } = await db.query(
     `${query.cte}
      SELECT
        COALESCE(SUM(debit - credit) FILTER (WHERE ${query.beforeRange}), 0)                      AS opening_balance,
@@ -408,8 +425,8 @@ router.get('/:portal/statement', async (req, res) => {
     const pool = getPool();
     const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 500 });
     const query = statementQuery(req, portal);
-    const [entries, totals] = await Promise.all([
-      pool.query(
+    const { entries, totals } = await withReadSnapshot(pool, async client => ({
+      entries: await client.query(
         `${query.cte}
          SELECT seq, entry_date, line_type, invoice_no, portal_account, reference_no, description,
                 debit, credit, balance
@@ -419,8 +436,8 @@ router.get('/:portal/statement', async (req, res) => {
          LIMIT $${query.values.length + 1} OFFSET $${query.values.length + 2}`,
         [...query.values, pageSize, offset],
       ),
-      statementTotals(pool, query),
-    ]);
+      totals: await statementTotals(client, query),
+    }));
     res.json({ rows: entries.rows, page, pageSize, total: totals.entries, totals });
   } catch (err) {
     sendError(res, req, err, 'Failed to load ledger statement');
@@ -437,29 +454,34 @@ router.get('/:portal/ledger-report', async (req, res) => {
     if (!isAllowedPortal(portal)) return res.status(404).json({ error: 'Unknown SOR portal', portal });
     const pool = getPool();
     const query = statementQuery(req, portal);
-    const totals = await statementTotals(pool, query);
-    if (totals.entries > MAX_REPORT_ENTRIES) {
-      throw badRequest(`The report would have ${totals.entries} entries; narrow the date range to ${MAX_REPORT_ENTRIES} or fewer.`);
-    }
     const outstandingFilter = buildSorInvoiceWhere(req, portal);
-    const [entries, outstanding] = await Promise.all([
-      pool.query(
-        `${query.cte}
-         SELECT entry_date, line_type, invoice_no, portal_account, reference_no, description, debit, credit, balance
-         FROM ordered WHERE ${query.inRange} ORDER BY seq`,
-        query.values,
-      ),
-      pool.query(
-        `SELECT invoice_no, portal_account, invoice_date, sale_total, payment_total, return_total, deduction_total,
-                outstanding, age_days, declared_net_payable, variance, ledger_status
-         FROM sor_outstanding WHERE ${outstandingFilter.whereSql}
-         ORDER BY invoice_date NULLS LAST, invoice_no`,
-        outstandingFilter.values,
-      ),
-    ]);
+    const { totals, entries, outstanding } = await withReadSnapshot(pool, async client => {
+      const snapshotTotals = await statementTotals(client, query);
+      if (snapshotTotals.entries > MAX_REPORT_ENTRIES) {
+        throw badRequest(`The report would have ${snapshotTotals.entries} entries; narrow the date range to ${MAX_REPORT_ENTRIES} or fewer.`);
+      }
+      return {
+        totals: snapshotTotals,
+        entries: await client.query(
+          `${query.cte}
+           SELECT entry_date, line_type, invoice_no, portal_account, reference_no, description, debit, credit, balance
+           FROM ordered WHERE ${query.inRange} ORDER BY seq`,
+          query.values,
+        ),
+        outstanding: await client.query(
+          `SELECT invoice_no, portal_account, invoice_date, sale_total, payment_total, return_total, deduction_total,
+                  outstanding, age_days, declared_net_payable, variance, ledger_status
+           FROM sor_outstanding WHERE ${outstandingFilter.whereSql}
+           ORDER BY invoice_date NULLS LAST, invoice_no`,
+          outstandingFilter.values,
+        ),
+      };
+    });
 
     const money = value => (value === null || value === undefined ? null : Math.round(Number(value) * 100) / 100);
-    const period = `${query.from || 'Beginning'} to ${query.to || 'today'}`;
+    // Without an end date the report runs to the latest entry, which can be
+    // a future-dated invoice — not "today".
+    const period = `${query.from || 'Beginning'} to ${query.to || 'latest entry'}`;
     const typeLabel = { sale: 'Invoice', payment: 'Payment', return: 'Return', deduction: 'Deduction' };
     const open = outstanding.rows.filter(row => row.ledger_status === 'open');
     const overdue = open.filter(row => Number(row.age_days) > 60);

@@ -78,7 +78,8 @@ router.post('/:portal/upload/:stream', checkStream, upload.single('file'), async
     const applied = await applySorUpload(pool, { portal, account, stream, records: parsed.records, uploadedBy });
     const skipped = [...parsed.skipped, ...applied.skipped].sort((a, b) => a.rowNum - b.rowNum);
     if (applied.errors.length) console.warn(`[sorUpload] ${portal}/${stream}:`, applied.errors.slice(0, 5));
-    const status = applied.inserted + applied.updated === 0 ? 'error' : skipped.length ? 'partial' : 'ok';
+    const saved = applied.inserted + applied.updated + applied.removed;
+    const status = saved === 0 ? 'error' : skipped.length ? 'partial' : 'ok';
     await logSorUpload(pool, {
       portal, account, filename, uploadedBy, status,
       inserted: applied.inserted, updated: applied.updated, skipped: skipped.length,
@@ -86,7 +87,7 @@ router.post('/:portal/upload/:stream', checkStream, upload.single('file'), async
       error: status === 'error' ? (skipped[0]?.reason || 'No rows were saved') : null,
     }).catch(error => console.warn('[sorUpload] audit log write failed:', error.message));
     res.json({
-      ok: applied.inserted + applied.updated > 0,
+      ok: saved > 0,
       portal,
       account,
       stream,
@@ -94,6 +95,7 @@ router.post('/:portal/upload/:stream', checkStream, upload.single('file'), async
       invoices: applied.invoices,
       inserted: applied.inserted,
       updated: applied.updated,
+      removed: applied.removed,
       skipped: skipped.length,
       skippedRows: skipped.slice(0, MAX_SKIPPED_IN_RESPONSE),
     });

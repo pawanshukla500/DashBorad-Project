@@ -30,16 +30,24 @@ const REVOCATION_CACHE_MS = 60_000;
 const REVOCATION_LOOKUP_TIMEOUT_MS = 1_500;
 const revocationCache = new Map();
 const revocationLookups = new Map();
+// Bumped whenever a user's state is cleared (role change, deletion): a lookup
+// that started before the change must not write its stale answer back.
+const revocationGenerations = new Map();
+let allGeneration = 0;
 
 export function forgetRevocationState(uid) {
   if (uid) {
     revocationCache.delete(uid);
     revocationLookups.delete(uid);
+    revocationGenerations.set(uid, (revocationGenerations.get(uid) || 0) + 1);
   } else {
     revocationCache.clear();
     revocationLookups.clear();
+    allGeneration++;
   }
 }
+
+const generationOf = uid => `${allGeneration}:${revocationGenerations.get(uid) || 0}`;
 
 function withTimeout(promise, ms) {
   let timer;
@@ -59,6 +67,7 @@ function revocationState(uid) {
   const cached = revocationCache.get(uid);
   if (cached && Date.now() - cached.at <= REVOCATION_CACHE_MS) return Promise.resolve(cached);
   if (revocationLookups.has(uid)) return revocationLookups.get(uid);
+  const generation = generationOf(uid);
   const lookup = withTimeout(auth.getUser(uid), REVOCATION_LOOKUP_TIMEOUT_MS)
     .then(
       user => ({ validAfterMs: user.tokensValidAfterTime ? Date.parse(user.tokensValidAfterTime) : 0, deleted: false }),
@@ -70,10 +79,13 @@ function revocationState(uid) {
     )
     .then(state => {
       const entry = { ...state, at: Date.now() };
-      revocationCache.set(uid, entry);
+      // Cleared meanwhile: answer this request, but cache nothing stale.
+      if (generationOf(uid) === generation) revocationCache.set(uid, entry);
       return entry;
     })
-    .finally(() => revocationLookups.delete(uid));
+    .finally(() => {
+      if (revocationLookups.get(uid) === lookup) revocationLookups.delete(uid);
+    });
   revocationLookups.set(uid, lookup);
   return lookup;
 }
