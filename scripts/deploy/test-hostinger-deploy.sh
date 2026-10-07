@@ -139,10 +139,15 @@ case "$cmd" in
       pg_dump)
         printf 'PGDMP-fake-archive\n'
         if [ "${FAKE_DUMP_FAIL:-}" = 1 ]; then exit 1; fi
+        # A truncated archive: pg_dump "succeeds" but the data stops early.
+        if [ "${FAKE_DUMP_TRUNCATE:-}" != 1 ]; then printf 'END-OF-ARCHIVE\n'; fi
         ;;
       pg_restore)
+        # Like `pg_restore -f /dev/null`: reads the whole stream and fails
+        # unless it is a complete archive.
         [ "$stdin" = 1 ] || exit 1
-        [ "$(head -c 5)" = "PGDMP" ]
+        data="$(cat)"
+        [ "${data:0:5}" = "PGDMP" ] && [ "${data: -14}" = "END-OF-ARCHIVE" ]
         ;;
     esac
     ;;
@@ -302,6 +307,17 @@ check "container untouched" [ "$(running_ref)" = "reconcentral:$A" ]
 check "previous release directory restored" [ "$(release_dir_marker)" = "release-$A" ]
 show_output_on_failure "$before"
 
+echo "4b. truncated dump (pg_dump exit 0) is rejected before the new container starts"
+before=$FAILURES; : > "$FAKE_STATE/calls.log"; dumps_before="$(dump_count)"
+deploy "$C" FAKE_DUMP_TRUNCATE=1
+check "exit non-zero" [ "$RC" -ne 0 ]
+check "compose up never ran" absent 'compose.* up ' "$FAKE_STATE/calls.log"
+check "truncated dump not kept" [ "$(dump_count)" = "$dumps_before" ]
+check "no partial dump left behind" [ -z "$(find "$ROOT/backups" -name '*.partial')" ]
+check "container untouched" [ "$(running_ref)" = "reconcentral:$A" ]
+check "annotation names the incomplete archive" in_output 'is not a complete archive'
+show_output_on_failure "$before"
+
 echo "5. failed build changes nothing"
 before=$FAILURES; : > "$FAKE_STATE/calls.log"
 deploy "$C" FAKE_BUILD_FAIL=1
@@ -409,6 +425,16 @@ deploy "$B" FAKE_BAD_TAG="$B"
 check "exit non-zero" [ "$RC" -ne 0 ]
 check "latest's image is running" [ "$(running_image)" = "$good_id" ]
 check "explains the choice" in_output 'The running container is absent; using reconcentral:latest'
+show_output_on_failure "$before"
+
+echo "15. drill on a first-ever deploy (nothing to roll back to)"
+new_scenario fresh; before=$FAILURES
+deploy "$A" ROLLBACK_DRILL=true
+check "exit non-zero" [ "$RC" -ne 0 ]
+check "new release keeps serving" [ "$(running_ref)" = "reconcentral:$A" ]
+check "latest points at the new release" [ "$(tag_id latest)" = "$(tag_id "$A")" ]
+check "recorded as a good release" grep -qx "$A" "$ROOT/good-releases"
+check "explains that nothing was rolled back" in_output 'Rollback drill could not start a rollback'
 show_output_on_failure "$before"
 
 if [ "$FAILURES" -ne 0 ]; then

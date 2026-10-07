@@ -62,6 +62,8 @@ PROBE_TIMEOUT="${PROBE_TIMEOUT:-20}"
 PREV_IMAGE_ID=""
 PREV_TAG=""
 MOVED_PREVIOUS=0
+# Set once rollback starts changing anything (directories, tags, container).
+ROLLBACK_SWITCHED=0
 RUN_STAMP=""
 
 log() { printf '%s\n' "$*"; }
@@ -356,6 +358,7 @@ rollback() {
   if [ "$MOVED_PREVIOUS" -eq 1 ] && [ -f "$PREV_DIR/.env" ] && ! cmp -s "$PREV_DIR/.env" "$APP_DIR/.env"; then
     printf '::warning::%s\n' "The rolled-back release uses its previous .env, which differs from the one just uploaded (e.g. a rotated secret). Deploy a fixed commit to apply the new values."
   fi
+  ROLLBACK_SWITCHED=1
   if ! restore_previous_source "$keep_failed_as"; then
     fail_note "Could not restore the previous release directory."
     return 1
@@ -528,7 +531,12 @@ main() {
       printf '::notice::%s\n' "Rollback drill passed: production is running $IMAGE_REPO:$PREV_TAG and is healthy."
       exit 0
     fi
-    if [ -d "$NEXT_DIR" ] && roll_forward; then
+    if [ "$ROLLBACK_SWITCHED" -eq 0 ]; then
+      # rollback stopped before touching anything (no target, image gone):
+      # production is still on the release that just passed its checks.
+      finish_success
+      fail_note "Rollback drill could not start a rollback (see above). Production stays on $IMAGE_REPO:$IMAGE_TAG, which is healthy."
+    elif [ -d "$NEXT_DIR" ] && roll_forward; then
       finish_success
       fail_note "Rollback drill failed: $IMAGE_REPO:$PREV_TAG could not be brought back healthy. Production rolled forward to $IMAGE_REPO:$IMAGE_TAG and is healthy."
     else
