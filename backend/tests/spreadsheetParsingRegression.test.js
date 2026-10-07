@@ -5,6 +5,7 @@ import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
 import { buildHeaderIndex, parseAmazonSettlementLine } from '../routes/amazonUpload.js';
 import { parseLedgerUploadRow } from '../routes/mpSettlement.js';
+import { parseReturnsReceivedRow } from '../routes/upload.js';
 
 const require = createRequire(import.meta.url);
 const XLSX = require('xlsx');
@@ -14,7 +15,7 @@ const XLSX = require('xlsx');
 // instead of in a finance report. Read options are the handlers' own.
 const GENERIC_UPLOAD = { read: { cellDates: true }, sheets: 0, json: { header: 1, defval: '', raw: false } }; // upload.js, myntraUpload.js
 const LEDGER_UPLOAD = { read: { cellDates: true }, sheets: 0, json: { defval: '' } }; // mpSettlement.js
-const RETURNS_UPLOAD = { sheets: 0, json: { header: 1, defval: '' } }; // upload.js returns, returnTracking.js
+const RETURNS_RECEIVED = { read: { raw: true }, sheets: 0, json: { header: 1, defval: '' } }; // upload.js returns-received
 const AMAZON_SETTLEMENT = { read: { cellDates: false, cellNF: false, cellStyles: false }, values: true };
 
 // Dates are written as serial numbers with a number format, not Date objects,
@@ -84,7 +85,7 @@ describe('upload parsing: XLSX dates and numbers', () => {
   });
 
   it('gives handlers without cellDates the Excel serials, which normalize to the same dates', async () => {
-    const book = await parseSpreadsheet(workbookFile(ORDERS), RETURNS_UPLOAD);
+    const book = await parseSpreadsheet(workbookFile(ORDERS), RETURNS_RECEIVED);
     const [, first, second] = book.Sheets.Orders;
 
     expect(first.slice(0, 6)).toStrictEqual([46117, 46117.510416666664, 1250.75, -45.5, 3, 0.18]);
@@ -111,6 +112,40 @@ describe('upload parsing: XLSX dates and numbers', () => {
       [-45.5, '2026-04-25', null],
       [-1250.75, '2026-12-31', 2],
     ]);
+    expect(lines[1].posted_at).toBe('2026-04-25T00:00:00.000Z');
+  });
+
+  it('reads the date-time forms of a TSV settlement file', async () => {
+    // SheetJS 0.20 reads "...T10:30:00Z" and "2026-04-05 10:30:00" in a
+    // delimited file as date serials (46117.4375), not text.
+    const tsv = Buffer.from([
+      'settlement-id\ttransaction-type\tamount-type\tamount-description\tamount\tposted-date\tposted-date-time\tcurrency',
+      'S-1\tOrder\tItemPrice\tPrincipal\t899.00\t2026-04-05T10:30:00Z\t2026-04-05T10:30:00Z\tINR',
+      'S-1\tOrder\tItemFees\tCommission\t-45.50\t2026-04-05T10:30:00+00:00\t2026-04-05T10:30:00+00:00\tINR',
+      'S-1\tOrder\tItemFees\tFBAPerUnitFulfillmentFee\t-12.34\t2026-04-05 10:30:00\t2026-04-05 10:30:00\tINR',
+      'S-1\tRefund\tItemPrice\tPrincipal\t-899.00\t05.04.2026\t05.04.2026 10:30:00 UTC\tINR',
+    ].join('\n'));
+    const book = await parseSpreadsheet(tsv, AMAZON_SETTLEMENT);
+    const rows = book.Sheets.Sheet1;
+    const idx = buildHeaderIndex(rows[0].map(cell => String(cell ?? '').trim()));
+
+    const lines = rows.slice(1).map(row => parseAmazonSettlementLine(row, idx));
+    expect(lines.map(line => line.error)).toStrictEqual([undefined, undefined, undefined, undefined]);
+    expect(lines.map(({ values }) => [values.amount, values.posted_date, values.posted_at])).toStrictEqual([
+      [899, '2026-04-05', '2026-04-05T10:30:00.000Z'],
+      [-45.5, '2026-04-05', '2026-04-05T10:30:00.000Z'],
+      [-12.34, '2026-04-05', '2026-04-05T10:30:00.000Z'],
+      [-899, '2026-04-05', '2026-04-05T10:30:00Z'],
+    ]);
+  });
+
+  it('leaves XLSX dates alone when their display text only looks day-first', async () => {
+    // "26-04-05" is 2026-04-05 shown as yy-mm-dd, not a misread 5 April 2026.
+    const file = workbookFile([['Posted'], [{ t: 'n', v: 46117, z: 'yy-mm-dd' }]]);
+    const ledger = await parseSpreadsheet(file, LEDGER_UPLOAD);
+    expect(wallClock(ledger.Sheets.Orders[0].Posted)).toStrictEqual([2026, 4, 5, 0, 0, 0]);
+    const values = await parseSpreadsheet(file, AMAZON_SETTLEMENT);
+    expect(values.Sheets.Orders[1][0]).toBe(46117);
   });
 });
 
@@ -152,5 +187,20 @@ describe('upload parsing: CSV and HTML-table ".xls" files', () => {
     expect(text.Sheets.Sheet1.slice(1).map(row => row[0])).toStrictEqual(['05-04-2026', '01-12-2026 10:30:00', '26-04-26']);
     const values = await parseSpreadsheet(html, { read: { cellDates: false }, values: true });
     expect(values.Sheets.Sheet1.slice(1).map(row => row[0])).toStrictEqual(['05-04-2026', '01-12-2026 10:30:00', '26-04-26']);
+  });
+
+  it('keeps returns-received IDs and dates from an HTML table exactly as written', async () => {
+    // Parsed, the 18-digit ID would become 123456789012345680.
+    const html = Buffer.from(`<table>
+      <tr><td>Order Item ID</td><td>Return Received?</td><td>Condition</td><td>Received Date</td></tr>
+      <tr><td>123456789012345678</td><td>Yes</td><td>Good</td><td>05-04-2026</td></tr>
+    </table>`);
+    const book = await parseSpreadsheet(html, RETURNS_RECEIVED);
+    const [, row] = book.Sheets.Sheet1;
+
+    expect(row).toStrictEqual(['123456789012345678', 'Yes', 'Good', '05-04-2026']);
+    expect(parseReturnsReceivedRow({
+      order_item_id: row[0], return_received_yes_no: row[1], condition_good_bad: row[2], received_date: row[3],
+    })).toMatchObject({ orderItemId: '123456789012345678', received: true, isBad: false, receivedDate: '2026-04-05' });
   });
 });

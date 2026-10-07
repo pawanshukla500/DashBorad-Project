@@ -2198,7 +2198,10 @@ router.post('/returns-received', upload.single('file'), async (req, res) => {
   const skippedRows = [];
   try {
     const pool = getPool();
-    const wb = await parseSpreadsheet(req.file.buffer, { sheets: 0, json: { header: 1, defval: '' }, transfer: true });
+    // raw: text-format files (CSV, HTML-table .xls) keep their text, matching
+    // the batches ReturnTrackingPage re-encodes from large files; XLSX/XLS
+    // cells are typed and read the same either way.
+    const wb = await parseSpreadsheet(req.file.buffer, { read: { raw: true }, sheets: 0, json: { header: 1, defval: '' }, transfer: true });
     const rows = wb.Sheets[wb.SheetNames[0]] ?? [];
     const headerRow = (rows[0] || []).map((header, index) => normalizedUploadHeader(header) || `col_${index}`);
     const data = rows.slice(1).filter(r => r.some(c => c !== ''));

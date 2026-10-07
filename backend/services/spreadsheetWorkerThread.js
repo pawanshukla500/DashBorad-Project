@@ -14,7 +14,7 @@ const CHUNK_CELLS = 50_000;
 
 // Day-first date text such as "05-04-2026" or "26-04-26 10:30"; see
 // restoreMisreadDates. Declared before run() starts, which uses it.
-const DAY_FIRST_DATE = /^\d{1,2}-\d{1,2}-(\d{4}|\d{2})(?:[T ]|$)/;
+const DAY_FIRST_DATE = /^(\d{1,2})-(\d{1,2})-(\d{4}|\d{2})(?:[T ]|$)/;
 
 if (parentPort && workerData?.kind === 'spreadsheet-parse') {
   run(workerData).catch((error) => {
@@ -111,10 +111,10 @@ function fillBlankRows(sheet, options) {
 // SheetJS reads date text in HTML tables (the ".xls" some portals export) as
 // year-month-day even when it is day-first: "05-04-2026" becomes year 5 plus
 // 2026 days, 1910-10-17. The cell keeps the text it was read from in `w`, so
-// when the year written there disagrees with the date read from it, keep the
-// cell as that text; the upload's date normalizer then reads it exactly as it
-// reads the same text from a CSV. Dates read correctly (CSV, XLSX, XLS) agree
-// with their own text and are left alone.
+// when a cell's date falls in the year that misreading of its own text gives,
+// keep the cell as that text; the upload's date normalizer then reads it as it
+// reads the same text elsewhere. Any other date, such as an XLSX date shown as
+// "26-04-05" (yy-mm-dd), is left alone.
 function restoreMisreadDates(sheet) {
   const rows = sheet['!data'];
   if (!rows) return;
@@ -126,7 +126,7 @@ function restoreMisreadDates(sheet) {
       // Cheap filter before the regex: day-first text has a '-' at index 1 or 2.
       if (cell.w.charCodeAt(1) !== 45 && cell.w.charCodeAt(2) !== 45) continue;
       const match = DAY_FIRST_DATE.exec(cell.w);
-      if (match && !dateYears(cell).some(year => yearMatches(year, match[1]))) {
+      if (match && dateYears(cell).includes(misreadYear(match))) {
         row[c] = { t: 's', v: cell.w, w: cell.w };
       }
     }
@@ -134,16 +134,17 @@ function restoreMisreadDates(sheet) {
 }
 
 // The calendar year of a date cell, read both ways round so a date near New
-// Year in a non-UTC zone still matches its text.
+// Year in a non-UTC zone still matches.
 function dateYears(cell) {
   if (cell.v instanceof Date) return [cell.v.getFullYear(), cell.v.getUTCFullYear()];
   if (typeof cell.v === 'number') return [new Date(Math.round((cell.v - 25569) * 86_400_000)).getUTCFullYear()];
   return [];
 }
 
-// A two-digit year counts as 20yy: the misread of "26-04-26" is 1926.
-function yearMatches(year, text) {
-  return year === (text.length === 4 ? Number(text) : 2000 + Number(text));
+// The year SheetJS gets by reading "dd-mm-yyyy" as year-month-day: year 19dd
+// pushed on by yyyy days, 1900-1937 for any real date ("05-04-2026" gives 1910).
+function misreadYear([, first, second, third]) {
+  return new Date(Date.UTC(Number(first), Number(second) - 1, Number(third))).getUTCFullYear();
 }
 
 // The row range sheet_to_json reads for these options.

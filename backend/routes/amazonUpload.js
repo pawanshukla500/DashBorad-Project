@@ -584,11 +584,24 @@ async function markFlexReturnsReceived(pool, returnRows) {
   return received.length;
 }
 
+// An Excel date serial (five digits, 1927-2173, with an optional time
+// fraction) as a Date at its wall-clock time in UTC. The settlement reader
+// gets cell values, so date cells arrive as serials, and SheetJS also reads
+// delimited date-times such as "2026-04-05T10:30:00Z" as one (46117.4375).
+function serialDate(v) {
+  const text = (v + '').trim();
+  return /^\d{5}(?:\.\d+)?$/.test(text)
+    ? new Date(Math.round((Number(text) - 25569) * 86_400_000))
+    : null;
+}
+
 function dt(v) {
   if (!v) return null;
   if (v instanceof Date) {
     return isNaN(v.getTime()) ? null : `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
   }
+  const serial = serialDate(v);
+  if (serial) return serial.toISOString().slice(0, 10);
   const s = (v + '').trim();
   if (!s) return null;
   const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
@@ -601,6 +614,8 @@ function dt(v) {
 }
 function dtIso(v) {
   if (!v) return null;
+  const serial = serialDate(v);
+  if (serial) return serial.toISOString();
   const s = (v + '').trim();
   if (!s) return null;
   const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}:\d{2}:\d{2})(?:\s*UTC)?$/i);
