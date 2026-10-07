@@ -130,11 +130,152 @@ Add these repository secrets:
 | `HOSTINGER_SSH_PORT` | Usually `22` |
 
 Pushes to `master` run tests and the frontend build before the deploy job.
-The VPS pulls only fast-forward Git history, then recreates changed containers.
-The deployment stops if tests fail or the VPS has unexpected local Git edits.
-The deploy job also verifies that the API container can resolve the configured
-database host from inside Docker and that `/health` reports a connected,
-schema-ready PostgreSQL runtime before CI/CD passes.
+The deploy job uploads the checked-out source and a generated `.env` to
+`/opt/reconcentral`, then pipes
+[`scripts/deploy/hostinger-deploy.sh`](../scripts/deploy/hostinger-deploy.sh)
+to the VPS over SSH. The script verifies that the API container can resolve
+the configured database host from inside Docker and that `/health` reports a
+connected, schema-ready PostgreSQL runtime before CI/CD passes.
+
+### Releases, rollback and pre-deploy backups
+
+Each deploy runs these steps in order:
+
+1. Records the rollback target. This is the image the `ReconCentral`
+   container is running if Docker reports it healthy. If the container is
+   missing or unhealthy, the target is `reconcentral:latest` instead, the
+   last release that passed its checks. A target that is not already under a
+   commit-SHA tag is pinned as `reconcentral:rollback-<image id>`.
+2. Moves the current `/opt/reconcentral/ReconCentral` to
+   `ReconCentral.prev` and unpacks the new release in its place.
+3. Builds `reconcentral:<commit SHA>`. The old container keeps serving during
+   the build. If the build fails, the job stops and production is unchanged.
+4. Takes `pg_dump -Fc` of **`paymentapp` only** into
+   `/opt/backups/reconcentral-predeploy/paymentapp_<UTC time>_<sha12>.dump`
+   (directory `700`, files `600`). The dump runs through `docker exec` on
+   the shared Postgres container's local socket, so no password is used and
+   the container is never restarted. The whole archive is read back with
+   `pg_restore -f /dev/null` to catch truncation. The last 5 dumps are
+   kept.
+   - Before dumping, the script checks free disk space against the database
+     size plus 2 GB of headroom. If space is short, or the dump fails, the
+     deploy **aborts before the new container starts** and production is
+     unchanged.
+   - For an urgent fix while the disk is full, run the workflow manually
+     with **skip_predeploy_backup** checked. Then the nightly dump is the
+     only restore point.
+5. Runs `docker compose ... up -d --no-build`. The new container applies its
+   startup migrations.
+6. Runs the private-DB-route, `/health` and public HTTPS checks. If any check
+   fails, the script:
+   - saves the failed container's last 500 log lines to
+     `/opt/reconcentral/deploy-logs/<time>_<sha12>.app.log` (root-only,
+     last 10 kept). They are not printed, because Actions logs on a public
+     repository are public;
+   - restores `ReconCentral.prev` (the compose file and `.env` the previous
+     container was created from). If that `.env` differs from the newly
+     uploaded one, for example after a secret rotation, the job adds a
+     warning without printing either file;
+   - points `latest` back at the previous image;
+   - runs `up -d --no-build --force-recreate` with
+     `IMAGE_TAG=<previous tag>`, re-checks health, and **fails the job**.
+     The `::error::` annotation states which tag production is on.
+7. On success, the script points `reconcentral:latest` at the new release
+   ("last known good") and records it in `/opt/reconcentral/good-releases`.
+   It then keeps the images of the last 3 releases that passed their checks,
+   plus the running image and the rollback target. Failed builds are removed
+   at the next successful deploy; their logs stay in `deploy-logs/`. Only
+   commit-SHA and `rollback-*` tags are managed; other images on the host
+   are not touched. There is no `docker image prune` anymore.
+
+Each run's full output is also written to
+`/opt/reconcentral/deploy-logs/<time>_<sha12>.deploy.log` (last 20 kept).
+Every probe has a time limit. The script ignores SIGHUP and keeps logging to
+that file if its SSH session disappears, for example when the job is
+cancelled or times out. So a deploy that has already started still finishes
+its checks and, if needed, its rollback. In that case, read the outcome from
+the log file. A lock (`/opt/reconcentral/.deploy.lock`) makes the next
+deploy wait for it.
+
+`latest` always means the last release that passed its checks, so a plain
+`docker compose up -d` from Hostinger Docker Manager (no `IMAGE_TAG`) starts a
+known-good image.
+
+**Schema changes are not rolled back.** Startup migrations are additive and
+idempotent, and the previous image normally runs fine on the newer schema.
+If a release damaged data, restore `paymentapp` from its pre-deploy dump (see
+below). Do not restart the Postgres container: it hosts other databases.
+
+#### Manual rollback to an older release
+
+```bash
+docker image ls reconcentral          # available tags, newest first
+cd /opt/reconcentral/ReconCentral
+IMAGE_TAG=<sha-or-rollback-tag> docker compose -p reconcentral \
+  -f docker-compose.production.yml --env-file .env up -d --no-build --force-recreate
+docker tag reconcentral:<sha-or-rollback-tag> reconcentral:latest
+```
+
+#### Restoring paymentapp from a pre-deploy dump
+
+Restore into a scratch database first and check it. This affects only the new
+database, never `paymentapp` or the other databases in the cluster. `<db user>`
+is the user in `DATABASE_URL`.
+
+```bash
+PG=postgresql-6k6a-postgresql-1
+DUMP=/opt/backups/reconcentral-predeploy/paymentapp_<stamp>_<sha12>.dump
+docker exec "$PG" createdb -U <db user> paymentapp_restore_check
+docker exec -i "$PG" pg_restore -U <db user> -d paymentapp_restore_check --no-owner < "$DUMP"
+```
+
+Restoring over the live `paymentapp` discards every write made after the
+dump. Only do it as a deliberate decision: stop `ReconCentral` first, run
+`pg_restore --clean --if-exists --single-transaction -d paymentapp`, then
+start the container again. Dumps written through a pipe do not support
+`pg_restore -j`; restore them serially.
+
+#### Testing the rollback path safely
+
+- **No server needed:** `bash scripts/deploy/test-hostinger-deploy.sh` runs the
+  real script against a fake `docker`. It covers:
+  - a healthy deploy, and an unhealthy one (`/health` or the public HTTPS
+    check fails) that rolls back;
+  - the first deploy on a legacy `latest`-only server, both success and
+    failure;
+  - rollback to `latest` when there is no running container;
+  - low disk, a failed `pg_dump`, a failed build and an unreadable bundle;
+  - retention when some releases failed;
+  - the drill, including the roll-forward case;
+  - an SSH session that disappears mid-deploy.
+
+  CI runs it, plus `shellcheck`, on every PR.
+- **Real drill on the VPS:** in a quiet window, run the workflow manually on
+  `master` with **rollback_drill** checked. It deploys the current commit,
+  checks it, then deliberately rolls back to the image that was running.
+  Expect two container recreations, each with the same brief downtime as a
+  normal deploy.
+  The job is green only if the rolled-back container passes the health
+  checks, and the log ends with `Rollback drill passed`.
+  - Afterwards, `docker inspect -f '{{.Config.Image}}' ReconCentral` shows
+    `reconcentral:rollback-…` or the previous SHA.
+  - The drill code equals the running code, so nothing needs undoing. The
+    next normal deploy moves forward again.
+  - If the rollback target turns out to be unhealthy, the drill rolls
+    forward to the release it just verified, so production is not left
+    down. The job then fails with `Rollback drill failed ... rolled forward`.
+
+#### Host image-prune cron
+
+`/etc/cron.d/docker-image-prune` runs `docker image prune -af --filter
+"until=24h"` daily. It deletes every image no container uses, including
+release images kept for rollback. Release images carry the label
+`com.reconcentral.release=true`. Adding `--filter
+"label!=com.reconcentral.release"` to that cron line keeps them. Until then,
+manual rollback is reliable only to images built in the last 24 hours. The
+automatic in-deploy rollback is affected only if the cron happens to fire in
+the few minutes between `up` and the rollback. If it does, the job's
+`::error::` says the rollback image no longer exists.
 
 The ReconCentral compose file exposes port `3001` only to Docker networks.
 Traefik remains the public entrypoint on ports `80` and `443`; direct public
@@ -211,11 +352,13 @@ queries can be identified from real traffic.
 ## Recovery commands
 
 ```bash
-cd /opt/reconcentral
-docker compose -f docker-compose.production.yml logs -f api
-docker compose -f docker-compose.production.yml ps
+cd /opt/reconcentral/ReconCentral
+docker compose -p reconcentral -f docker-compose.production.yml logs -f reconcentral
+docker compose -p reconcentral -f docker-compose.production.yml ps
+docker inspect -f '{{.Config.Image}}' ReconCentral   # which release is running
 curl -i http://127.0.0.1/health
-docker compose --env-file .env -f docker-compose.production.yml up -d --build
+# Restart the last known-good release without rebuilding:
+docker compose -p reconcentral -f docker-compose.production.yml --env-file .env up -d --no-build
 ```
 
 For a database outage, do not restart the API repeatedly. Restore database

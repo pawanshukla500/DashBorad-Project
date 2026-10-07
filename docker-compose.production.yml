@@ -3,10 +3,15 @@ name: reconcentral
 services:
   reconcentral:
     container_name: ReconCentral
-    image: reconcentral:latest
+    # Deploys build reconcentral:<commit SHA>; `latest` is moved to the last
+    # release that passed its health check (scripts/deploy/hostinger-deploy.sh).
+    image: reconcentral:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
+      labels:
+        # Lets host-level image pruning skip release images kept for rollback.
+        com.reconcentral.release: "true"
     restart: unless-stopped
     expose:
       - "3001"
