@@ -12,7 +12,7 @@ vi.mock('../utils/firebaseAdmin.js', () => ({
   },
 }));
 
-const { authMiddleware, forgetRevocationState, requireRole } = await import('../utils/authMiddleware.js');
+const { authMiddleware, forgetRevocationState, pruneRevocationCache, revocationCacheSize, requireRole } = await import('../utils/authMiddleware.js');
 
 beforeEach(() => {
   firebaseUser = { tokensValidAfterTime: null };
@@ -121,6 +121,51 @@ describe('authMiddleware — revoked sessions (role change / user removed)', () 
     await authMiddleware(request(), res, vi.fn());
     expect(auth.getUser).toHaveBeenCalledTimes(2); // looked up again, not served from the stale cache
     expect(res.statusCode).toBe(401);
+  });
+
+  const fillCache = async (count, prefix = 'u') => {
+    firebaseUser = { tokensValidAfterTime: null };
+    for (let i = 0; i < count; i++) {
+      decodedToken = { uid: `${prefix}${i}`, email: `${prefix}${i}@example.com`, recon_role: 'viewer', auth_time: issuedAt };
+      await authMiddleware(request(), response(), vi.fn());
+    }
+  };
+
+  it('drops expired entries once the cache grows, at most once per cache window', async () => {
+    await fillCache(520);
+    expect(revocationCacheSize()).toBe(520);
+    const later = Date.now() + 61_000;
+    pruneRevocationCache(later);
+    expect(revocationCacheSize()).toBe(0);
+    await fillCache(520, 'v');
+    pruneRevocationCache(later + 1_000); // within the window of the last sweep
+    expect(revocationCacheSize()).toBe(520);
+  });
+
+  it("keeps a revoked user's state through a prune, so a Firebase outage still refuses the old token", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const start = Date.parse('2026-10-07T10:00:00Z');
+      vi.setSystemTime(start);
+      const revokedAt = new Date(start - 10 * 60_000).toISOString();
+      const oldToken = { uid: 'demoted', email: 'demoted@example.com', recon_role: 'admin', auth_time: Math.floor(Date.parse(revokedAt) / 1000) - 60 };
+      decodedToken = oldToken;
+      firebaseUser = { tokensValidAfterTime: revokedAt };
+      const first = response();
+      await authMiddleware(request(), first, vi.fn());
+      expect(first.statusCode).toBe(401);
+      await fillCache(520);
+      vi.setSystemTime(start + 61_000); // every entry is now past the cache window
+      pruneRevocationCache();
+      expect(revocationCacheSize()).toBe(1); // only the revocation is kept
+      decodedToken = oldToken;
+      firebaseUser = Object.assign(new Error('network down'), { code: 'app/network-error' });
+      const during = response();
+      await authMiddleware(request(), during, vi.fn());
+      expect(during.statusCode).toBe(401); // the outage fallback still knows the revocation
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps serving verified tokens when Firebase cannot be reached', async () => {

@@ -44,10 +44,45 @@ export function forgetRevocationState(uid) {
     revocationCache.clear();
     revocationLookups.clear();
     allGeneration++;
+    lastRevocationPruneAt = 0;
   }
 }
 
 const generationOf = uid => `${allGeneration}:${revocationGenerations.get(uid) || 0}`;
+
+// Entries are only refreshed when their user returns, so drop expired ones
+// once the map grows: users who stop signing in do not accumulate. A sweep
+// runs at most once per cache window, so a burst of sign-ins never rescans
+// the map on every request.
+const REVOCATION_CACHE_PRUNE_SIZE = 500;
+// Firebase ID tokens expire at most an hour after they are issued.
+const ID_TOKEN_LIFETIME_MS = 60 * 60_000;
+let lastRevocationPruneAt = 0;
+
+// A revocation or deletion is the state the Firebase-outage fallback relies
+// on to keep refusing old tokens, so it is kept until every token issued
+// before it has expired; an entry without one carries nothing the fallback
+// default would not also give.
+function revocationKeptUntil(entry) {
+  if (entry.deleted) return entry.at + ID_TOKEN_LIFETIME_MS;
+  if (entry.validAfterMs > 0) return entry.validAfterMs + ID_TOKEN_LIFETIME_MS;
+  return 0;
+}
+
+export function pruneRevocationCache(now = Date.now()) {
+  if (revocationCache.size < REVOCATION_CACHE_PRUNE_SIZE) return;
+  if (now - lastRevocationPruneAt < REVOCATION_CACHE_MS) return;
+  lastRevocationPruneAt = now;
+  for (const [uid, entry] of revocationCache) {
+    if (now - entry.at <= REVOCATION_CACHE_MS) continue;
+    if (now < revocationKeptUntil(entry)) continue;
+    revocationCache.delete(uid);
+  }
+}
+
+export function revocationCacheSize() {
+  return revocationCache.size;
+}
 
 function withTimeout(promise, ms) {
   let timer;
@@ -80,7 +115,10 @@ function revocationState(uid) {
     .then(state => {
       const entry = { ...state, at: Date.now() };
       // Cleared meanwhile: answer this request, but cache nothing stale.
-      if (generationOf(uid) === generation) revocationCache.set(uid, entry);
+      if (generationOf(uid) === generation) {
+        pruneRevocationCache(entry.at);
+        revocationCache.set(uid, entry);
+      }
       return entry;
     })
     .finally(() => {
