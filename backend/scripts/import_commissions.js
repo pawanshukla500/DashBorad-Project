@@ -5,6 +5,9 @@ import { getPool } from '../db/index.js';
 import * as XLSX from 'xlsx';
 import fs from 'fs';
 
+// The ES module build of SheetJS needs fs handed to it for readFile.
+XLSX.set_fs(fs);
+
 dotenv.config({ path: path.resolve(fileURLToPath(import.meta.url), '../../.env') });
 
 async function importCommissions() {

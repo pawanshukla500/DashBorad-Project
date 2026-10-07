@@ -63,7 +63,10 @@ export default function ReturnTrackingPage() {
     try {
       const XLSX = await loadXlsx();
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
+      // raw: keep the text of HTML-table ".xls" files as written. Parsed, long
+      // order item IDs lose digits and "05-04-2026" becomes a 1910 date before
+      // the server sees it. XLSX/XLS cells are typed and read the same either way.
+      const wb = XLSX.read(buf, { type: 'array', raw: true });
       const sheetName = wb.SheetNames[0];
       const ws = wb.Sheets[sheetName];
       const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
