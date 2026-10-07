@@ -161,9 +161,16 @@ api.interceptors.response.use(
   async error => {
     // The API revoked this session (role changed or account removed): sign
     // out so the user signs in again with a token that carries the new role.
-    if (error.response?.status === 401 && error.response?.data?.code === 'SESSION_REVOKED') {
-      await signOut(auth).catch(() => {});
-      return Promise.reject(error);
+    if (error.response?.status === 401) {
+      let code = error.response.data?.code;
+      // Template / report downloads receive the error body as a Blob.
+      if (!code && error.response.data instanceof Blob) {
+        try { code = JSON.parse(await error.response.data.text()).code; } catch { /* not JSON */ }
+      }
+      if (code === 'SESSION_REVOKED') {
+        await signOut(auth).catch(() => {});
+        return Promise.reject(error);
+      }
     }
     // A development restart or a short VPS/database network interruption
     // should not turn a dashboard page into an error state. Retry only safe

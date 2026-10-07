@@ -180,8 +180,9 @@ router.get('/:portal/outstanding', async (req, res) => {
             COALESCE(SUM(payment_total), 0)                                     AS "totalPayment",
             COALESCE(SUM(return_total), 0)                                      AS "totalReturn",
             COALESCE(SUM(deduction_total), 0)                                   AS "totalDeduction",
-            -- Future-dated invoices (negative age) are current, not yet aged.
-            COALESCE(SUM(outstanding) FILTER (WHERE ledger_status = 'open' AND GREATEST(age_days, 0) <= 30), 0)      AS "aging0to30",
+            -- Future-dated invoices (negative age) are current and belong here;
+            -- undated invoices (NULL age) go to 90+ only.
+            COALESCE(SUM(outstanding) FILTER (WHERE ledger_status = 'open' AND age_days <= 30), 0)                   AS "aging0to30",
             COALESCE(SUM(outstanding) FILTER (WHERE ledger_status = 'open' AND age_days BETWEEN 31 AND 60), 0)       AS "aging31to60",
             COALESCE(SUM(outstanding) FILTER (WHERE ledger_status = 'open' AND age_days BETWEEN 61 AND 90), 0)       AS "aging61to90",
             COALESCE(SUM(outstanding) FILTER (WHERE ledger_status = 'open' AND (age_days > 90 OR age_days IS NULL)), 0) AS "aging90plus"
@@ -367,8 +368,13 @@ function statementQuery(req, portal) {
         ROWS UNBOUNDED PRECEDING
       )
     )`;
-  const inRange = `(${fromParam} IS NULL OR entry_date >= ${fromParam}) AND (${toParam} IS NULL OR entry_date <= ${toParam})`;
-  const beforeRange = `${fromParam} IS NOT NULL AND (entry_date < ${fromParam} OR entry_date IS NULL)`;
+  // Undated entries sort first in the running balance, so whenever a date
+  // filter is set they belong to the opening balance — never to the range —
+  // and the closing balance equals the last entry's running balance.
+  const filtered = `(${fromParam} IS NOT NULL OR ${toParam} IS NOT NULL)`;
+  const inRange = `(${fromParam} IS NULL OR entry_date >= ${fromParam}) AND (${toParam} IS NULL OR entry_date <= ${toParam})
+    AND (entry_date IS NOT NULL OR NOT ${filtered})`;
+  const beforeRange = `((${fromParam} IS NOT NULL AND entry_date < ${fromParam}) OR (entry_date IS NULL AND ${filtered}))`;
   return { cte, values, inRange, beforeRange, from, to, account: accountFilter };
 }
 

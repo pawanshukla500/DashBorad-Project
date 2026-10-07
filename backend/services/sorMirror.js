@@ -1,4 +1,5 @@
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import { lineComponent, ownedComponents } from './sorUpload.js';
 
 /**
  * SOR Level Payment Reconciliation — AJIO invoice mirror.
@@ -329,7 +330,12 @@ async function writeInvoice(client, invoice, uploadedBy) {
     `DELETE FROM sor_invoice_line WHERE invoice_id = $1 AND source = $2`,
     [headerId, SOR_AJIO_LINE_SOURCE],
   );
-  await forEachDbBatch(invoice.lines, LINE_COLUMN_COUNT, async batch => {
+  // A component (payment, return, a fee type) that SOR uploads already
+  // recorded for this invoice stays theirs; posting it from the invoice file
+  // too would count it twice (see services/sorUpload.js lineComponent).
+  const uploadOwned = (await ownedComponents(client, [headerId], `source LIKE 'sor_upload:%'`)).get(String(headerId));
+  const lines = uploadOwned ? invoice.lines.filter(line => !uploadOwned.has(lineComponent(line))) : invoice.lines;
+  await forEachDbBatch(lines, LINE_COLUMN_COUNT, async batch => {
     const values = [];
     const groups = batch.map(line => {
       const start = values.length;

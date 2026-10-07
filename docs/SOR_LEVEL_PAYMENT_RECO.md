@@ -389,6 +389,16 @@ names (`backend/services/sorUpload.js`):
 - AJIO invoices keep coming through the AJIO `mp_invoices` importer (the
   SOR page calls it directly); `POST …/reliance-ajio/upload/invoice` is
   refused so sale lines have one source.
+- **AJIO component ownership:** the AJIO invoice file can also carry
+  payments (Amount Received), returns and fees (commission, TDS, TCS, other
+  deductions). Each money component of an invoice belongs to the source that
+  recorded it first — the AJIO file or the SOR uploads — and the other one
+  skips it ("Already recorded from the AJIO invoice file"), in both
+  directions. Discounts, penalties and standalone debit notes never collide.
+  An upload never takes over a line owned by the AJIO mirror.
+- Dates: the day/month order is decided once per column from all of its
+  values (a part above 12 settles it; otherwise DD-MM). A column that proves
+  both orders is refused.
 - Every upload writes `sor_upload_log` (→ Audit History via the trigger).
 
 **Statement** — `GET /api/sor/:portal/statement?from&to&page&pageSize`:
@@ -433,6 +443,7 @@ errors return a generic message (no database text).
 | `2026.10.sor-ledger-2` | `line_type` + CHECK, `source` (tags lines left by the earlier mirror revision), FK-column and covering indexes. |
 | `2026.10.sor-fk-dedupe-1` | Drops the duplicate named FKs Phase 0 added on top of the inline ones (production had both). |
 | `2026.10.sor-ajio-mirror-2` | One-time AJIO backfill after startup; recorded only when every invoice synced. |
+| `2026.10.sor-ajio-mirror-3` | Re-runs the backfill after `sor-streams-1` so every mirrored line gets its key and date. |
 | `2026.10.sor-streams-1` | Upload-stream columns (`line_date`, `reference_no`, `description`, `source_key`) + `UNIQUE (invoice_id, line_type, source_key)`. |
 
 `-2` names: earlier unmerged revisions (PR #44 / #48) used `sor-ledger-1`
@@ -441,8 +452,9 @@ reused once its contents change.
 
 Rules: each step runs in one transaction on one client with
 `lock_timeout` (5 s; 3 s for the FK step) and records its version only on
-success, so a failure is retried on the next start instead of being
-silently skipped. SOR steps run on both the full and the already-current
+success, so a failure is retried instead of being silently skipped — in
+the background every minute after startup (`finishSorSchema`), then on the
+next start. SOR steps run on both the full and the already-current
 startup paths and **must not bump `CURRENT_SCHEMA_VERSION`** — that would
 send production through the full DDL pass (dozens of `ALTER TABLE` on
 `orders` / `returns`) on the shared PostgreSQL server. Startup migrations

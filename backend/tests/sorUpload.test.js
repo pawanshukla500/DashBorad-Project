@@ -1,6 +1,6 @@
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildSorLines, parseSorUploadRows, sorTemplateHeaders } from '../services/sorUpload.js';
+import { buildSorLines, lineComponent, parseSorUploadRows, sorTemplateHeaders } from '../services/sorUpload.js';
 
 describe('parseSorUploadRows — column mapping and validation', () => {
   it('maps template headers and portal-export aliases (case / punctuation insensitive)', () => {
@@ -36,7 +36,27 @@ describe('parseSorUploadRows — column mapping and validation', () => {
       { 'Invoice No': 'INV-2', 'Advice Date': '2026-10-05' },
     ]);
     expect(records).toHaveLength(1);
-    expect(skipped[0].reason).toBe('Amount Paid and every deduction are empty');
+    expect(skipped[0].reason).toBe('Nothing to post: Amount Paid and every deduction are empty or zero');
+  });
+
+  it('decides the day/month order once per date column, from all of its values', () => {
+    const monthFirst = parseSorUploadRows('payment', [
+      { 'Invoice No': 'A', 'Payment Date': '10/05/2026', 'Amount Paid': '1' },
+      { 'Invoice No': 'B', 'Payment Date': '10/25/2026', 'Amount Paid': '1' },
+    ]);
+    expect(monthFirst.records.map(r => r.payment_date)).toEqual(['2026-10-05', '2026-10-25']);
+    const dayFirst = parseSorUploadRows('payment', [
+      { 'Invoice No': 'A', 'Payment Date': '05-10-2026', 'Amount Paid': '1' },
+      { 'Invoice No': 'B', 'Payment Date': '2026-10-07', 'Amount Paid': '1' },
+    ]);
+    expect(dayFirst.records.map(r => r.payment_date)).toEqual(['2026-10-05', '2026-10-07']);
+  });
+
+  it('refuses a date column that mixes day-month and month-day orders', () => {
+    expect(() => parseSorUploadRows('payment', [
+      { 'Invoice No': 'A', 'Payment Date': '25/10/2026', 'Amount Paid': '1' },
+      { 'Invoice No': 'B', 'Payment Date': '10/25/2026', 'Amount Paid': '1' },
+    ])).toThrow(/mixes day-month and month-day dates/);
   });
 
   it('refuses an unknown stream and oversized files', () => {
@@ -73,6 +93,21 @@ describe('buildSorLines — ledger lines and idempotency keys', () => {
     ]);
   });
 
+  it('keys reference-less lines without the amount, so a corrected re-upload replaces them', () => {
+    const [line] = buildSorLines('payment', [{ rowNum: 2, invoice_no: 'INV-1', payment_date: '2026-10-05', reference: null, paid_amount: 99 }]);
+    expect(line.source_key).toBe('pay:2026-10-05');
+  });
+
+  it('maps lines from both sources to the same money components', () => {
+    expect(lineComponent({ line_type: 'payment', source_key: 'mp:4:payment' })).toBe('payment');
+    expect(lineComponent({ line_type: 'payment', source_key: 'pay:UTR1' })).toBe('payment');
+    expect(lineComponent({ line_type: 'deduction', source_key: 'mp:4:tds' })).toBe('deduction:tds');
+    expect(lineComponent({ line_type: 'deduction', source_key: 'adv:UTR1:tds' })).toBe('deduction:tds');
+    expect(lineComponent({ line_type: 'deduction', source_key: 'adv:UTR1:other_deduction' })).toBe('deduction:other_deductions');
+    expect(lineComponent({ line_type: 'deduction', source_key: null, fee_type: 'commission' })).toBe('deduction:commission');
+    expect(lineComponent({ line_type: 'deduction', source_key: 'ded:DN-7:SHORTAGE' })).toBe('deduction:debit_note');
+  });
+
   it('keys deductions by reference and type', () => {
     const [line] = buildSorLines('deduction', [{ rowNum: 2, invoice_no: 'INV-1', deduction_date: '2026-09-25', reference: 'DN-7', deduction_type: 'Late delivery', deduction_amount: 150 }]);
     expect(line).toMatchObject({ line_type: 'deduction', source_key: 'ded:DN-7:LATEDELIVERY', gross_amount: 150, description: 'Late delivery', reference_no: 'DN-7' });
@@ -82,6 +117,9 @@ describe('buildSorLines — ledger lines and idempotency keys', () => {
 // ── HTTP contract ──
 let sheetRows;
 let statements;
+let mirrorLines;
+let headerCreated;
+let blockedKeys;
 vi.mock('../services/spreadsheetWorker.js', () => ({
   parseSpreadsheet: async () => ({ SheetNames: ['Upload'], Sheets: { Upload: sheetRows } }),
 }));
@@ -92,8 +130,16 @@ vi.mock('../db/index.js', () => {
     if (sql.startsWith('SELECT id, invoice_no FROM sor_invoice')) {
       return { rows: params[3].filter(no => no !== 'MISSING').map((invoice_no, i) => ({ id: 10 + i, invoice_no })) };
     }
-    if (sql.startsWith('INSERT INTO sor_invoice ')) return { rows: [{ id: 77 }] };
-    if (sql.startsWith('INSERT INTO sor_invoice_line')) return { rows: Array.from({ length: (params.length / 15) }, () => ({ inserted: true })) };
+    if (sql.startsWith('INSERT INTO sor_invoice ')) return { rows: [{ id: 77, created: headerCreated }] };
+    if (sql.startsWith('SELECT invoice_id, line_type, source_key')) {
+      return { rows: params[1] === 'mp_invoices:ajio' ? mirrorLines : [] };
+    }
+    if (sql.startsWith('INSERT INTO sor_invoice_line')) {
+      return {
+        rows: Array.from({ length: params.length / 15 }, (_, i) => ({ line_type: params[i * 15 + 1], source_key: params[i * 15 + 11], inserted: true }))
+          .filter(row => !blockedKeys.includes(row.source_key)),
+      };
+    }
     if (sql.startsWith('DELETE')) return { rows: [], rowCount: 0 };
     return { rows: [], rowCount: 0 };
   };
@@ -110,6 +156,9 @@ let baseUrl;
 beforeEach(async () => {
   statements = [];
   sheetRows = [];
+  mirrorLines = [];
+  headerCreated = true;
+  blockedKeys = [];
   const app = express();
   app.use((req, _res, next) => { req.user = { email: 'ops@example.com', role: 'operator' }; next(); });
   app.use('/api/sor', sorUploadRouter);
@@ -153,6 +202,38 @@ describe('POST /api/sor/:portal/upload/:stream', () => {
     const refused = await uploadFile('/reliance-ajio/upload/invoice');
     expect(refused.status).toBe(400);
     expect((await refused.json()).error).toContain('AJIO invoice importer');
+  });
+
+  it('on AJIO, skips components the AJIO invoice file already posted and keeps the rest', async () => {
+    mirrorLines = [
+      { invoice_id: 10, line_type: 'payment', source_key: 'mp:1:payment', fee_type: null },
+      { invoice_id: 10, line_type: 'deduction', source_key: 'mp:1:tds', fee_type: 'tds' },
+    ];
+    sheetRows = [{ 'Invoice No': 'AJ-1', 'Advice Date': '2026-10-01', 'Payment Reference': 'UTR9', 'Amount Paid': '900', TDS: '10', 'Penalty / Claims': '25' }];
+    const body = await (await uploadFile('/reliance-ajio/upload/payment_advice')).json();
+    expect(body.inserted).toBe(1); // only the penalty
+    expect(body.skippedRows.map(row => row.reason)).toEqual([
+      'Already recorded from the AJIO invoice file (payment) — not posted twice',
+      'Already recorded from the AJIO invoice file (TDS) — not posted twice',
+    ]);
+    const insert = statements.find(s => s.sql.startsWith('INSERT INTO sor_invoice_line'));
+    expect(insert.params[11]).toBe('adv:UTR9:penalty');
+  });
+
+  it('never takes over a line owned by another source on a key conflict', async () => {
+    blockedKeys = ['pay:UTR1'];
+    sheetRows = [{ 'Invoice No': 'INV-1', 'Payment Date': '2026-10-05', 'Payment Reference': 'UTR1', 'Amount Paid': '500' }];
+    const body = await (await uploadFile('/zepto/upload/payment')).json();
+    expect(body).toMatchObject({ inserted: 0, updated: 0, skipped: 1 });
+    const insert = statements.find(s => s.sql.startsWith('INSERT INTO sor_invoice_line'));
+    expect(insert.sql).toContain("WHERE sor_invoice_line.source LIKE 'sor_upload:%'");
+  });
+
+  it('counts a re-uploaded invoice as updated, not new', async () => {
+    headerCreated = false;
+    sheetRows = [{ 'Invoice No': 'INV-9', 'Invoice Date': '2026-09-01', 'Invoice Amount': '1000' }];
+    const body = await (await uploadFile('/zepto/upload/invoice')).json();
+    expect(body).toMatchObject({ inserted: 0, updated: 1 });
   });
 
   it('rejects unknown portals / streams, bad accounts and non-spreadsheet files', async () => {

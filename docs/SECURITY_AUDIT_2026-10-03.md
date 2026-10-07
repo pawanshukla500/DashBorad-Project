@@ -230,8 +230,9 @@ still applies to every upload path until the SheetJS upgrade.
 - **Major** — `POST /api/health` skipped auth and reached the 50 MB parser:
   the health bypass is GET / HEAD only and the large parser runs only for
   authenticated requests.
-- **Major** — future-dated invoices fell into the 0–30 day aging bucket
-  implicitly: stated explicitly (`GREATEST(age_days, 0)`).
+- **Major** — future-dated invoices in the 0–30 day aging bucket: intended
+  (they are current, not overdue) and now documented in the query;
+  undated invoices are counted in 90+ only.
 
 ---
 

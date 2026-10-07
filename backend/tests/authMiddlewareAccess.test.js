@@ -90,6 +90,21 @@ describe('authMiddleware — revoked sessions (role change / user removed)', () 
     expect(res.statusCode).toBe(401);
   });
 
+  it('does not hold requests longer than the lookup timeout and reuses one lookup', async () => {
+    const { auth } = await import('../utils/firebaseAdmin.js');
+    auth.getUser.mockClear();
+    decodedToken = { uid: 'slow', email: 'ops@example.com', recon_role: 'viewer', auth_time: issuedAt };
+    auth.getUser.mockImplementationOnce(() => new Promise(() => {})); // Firebase never answers
+    const started = Date.now();
+    const nexts = [vi.fn(), vi.fn()];
+    await Promise.all(nexts.map(next => authMiddleware(request(), response(), next)));
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(nexts.every(next => next.mock.calls.length === 1)).toBe(true);
+    expect(auth.getUser).toHaveBeenCalledTimes(1);
+    await authMiddleware(request(), response(), vi.fn()); // cached for the window
+    expect(auth.getUser).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps serving verified tokens when Firebase cannot be reached', async () => {
     decodedToken = { uid: 'member', email: 'ops@example.com', recon_role: 'viewer', auth_time: issuedAt };
     firebaseUser = Object.assign(new Error('network down'), { code: 'app/network-error' });

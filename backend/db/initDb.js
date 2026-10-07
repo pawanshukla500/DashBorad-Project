@@ -25,7 +25,10 @@ const SOR_INVOICE_SCHEMA_VERSION = '2026.10.sor-invoice-2';
 // must still get the current steps.
 const SOR_LEDGER_SCHEMA_VERSION = '2026.10.sor-ledger-2';
 const SOR_FK_DEDUPE_SCHEMA_VERSION = '2026.10.sor-fk-dedupe-1';
-const SOR_AJIO_MIRROR_SCHEMA_VERSION = '2026.10.sor-ajio-mirror-2';
+// -3: re-runs the AJIO rebuild once more after sor-streams-1 so every
+// mirrored line gets its source_key / entry date (lines written before have
+// NULL keys, which never de-duplicate against uploads).
+const SOR_AJIO_MIRROR_SCHEMA_VERSION = '2026.10.sor-ajio-mirror-3';
 const SOR_STREAMS_SCHEMA_VERSION = '2026.10.sor-streams-1';
 const MYNTRA_UPLOAD_SCHEMA_VERSION = '2026.08.myntra-ej-vb-order-return-1';
 const MYNTRA_SELLER_ID_SCHEMA_VERSION = '2026.08.myntra-seller-id-guard-1';
@@ -1903,14 +1906,45 @@ async function ensureSorInvoiceSchema(pool) {
  * gating the rest of the API on an optional workspace.
  */
 export async function ensureSorSchema(pool) {
-  await ensureSorInvoiceSchema(pool);
+  const invoiceReady = await ensureSorInvoiceSchema(pool);
   const ledgerReady = await ensureSorLedgerSchema(pool);
-  await ensureSorForeignKeyDedupe(pool);
-  if (!ledgerReady) return;
-  await ensureSorStreamsSchema(pool);
-  await ensureSorOutstandingView(pool);
-  // The AJIO backfill is data, not schema: server.js runs
-  // ensureSorAjioBackfill() after the API is ready so it never delays startup.
+  const dedupeReady = await ensureSorForeignKeyDedupe(pool);
+  let ready = invoiceReady && ledgerReady && dedupeReady;
+  if (ledgerReady) {
+    const streamsReady = await ensureSorStreamsSchema(pool);
+    const viewReady = await ensureSorOutstandingView(pool);
+    ready = ready && streamsReady && viewReady;
+  }
+  sorSchemaPending = !ready;
+  return ready;
+  // The AJIO backfill is data, not schema: server.js runs finishSorSchema()
+  // after the API is ready so it never delays startup.
+}
+
+let sorSchemaPending = false;
+const SOR_SCHEMA_RETRY_MS = 60_000;
+const SOR_SCHEMA_MAX_RETRIES = 30;
+
+/**
+ * After the API is ready: retry any SOR schema step that failed at startup
+ * (e.g. a lock timeout on the shared server) every minute instead of waiting
+ * for the next restart, then run the one-time AJIO backfill.
+ */
+export async function finishSorSchema(pool, { retryMs = SOR_SCHEMA_RETRY_MS, maxRetries = SOR_SCHEMA_MAX_RETRIES } = {}) {
+  for (let attempt = 1; sorSchemaPending && attempt <= maxRetries; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, retryMs));
+    try {
+      await ensureSorSchema(pool);
+    } catch (error) {
+      console.error('[db] SOR schema retry failed:', error.message);
+    }
+  }
+  if (sorSchemaPending) {
+    console.error('[db] SOR schema steps are still pending; SOR uploads and the AJIO mirror stay unavailable until they apply.');
+    return false;
+  }
+  await ensureSorAjioBackfill(pool);
+  return true;
 }
 
 /**

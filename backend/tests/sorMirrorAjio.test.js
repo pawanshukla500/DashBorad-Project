@@ -220,6 +220,7 @@ describe('mirrorAjioInvoicesToSor — persistence', () => {
       'BEGIN',
       'INSERT INTO sor_invoice',
       'DELETE FROM sor_invoice_line',
+      'SELECT invoice_id, line_type,', // components SOR uploads already own
       'INSERT INTO sor_invoice_line',
       'COMMIT',
     ]);

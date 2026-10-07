@@ -160,6 +160,31 @@ function resolveColumns(stream, headers) {
 const text = value => (value === null || value === undefined ? '' : String(value).trim());
 const blank = value => text(value) === '';
 const round2 = value => Math.round(value * 100) / 100;
+const NUMERIC_DATE = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?:[ T].*)?$/;
+
+// One day/month order per date column, decided from all of its values (a
+// part above 12 settles it) — never cell by cell, which would read 10/05 and
+// 10/25 in different orders. An undecided column is DD-MM, the Indian
+// convention; a column that proves both orders is refused.
+function columnDateOrder(values) {
+  let dayFirst = false;
+  let monthFirst = false;
+  for (const value of values) {
+    const match = typeof value === 'string' ? value.trim().match(NUMERIC_DATE) : null;
+    if (!match) continue;
+    if (Number(match[1]) > 12) dayFirst = true;
+    if (Number(match[2]) > 12) monthFirst = true;
+  }
+  if (dayFirst && monthFirst) return 'MIXED';
+  return monthFirst ? 'MDY' : 'DMY';
+}
+
+function parseDateCell(value, order) {
+  if (typeof value === 'string' && NUMERIC_DATE.test(value.trim())) {
+    return normalizeSqlDate(value.trim(), { format: order });
+  }
+  return normalizeSqlDate(value); // Excel dates, ISO, month names
+}
 
 /**
  * Pure: sheet rows → normalized records + skipped rows (with reasons).
@@ -186,6 +211,17 @@ export function parseSorUploadRows(stream, rows) {
     throw Object.assign(new Error('A payment advice needs an Amount Paid column or at least one deduction column (TDS, Commission, Discount, Penalty / Claims, Other Deductions).'), { status: 400 });
   }
 
+  const dateOrders = {};
+  for (const column of config.columns) {
+    if (!DATE_FIELDS.has(column) || !columns[column]) continue;
+    dateOrders[column] = columnDateOrder(rows.map(row => row?.[columns[column]]));
+    if (dateOrders[column] === 'MIXED') {
+      throw Object.assign(new Error(
+        `The ${columns[column]} column mixes day-month and month-day dates. Export it in one date format and upload again.`,
+      ), { status: 400 });
+    }
+  }
+
   const records = [];
   const skipped = [];
   rows.forEach((row, index) => {
@@ -198,7 +234,7 @@ export function parseSorUploadRows(stream, rows) {
       const raw = header === undefined ? '' : row[header];
       if (!blank(raw)) empty = false;
       if (DATE_FIELDS.has(column)) {
-        values[column] = blank(raw) ? null : normalizeSqlDate(raw);
+        values[column] = blank(raw) ? null : parseDateCell(raw, dateOrders[column]);
         if (!blank(raw) && !values[column]) problems.push(`${LABELS[column] || column} "${text(raw)}" is not a valid date`);
       } else if (MONEY_FIELDS.has(column) || column === 'quantity') {
         values[column] = blank(raw) ? null : optionalNumber(raw);
@@ -216,8 +252,8 @@ export function parseSorUploadRows(stream, rows) {
     if (values.quantity !== null && values.quantity !== undefined && (!Number.isInteger(values.quantity) || values.quantity < 0)) {
       problems.push('Quantity must be a whole number');
     }
-    if (stream === 'payment_advice' && values.paid_amount === null && ADVICE_DEDUCTIONS.every(([column]) => !values[column])) {
-      problems.push('Amount Paid and every deduction are empty');
+    if (stream === 'payment_advice' && !values.paid_amount && ADVICE_DEDUCTIONS.every(([column]) => !values[column])) {
+      problems.push('Nothing to post: Amount Paid and every deduction are empty or zero');
     }
     if (problems.length) {
       skipped.push({ rowNum, reason: problems.join('; ') });
@@ -250,7 +286,7 @@ export function buildSorLines(stream, records) {
       const ref = normRef(record.reference);
       add(record, {
         line_type: 'payment',
-        source_key: ref ? `pay:${ref}` : `pay:${record.payment_date}:${record.paid_amount}`,
+        source_key: ref ? `pay:${ref}` : `pay:${record.payment_date}`,
         gross_amount: round2(record.paid_amount),
         line_date: record.payment_date,
         reference_no: record.reference,
@@ -283,7 +319,7 @@ export function buildSorLines(stream, records) {
       const note = normRef(record.note_no);
       add(record, {
         line_type: 'return',
-        source_key: note ? `ret:${note}:${normRef(record.sku)}` : `ret:${record.return_date}:${normRef(record.sku)}:${record.return_amount}`,
+        source_key: note ? `ret:${note}:${normRef(record.sku)}` : `ret:${record.return_date}:${normRef(record.sku)}`,
         gross_amount: round2(record.return_amount),
         line_date: record.return_date,
         reference_no: record.note_no,
@@ -296,7 +332,7 @@ export function buildSorLines(stream, records) {
       const type = text(record.deduction_type) || 'Deduction';
       add(record, {
         line_type: 'deduction',
-        source_key: ref ? `ded:${ref}:${normRef(type)}` : `ded:${record.deduction_date}:${normRef(type)}:${record.deduction_amount}`,
+        source_key: ref ? `ded:${ref}:${normRef(type)}` : `ded:${record.deduction_date}:${normRef(type)}`,
         gross_amount: round2(record.deduction_amount),
         line_date: record.deduction_date,
         reference_no: record.reference,
@@ -308,6 +344,50 @@ export function buildSorLines(stream, records) {
 }
 
 /**
+ * The money component a ledger line stands for. On AJIO two sources can
+ * carry the same component of an invoice — the AJIO invoice file (mirrored by
+ * services/sorMirror.js) and the SOR uploads — under different keys. Each
+ * component of an invoice is owned by the source that recorded it first; the
+ * other source skips it, so a payment, return or fee is never counted twice.
+ */
+const ADVICE_COMPONENTS = Object.freeze({
+  tds: 'tds', commission: 'commission', other_deduction: 'other_deductions', discount: 'discount', penalty: 'penalty',
+});
+const COMPONENT_LABELS = Object.freeze({
+  payment: 'payment', return: 'return', 'deduction:tds': 'TDS', 'deduction:tcs': 'TCS', 'deduction:commission': 'commission',
+  'deduction:other_deductions': 'other deductions', 'deduction:discount': 'discount', 'deduction:penalty': 'penalty',
+});
+export const SOR_MIRROR_SOURCE = 'mp_invoices:ajio';
+
+export function lineComponent({ line_type: lineType, source_key: sourceKey, fee_type: feeType }) {
+  if (lineType !== 'deduction') return lineType;
+  if (feeType) return `deduction:${feeType}`;
+  const key = String(sourceKey || '');
+  const mirrorFee = key.match(/^mp:\d+:([a-z_]+)$/);
+  if (mirrorFee) return `deduction:${mirrorFee[1]}`;
+  const advice = key.match(/^adv:.*:([a-z_]+)$/);
+  if (advice) return `deduction:${ADVICE_COMPONENTS[advice[1]] || advice[1]}`;
+  return 'deduction:debit_note'; // a standalone debit note never collides
+}
+
+// Components of each invoice already recorded by sources matching `where`.
+export async function ownedComponents(client, headerIds, sourceCondition, params = []) {
+  const owned = new Map();
+  if (headerIds.length === 0) return owned;
+  const { rows } = await client.query(
+    `SELECT invoice_id, line_type, source_key, raw_payload->>'fee_type' AS fee_type
+     FROM sor_invoice_line
+     WHERE invoice_id = ANY($1::bigint[]) AND ${sourceCondition}`,
+    [headerIds, ...params],
+  );
+  for (const row of rows) {
+    if (!owned.has(String(row.invoice_id))) owned.set(String(row.invoice_id), new Set());
+    owned.get(String(row.invoice_id)).add(lineComponent(row));
+  }
+  return owned;
+}
+
+/**
  * Write a parsed upload to the ledger. One dedicated client; one transaction
  * per invoice so a bad invoice cannot block the rest of the file.
  */
@@ -315,6 +395,9 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
   const source = `sor_upload:${stream}`;
   const result = { invoices: 0, inserted: 0, updated: 0, skipped: [], errors: [] };
   if (records.length === 0) return result;
+  const skipLine = (line, reason) => {
+    for (const rowNum of line.rows) result.skipped.push({ rowNum, reason });
+  };
 
   const client = await pool.connect();
   try {
@@ -330,8 +413,9 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
           const outcome = await writeInvoice(client, { portal, account, invoiceNo, rows, source, uploadedBy });
           await client.query('COMMIT');
           result.invoices++;
-          result.inserted += outcome.inserted;
-          result.updated += outcome.replaced;
+          // A re-uploaded invoice replaces its lines: count them as updated.
+          if (outcome.created) result.inserted += outcome.lines;
+          else result.updated += outcome.lines;
         } catch (err) {
           await client.query('ROLLBACK').catch(() => {});
           result.errors.push(`Invoice ${invoiceNo}: ${err.message}`);
@@ -348,14 +432,18 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
        WHERE portal = $1 AND portal_account = $2 AND invoice_type = $3 AND invoice_no = ANY($4::text[])`,
       [portal, account, SOR_INVOICE_TYPE, invoiceNos],
     );
-    const headerIds = new Map(headers.map(row => [row.invoice_no, row.id]));
+    const headerIds = new Map(headers.map(row => [row.invoice_no, String(row.id)]));
+    const mirrorOwned = await ownedComponents(client, [...headerIds.values()], 'source = $2', [SOR_MIRROR_SOURCE]);
     const byInvoice = new Map();
     for (const line of lines) {
       const headerId = headerIds.get(line.invoice_no);
       if (!headerId) {
-        for (const rowNum of line.rows) {
-          result.skipped.push({ rowNum, reason: `Invoice ${line.invoice_no} is not in the ${PORTAL_LABELS[portal] || portal} ledger — upload the invoice file first` });
-        }
+        skipLine(line, `Invoice ${line.invoice_no} is not in the ${PORTAL_LABELS[portal] || portal} ledger — upload the invoice file first`);
+        continue;
+      }
+      const component = lineComponent(line);
+      if (mirrorOwned.get(headerId)?.has(component)) {
+        skipLine(line, `Already recorded from the AJIO invoice file (${COMPONENT_LABELS[component] || component}) — not posted twice`);
         continue;
       }
       if (!byInvoice.has(headerId)) byInvoice.set(headerId, []);
@@ -370,12 +458,11 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
         result.invoices++;
         result.inserted += outcome.inserted;
         result.updated += outcome.updated;
+        for (const line of outcome.blocked) skipLine(line, 'Already recorded from the AJIO invoice file — not posted twice');
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
         result.errors.push(`Invoice ${invoiceLines[0].invoice_no}: ${err.message}`);
-        for (const line of invoiceLines) {
-          for (const rowNum of line.rows) result.skipped.push({ rowNum, reason: 'Could not be saved; retry the upload' });
-        }
+        for (const line of invoiceLines) skipLine(line, 'Could not be saved; retry the upload');
       }
     }
     return result;
@@ -405,7 +492,7 @@ async function writeInvoice(client, { portal, account, invoiceNo, rows, source, 
         raw_payload  = EXCLUDED.raw_payload,
         uploaded_by  = COALESCE(EXCLUDED.uploaded_by, sor_invoice.uploaded_by),
         uploaded_at  = NOW()
-      RETURNING id
+      RETURNING id, (xmax = 0) AS created
     `,
     [
       portal, account, invoiceNo, dates[0], dates[0], dates[dates.length - 1], SOR_INVOICE_TYPE,
@@ -414,7 +501,7 @@ async function writeInvoice(client, { portal, account, invoiceNo, rows, source, 
   );
   const headerId = headerRows[0]?.id;
   if (!headerId) throw new Error('invoice header was not saved');
-  const removed = await client.query(
+  await client.query(
     `DELETE FROM sor_invoice_line WHERE invoice_id = $1 AND source = $2`,
     [headerId, source],
   );
@@ -431,12 +518,16 @@ async function writeInvoice(client, { portal, account, invoiceNo, rows, source, 
     rows: [row.rowNum],
   }));
   await upsertLines(client, headerId, lines, source);
-  return { inserted: lines.length, replaced: removed.rowCount };
+  return { lines: lines.length, created: headerRows[0].created !== false };
 }
 
+// Insert / update keyed lines. A conflicting line owned by another source
+// (the AJIO mirror) is never taken over: it is left as is and reported back
+// in `blocked`.
 async function upsertLines(client, headerId, lines, source) {
   let inserted = 0;
   let updated = 0;
+  const written = new Set();
   await forEachDbBatch(lines, LINE_COLUMN_COUNT, async batch => {
     const values = [];
     const groups = batch.map(line => {
@@ -467,13 +558,16 @@ async function upsertLines(client, headerId, lines, source) {
          line_date    = EXCLUDED.line_date,
          reference_no = EXCLUDED.reference_no,
          description  = EXCLUDED.description
-       RETURNING (xmax = 0) AS inserted`,
+       WHERE sor_invoice_line.source LIKE 'sor_upload:%'
+       RETURNING line_type, source_key, (xmax = 0) AS inserted`,
       values,
     );
     for (const row of rows) {
+      written.add(`${row.line_type}\u0000${row.source_key}`);
       if (row.inserted) inserted++;
       else updated++;
     }
   });
-  return { inserted, updated };
+  const blocked = lines.filter(line => !written.has(`${line.line_type}\u0000${line.source_key}`));
+  return { inserted, updated, blocked };
 }

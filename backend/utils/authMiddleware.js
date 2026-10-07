@@ -27,31 +27,59 @@ export function firebaseSessionFromToken(decodedToken = {}) {
 // revocation time is cached per user for a minute so a request does not
 // always wait on Firebase.
 const REVOCATION_CACHE_MS = 60_000;
+const REVOCATION_LOOKUP_TIMEOUT_MS = 1_500;
 const revocationCache = new Map();
+const revocationLookups = new Map();
 
 export function forgetRevocationState(uid) {
-  if (uid) revocationCache.delete(uid);
-  else revocationCache.clear();
+  if (uid) {
+    revocationCache.delete(uid);
+    revocationLookups.delete(uid);
+  } else {
+    revocationCache.clear();
+    revocationLookups.clear();
+  }
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(`revocation lookup timed out after ${ms} ms`), { code: 'timeout' })), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// One Firebase lookup per user at a time, at most once a minute, never
+// longer than the timeout. While Firebase is slow or down the last known
+// state (or "not revoked") is reused for the cache window, so requests do not
+// each wait on retries — and verified users are not locked out.
+function revocationState(uid) {
+  const cached = revocationCache.get(uid);
+  if (cached && Date.now() - cached.at <= REVOCATION_CACHE_MS) return Promise.resolve(cached);
+  if (revocationLookups.has(uid)) return revocationLookups.get(uid);
+  const lookup = withTimeout(auth.getUser(uid), REVOCATION_LOOKUP_TIMEOUT_MS)
+    .then(
+      user => ({ validAfterMs: user.tokensValidAfterTime ? Date.parse(user.tokensValidAfterTime) : 0, deleted: false }),
+      error => {
+        if (error?.code === 'auth/user-not-found') return { validAfterMs: 0, deleted: true };
+        console.warn('[Auth Middleware] revocation check unavailable:', error?.message);
+        return { validAfterMs: cached?.validAfterMs ?? 0, deleted: cached?.deleted ?? false };
+      },
+    )
+    .then(state => {
+      const entry = { ...state, at: Date.now() };
+      revocationCache.set(uid, entry);
+      return entry;
+    })
+    .finally(() => revocationLookups.delete(uid));
+  revocationLookups.set(uid, lookup);
+  return lookup;
 }
 
 async function sessionRevoked(decodedToken) {
-  const uid = decodedToken.uid;
-  let entry = revocationCache.get(uid);
-  if (!entry || Date.now() - entry.at > REVOCATION_CACHE_MS) {
-    try {
-      const user = await auth.getUser(uid);
-      entry = { at: Date.now(), validAfterMs: user.tokensValidAfterTime ? Date.parse(user.tokensValidAfterTime) : 0, deleted: false };
-    } catch (error) {
-      if (error?.code !== 'auth/user-not-found') {
-        // Firebase unreachable: keep serving verified tokens rather than
-        // locking every user out; the next request retries the lookup.
-        console.warn('[Auth Middleware] revocation check skipped:', error?.message);
-        return false;
-      }
-      entry = { at: Date.now(), validAfterMs: 0, deleted: true };
-    }
-    revocationCache.set(uid, entry);
-  }
+  const entry = await revocationState(decodedToken.uid);
   if (entry.deleted) return true;
   const issuedAtMs = Number(decodedToken.auth_time || decodedToken.iat || 0) * 1000;
   return entry.validAfterMs > 0 && issuedAtMs < entry.validAfterMs;

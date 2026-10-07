@@ -54,10 +54,15 @@ function resolveAccount(portal, value) {
  * POST /api/sor/:portal/upload/:stream   (operator / admin)
  * multipart: file (xlsx / xls / csv), optional account
  */
-router.post('/:portal/upload/:stream', upload.single('file'), async (req, res) => {
-  const { portal, stream } = req.params;
-  const denied = assertStreamAllowed(portal, stream);
+// Refuse an unknown portal / stream before multer buffers the file.
+function checkStream(req, res, next) {
+  const denied = assertStreamAllowed(req.params.portal, req.params.stream);
   if (denied) return res.status(denied.status).json({ error: denied.error });
+  return next();
+}
+
+router.post('/:portal/upload/:stream', checkStream, upload.single('file'), async (req, res) => {
+  const { portal, stream } = req.params;
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
 
@@ -93,8 +98,10 @@ router.post('/:portal/upload/:stream', upload.single('file'), async (req, res) =
       skippedRows: skipped.slice(0, MAX_SKIPPED_IN_RESPONSE),
     });
   } catch (err) {
-    const status = err.status === 400 ? 400 : 500;
-    const message = status === 400 ? err.message : 'The upload could not be processed. Please retry.';
+    // 400 (our validation) and 413 (spreadsheet too large for the parser)
+    // carry messages meant for the user; anything else is generic.
+    const status = [400, 413].includes(err.status) ? err.status : 500;
+    const message = status !== 500 ? err.message : 'The upload could not be processed. Please retry.';
     if (status === 500) console.error(`[sorUpload] ${portal}/${stream} failed:`, err.message);
     await logSorUpload(pool, {
       portal, account, filename, uploadedBy, status: 'error', inserted: 0, updated: 0, skipped: 0,
