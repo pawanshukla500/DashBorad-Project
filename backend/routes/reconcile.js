@@ -22,7 +22,7 @@ router.get('/unified-linkup', async (req, res) => {
     const { where, values } = buildFilters(req.query, {
       alias: 'o',
       dateColumn: 'order_date',
-      categoryColumn: 'category',
+      categoryColumn: "COALESCE(o.vb_export_category, o.category, 'Uncategorized')",
       neftAlias: 's',
     });
     const dataValues = [...values, pageSize, offset];
@@ -33,7 +33,7 @@ router.get('/unified-linkup', async (req, res) => {
       pool.query(`
         SELECT
           o.order_id, o.order_item_id, o.order_date, o.marketplace, o.seller_account,
-          o.sku, o.category, o.fulfilment_type, o.orders_status, o.final_invoice_amount,
+          o.sku, COALESCE(o.vb_export_category, o.category, 'Uncategorized') AS category, o.fulfilment_type, o.orders_status, o.final_invoice_amount,
           rt.return_status, rt.return_type, rt.return_reason,
           COALESCE(SUM(s.sale_amount), 0) AS total_sale_amount,
           COALESCE(SUM(s.bank_settlement), 0) AS total_bank_settlement,
@@ -44,7 +44,7 @@ router.get('/unified-linkup', async (req, res) => {
         LEFT JOIN unified_settlements s ON s.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
         GROUP BY o.order_id, o.order_item_id, o.order_date, o.marketplace, o.seller_account,
-                 o.sku, o.category, o.fulfilment_type, o.orders_status, o.final_invoice_amount,
+                 o.sku, COALESCE(o.vb_export_category, o.category, 'Uncategorized'), o.fulfilment_type, o.orders_status, o.final_invoice_amount,
                  rt.return_status, rt.return_type, rt.return_reason
         ORDER BY o.order_date DESC
         LIMIT ${pageSizeParam} OFFSET ${offsetParam}
@@ -93,7 +93,10 @@ export function buildFilters(q, {
   if (sellerAcc) { conds.push(`${alias}.seller_account = $${values.push(sellerAcc)}`); }
   if (q.startDate)      { conds.push(`${alias}.${dateColumn} >= $${values.push(q.startDate)}`); }
   if (q.endDate)        { conds.push(`${alias}.${dateColumn} <= $${values.push(q.endDate)}`); }
-  if (q.category)       { conds.push(`${alias}.${categoryColumn} = $${values.push(q.category)}`); }
+  if (q.category) {
+    const colExpr = categoryColumn.includes('(') || categoryColumn.includes('.') ? categoryColumn : `${alias}.${categoryColumn}`;
+    conds.push(`${colExpr} = $${values.push(q.category)}`);
+  }
   if (q.neftId)         { conds.push(`${neftAlias}.neft_id = $${values.push(q.neftId)}`); }
   if (q.orderId)        { conds.push(`(${alias}.order_id = $${values.push(q.orderId)} OR ${alias}.order_item_id = $${values.push(q.orderId)})`); }
   if (q.suspiciousOnly === '1') {

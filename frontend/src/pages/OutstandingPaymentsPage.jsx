@@ -350,7 +350,7 @@ export default function OutstandingPaymentsPage() {
           <button
             type="button"
             onClick={openConfigModal}
-            className="inline-flex items-center gap-2 rounded-lg bg-[#1a2b4c] hover:bg-[#132038] px-4 py-2 text-xs font-semibold text-white shadow-sm transition-colors focus-visible:ring-2 focus-visible:ring-primary/40"
+            className="inline-flex items-center gap-2 rounded-lg bg-primary hover:bg-indigo-dark px-4 py-2 text-xs font-semibold text-on-primary shadow-sm transition-colors focus-visible:ring-2 focus-visible:ring-primary/40"
           >
             Config Outstanding
           </button>
@@ -482,7 +482,7 @@ export default function OutstandingPaymentsPage() {
           <span>−</span>
           <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-mono font-medium">Payment Received</span>
           <span>=</span>
-          <span className="bg-[#0f2744] text-white px-2.5 py-0.5 rounded font-mono font-bold">Outstanding</span>
+          <span className="bg-primary text-on-primary px-2.5 py-0.5 rounded font-mono font-bold">Outstanding</span>
         </div>
         <div className="text-[11px] text-slate-500 font-mono">
           Pure Live Database Mode • {b2cChannels.length} Channels Integrated

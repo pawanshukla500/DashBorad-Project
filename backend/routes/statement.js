@@ -17,7 +17,7 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 10, parts: 20 },
 });
 
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-1.5-pro'];
+const GEMINI_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
 const GEMINI_TIMEOUT_MS = 60_000;
 // A real settlement statement carries a few KB of table text. Less means a
 // scanned PDF with no text layer — the model would then invent figures (e.g.

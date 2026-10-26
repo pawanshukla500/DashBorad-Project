@@ -287,7 +287,7 @@ router.get('/config/categories', async (req, res) => {
         : `marketplace = $1`;
       const orderParams = sellerAccount !== 'default' ? [marketplace, sellerAccount] : [marketplace];
       const { rows: orderCats } = await pool.query(
-        `SELECT DISTINCT category FROM orders WHERE ${orderCond} AND category IS NOT NULL AND category != ''`,
+        `SELECT DISTINCT COALESCE(vb_export_category, category) AS category FROM orders WHERE ${orderCond} AND COALESCE(vb_export_category, category) IS NOT NULL AND COALESCE(vb_export_category, category) != ''`,
         orderParams,
       );
       for (const r of orderCats) cats.add(normalizeCategory(r.category));
@@ -1260,7 +1260,7 @@ router.get('/intelligence', (req, res) => res.json({ orderFees: [], nonOrderFees
 // ── AI Screenshot Parser (Gemini Vision) ─────────────────────────────────────
 // Accepts a base64-encoded screenshot of a marketplace rate card page and
 // extracts structured slab data using Google Gemini's vision model.
-const GEMINI_VISION_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-1.5-pro'];
+const GEMINI_VISION_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
 
 // Screenshots only. Each type is checked against the decoded file signature,
 // so a renamed PDF or HTML file cannot be sent to the model as an image.
