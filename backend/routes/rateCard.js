@@ -8,9 +8,10 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
-import { normalizeCategory } from '../services/rateCard.js';
+import { normalizeCategory, clearRateCardCache } from '../services/rateCard.js';
 import { scrapeRateCard } from '../services/rateCardScraper.js';
-import { clearRateCardCache } from '../services/rateCard.js';
+import { scrapeFlipkartRateCards, getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
+import { detectRateChanges, syncRateCardsToDatabase } from '../services/rateCardSyncEngine.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
@@ -1501,5 +1502,124 @@ Rules:
 
 router.get('/rc-entry-reco', (req, res) => res.json({ commission: [], fixed_fee: [], pick_pack: [], franchise_fee: [] }));
 router.get('/rc-entry-orders', (req, res) => res.json({ orders: [], total: 0 }));
+
+// ── Flipkart Rate Card Automation Endpoints ─────────────────────────────────────
+
+/**
+ * GET /api/rate-card/verticals
+ * Lists distinct Flipkart verticals in orders table along with available samples
+ */
+router.get('/verticals', async (req, res) => {
+  try {
+    const verticals = await getFlipkartVerticals();
+    const pool = getPool();
+    const sampleFsns = await pool.query(`
+      SELECT DISTINCT ON (category) category, fsn, sku 
+      FROM orders 
+      WHERE marketplace ILIKE '%flipkart%' AND fsn IS NOT NULL AND fsn != ''
+      LIMIT 30
+    `);
+    res.json({
+      verticals,
+      samples: sampleFsns.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/sync-status
+ * Current status of Flipkart credentials, session cookies, and latest rate card version
+ */
+router.get('/sync-status', async (req, res) => {
+  try {
+    const pool = getPool();
+    const latestVersion = await pool.query(`
+      SELECT id, version_name, status, effective_from, created_at, published_at 
+      FROM rate_card_versions 
+      WHERE marketplace = 'flipkart'
+      ORDER BY id DESC 
+      LIMIT 1
+    `);
+
+    // Check cookies
+    let hasCookies = false;
+    try {
+      const fsSync = await import('fs');
+      const pathMod = (await import('path')).default;
+      const p = pathMod.join(process.cwd(), '.runtime/cookies.json');
+      hasCookies = fsSync.existsSync(p);
+    } catch {}
+
+    res.json({
+      marketplace: 'flipkart',
+      hasCookies,
+      latestVersion: latestVersion.rows[0] || null,
+      sellerAccount: 'default'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/sync-flipkart
+ * Trigger end-to-end extraction, change detection, and DB update for Flipkart
+ */
+router.post('/sync-flipkart', async (req, res) => {
+  try {
+    const { verticals, headless = 'new', forceUpdate = false } = req.body || {};
+    
+    // 1. Scrape rates from Flipkart Seller Hub
+    const scrapeResult = await scrapeFlipkartRateCards({
+      verticals,
+      headless
+    });
+
+    if (!scrapeResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: scrapeResult.error
+      });
+    }
+
+    // 2. Commit to Database and Detect Changes
+    const syncResult = await syncRateCardsToDatabase(scrapeResult.data, {
+      marketplace: 'flipkart',
+      sellerAccount: 'default',
+      forceUpdate
+    });
+
+    res.json({
+      success: true,
+      scrapedCount: scrapeResult.count,
+      syncResult
+    });
+  } catch (err) {
+    console.error('[sync-flipkart] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/detect-changes
+ * Preview changes without committing to the database
+ */
+router.post('/detect-changes', async (req, res) => {
+  try {
+    const { scrapedData } = req.body || {};
+    if (!Array.isArray(scrapedData)) {
+      return res.status(400).json({ error: 'scrapedData array is required' });
+    }
+    const changes = await detectRateChanges(scrapedData, 'flipkart', 'default');
+    res.json({
+      changesCount: changes.length,
+      changes
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;

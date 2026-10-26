@@ -1,0 +1,62 @@
+{
+  "name": "reconcentral-ratecard-worker",
+  "version": "1.0.0",
+  "description": "Cross-Platform Flipkart & Marketplace Rate Card Scraper Worker and Desktop App",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "worker": "node worker.js",
+    "worker:flipkart": "node worker.js --marketplace=flipkart",
+    "build:win": "electron-builder --win --x64",
+    "build:linux": "electron-builder --linux AppImage deb",
+    "build:all": "electron-builder -wl"
+  },
+  "keywords": [
+    "ratecard",
+    "scraper",
+    "reconcentral",
+    "flipkart",
+    "electron"
+  ],
+  "author": "ReconCentral Team",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "pg": "^8.20.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.reconcentral.ratecardworker",
+    "productName": "ReconCentral RateCard Worker",
+    "directories": {
+      "output": "dist-release"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "ui/icon.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office"
+    },
+    "files": [
+      "**/*",
+      "!dist-release/**",
+      "!node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!node_modules/*.d.ts",
+      "!node_modules/.bin"
+    ]
+  }
+}

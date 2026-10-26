@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReconCentral RateCard Worker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-logo">
+          <span class="logo-icon">⚡</span>
+          <div class="logo-text">
+            <span class="logo-title">ReconCentral</span>
+            <span class="logo-sub">RateCard Worker v1.0</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-tab="dashboard">
+          <span class="nav-icon">📊</span>
+          <span>Dashboard</span>
+        </button>
+        <button class="nav-item" data-tab="scraper">
+          <span class="nav-icon">🤖</span>
+          <span>Live Scraper</span>
+        </button>
+        <button class="nav-item" data-tab="diff">
+          <span class="nav-icon">🔍</span>
+          <span>Change Review</span>
+          <span class="badge" id="changes-badge" style="display: none;">0</span>
+        </button>
+        <button class="nav-item" data-tab="settings">
+          <span class="nav-icon">⚙️</span>
+          <span>Settings</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-indicator-box">
+          <div class="status-dot active"></div>
+          <div class="status-info">
+            <span class="status-label">Worker Engine</span>
+            <span class="status-val" id="engine-status">Ready</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="content-area">
+      <!-- Top Header -->
+      <header class="app-header">
+        <div class="header-left">
+          <h1 id="page-title">Dashboard & Operations</h1>
+          <p id="page-desc">Automated marketplace rate card extraction, change detection, and sync</p>
+        </div>
+        <div class="header-right">
+          <span class="badge badge-portal">Flipkart Seller Hub</span>
+          <span class="badge badge-account">EthnicJunction</span>
+        </div>
+      </header>
+
+      <!-- View Containers -->
+      <div class="views-wrapper">
+        <!-- 1. DASHBOARD VIEW -->
+        <section id="view-dashboard" class="tab-view active">
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <span class="kpi-icon">🍪</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Session Status</span>
+                <span class="kpi-val" id="dash-session-status">Checking...</span>
+                <span class="kpi-sub" id="dash-session-sub">Session cookies valid</span>
+              </div>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-icon">🗄️</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Database Connection</span>
+                <span class="kpi-val" id="dash-db-status">Checking...</span>
+                <span class="kpi-sub">Hostinger VPS PostgreSQL</span>
+              </div>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-icon">⏰</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Daily Schedule</span>
+                <span class="kpi-val" id="dash-schedule">06:00 AM</span>
+                <span class="kpi-sub">Runs daily automatically</span>
+              </div>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-icon">🏷️</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Target Verticals</span>
+                <span class="kpi-val" id="dash-verticals-count">7</span>
+                <span class="kpi-sub">Ethnic Sets, Kurta, Sari, etc.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card card-action-banner">
+            <div class="banner-text">
+              <h3>Run Flipkart Rate Card Sync Now</h3>
+              <p>Extract today's rate cards across all active product verticals, inspect rate hikes, and update ReconCentral database.</p>
+            </div>
+            <div class="banner-buttons">
+              <button class="btn btn-secondary" id="btn-dash-login">Human Login (2FA/OTP)</button>
+              <button class="btn btn-primary" id="btn-dash-run">🚀 Start Extraction</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. SCRAPER WORKER VIEW -->
+        <section id="view-scraper" class="tab-view">
+          <div class="scraper-controls-card card">
+            <div class="control-row">
+              <div class="control-group">
+                <label>Marketplace</label>
+                <select id="select-marketplace" class="form-input">
+                  <option value="flipkart" selected>Flipkart Seller Hub</option>
+                  <option value="shopsy">Shopsy Marketplace</option>
+                  <option value="amazon">Amazon Seller Central (Coming Soon)</option>
+                  <option value="myntra">Myntra Partner Portal (Coming Soon)</option>
+                </select>
+              </div>
+
+              <div class="control-group">
+                <label>Fulfillment Types</label>
+                <div class="checkbox-group">
+                  <label><input type="checkbox" id="chk-non-fbf" checked> Seller Fulfillment (Non-FBF)</label>
+                  <label><input type="checkbox" id="chk-fbf" checked> Flipkart Fulfillment (FBF)</label>
+                </div>
+              </div>
+
+              <div class="control-actions">
+                <button class="btn btn-secondary" id="btn-interactive-login" title="Open visible browser window to log in or handle OTP manually">
+                  🔑 Human Login / 2FA
+                </button>
+                <button class="btn btn-primary" id="btn-start-scrape">
+                  ⚡ Run Scraper Worker
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Live Terminal Output -->
+          <div class="terminal-card card">
+            <div class="terminal-header">
+              <div class="terminal-dots">
+                <span class="dot red"></span>
+                <span class="dot yellow"></span>
+                <span class="dot green"></span>
+              </div>
+              <span class="terminal-title">Worker Console Logs</span>
+              <button class="btn-terminal-clear" id="btn-clear-terminal">Clear</button>
+            </div>
+            <div class="terminal-body" id="terminal-body">
+              <div class="log-line info">[System] Ready to begin rate card automation. Click "Run Scraper Worker" to start.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. CHANGE REVIEW & DIFF VIEW -->
+        <section id="view-diff" class="tab-view">
+          <div class="card diff-header-card">
+            <div class="diff-summary">
+              <h3>Rate Card Change Review Queue</h3>
+              <p>Compare freshly scraped marketplace fee cards against active database records.</p>
+            </div>
+            <div class="diff-actions">
+              <button class="btn btn-secondary" id="btn-export-diff">Export JSON</button>
+              <button class="btn btn-success" id="btn-commit-db">✓ Commit & Auto-Close Previous Rates</button>
+            </div>
+          </div>
+
+          <div class="card table-card">
+            <table class="data-table" id="table-diff">
+              <thead>
+                <tr>
+                  <th>Fee Type</th>
+                  <th>Vertical / Category</th>
+                  <th>Slab / Condition</th>
+                  <th>Previous Active Rate</th>
+                  <th>New Scraped Rate</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="diff-tbody">
+                <tr>
+                  <td colspan="6" class="empty-state">No scraped data yet. Run the scraper worker first to review changes.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 4. SETTINGS VIEW -->
+        <section id="view-settings" class="tab-view">
+          <div class="card settings-card">
+            <h3>Marketplace Authentication</h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>Seller Email / Username</label>
+                <input type="text" id="cfg-email" class="form-input" placeholder="Vbexports@outlook.com">
+              </div>
+              <div class="form-group">
+                <label>Seller Password (FK_PASSWORD)</label>
+                <input type="password" id="cfg-password" class="form-input" placeholder="••••••••••••">
+              </div>
+            </div>
+
+            <h3 style="margin-top: 24px;">PostgreSQL Database Connection</h3>
+            <div class="form-grid">
+              <div class="form-group full-width">
+                <label>DATABASE_URL (ReconCentral dedicated PostgreSQL)</label>
+                <input type="text" id="cfg-db-url" class="form-input" placeholder="postgresql://user:pass@host:5433/paymentapp">
+              </div>
+            </div>
+            <div style="margin-top: 8px;">
+              <button class="btn btn-secondary" id="btn-test-db">Test DB Connection</button>
+              <span id="db-test-result" style="margin-left: 12px; font-size: 13px;"></span>
+            </div>
+
+            <h3 style="margin-top: 24px;">Automation & Alerts</h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>Daily Scheduled Run Time (24h)</label>
+                <div style="display: flex; gap: 8px;">
+                  <input type="number" id="cfg-hour" class="form-input" min="0" max="23" value="6" style="width: 80px;">
+                  <span style="align-self: center;">:</span>
+                  <input type="number" id="cfg-minute" class="form-input" min="0" max="59" value="0" style="width: 80px;">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Alert Email Address</label>
+                <input type="email" id="cfg-alert-email" class="form-input" value="payments@youthnic.shop">
+              </div>
+              <div class="form-group full-width">
+                <label>
+                  <input type="checkbox" id="cfg-auto-sync">
+                  Auto-commit to database without manual review when no anomalies are detected
+                </label>
+              </div>
+            </div>
+
+            <div style="margin-top: 24px; text-align: right;">
+              <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
