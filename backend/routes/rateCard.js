@@ -537,6 +537,7 @@ router.post('/config/:type/save-period', async (req, res) => {
     }
 
     // Start transaction: delete existing period, then insert new rows
+    const normalizedCategory = normalizeCategory(category) || String(category || 'ALL').trim();
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -545,7 +546,7 @@ router.post('/config/:type/save-period', async (req, res) => {
       // period and both stay open.
       await client.query(
         `SELECT pg_advisory_xact_lock(hashtext($1))`,
-        [`rate-period:${table}:${marketplace}:${seller_account}:${category || 'ALL'}`],
+        [`rate-period:${table}:${marketplace}:${seller_account}:${normalizedCategory}`],
       );
 
       // Two delete paths:
@@ -562,28 +563,75 @@ router.post('/config/:type/save-period', async (req, res) => {
         deleted = removed.rowCount;
       } else {
         await client.query(
-          `DELETE FROM ${table} WHERE category = $1 AND marketplace = $2 AND seller_account = $3
-           AND start_date IS NOT DISTINCT FROM $4 AND end_date IS NOT DISTINCT FROM $5`,
-          [category || 'ALL', marketplace, seller_account, start_date || null, end_date || null],
+          `DELETE FROM ${table}
+            WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $6 OR LOWER(TRIM(category)) = LOWER(TRIM($6)))
+              AND marketplace = $2
+              AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+              AND start_date IS NOT DISTINCT FROM $4
+              AND end_date IS NOT DISTINCT FROM $5`,
+          [category || 'ALL', marketplace, seller_account, start_date || null, end_date || null, normalizedCategory],
         );
       }
 
       let closed = null;
       if (autoClose) {
         const closeOn = dayBefore(start_date);
-        const result = await client.query(
-          `UPDATE ${table}
-             SET end_date = $5::date, updated_at = NOW()
-           WHERE category = $1 AND marketplace = $2 AND seller_account = $3
-             AND (start_date IS NULL OR start_date < $4::date)
-             AND (end_date IS NULL OR end_date >= $4::date)
-           RETURNING TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date`,
-          [category || 'ALL', marketplace, seller_account, start_date, closeOn],
+
+        // Find all earlier open or overlapping periods for this category
+        const { rows: openPeriods } = await client.query(
+          `SELECT DISTINCT TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date
+             FROM ${table}
+            WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $5 OR LOWER(TRIM(category)) = LOWER(TRIM($5)))
+              AND marketplace = $2
+              AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+              AND (start_date IS NULL OR start_date < $4::date)
+              AND (end_date IS NULL OR end_date >= $4::date)
+            ORDER BY start_date ASC NULLS FIRST`,
+          [category || 'ALL', marketplace, seller_account, start_date, normalizedCategory],
         );
+
+        let totalClosedRows = 0;
+        const closedStarts = [];
+
+        for (let idx = 0; idx < openPeriods.length; idx++) {
+          const currentStart = openPeriods[idx].start_date;
+          // If there is a subsequent open period before new start_date, end the day before that subsequent period starts.
+          // Otherwise, end on closeOn (the day before new rate starts).
+          const nextStart = idx + 1 < openPeriods.length ? openPeriods[idx + 1].start_date : null;
+          let targetEnd = closeOn;
+          if (nextStart) {
+            const nextClose = dayBefore(nextStart);
+            if (!currentStart || nextClose >= currentStart) {
+              targetEnd = nextClose;
+            }
+          }
+
+          const startCond = currentStart ? `start_date = $4::date` : `start_date IS NULL`;
+          const updateParams = [category || 'ALL', marketplace, seller_account, ...(currentStart ? [currentStart] : []), targetEnd, normalizedCategory];
+          const targetParamIdx = currentStart ? 5 : 4;
+          const normParamIdx = currentStart ? 6 : 5;
+
+          const res = await client.query(
+            `UPDATE ${table}
+                SET end_date = $${targetParamIdx}::date, updated_at = NOW()
+              WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $${normParamIdx} OR LOWER(TRIM(category)) = LOWER(TRIM($${normParamIdx})))
+                AND marketplace = $2
+                AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+                AND ${startCond}
+                AND (end_date IS NULL OR end_date >= $${targetParamIdx}::date)`,
+            updateParams,
+          );
+
+          if (res.rowCount > 0) {
+            totalClosedRows += res.rowCount;
+            if (currentStart) closedStarts.push(currentStart);
+          }
+        }
+
         closed = {
-          rows: result.rowCount,
+          rows: totalClosedRows,
           end_date: closeOn,
-          period_starts: [...new Set(result.rows.map(row => row.start_date))],
+          period_starts: [...new Set(closedStarts)],
         };
       }
 
@@ -596,7 +644,7 @@ router.post('/config/:type/save-period', async (req, res) => {
       // for type numeric", HTTP 500). It now takes the column's default, as if
       // the cell had been omitted. Text cells are unchanged.
       const slabData = checkedRows.map(slab => [
-        slab.category || category || 'ALL',
+        slab.category || normalizedCategory || category || 'ALL',
         start_date || null,
         end_date || null,
         marketplace,
@@ -635,8 +683,85 @@ router.post('/config/:type/save-period', async (req, res) => {
   }
 });
 
+// POST /api/rate-card/config/:type/auto-close-superseded — resolve all overlapping periods for this marketplace & account
+router.post('/config/:type/auto-close-superseded', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const table = resolveTable(req.params.type);
+    const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.body.marketplace, req.body.seller_account);
+    const pool = getPool();
 
+    // Find all distinct periods per category
+    const { rows: periods } = await pool.query(
+      `SELECT category, TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date, TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date, COUNT(*) as cnt
+         FROM ${table}
+        WHERE marketplace = $1
+          AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+        GROUP BY category, start_date, end_date
+        ORDER BY category, start_date ASC NULLS FIRST`,
+      [marketplace, sellerAccount],
+    );
 
+    const byCategory = {};
+    for (const p of periods) {
+      const cat = p.category;
+      if (!byCategory[cat]) byCategory[cat] = [];
+      byCategory[cat].push(p);
+    }
+
+    let closedCount = 0;
+    const resolved = [];
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const [cat, catPeriods] of Object.entries(byCategory)) {
+        for (let i = 0; i < catPeriods.length - 1; i++) {
+          const cur = catPeriods[i];
+          const next = catPeriods[i + 1];
+          if (next.start_date) {
+            const idealEnd = dayBefore(next.start_date);
+            if (!cur.end_date || cur.end_date > idealEnd) {
+              if (!cur.start_date || idealEnd >= cur.start_date) {
+                const startCond = cur.start_date ? `start_date = $3::date` : `start_date IS NULL`;
+                const endCond = cur.end_date ? `end_date = $4::date` : `end_date IS NULL`;
+                const params = [cat, marketplace, ...(cur.start_date ? [cur.start_date] : []), ...(cur.end_date ? [cur.end_date] : []), idealEnd, sellerAccount];
+                const idealIdx = (cur.start_date ? 1 : 0) + (cur.end_date ? 1 : 0) + 3;
+                const accountIdx = idealIdx + 1;
+
+                const { rowCount } = await client.query(
+                  `UPDATE ${table}
+                      SET end_date = $${idealIdx}::date, updated_at = NOW()
+                    WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)))
+                      AND marketplace = $2
+                      AND (seller_account = $${accountIdx} OR ($${accountIdx} = 'default' AND (seller_account IS NULL OR seller_account = '')))
+                      AND ${startCond}
+                      AND ${endCond}`,
+                  params,
+                );
+                if (rowCount > 0) {
+                  closedCount += rowCount;
+                  resolved.push({ category: cat, from: cur.start_date, closed_on: idealEnd });
+                }
+              }
+            }
+          }
+        }
+      }
+      await client.query('COMMIT');
+      clearRateCardCache();
+      res.json({ ok: true, closedRows: closedCount, resolved });
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error('[rate-card/auto-close-superseded]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // POST /api/rate-card/config/:type/close-period — end one existing period.
 // Used to resolve overlapping periods created before auto-close worked: the
@@ -648,6 +773,7 @@ router.post('/config/:type/close-period', async (req, res) => {
     const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.body.marketplace, req.body.seller_account);
     const category = String(req.body.category || '').trim();
     if (!category) return res.status(400).json({ error: 'category is required' });
+    const normalizedCategory = normalizeCategory(category) || category;
     const startDate = periodDate(req.body.start_date, 'start_date');
     const endDate = periodDate(req.body.end_date, 'end_date');
     const closeOn = periodDate(req.body.close_on, 'close_on');
@@ -661,9 +787,12 @@ router.post('/config/:type/close-period', async (req, res) => {
     const { rowCount } = await getPool().query(
       `UPDATE ${table}
          SET end_date = $6::date, updated_at = NOW()
-       WHERE category = $1 AND marketplace = $2 AND seller_account = $3
-         AND start_date IS NOT DISTINCT FROM $4::date AND end_date IS NOT DISTINCT FROM $5::date`,
-      [category, marketplace, sellerAccount, startDate, endDate, closeOn],
+       WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $7 OR LOWER(TRIM(category)) = LOWER(TRIM($7)))
+         AND marketplace = $2
+         AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+         AND start_date IS NOT DISTINCT FROM $4::date
+         AND end_date IS NOT DISTINCT FROM $5::date`,
+      [category, marketplace, sellerAccount, startDate, endDate, closeOn, normalizedCategory],
     );
     if (!rowCount) return res.status(404).json({ error: 'Rate period not found' });
     clearRateCardCache();

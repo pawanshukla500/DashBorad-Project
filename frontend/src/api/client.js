@@ -376,6 +376,8 @@ export const deleteRateCardRow = (type, id, marketplace = 'flipkart', sellerAcco
 export const seedRateCard         = ()           => api.post('/rate-card/config/seed').then(r => r.data);
 export const saveRateCardPeriod   = (type, body) => api.post(`/rate-card/config/${type}/save-period`, body).then(r => r.data);
 export const closeRateCardPeriod  = (type, body) => api.post(`/rate-card/config/${type}/close-period`, body).then(r => r.data);
+export const autoCloseSupersededPeriods = (type, marketplace = 'flipkart', sellerAccount = 'default') =>
+  api.post(`/rate-card/config/${type}/auto-close-superseded`, { marketplace, seller_account: sellerAccount }).then(r => r.data);
 export const fetchFeeIntelligence = (refreshToken) => api.get('/rate-card/intelligence', { params: refreshToken ? { _refresh: refreshToken } : {} }).then(r => r.data);
 // AI-powered rate card screenshot parser (uses Gemini Vision on backend)
 export const parseRateCardImage   = (body)       => api.post('/rate-card/parse-image', body).then(r => r.data);
