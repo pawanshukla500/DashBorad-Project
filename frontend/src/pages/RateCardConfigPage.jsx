@@ -10,6 +10,7 @@ import {
   fetchFilters, backfillBrands, fetchRateCardVersions, createRateCardVersion,
   publishRateCardVersion, rollbackRateCardVersion,
   fetchRateCardNotificationStatus, sendRateCardNotificationTest,
+  fetchFlipkartSyncStatus, fetchUnconfiguredCategories, checkCategoryRateCard, syncFlipkartRateCards,
 } from '../api/client';
 
 /* ─── Date helpers ────────────────────────────────────────────────
@@ -2629,6 +2630,331 @@ function RateCardVersionPanel({ marketplace, sellerAccount, onRestored }) {
   );
 }
 
+/* ─── Flipkart Rate Card Live Sync & New Category Discovery ──── */
+function FlipkartAutomationPanel({ onSyncComplete }) {
+  const [status, setStatus] = useState(null);
+  const [unconfigured, setUnconfigured] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [customCat, setCustomCat] = useState('');
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectResult, setInspectResult] = useState(null);
+  const [toast, setToast] = useState('');
+  const [error, setError] = useState('');
+
+  const loadStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [sData, uData] = await Promise.all([
+        fetchFlipkartSyncStatus().catch(() => null),
+        fetchUnconfiguredCategories().catch(() => ({ categories: [] }))
+      ]);
+      setStatus(sData);
+      setUnconfigured(uData?.categories || []);
+    } catch (e) {
+      console.warn('Status load note:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+  }, [loadStatus]);
+
+  const handleSyncAll = async () => {
+    setSyncing(true);
+    setError('');
+    setToast('');
+    try {
+      const res = await syncFlipkartRateCards({ forceUpdate: true });
+      if (res.success) {
+        setToast(`✓ Successfully synced ${res.scrapedCount || 0} categories from Flipkart Seller Hub!`);
+        if (onSyncComplete) onSyncComplete();
+        loadStatus();
+      } else {
+        setError(res.error || 'Failed to sync Flipkart rate cards');
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleCheckCategory = async (categoryName, autoSync = false) => {
+    const cat = (categoryName || customCat || '').trim();
+    if (!cat) return;
+    setInspecting(true);
+    setError('');
+    setToast('');
+    try {
+      const res = await checkCategoryRateCard(cat, autoSync);
+      if (res.success) {
+        setInspectResult(res);
+        if (autoSync) {
+          setToast(`✓ Category "${cat}" rate card successfully extracted and saved to DB!`);
+          if (onSyncComplete) onSyncComplete();
+          loadStatus();
+        }
+      } else {
+        setError(res.error || `Could not find rate card for category "${cat}" on Flipkart`);
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Category check failed');
+    } finally {
+      setInspecting(false);
+    }
+  };
+
+  const handleCommitInspected = async () => {
+    if (!inspectResult?.category) return;
+    await handleCheckCategory(inspectResult.category, true);
+  };
+
+  return (
+    <div className="bg-surface rounded-2xl border border-border shadow-sm overflow-hidden mb-6">
+      {/* Header bar */}
+      <div className="p-4 sm:p-5 bg-gradient-to-r from-primary/10 via-primary-container/20 to-surface border-b border-border flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center text-white text-xl shadow-md">
+            🛒
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-ink">Flipkart Live Rate Card Automation</h3>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                Live Sync Engine
+              </span>
+            </div>
+            <p className="text-xs text-secondary mt-0.5">
+              Directly checks & extracts Commission, Fixed Fee, and Reverse Shipping from Flipkart Seller Hub (<strong className="text-ink">EthnicJunction</strong>).
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {status?.latestVersion && (
+            <div className="hidden sm:block text-right pr-2 border-r border-border">
+              <p className="text-[10px] text-outline uppercase font-semibold">Latest Version</p>
+              <p className="text-xs font-mono font-bold text-primary truncate max-w-[140px]" title={status.latestVersion.version_name}>
+                {status.latestVersion.version_name}
+              </p>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={handleSyncAll}
+            disabled={syncing || inspecting}
+            className="px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold hover:bg-primary-hover active:scale-95 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+          >
+            {syncing ? (
+              <>
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                <span>Scraping & Syncing...</span>
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                <span>Sync All Rates Now</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {toast && (
+        <div className="px-5 py-2.5 bg-emerald-50 border-b border-emerald-200 text-xs font-semibold text-emerald-800 flex items-center justify-between">
+          <span>{toast}</span>
+          <button type="button" onClick={() => setToast('')} className="text-emerald-600 hover:text-emerald-900">✕</button>
+        </div>
+      )}
+
+      {error && (
+        <div className="px-5 py-2.5 bg-rose-50 border-b border-rose-200 text-xs font-semibold text-rose-800 flex items-center justify-between">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError('')} className="text-rose-600 hover:text-rose-900">✕</button>
+        </div>
+      )}
+
+      {/* Dynamic New Category Discovery & Checker */}
+      <div className="p-4 sm:p-5 space-y-4">
+        {/* Unconfigured categories chips */}
+        {unconfigured.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold text-secondary uppercase tracking-wider">
+                Unconfigured Categories in Orders ({unconfigured.length})
+              </span>
+              <span className="text-[10px] text-outline">Click any category to inspect Flipkart rate card live:</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {unconfigured.map(c => (
+                <button
+                  key={c.category}
+                  type="button"
+                  onClick={() => handleCheckCategory(c.category)}
+                  disabled={inspecting}
+                  className="px-2.5 py-1 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                >
+                  <span>{c.category}</span>
+                  <span className="px-1.5 py-0.2 rounded-full bg-amber-200/80 text-[10px] text-amber-800">
+                    {c.order_count} orders
+                  </span>
+                  <span className="text-amber-700 font-bold">🔍 Check</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Custom Category Input & Check Tool */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
+          <div className="flex-1 min-w-[220px]">
+            <input
+              type="text"
+              value={customCat}
+              onChange={e => setCustomCat(e.target.value)}
+              placeholder="Check ANY category (e.g. lehenga_choli, blouse, gown, dupatta, shirt)..."
+              className="w-full px-3 py-2 rounded-xl border border-border text-xs text-ink placeholder:text-outline focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => handleCheckCategory(customCat, false)}
+            disabled={inspecting || !customCat.trim()}
+            className="px-3.5 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high border border-border text-ink text-xs font-semibold transition-colors disabled:opacity-40 flex items-center gap-1"
+          >
+            {inspecting ? (
+              <span>Inspecting Flipkart...</span>
+            ) : (
+              <>
+                <span>🔍 Inspect Rates</span>
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleCheckCategory(customCat, true)}
+            disabled={inspecting || !customCat.trim()}
+            className="px-3.5 py-2 rounded-xl bg-primary-container hover:bg-primary-container/80 text-primary text-xs font-bold transition-colors disabled:opacity-40 flex items-center gap-1"
+          >
+            <span>⚡ Inspect & Sync to DB</span>
+          </button>
+        </div>
+
+        {/* Live Inspection Result Card */}
+        {inspectResult && (
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-3 animate-[modal-fade-in_200ms_ease-out]">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-primary/10 pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-ink">
+                  Rate Card for <span className="text-primary capitalize">{inspectResult.category}</span>
+                </span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  inspectResult.isConfiguredInDb ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {inspectResult.isConfiguredInDb ? 'Configured in DB' : 'New / Unconfigured'}
+                </span>
+                <span className="text-[11px] text-secondary">
+                  (Found 9 tables on Flipkart)
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {!inspectResult.synced && (
+                  <button
+                    type="button"
+                    onClick={handleCommitInspected}
+                    disabled={inspecting}
+                    className="px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-bold hover:bg-primary-hover shadow-sm active:scale-95 transition-all"
+                  >
+                    💾 Save to Database
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setInspectResult(null)}
+                  className="text-xs text-outline hover:text-ink px-1.5 py-1"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Fees Breakdown Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              {/* Commission */}
+              <div className="p-3 rounded-lg bg-surface border border-border space-y-1.5">
+                <p className="font-bold text-ink flex items-center gap-1">
+                  <span>💰</span> Commission Slabs ({inspectResult.rates?.commissionsCount || 0})
+                </p>
+                <div className="space-y-1 text-secondary">
+                  {(inspectResult.rates?.data?.commissions || []).slice(0, 4).map((c, idx) => (
+                    <div key={idx} className="flex justify-between text-[11px]">
+                      <span>₹{c.price_min} - ₹{c.price_max}</span>
+                      <strong className="text-ink">{(c.rate * 100).toFixed(1)}%</strong>
+                    </div>
+                  ))}
+                  {(!inspectResult.rates?.data?.commissions || inspectResult.rates.data.commissions.length === 0) && (
+                    <p className="text-[11px] text-outline">0% standard rate</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Fixed Fee */}
+              <div className="p-3 rounded-lg bg-surface border border-border space-y-1.5">
+                <p className="font-bold text-ink flex items-center gap-1">
+                  <span>🏷️</span> Fixed Fee Slabs ({inspectResult.rates?.fixedFeesCount || 0})
+                </p>
+                <div className="space-y-1 text-secondary">
+                  {(inspectResult.rates?.data?.fixedFees || [])
+                    .filter(f => f.fulfilment_type === 'Silver' || f.fulfilment_type === 'Bronze')
+                    .slice(0, 3)
+                    .map((f, idx) => (
+                      <div key={idx} className="flex justify-between text-[11px]">
+                        <span>{f.fulfilment_type} (₹{f.price_min} - ₹{f.price_max})</span>
+                        <strong className="text-ink">₹{f.rate}</strong>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              {/* Reverse Shipping */}
+              <div className="p-3 rounded-lg bg-surface border border-border space-y-1.5">
+                <p className="font-bold text-ink flex items-center gap-1">
+                  <span>🚚</span> Reverse Shipping Slabs ({inspectResult.rates?.reverseShippingCount || 0})
+                </p>
+                <div className="space-y-1 text-secondary">
+                  {(inspectResult.rates?.data?.reverseShipping || []).slice(0, 2).map((r, idx) => (
+                    <div key={idx} className="text-[11px] leading-tight">
+                      <div className="font-semibold text-ink">{r.weight_slab}</div>
+                      <div className="text-outline">Local: ₹{r.local_fee} | Zonal: ₹{r.zonal_fee} | Nat: ₹{r.national_fee}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Changes detected count */}
+            {inspectResult.changesCount > 0 && (
+              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 font-medium">
+                ⚡ <strong>{inspectResult.changesCount} rate differences detected</strong> compared to currently active rates.
+                {!inspectResult.synced && ' Click "Save to Database" to auto-close prior periods and activate these rates.'}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ─── Main page ───────────────────────────────────────────────── */
 function RateCardNotificationPanel() {
   const [data, setData] = useState(null);
@@ -2870,6 +3196,10 @@ export default function RateCardConfigPage() {
 
       {coverage !== null && (
         <MarketplaceCoverageSummary coverage={coverage} marketplace={marketplace} />
+      )}
+
+      {marketplace === 'flipkart' && (
+        <FlipkartAutomationPanel onSyncComplete={handleCoverageDirty} />
       )}
 
       <RateCardVersionPanel

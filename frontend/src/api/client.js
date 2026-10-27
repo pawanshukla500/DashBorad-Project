@@ -398,6 +398,14 @@ export const fetchRateCardConfigStatus = (marketplace = 'flipkart', sellerAccoun
 export const fetchMpInvoiceRateAudit = (marketplace = 'myntra', sellerAccount = '') =>
   api.get('/mp-settlement/invoices/rate-audit', { params: { marketplace, ...(sellerAccount ? { seller_account: sellerAccount } : {}) } }).then(r => r.data);
 
+// Flipkart Rate Card Automation & Scraper Engine
+export const fetchFlipkartSyncStatus      = () => api.get('/rate-card/sync-status').then(r => r.data);
+export const fetchFlipkartVerticals       = () => api.get('/rate-card/verticals').then(r => r.data);
+export const fetchUnconfiguredCategories  = () => api.get('/rate-card/unconfigured-categories').then(r => r.data);
+export const checkCategoryRateCard        = (category, sync = false) => api.post('/rate-card/check-category', { category, sync }).then(r => r.data);
+export const syncFlipkartRateCards        = (options = {}) => api.post('/rate-card/sync-flipkart', options).then(r => r.data);
+
+
 
 // RC Entry Reconciliation (RC entry → matching orders with expected vs actual fee)
 

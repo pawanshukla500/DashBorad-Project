@@ -1622,4 +1622,105 @@ router.post('/detect-changes', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/rate-card/unconfigured-categories
+ * List categories found in Flipkart orders that do not have active rate cards in DB
+ */
+router.get('/unconfigured-categories', async (req, res) => {
+  try {
+    const pool = getPool();
+    const result = await pool.query(`
+      SELECT DISTINCT o.category, COUNT(o.id) as order_count
+      FROM orders o
+      WHERE o.marketplace ILIKE '%flipkart%'
+        AND o.category IS NOT NULL AND o.category != ''
+        AND o.category NOT IN (
+          SELECT DISTINCT c.category 
+          FROM rc_commission c 
+          WHERE c.marketplace = 'flipkart' AND c.end_date IS NULL
+        )
+      GROUP BY o.category
+      ORDER BY order_count DESC, o.category ASC
+      LIMIT 25
+    `);
+    res.json({
+      marketplace: 'flipkart',
+      unconfiguredCount: result.rows.length,
+      categories: result.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/check-category
+ * Inspect or dynamically import a single category from Flipkart Seller Hub
+ */
+router.post('/check-category', async (req, res) => {
+  try {
+    const { category, sync = false } = req.body || {};
+    if (!category || typeof category !== 'string' || !category.trim()) {
+      return res.status(400).json({ error: 'Valid category name is required' });
+    }
+
+    const cleanCategory = category.trim().toLowerCase();
+    const pool = getPool();
+
+    // Check existing DB status
+    const existing = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM rc_commission 
+      WHERE marketplace = 'flipkart' AND category = $1 AND end_date IS NULL
+    `, [cleanCategory]);
+    const isConfiguredInDb = parseInt(existing.rows[0].count, 10) > 0;
+
+    // Scrape live rates for this single category
+    const scrapeResult = await scrapeFlipkartRateCards({
+      verticals: [cleanCategory],
+      headless: 'new'
+    });
+
+    if (!scrapeResult.success || !scrapeResult.data.length) {
+      return res.status(500).json({
+        success: false,
+        error: scrapeResult.error || `No rate tables found on Flipkart for vertical "${cleanCategory}"`
+      });
+    }
+
+    const categoryData = scrapeResult.data[0];
+    const changes = await detectRateChanges([categoryData], 'flipkart', 'default');
+
+    let syncResult = null;
+    if (sync) {
+      syncResult = await syncRateCardsToDatabase([categoryData], {
+        marketplace: 'flipkart',
+        sellerAccount: 'default',
+        forceUpdate: true
+      });
+    }
+
+    res.json({
+      success: true,
+      category: cleanCategory,
+      isConfiguredInDb,
+      changesCount: changes.length,
+      changes,
+      rates: {
+        commissionsCount: categoryData.commissions.length,
+        fixedFeesCount: categoryData.fixedFees.length,
+        collectionFeesCount: categoryData.collectionFees.length,
+        reverseShippingCount: categoryData.reverseShipping.length,
+        data: categoryData
+      },
+      synced: Boolean(sync),
+      syncResult
+    });
+  } catch (err) {
+    console.error('[check-category] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 export default router;
+

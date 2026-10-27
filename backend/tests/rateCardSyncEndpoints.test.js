@@ -90,4 +90,25 @@ describe('Rate Card Automation & Sync Endpoints', () => {
     const body = await res.json();
     expect(body.error).toContain('scrapedData array is required');
   });
+
+  it('GET /api/rate-card/unconfigured-categories returns list of unconfigured categories', async () => {
+    const res = await fetch(`${baseUrl}/api/rate-card/unconfigured-categories`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty('marketplace', 'flipkart');
+    expect(body).toHaveProperty('categories');
+    expect(Array.isArray(body.categories)).toBe(true);
+  });
+
+  it('POST /api/rate-card/check-category validates category parameter', async () => {
+    const res = await fetch(`${baseUrl}/api/rate-card/check-category`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('Valid category name is required');
+  });
 });
+

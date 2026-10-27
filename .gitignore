@@ -65,3 +65,5 @@ frontend/*.cjs
 **/.codex-tmp/
 desktop/dist-release/
 desktop/node_modules/
+reports/
+
