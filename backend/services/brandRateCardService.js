@@ -230,6 +230,18 @@ export async function detectBrandRateChanges(brandRateCards, pool = null) {
       continue;
     }
 
+    if (activeCommissions.rows.length !== commissions.length) {
+      changes.push({
+        type: 'commission',
+        marketplace,
+        category,
+        brand,
+        sample_fsn: card.sample_fsn,
+        reason: `Commission slab count changed (DB: ${activeCommissions.rows.length}, New: ${commissions.length})`,
+        slabsCount: commissions.length
+      });
+    }
+
     for (const sc of commissions) {
       const match = activeCommissions.rows.find(ac =>
         Math.abs(parseFloat(ac.price_min) - sc.price_min) < 0.01 &&
@@ -259,6 +271,44 @@ export async function detectBrandRateChanges(brandRateCards, pool = null) {
           oldRate: parseFloat(match.rate),
           newRate: sc.rate,
           reason: 'Commission rate percentage modified'
+        });
+      }
+    }
+
+    // Also check fixed fees differences
+    if (card.fixedFees && card.fixedFees.length > 0) {
+      const activeFixed = await p.query(`
+        SELECT price_min, price_max, rate, fulfilment_type
+        FROM rc_fixed_fee
+        WHERE marketplace = $1 AND category = $2 AND end_date IS NULL
+      `, [marketplace, category]);
+
+      if (activeFixed.rows.length !== card.fixedFees.length) {
+        changes.push({
+          type: 'fixed_fee',
+          marketplace,
+          category,
+          brand,
+          reason: `Fixed fee slab count changed (DB: ${activeFixed.rows.length}, New: ${card.fixedFees.length})`
+        });
+      }
+    }
+
+    // Also check reverse shipping differences
+    if (card.reverseShipping && card.reverseShipping.length > 0) {
+      const activeRev = await p.query(`
+        SELECT weight_slab, price_min, price_max, local_fee, zonal_fee, national_fee
+        FROM rc_reverse_shipping
+        WHERE marketplace = $1 AND category = $2 AND end_date IS NULL
+      `, [marketplace, category]);
+
+      if (activeRev.rows.length !== card.reverseShipping.length) {
+        changes.push({
+          type: 'reverse_shipping',
+          marketplace,
+          category,
+          brand,
+          reason: `Reverse shipping slab count changed (DB: ${activeRev.rows.length}, New: ${card.reverseShipping.length})`
         });
       }
     }
@@ -310,22 +360,24 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         await client.query(`
           DELETE FROM rc_commission 
           WHERE marketplace = $1 
-            AND category = $2 
-            AND (brand_name = $3 OR ($3 IS NULL AND brand_name IS NULL))
-            AND start_date = $4::date 
+            AND seller_account = $2
+            AND category = $3 
+            AND (brand_name = $4 OR ($4 IS NULL AND brand_name IS NULL))
+            AND start_date >= $5::date 
             AND end_date IS NULL
-        `, [marketplace, category, brandVal, effectiveDate]);
+        `, [marketplace, sellerAccount, category, brandVal, effectiveDate]);
 
         // Auto-close earlier active periods
         await client.query(`
           UPDATE rc_commission 
           SET end_date = $1::date, updated_at = NOW() 
           WHERE marketplace = $2 
-            AND category = $3 
-            AND (brand_name = $4 OR ($4 IS NULL AND brand_name IS NULL))
-            AND start_date < $5::date
-            AND (end_date IS NULL OR end_date >= $5::date)
-        `, [previousEndDate, marketplace, category, brandVal, effectiveDate]);
+            AND seller_account = $3
+            AND category = $4 
+            AND (brand_name = $5 OR ($5 IS NULL AND brand_name IS NULL))
+            AND start_date < $6::date
+            AND (end_date IS NULL OR end_date >= $6::date)
+        `, [previousEndDate, marketplace, sellerAccount, category, brandVal, effectiveDate]);
 
         for (const c of commissions) {
           await client.query(`
@@ -341,19 +393,21 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         await client.query(`
           DELETE FROM rc_fixed_fee 
           WHERE marketplace = $1 
-            AND category = $2 
-            AND start_date = $3::date 
+            AND seller_account = $2
+            AND category = $3 
+            AND start_date >= $4::date 
             AND end_date IS NULL
-        `, [marketplace, category, effectiveDate]);
+        `, [marketplace, sellerAccount, category, effectiveDate]);
 
         await client.query(`
           UPDATE rc_fixed_fee 
           SET end_date = $1::date, updated_at = NOW() 
           WHERE marketplace = $2 
-            AND category = $3 
-            AND start_date < $4::date
-            AND (end_date IS NULL OR end_date >= $4::date)
-        `, [previousEndDate, marketplace, category, effectiveDate]);
+            AND seller_account = $3
+            AND category = $4 
+            AND start_date < $5::date
+            AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
 
         for (const f of fixedFees) {
           await client.query(`
@@ -369,19 +423,21 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         await client.query(`
           DELETE FROM rc_reverse_shipping 
           WHERE marketplace = $1 
-            AND category = $2 
-            AND start_date = $3::date 
+            AND seller_account = $2
+            AND category = $3 
+            AND start_date >= $4::date 
             AND end_date IS NULL
-        `, [marketplace, category, effectiveDate]);
+        `, [marketplace, sellerAccount, category, effectiveDate]);
 
         await client.query(`
           UPDATE rc_reverse_shipping 
           SET end_date = $1::date, updated_at = NOW() 
           WHERE marketplace = $2 
-            AND category = $3 
-            AND start_date < $4::date
-            AND (end_date IS NULL OR end_date >= $4::date)
-        `, [previousEndDate, marketplace, category, effectiveDate]);
+            AND seller_account = $3
+            AND category = $4 
+            AND start_date < $5::date
+            AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
 
         for (const r of reverseShipping) {
           await client.query(`

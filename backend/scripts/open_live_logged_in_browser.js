@@ -97,7 +97,17 @@ async function main() {
         console.log(`Typed username: ${email}`);
 
         // Click Next or Submit
-        const nextBtn = await page.$('button[type="submit"], button:has-text("Next"), button.fk-ui-btn');
+        let nextBtn = await page.$('button[type="submit"], button.fk-ui-btn');
+        if (!nextBtn) {
+          const buttons = await page.$$('button');
+          for (const b of buttons) {
+            const text = await page.evaluate(el => el.textContent || '', b);
+            if (/Next|Continue/i.test(text)) {
+              nextBtn = b;
+              break;
+            }
+          }
+        }
         if (nextBtn) {
           await nextBtn.click();
           await delay(2000);
@@ -109,7 +119,17 @@ async function main() {
           await passInput.type(password, { delay: 40 });
           console.log('Typed password.');
 
-          const loginBtn = await page.$('button[type="submit"], button:has-text("Login"), button.fk-ui-btn');
+          let loginBtn = await page.$('button[type="submit"], button.fk-ui-btn');
+          if (!loginBtn) {
+            const buttons = await page.$$('button');
+            for (const b of buttons) {
+              const text = await page.evaluate(el => el.textContent || '', b);
+              if (/Login|Sign\s*in/i.test(text)) {
+                loginBtn = b;
+                break;
+              }
+            }
+          }
           if (loginBtn) {
             await loginBtn.click();
             console.log('Clicked Login button.');

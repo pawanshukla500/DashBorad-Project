@@ -166,10 +166,17 @@ export async function syncRateCardsToDatabase(scrapedList, options = {}) {
       // 1. Sync Commissions
       if (commissions.length > 0) {
         await client.query(`
+          DELETE FROM rc_commission 
+          WHERE marketplace = $1 AND seller_account = $2 AND category = $3 
+            AND start_date >= $4::date AND end_date IS NULL
+        `, [marketplace, sellerAccount, vertical, effectiveDate]);
+
+        await client.query(`
           UPDATE rc_commission 
-          SET end_date = $1, updated_at = NOW() 
-          WHERE marketplace = $2 AND seller_account = $3 AND category = $4 AND end_date IS NULL
-        `, [previousEndDate, marketplace, sellerAccount, vertical]);
+          SET end_date = $1::date, updated_at = NOW() 
+          WHERE marketplace = $2 AND seller_account = $3 AND category = $4 
+            AND start_date < $5::date AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, vertical, effectiveDate]);
 
         for (const c of commissions) {
           await client.query(`
@@ -182,10 +189,17 @@ export async function syncRateCardsToDatabase(scrapedList, options = {}) {
       // 2. Sync Fixed Fees
       if (fixedFees.length > 0) {
         await client.query(`
+          DELETE FROM rc_fixed_fee 
+          WHERE marketplace = $1 AND seller_account = $2 AND category = $3 
+            AND start_date >= $4::date AND end_date IS NULL
+        `, [marketplace, sellerAccount, vertical, effectiveDate]);
+
+        await client.query(`
           UPDATE rc_fixed_fee 
-          SET end_date = $1, updated_at = NOW() 
-          WHERE marketplace = $2 AND seller_account = $3 AND category = $4 AND end_date IS NULL
-        `, [previousEndDate, marketplace, sellerAccount, vertical]);
+          SET end_date = $1::date, updated_at = NOW() 
+          WHERE marketplace = $2 AND seller_account = $3 AND category = $4 
+            AND start_date < $5::date AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, vertical, effectiveDate]);
 
         for (const f of fixedFees) {
           await client.query(`
@@ -198,10 +212,17 @@ export async function syncRateCardsToDatabase(scrapedList, options = {}) {
       // 3. Sync Collection Fees
       if (collectionFees.length > 0) {
         await client.query(`
+          DELETE FROM rc_collection_fee 
+          WHERE marketplace = $1 AND seller_account = $2 AND category = $3 
+            AND start_date >= $4::date AND end_date IS NULL
+        `, [marketplace, sellerAccount, vertical, effectiveDate]);
+
+        await client.query(`
           UPDATE rc_collection_fee 
-          SET end_date = $1, updated_at = NOW() 
-          WHERE marketplace = $2 AND seller_account = $3 AND category = $4 AND end_date IS NULL
-        `, [previousEndDate, marketplace, sellerAccount, vertical]);
+          SET end_date = $1::date, updated_at = NOW() 
+          WHERE marketplace = $2 AND seller_account = $3 AND category = $4 
+            AND start_date < $5::date AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, vertical, effectiveDate]);
 
         for (const cf of collectionFees) {
           await client.query(`
@@ -214,10 +235,17 @@ export async function syncRateCardsToDatabase(scrapedList, options = {}) {
       // 4. Sync Reverse Shipping
       if (reverseShipping.length > 0) {
         await client.query(`
+          DELETE FROM rc_reverse_shipping 
+          WHERE marketplace = $1 AND seller_account = $2 AND category = $3 
+            AND start_date >= $4::date AND end_date IS NULL
+        `, [marketplace, sellerAccount, vertical, effectiveDate]);
+
+        await client.query(`
           UPDATE rc_reverse_shipping 
-          SET end_date = $1, updated_at = NOW() 
-          WHERE marketplace = $2 AND seller_account = $3 AND category = $4 AND end_date IS NULL
-        `, [previousEndDate, marketplace, sellerAccount, vertical]);
+          SET end_date = $1::date, updated_at = NOW() 
+          WHERE marketplace = $2 AND seller_account = $3 AND category = $4 
+            AND start_date < $5::date AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, vertical, effectiveDate]);
 
         for (const r of reverseShipping) {
           await client.query(`
