@@ -6,7 +6,10 @@ let directory;
 const setFirebaseRole = vi.fn(async () => {});
 
 vi.mock('../utils/firebaseAdmin.js', () => ({
-  auth: { verifyIdToken: vi.fn(async () => decodedToken) },
+  auth: { 
+    verifyIdToken: vi.fn(async () => decodedToken),
+    createCustomToken: vi.fn(async () => 'mock-custom-token')
+  },
 }));
 vi.mock('../services/firebaseRoleClaims.js', () => ({
   FIREBASE_ROLE_CLAIM: 'recon_role',

@@ -112,8 +112,8 @@ const SUPPORTED_MARKETPLACES = [
     dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
     rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
     defaultAccount: 'returnorders@vbexports.co.in',
-    hasScraper: true,
-    description: 'Myntra Partner Portal for VB Exports (Seller ID 10708)'
+    hasScraper: false,
+    description: 'Myntra Partner Portal for VB Exports (Seller ID 10708) — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
   },
   {
     id: 'myntra_ej',
@@ -126,8 +126,8 @@ const SUPPORTED_MARKETPLACES = [
     dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
     rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
     defaultAccount: 'returnorders@vbexports.co.in',
-    hasScraper: true,
-    description: 'Myntra Partner Portal for Ethnic Junction (Seller ID 45833)'
+    hasScraper: false,
+    description: 'Myntra Partner Portal for Ethnic Junction (Seller ID 45833) — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
   },
   {
     id: 'meesho',
@@ -139,8 +139,8 @@ const SUPPORTED_MARKETPLACES = [
     dashboardUrl: 'https://supplier.meesho.com/panel/v2/new/home',
     rateCardUrl: 'https://supplier.meesho.com/panel/v2/new/growth/rate-card',
     defaultAccount: 'returnorders@vbexports.co.in',
-    hasScraper: true,
-    description: 'Meesho Supplier Panel 0% commission & tiered weight-slab logistics'
+    hasScraper: false,
+    description: 'Meesho Supplier Panel — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
   },
   {
     id: 'amazon',
@@ -211,6 +211,42 @@ async function authenticateWithFirebase(email, password) {
     throw new Error(errorMsg);
   }
   return data;
+}
+
+async function exchangeFirebaseCustomToken(customToken) {
+  if (!customToken) return null;
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${FIREBASE_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: customToken, returnSecureToken: true })
+  });
+  if (response.ok) {
+    const data = await response.json();
+    return {
+      idToken: data.idToken,
+      refreshToken: data.refreshToken
+    };
+  }
+  return null;
+}
+
+async function refreshFirebaseIdToken(refreshToken) {
+  if (!refreshToken) return null;
+  const url = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
+  });
+  if (response.ok) {
+    const data = await response.json();
+    return {
+      idToken: data.id_token || data.access_token,
+      refreshToken: data.refresh_token
+    };
+  }
+  return null;
 }
 
 function loadAuthSession() {
@@ -573,6 +609,29 @@ const server = http.createServer(async (req, res) => {
                 }
                 config.apiServerUrl = normalizedBase;
                 saveConfig(config);
+
+                // Reissue fresh ID token carrying newly updated role claim
+                if (srvData.customToken) {
+                  try {
+                    const customAuth = await exchangeFirebaseCustomToken(srvData.customToken);
+                    if (customAuth && customAuth.idToken) {
+                      fbResult.idToken = customAuth.idToken;
+                      if (customAuth.refreshToken) fbResult.refreshToken = customAuth.refreshToken;
+                    }
+                  } catch (ctErr) {
+                    console.warn('[desktopServer] Custom token exchange warning:', ctErr.message);
+                  }
+                } else if (fbResult.refreshToken) {
+                  try {
+                    const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
+                    if (refreshed && refreshed.idToken) {
+                      fbResult.idToken = refreshed.idToken;
+                      if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
+                    }
+                  } catch (refreshErr) {
+                    console.warn('[desktopServer] Token refresh warning:', refreshErr.message);
+                  }
+                }
                 break;
               }
             } else if (srvRes.status === 403) {
@@ -811,6 +870,14 @@ const server = http.createServer(async (req, res) => {
       const body = await parseJsonBody();
       const config = loadConfig();
       const targetMp = body.marketplace || config.marketplace || 'both';
+      const normalizedChannel = String(targetMp).toLowerCase().trim();
+      const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === normalizedChannel || m.marketplace === normalizedChannel);
+      if (mpConfig && !mpConfig.hasScraper) {
+        return sendJson(400, {
+          success: false,
+          error: `Automated scraping is not yet implemented for ${mpConfig.name}. Automated scrapers are currently active for Flipkart & Shopsy. Use "🔑 Human Login (2FA)" to authorize and store your session for Phase 2.`
+        });
+      }
       const isVisible = body.mode === 'visible' || body.visible === true;
       const targetBrands = body.brands || config.selectedBrands;
       const targetVerticals = body.verticals || config.selectedVerticals;
@@ -879,16 +946,18 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/interactive-login' && req.method === 'POST') {
       try {
         const body = await parseJsonBody();
-        const portalUrl = body.portal_url || 'https://seller.flipkart.com/';
+        const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId) || SUPPORTED_MARKETPLACES[0];
+        const portalUrl = body.portal_url || mpConfig.loginUrl || mpConfig.portalUrl || 'https://seller.flipkart.com/';
         const chromePath = getChromeExecutablePath();
-        const userDataDir = path.join(USER_DATA_DIR, 'chrome-user-data');
-        if (!fs.existsSync(userDataDir)) {
-          fs.mkdirSync(userDataDir, { recursive: true });
+        const channelProfileDir = path.join(USER_DATA_DIR, 'chrome-profiles', targetId);
+        if (!fs.existsSync(channelProfileDir)) {
+          fs.mkdirSync(channelProfileDir, { recursive: true });
         }
 
-        broadcastProgress(`Launching interactive browser for ${body.display_name || body.marketplace || 'Portal'} at ${portalUrl}...`);
+        broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
         const args = [
-          `--user-data-dir=${userDataDir}`,
+          `--user-data-dir=${channelProfileDir}`,
           '--no-first-run',
           '--no-default-browser-check',
           portalUrl
@@ -896,8 +965,8 @@ const server = http.createServer(async (req, res) => {
         const child = spawn(chromePath, args, { detached: true, stdio: 'ignore' });
         child.unref();
 
-        broadcastProgress(`✓ Browser window opened. Please complete 2FA or human login in the window.`);
-        return sendJson(200, { success: true, message: 'Browser launched successfully', portal_url: portalUrl });
+        broadcastProgress(`✓ Browser window opened for ${mpConfig.name}. Please complete 2FA or human login in the window.`);
+        return sendJson(200, { success: true, message: `Browser launched successfully for ${mpConfig.name}`, portal_url: portalUrl });
       } catch (err) {
         broadcastProgress(`❌ Failed to launch browser: ${err.message}`);
         return sendJson(500, { success: false, error: err.message });

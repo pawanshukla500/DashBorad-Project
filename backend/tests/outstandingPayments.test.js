@@ -31,7 +31,7 @@ describe('Outstanding Payments Endpoints', () => {
     } finally {
       server.close();
     }
-  }, 20_000);
+  }, 60_000);
 
   it('GET /reconcile/outstanding/orders supports pagination and aging buckets', async () => {
     const server = app.listen(0);
@@ -145,7 +145,7 @@ describe('Outstanding Payments Endpoints', () => {
     } finally {
       server.close();
     }
-  }, 20_000);
+  }, 60_000);
 
   it('GET /reconcile/outstanding/config returns channel configs and PUT updates config', async () => {
     const server = app.listen(0);

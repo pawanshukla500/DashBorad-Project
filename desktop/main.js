@@ -35,6 +35,42 @@ async function authenticateWithFirebase(email, password) {
   return data;
 }
 
+async function exchangeFirebaseCustomToken(customToken) {
+  if (!customToken) return null;
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${FIREBASE_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: customToken, returnSecureToken: true })
+  });
+  if (response.ok) {
+    const data = await response.json();
+    return {
+      idToken: data.idToken,
+      refreshToken: data.refreshToken
+    };
+  }
+  return null;
+}
+
+async function refreshFirebaseIdToken(refreshToken) {
+  if (!refreshToken) return null;
+  const url = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
+  });
+  if (response.ok) {
+    const data = await response.json();
+    return {
+      idToken: data.id_token || data.access_token,
+      refreshToken: data.refresh_token
+    };
+  }
+  return null;
+}
+
 function loadAuthSession() {
   try {
     if (fs.existsSync(SESSION_FILE)) {
@@ -106,8 +142,8 @@ const SUPPORTED_MARKETPLACES = [
     dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
     rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
     defaultAccount: 'returnorders@vbexports.co.in',
-    hasScraper: true,
-    description: 'Myntra Partner Portal for VB Exports (Seller ID 10708)'
+    hasScraper: false,
+    description: 'Myntra Partner Portal for VB Exports (Seller ID 10708) — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
   },
   {
     id: 'myntra_ej',
@@ -120,8 +156,8 @@ const SUPPORTED_MARKETPLACES = [
     dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
     rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
     defaultAccount: 'returnorders@vbexports.co.in',
-    hasScraper: true,
-    description: 'Myntra Partner Portal for Ethnic Junction (Seller ID 45833)'
+    hasScraper: false,
+    description: 'Myntra Partner Portal for Ethnic Junction (Seller ID 45833) — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
   },
   {
     id: 'meesho',
@@ -133,8 +169,8 @@ const SUPPORTED_MARKETPLACES = [
     dashboardUrl: 'https://supplier.meesho.com/panel/v2/new/home',
     rateCardUrl: 'https://supplier.meesho.com/panel/v2/new/growth/rate-card',
     defaultAccount: 'returnorders@vbexports.co.in',
-    hasScraper: true,
-    description: 'Meesho Supplier Panel 0% commission & tiered weight-slab logistics'
+    hasScraper: false,
+    description: 'Meesho Supplier Panel — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
   },
   {
     id: 'amazon',
@@ -1057,6 +1093,29 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
             }
             config.apiServerUrl = normalizedBase;
             saveConfig(config);
+
+            // Reissue fresh ID token carrying newly updated role claim
+            if (srvData.customToken) {
+              try {
+                const customAuth = await exchangeFirebaseCustomToken(srvData.customToken);
+                if (customAuth && customAuth.idToken) {
+                  fbResult.idToken = customAuth.idToken;
+                  if (customAuth.refreshToken) fbResult.refreshToken = customAuth.refreshToken;
+                }
+              } catch (ctErr) {
+                console.warn('[Desktop Auth] Custom token exchange warning:', ctErr.message);
+              }
+            } else if (fbResult.refreshToken) {
+              try {
+                const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
+                if (refreshed && refreshed.idToken) {
+                  fbResult.idToken = refreshed.idToken;
+                  if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
+                }
+              } catch (refreshErr) {
+                console.warn('[Desktop Auth] Token refresh warning:', refreshErr.message);
+              }
+            }
             break;
           }
         } else if (srvRes.status === 403) {

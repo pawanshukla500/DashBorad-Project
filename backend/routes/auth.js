@@ -4,7 +4,7 @@ import { authMiddleware, forgetRevocationState, requireAdmin, VALID_ROLES, norma
 import { auth } from '../utils/firebaseAdmin.js';
 import { identityFromFirebaseToken } from '../utils/firebaseIdentity.js';
 import { AccessNotGrantedError, IdentityConflictError, syncFirebaseUser } from '../services/userSync.js';
-import { setFirebaseRole } from '../services/firebaseRoleClaims.js';
+import { setFirebaseRole, FIREBASE_ROLE_CLAIM } from '../services/firebaseRoleClaims.js';
 
 const router = express.Router();
 
@@ -105,6 +105,13 @@ router.post('/desktop-login', async (req, res) => {
       return res.status(403).json({ error: `Access denied. Role '${role}' is not authorized to operate desktop scraper.` });
     }
 
+    let customToken = null;
+    try {
+      customToken = await auth.createCustomToken(identity.uid, { [FIREBASE_ROLE_CLAIM]: role });
+    } catch (ctErr) {
+      console.warn('[desktop-login] Custom token generation warning:', ctErr.message);
+    }
+
     res.json({
       success: true,
       user: {
@@ -113,6 +120,7 @@ router.post('/desktop-login', async (req, res) => {
         username: user.username,
         role: role
       },
+      customToken,
       databaseUrl: process.env.DATABASE_URL || '',
       serverTime: new Date().toISOString()
     });

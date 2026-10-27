@@ -72,9 +72,15 @@ Options:
 const isInteractive = args.includes('--interactive') || args.includes('--visible');
 const autoSync = args.includes('--auto-sync') || args.includes('-y');
 const shouldExportExcel = args.includes('--export-excel');
-const SUPPORTED_WORKER_CHANNELS = ['both', 'flipkart', 'shopsy', 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'];
+const SUPPORTED_WORKER_CHANNELS = ['both', 'flipkart', 'shopsy', 'flipkart_shopsy'];
 const rawMarketplaceArg = args.find(a => a.startsWith('--marketplace='))?.split('=')[1] || 'both';
 const marketplaceArg = rawMarketplaceArg.toLowerCase().trim();
+
+if (['myntra_vb', 'myntra_ej', 'meesho', 'amazon', 'ajio', 'cocoblu', 'shopify'].includes(marketplaceArg)) {
+  console.error(`❌ Automated rate card scraping for "${rawMarketplaceArg}" is scheduled for Phase 2.`);
+  console.error(`Currently active scraper worker supports: ${SUPPORTED_WORKER_CHANNELS.join(', ')}`);
+  process.exit(1);
+}
 
 if (!SUPPORTED_WORKER_CHANNELS.includes(marketplaceArg)) {
   console.error(`❌ Error: Unsupported marketplace channel "${rawMarketplaceArg}".`);
@@ -118,15 +124,6 @@ async function runWorker() {
       rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'shopsy');
     } else if (marketplaceArg === 'both' || marketplaceArg === 'flipkart_shopsy') {
       rateCards = rateCards.filter(r => ['flipkart', 'shopsy'].includes(r.marketplace.toLowerCase()));
-    } else if (marketplaceArg === 'myntra_vb') {
-      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'myntra_vb' || (r.marketplace.toLowerCase() === 'myntra' && String(r.seller_id) === '10708'));
-      onProgress(`Marketplace channel targeted: Myntra VB (10708) — ${rateCards.length} rate profiles found.`);
-    } else if (marketplaceArg === 'myntra_ej') {
-      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'myntra_ej' || (r.marketplace.toLowerCase() === 'myntra' && String(r.seller_id) === '45833'));
-      onProgress(`Marketplace channel targeted: Myntra EJ (45833) — ${rateCards.length} rate profiles found.`);
-    } else if (marketplaceArg === 'meesho') {
-      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'meesho');
-      onProgress(`Marketplace channel targeted: Meesho — ${rateCards.length} rate profiles found.`);
     } else {
       rateCards = [];
     }
