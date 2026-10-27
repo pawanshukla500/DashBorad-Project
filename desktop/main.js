@@ -609,6 +609,12 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     await page.waitForFunction((id) => {
       const href = window.location.href.toLowerCase();
       const body = document.body ? document.body.innerText.toLowerCase() : '';
+      const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
+      const hasLoginForm = Boolean(document.querySelector('form[action*="login"], form[action*="signin"]'));
+
+      // If the page is still presenting a password field or login form, it is NOT authenticated yet
+      if (hasPasswordInput || hasLoginForm) return false;
+
       if (id.startsWith('myntra')) {
         return href.includes('partnerportal') && (href.includes('dashboard') || href.includes('home') || body.includes('logout') || body.includes('seller id'));
       }
@@ -633,15 +639,15 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       }
       if (id === 'cocoblu') {
         const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
-        const onAuthPage = href.includes('/dashboard') || href.includes('/orders') || href.includes('/home') || href.includes('/portal') || href.includes('/reports');
-        const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('dashboard') || body.includes('welcome');
-        return href.includes('cocoblu.biz') && notLogin && (onAuthPage || hasAuthText);
+        const onAuthRoute = href.includes('/dashboard') || href.includes('/orders') || href.includes('/vendor') || href.includes('/portal') || href.includes('/reports');
+        const hasLogoutAction = body.includes('logout') || body.includes('sign out') || Boolean(document.querySelector('a[href*="logout"], button[class*="logout"]'));
+        return href.includes('cocoblu.biz') && notLogin && (onAuthRoute || hasLogoutAction);
       }
       if (id === 'shopify') {
         const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
-        const onStore = href.includes('/store') || href.includes('/orders') || href.includes('/products') || href.includes('/settings');
-        const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('settings');
-        return href.includes('admin.shopify.com') && notLogin && (onStore || hasAuthText);
+        const onStoreRoute = (href.includes('/store/') || href.includes('/admin/')) && (href.includes('/orders') || href.includes('/products'));
+        const hasLogoutAction = body.includes('log out') || Boolean(document.querySelector('[data-polaris-header]'));
+        return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
       }
       return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
     }, { timeout: 300000 }, mpConfig.id);
@@ -1129,7 +1135,7 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
             }
 
             // Fail closed: do not persist session if role-claim token renewal failed
-            if (srvData.customToken && !tokenRenewed) {
+            if (!tokenRenewed) {
               return {
                 success: false,
                 error: 'Failed to refresh authentication token with newly assigned desktop role claims. Please verify your network connection and try logging in again.'
@@ -1334,7 +1340,13 @@ ipcMain.handle('get-ratecard-preview', async (e, options = {}) => {
     const targetMp = (options.marketplace || options.channel || '').toLowerCase().trim();
     let filteredRateCards = rateCards;
     if (targetMp && targetMp !== 'both' && targetMp !== 'all' && targetMp !== 'flipkart_shopsy') {
-      filteredRateCards = rateCards.filter(rc => (rc.marketplace || '').toLowerCase() === targetMp);
+      if (targetMp === 'myntra_vb') {
+        filteredRateCards = rateCards.filter(rc => (rc.account_id === 'myntra_vb' || (rc.marketplace === 'myntra' && (rc.seller_id === '10708' || rc.account === '10708'))));
+      } else if (targetMp === 'myntra_ej') {
+        filteredRateCards = rateCards.filter(rc => (rc.account_id === 'myntra_ej' || (rc.marketplace === 'myntra' && (rc.seller_id === '45833' || rc.account === '45833'))));
+      } else {
+        filteredRateCards = rateCards.filter(rc => (rc.marketplace || '').toLowerCase() === targetMp);
+      }
     }
     return { success: true, rateCards: filteredRateCards };
   } catch (err) {

@@ -478,7 +478,13 @@ const server = http.createServer(async (req, res) => {
         const targetMp = (urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || '').toLowerCase().trim();
         let filteredRateCards = rateCards;
         if (targetMp && targetMp !== 'both' && targetMp !== 'all' && targetMp !== 'flipkart_shopsy') {
-          filteredRateCards = rateCards.filter(rc => (rc.marketplace || '').toLowerCase() === targetMp);
+          if (targetMp === 'myntra_vb') {
+            filteredRateCards = rateCards.filter(rc => (rc.account_id === 'myntra_vb' || (rc.marketplace === 'myntra' && (rc.seller_id === '10708' || rc.account === '10708'))));
+          } else if (targetMp === 'myntra_ej') {
+            filteredRateCards = rateCards.filter(rc => (rc.account_id === 'myntra_ej' || (rc.marketplace === 'myntra' && (rc.seller_id === '45833' || rc.account === '45833'))));
+          } else {
+            filteredRateCards = rateCards.filter(rc => (rc.marketplace || '').toLowerCase() === targetMp);
+          }
         }
         return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards });
       } catch (err) {
@@ -644,7 +650,7 @@ const server = http.createServer(async (req, res) => {
                 }
 
                 // Fail closed: do not persist session if role-claim token renewal failed
-                if (srvData.customToken && !tokenRenewed) {
+                if (!tokenRenewed) {
                   return sendJson(401, {
                     success: false,
                     error: 'Failed to refresh authentication token with newly assigned desktop role claims. Please verify your network connection and try logging in again.'
@@ -1067,11 +1073,16 @@ function launchChromeApp() {
   }
 }
 
-server.listen(PORT, () => {
-  console.log('======================================================================');
-  console.log(`⚡ ReconCentral RateCard Desktop Control Server running on port ${PORT}`);
-  console.log(`Platform: ${process.platform} (${process.arch}) | Node: ${process.version}`);
-  console.log(`Desktop UI URL: http://localhost:${PORT}`);
-  console.log('======================================================================\n');
-  launchChromeApp();
-});
+const isDirectRun = Boolean(process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename));
+if (isDirectRun) {
+  server.listen(PORT, () => {
+    console.log('======================================================================');
+    console.log(`⚡ ReconCentral RateCard Desktop Control Server running on port ${PORT}`);
+    console.log(`Platform: ${process.platform} (${process.arch}) | Node: ${process.version}`);
+    console.log(`Desktop UI URL: http://localhost:${PORT}`);
+    console.log('======================================================================\n');
+    launchChromeApp();
+  });
+}
+
+export { server, PORT, SUPPORTED_MARKETPLACES, launchChromeApp };

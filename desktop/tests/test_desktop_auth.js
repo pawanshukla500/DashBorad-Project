@@ -169,31 +169,57 @@ async function runTests() {
     failed++;
   }
 
-  // Test 6: Verify Multi-Marketplace Gating, URL Consistency & Scraper Protection
+  // Test 6: Behavioral HTTP Test for Multi-Marketplace Gating, Scraper Protection & Channel Isolation
   try {
-    console.log('\n[Test 6] Verifying multi-marketplace channel configuration & scraper gating...');
-    const desktopServerContent = fs.readFileSync(path.join(projectRoot, 'desktop', 'desktopServer.mjs'), 'utf8');
-    const mainJsContent = fs.readFileSync(path.join(projectRoot, 'desktop', 'main.js'), 'utf8');
+    console.log('\n[Test 6] Exercising desktop server HTTP routes for multi-marketplace gating & isolation...');
+    const { server, SUPPORTED_MARKETPLACES } = await import('../desktopServer.mjs');
+    await new Promise(resolve => server.listen(0, resolve));
+    const testPort = server.address().port;
+    const testBase = `http://127.0.0.1:${testPort}`;
 
-    // 1. Myntra canonical URL check
-    const hasCanonicalMyntra = desktopServerContent.includes('https://partnerportal.myntra.com') && mainJsContent.includes('https://partnerportal.myntra.com');
-    // 2. Fail-closed token renewal check
-    const hasFailClosedRenewal = desktopServerContent.includes('Failed to refresh authentication token with newly assigned desktop role claims') &&
-                                mainJsContent.includes('Failed to refresh authentication token with newly assigned desktop role claims');
-    // 3. Unknown channel rejection in desktopServer.mjs
-    const hasUnknownChannelRejection = desktopServerContent.includes('Unsupported marketplace');
-    // 4. Cocoblu positive auth check
-    const hasCocobluAuthCheck = mainJsContent.includes('body.includes(\'logout\') || body.includes(\'sign out\') || body.includes(\'dashboard\')');
+    // 1. Unknown marketplace rejection test (Must return HTTP 400)
+    const unkRes = await fetch(`${testBase}/api/scrape/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketplace: 'invalid_test_channel' })
+    });
+    const unkData = await unkRes.json();
+    const isUnkRejected = unkRes.status === 400 && unkData.error?.includes('Unsupported marketplace');
+    console.log(`  • Unknown channel rejection (HTTP ${unkRes.status}): Passed = ${isUnkRejected}`);
 
-    if (hasCanonicalMyntra && hasFailClosedRenewal && hasUnknownChannelRejection && hasCocobluAuthCheck) {
-      console.log('  ✓ Pass: Multi-marketplace channel gating, fail-closed renewal, and URL consistency verified.');
+    // 2. Gated marketplace scraper test (Phase 2 channel must return HTTP 400)
+    const gatedRes = await fetch(`${testBase}/api/scrape/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketplace: 'myntra_vb' })
+    });
+    const gatedData = await gatedRes.json();
+    const isGatedBlocked = gatedRes.status === 400 && gatedData.error?.includes('Automated scraping is not yet implemented');
+    console.log(`  • Phase 2 channel scraper gate (HTTP ${gatedRes.status}): Passed = ${isGatedBlocked}`);
+
+    // 3. Isolated channel preview test (Myntra VB must return isolated 0-count rate cards, no Flipkart leakage)
+    const previewRes = await fetch(`${testBase}/api/preview?marketplace=myntra_vb`);
+    const previewData = await previewRes.json();
+    const isPreviewIsolated = previewRes.status === 200 && previewData.count === 0 && Array.isArray(previewData.rateCards);
+    console.log(`  • Channel-filtered preview isolation (HTTP ${previewRes.status}, count: ${previewData.count}): Passed = ${isPreviewIsolated}`);
+
+    // 4. Marketplaces catalog test (8 channels, Phase 2 channels flagged hasScraper: false)
+    const mpRes = await fetch(`${testBase}/api/desktop/marketplaces`);
+    const mpData = await mpRes.json();
+    const isMpListValid = mpRes.status === 200 && mpData.marketplaces?.length === 8 && mpData.marketplaces.find(m => m.id === 'myntra_vb')?.hasScraper === false;
+    console.log(`  • Marketplaces catalog API (HTTP ${mpRes.status}, ${mpData.marketplaces?.length} channels): Passed = ${isMpListValid}`);
+
+    server.close();
+
+    if (isUnkRejected && isGatedBlocked && isPreviewIsolated && isMpListValid) {
+      console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, and preview filtering verified.');
       passed++;
     } else {
-      console.error('  ✗ Fail: Multi-marketplace verification check failed:', {
-        hasCanonicalMyntra,
-        hasFailClosedRenewal,
-        hasUnknownChannelRejection,
-        hasCocobluAuthCheck
+      console.error('  ✗ Fail: Behavioral route verification failed:', {
+        isUnkRejected,
+        isGatedBlocked,
+        isPreviewIsolated,
+        isMpListValid
       });
       failed++;
     }

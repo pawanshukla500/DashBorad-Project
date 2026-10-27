@@ -274,7 +274,10 @@ async function loadRateCardPreview() {
   tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Generating brand-wise rate cards and comparing with PostgreSQL database...</td></tr>';
 
   try {
-    const res = await window.ratecardAPI.getRateCardPreview();
+    const selectEl = document.getElementById('select-marketplace');
+    const headerSelect = document.getElementById('header-select-marketplace');
+    const selectedChannel = selectEl?.value || headerSelect?.value || 'flipkart_shopsy';
+    const res = await window.ratecardAPI.getRateCardPreview({ marketplace: selectedChannel });
     if (res.success && res.rateCards?.length > 0) {
       currentRateCards = res.rateCards;
       
@@ -292,9 +295,13 @@ async function loadRateCardPreview() {
       }
 
       renderDiffTable();
-      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards across Flipkart and Shopsy (${currentChanges.length} diffs detected).`);
+      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${currentChanges.length} diffs detected).`);
     } else {
-      tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Failed to load preview: ${res.error || 'Empty'}</td></tr>`;
+      currentRateCards = [];
+      currentChanges = [];
+      const badge = document.getElementById('changes-badge');
+      if (badge) badge.style.display = 'none';
+      tbody.innerHTML = `<tr><td colspan="8" class="empty-state">${res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.'}</td></tr>`;
     }
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="8" class="empty-state error">Error loading rates: ${err.message}</td></tr>`;
@@ -480,8 +487,14 @@ function setupEventListeners() {
     }
   };
 
-  headerSelectMp?.addEventListener('change', (e) => syncMarketplaceSelection(e.target.value));
-  scraperSelectMp?.addEventListener('change', (e) => syncMarketplaceSelection(e.target.value));
+  headerSelectMp?.addEventListener('change', (e) => {
+    syncMarketplaceSelection(e.target.value);
+    loadRateCardPreview();
+  });
+  scraperSelectMp?.addEventListener('change', (e) => {
+    syncMarketplaceSelection(e.target.value);
+    loadRateCardPreview();
+  });
 
   // Multi-Marketplace 2FA Login buttons (Dashboard & Settings)
   document.addEventListener('click', async (e) => {
@@ -499,7 +512,7 @@ function setupEventListeners() {
   btnInteractiveLogin?.addEventListener('click', async () => {
     const selectEl = document.getElementById('select-marketplace');
     const selectedVal = selectEl?.value || 'flipkart_shopsy';
-    const selectedOption = selectEl?.selectedOptions?.[0] || selectEl?.querySelector(`option[value="${selectedVal}"]`);
+    const selectedOption = selectEl?.selectedOptions?.[0] || (selectEl && Array.from(selectEl.options).find(o => o.value === selectedVal));
     const portalUrl = selectedOption?.getAttribute('data-portal') || 'https://seller.flipkart.com/';
     const channelName = selectedOption?.innerText || selectedVal;
 
