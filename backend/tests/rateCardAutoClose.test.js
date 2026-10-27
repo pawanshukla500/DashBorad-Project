@@ -9,6 +9,9 @@ let updateRows;
 function recorder(text, params) {
   const sql = String(text).replace(/\s+/g, ' ').trim();
   statements.push({ sql, params });
+  if (/SELECT DISTINCT TO_CHAR\(start_date/i.test(sql)) {
+    return { rows: [{ start_date: '2026-04-01' }], rowCount: 1 };
+  }
   if (/^UPDATE/i.test(sql)) return { rows: updateRows, rowCount: updateRows.length };
   return { rows: [], rowCount: 0 };
 }
@@ -60,14 +63,27 @@ describe('save-period — auto-close the current active rate', () => {
 
     expect(response.status).toBe(200);
     const close = statements.find(s => s.sql.startsWith('UPDATE rc_commission'));
-    expect(close.sql).toContain('(start_date IS NULL OR start_date < $4::date)');
-    expect(close.sql).toContain('(end_date IS NULL OR end_date >= $4::date)');
-    expect(close.params).toEqual(['kurta', 'flipkart', 'default', '2026-10-01', '2026-09-30']);
+    expect(close.sql).toContain('start_date = $4::date');
+    expect(close.sql).toContain('(end_date IS NULL OR end_date >= $5::date)');
+    expect(close.params).toEqual(['kurta', 'flipkart', 'default', '2026-04-01', '2026-09-30', 'kurta']);
     const order = statements.map(s => s.sql.split(' ')[0]);
     expect(order.indexOf('UPDATE')).toBeGreaterThan(order.indexOf('BEGIN'));
     expect(order.indexOf('UPDATE')).toBeLessThan(order.indexOf('INSERT'));
     expect(order.at(-1)).toBe('COMMIT');
     expect(body.closed).toEqual({ rows: 2, end_date: '2026-09-30', period_starts: ['2026-04-01'] });
+  });
+
+  it('matches category case-insensitively and with normalized key', async () => {
+    const response = await post('/config/commission/save-period', {
+      ...newPeriod,
+      category: 'Kurta',
+      auto_close: true,
+    });
+    expect(response.status).toBe(200);
+    const close = statements.find(s => s.sql.startsWith('UPDATE rc_commission'));
+    expect(close.sql).toContain('LOWER(TRIM(category)) = LOWER(TRIM($1))');
+    expect(close.params[0]).toBe('Kurta');
+    expect(close.params[5]).toBe('kurta');
   });
 
   it('does not close anything for a bounded (historical) period or when auto-close is off', async () => {
@@ -92,7 +108,7 @@ describe('close-period — resolve an overlap left by earlier saves', () => {
     expect(response.status).toBe(200);
     const update = statements.find(s => s.sql.startsWith('UPDATE rc_fixed_fee'));
     expect(update.sql).toContain('start_date IS NOT DISTINCT FROM $4::date AND end_date IS NOT DISTINCT FROM $5::date');
-    expect(update.params).toEqual(['kurta', 'flipkart', 'default', '2026-04-01', null, '2026-08-31']);
+    expect(update.params).toEqual(['kurta', 'flipkart', 'default', '2026-04-01', null, '2026-08-31', 'kurta']);
   });
 
   it.each([

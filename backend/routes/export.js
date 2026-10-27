@@ -66,7 +66,7 @@ export function buildMonthlyDetailedSql({ marketplace, startDate, endDate }) {
       SELECT
         o.order_item_id,
         TO_CHAR(o.order_date, 'YYYY-MM-DD') as order_date,
-        o.category,
+        COALESCE(o.vb_export_category, o.category, 'Uncategorized') as category,
         o.brand_name,
         o.final_invoice_amount,
         o.fulfilment_type,

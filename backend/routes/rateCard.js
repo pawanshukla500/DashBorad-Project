@@ -8,13 +8,21 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
-import { normalizeCategory } from '../services/rateCard.js';
+import { normalizeCategory, clearRateCardCache } from '../services/rateCard.js';
 import { scrapeRateCard } from '../services/rateCardScraper.js';
-import { clearRateCardCache } from '../services/rateCard.js';
+import { scrapeFlipkartRateCards, getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
+import { detectRateChanges, syncRateCardsToDatabase } from '../services/rateCardSyncEngine.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { checkRateRow } from '../utils/rateCardRowChecks.js';
+import { 
+  getRealTimeBrandFsnSamples, 
+  buildBrandRateCardSet, 
+  detectBrandRateChanges, 
+  syncBrandRateCardsToDatabase 
+} from '../services/brandRateCardService.js';
+import { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } from '../services/brandwiseExcelExport.js';
 
 const router = express.Router();
 
@@ -287,7 +295,7 @@ router.get('/config/categories', async (req, res) => {
         : `marketplace = $1`;
       const orderParams = sellerAccount !== 'default' ? [marketplace, sellerAccount] : [marketplace];
       const { rows: orderCats } = await pool.query(
-        `SELECT DISTINCT category FROM orders WHERE ${orderCond} AND category IS NOT NULL AND category != ''`,
+        `SELECT DISTINCT COALESCE(vb_export_category, category) AS category FROM orders WHERE ${orderCond} AND COALESCE(vb_export_category, category) IS NOT NULL AND COALESCE(vb_export_category, category) != ''`,
         orderParams,
       );
       for (const r of orderCats) cats.add(normalizeCategory(r.category));
@@ -537,6 +545,7 @@ router.post('/config/:type/save-period', async (req, res) => {
     }
 
     // Start transaction: delete existing period, then insert new rows
+    const normalizedCategory = normalizeCategory(category) || String(category || 'ALL').trim();
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -545,7 +554,7 @@ router.post('/config/:type/save-period', async (req, res) => {
       // period and both stay open.
       await client.query(
         `SELECT pg_advisory_xact_lock(hashtext($1))`,
-        [`rate-period:${table}:${marketplace}:${seller_account}:${category || 'ALL'}`],
+        [`rate-period:${table}:${marketplace}:${seller_account}:${normalizedCategory}`],
       );
 
       // Two delete paths:
@@ -562,28 +571,75 @@ router.post('/config/:type/save-period', async (req, res) => {
         deleted = removed.rowCount;
       } else {
         await client.query(
-          `DELETE FROM ${table} WHERE category = $1 AND marketplace = $2 AND seller_account = $3
-           AND start_date IS NOT DISTINCT FROM $4 AND end_date IS NOT DISTINCT FROM $5`,
-          [category || 'ALL', marketplace, seller_account, start_date || null, end_date || null],
+          `DELETE FROM ${table}
+            WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $6 OR LOWER(TRIM(category)) = LOWER(TRIM($6)))
+              AND marketplace = $2
+              AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+              AND start_date IS NOT DISTINCT FROM $4
+              AND end_date IS NOT DISTINCT FROM $5`,
+          [category || 'ALL', marketplace, seller_account, start_date || null, end_date || null, normalizedCategory],
         );
       }
 
       let closed = null;
       if (autoClose) {
         const closeOn = dayBefore(start_date);
-        const result = await client.query(
-          `UPDATE ${table}
-             SET end_date = $5::date, updated_at = NOW()
-           WHERE category = $1 AND marketplace = $2 AND seller_account = $3
-             AND (start_date IS NULL OR start_date < $4::date)
-             AND (end_date IS NULL OR end_date >= $4::date)
-           RETURNING TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date`,
-          [category || 'ALL', marketplace, seller_account, start_date, closeOn],
+
+        // Find all earlier open or overlapping periods for this category
+        const { rows: openPeriods } = await client.query(
+          `SELECT DISTINCT TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date
+             FROM ${table}
+            WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $5 OR LOWER(TRIM(category)) = LOWER(TRIM($5)))
+              AND marketplace = $2
+              AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+              AND (start_date IS NULL OR start_date < $4::date)
+              AND (end_date IS NULL OR end_date >= $4::date)
+            ORDER BY start_date ASC NULLS FIRST`,
+          [category || 'ALL', marketplace, seller_account, start_date, normalizedCategory],
         );
+
+        let totalClosedRows = 0;
+        const closedStarts = [];
+
+        for (let idx = 0; idx < openPeriods.length; idx++) {
+          const currentStart = openPeriods[idx].start_date;
+          // If there is a subsequent open period before new start_date, end the day before that subsequent period starts.
+          // Otherwise, end on closeOn (the day before new rate starts).
+          const nextStart = idx + 1 < openPeriods.length ? openPeriods[idx + 1].start_date : null;
+          let targetEnd = closeOn;
+          if (nextStart) {
+            const nextClose = dayBefore(nextStart);
+            if (!currentStart || nextClose >= currentStart) {
+              targetEnd = nextClose;
+            }
+          }
+
+          const startCond = currentStart ? `start_date = $4::date` : `start_date IS NULL`;
+          const updateParams = [category || 'ALL', marketplace, seller_account, ...(currentStart ? [currentStart] : []), targetEnd, normalizedCategory];
+          const targetParamIdx = currentStart ? 5 : 4;
+          const normParamIdx = currentStart ? 6 : 5;
+
+          const res = await client.query(
+            `UPDATE ${table}
+                SET end_date = $${targetParamIdx}::date, updated_at = NOW()
+              WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $${normParamIdx} OR LOWER(TRIM(category)) = LOWER(TRIM($${normParamIdx})))
+                AND marketplace = $2
+                AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+                AND ${startCond}
+                AND (end_date IS NULL OR end_date >= $${targetParamIdx}::date)`,
+            updateParams,
+          );
+
+          if (res.rowCount > 0) {
+            totalClosedRows += res.rowCount;
+            if (currentStart) closedStarts.push(currentStart);
+          }
+        }
+
         closed = {
-          rows: result.rowCount,
+          rows: totalClosedRows,
           end_date: closeOn,
-          period_starts: [...new Set(result.rows.map(row => row.start_date))],
+          period_starts: [...new Set(closedStarts)],
         };
       }
 
@@ -596,7 +652,7 @@ router.post('/config/:type/save-period', async (req, res) => {
       // for type numeric", HTTP 500). It now takes the column's default, as if
       // the cell had been omitted. Text cells are unchanged.
       const slabData = checkedRows.map(slab => [
-        slab.category || category || 'ALL',
+        slab.category || normalizedCategory || category || 'ALL',
         start_date || null,
         end_date || null,
         marketplace,
@@ -635,8 +691,85 @@ router.post('/config/:type/save-period', async (req, res) => {
   }
 });
 
+// POST /api/rate-card/config/:type/auto-close-superseded — resolve all overlapping periods for this marketplace & account
+router.post('/config/:type/auto-close-superseded', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const table = resolveTable(req.params.type);
+    const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.body.marketplace, req.body.seller_account);
+    const pool = getPool();
 
+    // Find all distinct periods per category
+    const { rows: periods } = await pool.query(
+      `SELECT category, TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date, TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date, COUNT(*) as cnt
+         FROM ${table}
+        WHERE marketplace = $1
+          AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+        GROUP BY category, start_date, end_date
+        ORDER BY category, start_date ASC NULLS FIRST`,
+      [marketplace, sellerAccount],
+    );
 
+    const byCategory = {};
+    for (const p of periods) {
+      const cat = p.category;
+      if (!byCategory[cat]) byCategory[cat] = [];
+      byCategory[cat].push(p);
+    }
+
+    let closedCount = 0;
+    const resolved = [];
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const [cat, catPeriods] of Object.entries(byCategory)) {
+        for (let i = 0; i < catPeriods.length - 1; i++) {
+          const cur = catPeriods[i];
+          const next = catPeriods[i + 1];
+          if (next.start_date) {
+            const idealEnd = dayBefore(next.start_date);
+            if (!cur.end_date || cur.end_date > idealEnd) {
+              if (!cur.start_date || idealEnd >= cur.start_date) {
+                const startCond = cur.start_date ? `start_date = $3::date` : `start_date IS NULL`;
+                const endCond = cur.end_date ? `end_date = $4::date` : `end_date IS NULL`;
+                const params = [cat, marketplace, ...(cur.start_date ? [cur.start_date] : []), ...(cur.end_date ? [cur.end_date] : []), idealEnd, sellerAccount];
+                const idealIdx = (cur.start_date ? 1 : 0) + (cur.end_date ? 1 : 0) + 3;
+                const accountIdx = idealIdx + 1;
+
+                const { rowCount } = await client.query(
+                  `UPDATE ${table}
+                      SET end_date = $${idealIdx}::date, updated_at = NOW()
+                    WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)))
+                      AND marketplace = $2
+                      AND (seller_account = $${accountIdx} OR ($${accountIdx} = 'default' AND (seller_account IS NULL OR seller_account = '')))
+                      AND ${startCond}
+                      AND ${endCond}`,
+                  params,
+                );
+                if (rowCount > 0) {
+                  closedCount += rowCount;
+                  resolved.push({ category: cat, from: cur.start_date, closed_on: idealEnd });
+                }
+              }
+            }
+          }
+        }
+      }
+      await client.query('COMMIT');
+      clearRateCardCache();
+      res.json({ ok: true, closedRows: closedCount, resolved });
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error('[rate-card/auto-close-superseded]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // POST /api/rate-card/config/:type/close-period — end one existing period.
 // Used to resolve overlapping periods created before auto-close worked: the
@@ -648,6 +781,7 @@ router.post('/config/:type/close-period', async (req, res) => {
     const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.body.marketplace, req.body.seller_account);
     const category = String(req.body.category || '').trim();
     if (!category) return res.status(400).json({ error: 'category is required' });
+    const normalizedCategory = normalizeCategory(category) || category;
     const startDate = periodDate(req.body.start_date, 'start_date');
     const endDate = periodDate(req.body.end_date, 'end_date');
     const closeOn = periodDate(req.body.close_on, 'close_on');
@@ -661,9 +795,12 @@ router.post('/config/:type/close-period', async (req, res) => {
     const { rowCount } = await getPool().query(
       `UPDATE ${table}
          SET end_date = $6::date, updated_at = NOW()
-       WHERE category = $1 AND marketplace = $2 AND seller_account = $3
-         AND start_date IS NOT DISTINCT FROM $4::date AND end_date IS NOT DISTINCT FROM $5::date`,
-      [category, marketplace, sellerAccount, startDate, endDate, closeOn],
+       WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $7 OR LOWER(TRIM(category)) = LOWER(TRIM($7)))
+         AND marketplace = $2
+         AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+         AND start_date IS NOT DISTINCT FROM $4::date
+         AND end_date IS NOT DISTINCT FROM $5::date`,
+      [category, marketplace, sellerAccount, startDate, endDate, closeOn, normalizedCategory],
     );
     if (!rowCount) return res.status(404).json({ error: 'Rate period not found' });
     clearRateCardCache();
@@ -1260,7 +1397,7 @@ router.get('/intelligence', (req, res) => res.json({ orderFees: [], nonOrderFees
 // ── AI Screenshot Parser (Gemini Vision) ─────────────────────────────────────
 // Accepts a base64-encoded screenshot of a marketplace rate card page and
 // extracts structured slab data using Google Gemini's vision model.
-const GEMINI_VISION_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17', 'gemini-1.5-pro'];
+const GEMINI_VISION_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
 
 // Screenshots only. Each type is checked against the decoded file signature,
 // so a renamed PDF or HTML file cannot be sent to the model as an image.
@@ -1373,4 +1510,287 @@ Rules:
 router.get('/rc-entry-reco', (req, res) => res.json({ commission: [], fixed_fee: [], pick_pack: [], franchise_fee: [] }));
 router.get('/rc-entry-orders', (req, res) => res.json({ orders: [], total: 0 }));
 
+// ── Flipkart Rate Card Automation Endpoints ─────────────────────────────────────
+
+/**
+ * GET /api/rate-card/verticals
+ * Lists distinct Flipkart verticals in orders table along with available samples
+ */
+router.get('/verticals', async (req, res) => {
+  try {
+    const verticals = await getFlipkartVerticals();
+    const pool = getPool();
+    const sampleFsns = await pool.query(`
+      SELECT DISTINCT ON (category) category, fsn, sku 
+      FROM orders 
+      WHERE marketplace ILIKE '%flipkart%' AND fsn IS NOT NULL AND fsn != ''
+      LIMIT 30
+    `);
+    res.json({
+      verticals,
+      samples: sampleFsns.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/sync-status
+ * Current status of Flipkart credentials, session cookies, and latest rate card version
+ */
+router.get('/sync-status', async (req, res) => {
+  try {
+    const pool = getPool();
+    const latestVersion = await pool.query(`
+      SELECT id, version_name, status, effective_from, created_at, published_at 
+      FROM rate_card_versions 
+      WHERE marketplace = 'flipkart'
+      ORDER BY id DESC 
+      LIMIT 1
+    `);
+
+    // Check cookies
+    let hasCookies = false;
+    try {
+      const fsSync = await import('fs');
+      const pathMod = (await import('path')).default;
+      const p = pathMod.join(process.cwd(), '.runtime/cookies.json');
+      hasCookies = fsSync.existsSync(p);
+    } catch {}
+
+    res.json({
+      marketplace: 'flipkart',
+      hasCookies,
+      latestVersion: latestVersion.rows[0] || null,
+      sellerAccount: 'default'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/sync-flipkart
+ * Trigger end-to-end extraction, change detection, and DB update for Flipkart
+ */
+router.post('/sync-flipkart', async (req, res) => {
+  try {
+    const { verticals, headless = 'new', forceUpdate = false } = req.body || {};
+    
+    // 1. Scrape rates from Flipkart Seller Hub
+    const scrapeResult = await scrapeFlipkartRateCards({
+      verticals,
+      headless
+    });
+
+    if (!scrapeResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: scrapeResult.error
+      });
+    }
+
+    // 2. Commit to Database and Detect Changes
+    const syncResult = await syncRateCardsToDatabase(scrapeResult.data, {
+      marketplace: 'flipkart',
+      sellerAccount: 'default',
+      forceUpdate
+    });
+
+    res.json({
+      success: true,
+      scrapedCount: scrapeResult.count,
+      syncResult
+    });
+  } catch (err) {
+    console.error('[sync-flipkart] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/detect-changes
+ * Preview changes without committing to the database
+ */
+router.post('/detect-changes', async (req, res) => {
+  try {
+    const { scrapedData } = req.body || {};
+    if (!Array.isArray(scrapedData)) {
+      return res.status(400).json({ error: 'scrapedData array is required' });
+    }
+    const changes = await detectRateChanges(scrapedData, 'flipkart', 'default');
+    res.json({
+      changesCount: changes.length,
+      changes
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/unconfigured-categories
+ * List categories found in Flipkart orders that do not have active rate cards in DB
+ */
+router.get('/unconfigured-categories', async (req, res) => {
+  try {
+    const pool = getPool();
+    const result = await pool.query(`
+      SELECT DISTINCT o.category, COUNT(o.id) as order_count
+      FROM orders o
+      WHERE o.marketplace ILIKE '%flipkart%'
+        AND o.category IS NOT NULL AND o.category != ''
+        AND o.category NOT IN (
+          SELECT DISTINCT c.category 
+          FROM rc_commission c 
+          WHERE c.marketplace = 'flipkart' AND c.end_date IS NULL
+        )
+      GROUP BY o.category
+      ORDER BY order_count DESC, o.category ASC
+      LIMIT 25
+    `);
+    res.json({
+      marketplace: 'flipkart',
+      unconfiguredCount: result.rows.length,
+      categories: result.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/check-category
+ * Inspect or dynamically import a single category from Flipkart Seller Hub
+ */
+router.post('/check-category', async (req, res) => {
+  try {
+    const { category, sync = false } = req.body || {};
+    if (!category || typeof category !== 'string' || !category.trim()) {
+      return res.status(400).json({ error: 'Valid category name is required' });
+    }
+
+    const cleanCategory = category.trim().toLowerCase();
+    const pool = getPool();
+
+    // Check existing DB status
+    const existing = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM rc_commission 
+      WHERE marketplace = 'flipkart' AND category = $1 AND end_date IS NULL
+    `, [cleanCategory]);
+    const isConfiguredInDb = parseInt(existing.rows[0].count, 10) > 0;
+
+    // Scrape live rates for this single category
+    const scrapeResult = await scrapeFlipkartRateCards({
+      verticals: [cleanCategory],
+      headless: 'new'
+    });
+
+    if (!scrapeResult.success || !scrapeResult.data.length) {
+      return res.status(500).json({
+        success: false,
+        error: scrapeResult.error || `No rate tables found on Flipkart for vertical "${cleanCategory}"`
+      });
+    }
+
+    const categoryData = scrapeResult.data[0];
+    const changes = await detectRateChanges([categoryData], 'flipkart', 'default');
+
+    let syncResult = null;
+    if (sync) {
+      syncResult = await syncRateCardsToDatabase([categoryData], {
+        marketplace: 'flipkart',
+        sellerAccount: 'default',
+        forceUpdate: true
+      });
+    }
+
+    res.json({
+      success: true,
+      category: cleanCategory,
+      isConfiguredInDb,
+      changesCount: changes.length,
+      changes,
+      rates: {
+        commissionsCount: categoryData.commissions.length,
+        fixedFeesCount: categoryData.fixedFees.length,
+        collectionFeesCount: categoryData.collectionFees.length,
+        reverseShippingCount: categoryData.reverseShipping.length,
+        data: categoryData
+      },
+      synced: Boolean(sync),
+      syncResult
+    });
+  } catch (err) {
+    console.error('[check-category] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/brand-fsn-catalog
+ * Real-time discovery of sample FSNs and SKUs grouped by (marketplace, category, brand)
+ */
+router.get('/brand-fsn-catalog', async (req, res) => {
+  try {
+    const pool = getPool();
+    const catalog = await getRealTimeBrandFsnSamples(pool);
+    res.json({
+      success: true,
+      count: catalog.length,
+      catalog
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/sync-brand-rates
+ * Brand-wise rate sync for Flipkart and Shopsy with real-time FSN sampling
+ */
+router.post('/sync-brand-rates', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { forceUpdate = false, effectiveDate, exportExcel = true } = req.body || {};
+
+    const brandRateCards = await buildBrandRateCardSet(pool);
+    const syncResult = await syncBrandRateCardsToDatabase(brandRateCards, {
+      forceUpdate,
+      effectiveDate: effectiveDate || new Date().toISOString().slice(0, 10)
+    }, pool);
+
+    let excelResult = null;
+    if (exportExcel) {
+      excelResult = await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
+    }
+
+    res.json({
+      success: true,
+      brandCount: brandRateCards.length,
+      syncResult,
+      excelExport: excelResult
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/export-brandwise-excel
+ * Generate and download brand-wise Flipkart & Shopsy rate card Excel
+ */
+router.get('/export-brandwise-excel', async (req, res) => {
+  try {
+    const pool = getPool();
+    const excelResult = await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
+    res.download(excelResult.filePath, 'Flipkart_Shopsy_Brandwise_RateCard.xlsx');
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 export default router;
+

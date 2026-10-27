@@ -1,14 +1,16 @@
-﻿import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import PageHeader from '../components/PageHeader';
 import Modal, { ConfirmDialog } from '../components/Modal';
 import {
   fetchRateCardConfig, fetchRateCardCategoryList, saveRateCardPeriod, closeRateCardPeriod,
+  autoCloseSupersededPeriods,
   deleteRateCardRow, seedRateCard, parseRateCardImage,
   fetchMarketplaceAccounts, createMarketplaceAccount, deleteMarketplaceAccount,
   fetchFilters, backfillBrands, fetchRateCardVersions, createRateCardVersion,
   publishRateCardVersion, rollbackRateCardVersion,
   fetchRateCardNotificationStatus, sendRateCardNotificationTest,
+  fetchFlipkartSyncStatus, fetchUnconfiguredCategories, checkCategoryRateCard, syncFlipkartRateCards,
 } from '../api/client';
 
 /* ─── Date helpers ────────────────────────────────────────────────
@@ -120,7 +122,8 @@ function rowStatus(row, date = TODAY) {
 // Shopsy is a sub-channel of Flipkart — its categories appear under Flipkart
 // as "shopsy_kurta", "shopsy_ethnic_set" etc. (prefixed, not a separate marketplace).
 const MARKETPLACES = [
-  { id: 'flipkart', label: 'Flipkart',  emoji: '🛒', note: 'Includes Shopsy sub-channel (shopsy_* categories)' },
+  { id: 'flipkart', label: 'Flipkart',  emoji: '🛒', note: 'Flipkart Marketplace fee cards' },
+  { id: 'shopsy',   label: 'Shopsy',    emoji: '🛍️', note: 'Shopsy (0% Commission, Tiered Closing Fee & Return Shipping)' },
   { id: 'amazon',   label: 'Amazon',    emoji: '📦' },
   { id: 'meesho',   label: 'Meesho',    emoji: '🎀' },
   { id: 'myntra_vb', label: 'Myntra (VB)', emoji: '👗', defaultAccount: 'myntra_vb', note: 'VB Exports (Seller ID: 10708)' },
@@ -1532,17 +1535,22 @@ function RatePeriodDrawer({
                 <strong>Historical entry</strong> — {fmtDate(effectiveFrom)} → {fmtDate(endDate)}. Auto-close is off.
               </div>
             ) : (
-              <label className="mt-3 flex items-start gap-3 p-3 bg-surface rounded-xl border border-border cursor-pointer hover:border-primary transition-colors">
+              <label className="mt-3 flex items-start gap-3.5 p-3.5 bg-primary-container/25 rounded-2xl border-2 border-primary/30 cursor-pointer hover:border-primary transition-all shadow-sm">
                 <input
                   type="checkbox"
                   checked={autoClose}
                   onChange={e => setAutoClose(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 text-primary rounded border-border"
+                  className="mt-1 w-4 h-4 text-primary rounded border-border focus:ring-primary accent-[#902A4A]"
                 />
-                <span>
-                  <span className="text-sm font-semibold text-ink block">Auto-close current active rate</span>
-                  <span className="text-[11px] text-secondary block mt-0.5">
-                    Ends existing rate on <strong>{effectiveFrom ? fmtDate(dateMinus1(effectiveFrom)) : '—'}</strong> (day before new rate). Recommended.
+                <span className="flex-1">
+                  <span className="text-sm font-bold text-ink flex items-center gap-2">
+                    Auto-close current active rate
+                    <span className="text-[10px] bg-primary text-white font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Recommended
+                    </span>
+                  </span>
+                  <span className="text-xs text-secondary block mt-1 leading-relaxed">
+                    Ends existing rate on <strong className="text-primary font-bold">{effectiveFrom ? fmtDate(dateMinus1(effectiveFrom)) : '—'}</strong> (day before new rate starts). Past orders stay accurate on historical rates, and the new rate becomes active on <strong className="text-ink">{fmtDate(effectiveFrom)}</strong>.
                   </span>
                 </span>
               </label>
@@ -1850,6 +1858,7 @@ function RatePeriodDrawer({
     // Confirm dialog state for destructive flows.
     const [confirm, setConfirm]   = useState(null); // { title, description, action, variant }
     const [confirmBusy, setConfirmBusy] = useState(false);
+    const [autoClosingAll, setAutoClosingAll] = useState(false);
 
     const load = useCallback(async () => {
       setLoading(true); setErr(null);
@@ -1926,13 +1935,16 @@ function RatePeriodDrawer({
           await load();
           setConfirm(null);
           if (failed.length === 0) {
-            setBanner({ tone: 'success', text: `Deleted ${ids.length} row${ids.length > 1 ? 's' : ''}.` });
+            setBanner({ tone: 'success', text: `Deleted ${ids.length} rate row${ids.length > 1 ? 's' : ''}.` });
           } else {
             setBanner({
               tone: 'error',
-              text: `Deleted ${ids.length - failed.length} of ${ids.length} — ${failed.length} failed: ${failed[0].message}`,
+              text: `Deleted ${ids.length - failed.length} of ${ids.length} rows. ${failed.length} failed: ${failed.map(f => f.message).join('; ')}`,
             });
           }
+        } catch (err) {
+          setConfirm(null);
+          setBanner({ tone: 'error', text: err.response?.data?.error || err.message });
         } finally {
           setConfirmBusy(false);
         }
@@ -1940,164 +1952,181 @@ function RatePeriodDrawer({
     });
   }
 
-  function handleEditPeriod(category, pRows) {
-    setDrawer({
-      category,
-      rows: pRows,
-      editIds:     pRows.map(r => r.id),
-      initialFrom: toDateStr(pRows[0]?.start_date),
-      initialTo:   toDateStr(pRows[0]?.end_date),
-      isCopy:      false,
-      copyFromCat: null,
+  const supersededCount = Object.values(byCategory).reduce((sum, catRows) => {
+    const pMap = {};
+    catRows.forEach(r => {
+      const k = `${toDateStr(r.start_date) || 'no-date'}|${toDateStr(r.end_date) || 'open'}`;
+      if (!pMap[k]) pMap[k] = [];
+      pMap[k].push(r);
     });
+    const sorted = Object.keys(pMap).sort((a, b) => {
+      const sA = toDateStr(pMap[a][0].start_date) || '';
+      const sB = toDateStr(pMap[b][0].start_date) || '';
+      return sB.localeCompare(sA);
+    });
+    const act = sorted.filter(k => rowStatus(pMap[k][0]) === 'active');
+    return sum + Math.max(0, act.length - 1);
+  }, 0);
+
+  async function handleAutoCloseAllSuperseded() {
+    setAutoClosingAll(true);
+    try {
+      const res = await autoCloseSupersededPeriods(type, marketplace, sellerAccount);
+      await load();
+      if (onCoverageDirty) onCoverageDirty();
+      setBanner({
+        tone: 'success',
+        text: `Cleaned up ${res.closedRows || 0} overlapping rows across ${res.resolved?.length || 0} categories. All earlier periods are now cleanly closed.`,
+      });
+    } catch (err) {
+      setBanner({ tone: 'error', text: err.response?.data?.error || err.message });
+    } finally {
+      setAutoClosingAll(false);
+    }
   }
 
-  function handleCopyPeriod(sourceCategory, pRows) {
-    setDrawer({
-      category:    '',        // blank — user picks target category
-      rows:        pRows,     // slabs pre-filled from source period
-      editIds:     null,      // NOT edit mode
-      initialFrom: null,      // fresh dates
-      initialTo:   null,
-      isCopy:      true,
-      copyFromCat: sourceCategory,
-    });
-  }
-
-  const colorBgMap = { indigo: 'bg-primary', violet: 'bg-violet-600', blue: 'bg-blue-600', cyan: 'bg-cyan-600', rose: 'bg-rose-600', amber: 'bg-amber-600' };
-  const mpMeta = MARKETPLACES.find(m => m.id === marketplace) || MARKETPLACES[0];
-
-  // Auto-dismiss the toast banner after a few seconds. We track via ref so
-  // the timeout id is cancelled if a new banner arrives mid-display.
-  const bannerTimerRef = useRef(null);
-  useEffect(() => {
-    if (!banner) return undefined;
-    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    // Warnings list rows the admin may need to fix, so they stay until dismissed.
-    if (banner.tone === 'warning') return undefined;
-    bannerTimerRef.current = setTimeout(() => setBanner(null), 4500);
-    return () => { if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current); };
-  }, [banner]);
-
-  if (loading) return (
-    <div className="animate-pulse space-y-4">
-      {[1, 2, 3].map(i => <div key={i} className="h-32 bg-surface-container rounded-xl" />)}
-    </div>
-  );
-  if (err) return (
-    <div className="bg-rose-50 border border-rose-200 rounded-xl p-5 text-rose-700 text-sm">Failed to load: {err}</div>
-  );
-
-  const bannerPalette = banner?.tone === 'success'
-    ? { ring: 'border-emerald-200', bg: 'bg-emerald-50', text: 'text-emerald-800', icon: 'text-emerald-600' }
-    : banner?.tone === 'warning'
-      ? { ring: 'border-amber-200', bg: 'bg-amber-50', text: 'text-amber-900', icon: 'text-amber-600' }
-      : { ring: 'border-rose-200',   bg: 'bg-rose-50',   text: 'text-rose-800',   icon: 'text-rose-600' };
-
-  return (
-    <div className="space-y-4">
-      {banner && (
-        <div
-          role="status"
-          aria-live="polite"
-          className={`flex items-start gap-3 rounded-xl border ${bannerPalette.ring} ${bannerPalette.bg} px-4 py-3 ${bannerPalette.text} shadow-sm animate-[modal-fade-in_200ms_ease-out]`}
-        >
-          <svg className={`w-4 h-4 mt-0.5 shrink-0 ${bannerPalette.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            {banner.tone === 'success'
-              ? <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              : <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75M12 17.25h.008v.008H12v-.008zM10.29 3.86l-8.18 14.18A2 2 0 003.84 21h16.32a2 2 0 001.73-2.96L13.71 3.86a2 2 0 00-3.42 0z" />}
-          </svg>
-          <p className="text-sm flex-1 whitespace-pre-line">{banner.text}</p>
-          <button
-            type="button"
-            onClick={() => setBanner(null)}
-            className="text-current opacity-60 hover:opacity-100 transition-opacity"
-            aria-label="Dismiss notification"
+    return (
+      <div className="space-y-4">
+        {banner && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`flex items-start gap-3 rounded-xl border ${bannerPalette.ring} ${bannerPalette.bg} px-4 py-3 ${bannerPalette.text} shadow-sm animate-[modal-fade-in_200ms_ease-out]`}
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M6 18L18 6" />
+            <svg className={`w-4 h-4 mt-0.5 shrink-0 ${bannerPalette.icon}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              {banner.tone === 'success'
+                ? <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                : <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75M12 17.25h.008v.008H12v-.008zM10.29 3.86l-8.18 14.18A2 2 0 003.84 21h16.32a2 2 0 001.73-2.96L13.71 3.86a2 2 0 00-3.42 0z" />}
             </svg>
-          </button>
-        </div>
-      )}
-      <FeeTypeCoveragePanel
-        feeType={type}
-        coverage={coverage}
-        marketplace={marketplace}
-        sellerAccount={sellerAccount}
-        onConfigureCategory={(cat) => setDrawer({
-          category: cat,
-          rows: [],
-          editIds: null,
-          isCopy: false,
-          copyFromCat: null,
-        })}
-      />
+            <p className="text-sm flex-1 whitespace-pre-line">{banner.text}</p>
+            <button
+              type="button"
+              onClick={() => setBanner(null)}
+              className="text-current opacity-60 hover:opacity-100 transition-opacity"
+              aria-label="Dismiss notification"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 6l12 12M6 18L18 6" />
+              </svg>
+            </button>
+          </div>
+        )}
 
-      {/* Controls bar */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <p className="text-sm text-secondary flex-1">{config.description}</p>
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="flex bg-surface-container rounded-xl p-0.5">
-            {[['active', '● Active Now'], ['all', '⊙ All History']].map(([v, l]) => (
-              <button key={v} onClick={() => setViewMode(v)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  viewMode === v ? 'bg-surface text-ink shadow-sm' : 'text-secondary hover:text-ink'
-                }`}>{l}</button>
+        {supersededCount > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-amber-50/90 border border-amber-200 rounded-2xl text-amber-900 shadow-sm animate-[modal-fade-in_200ms_ease-out]">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center text-amber-700 shrink-0 font-bold text-lg">
+                ⚡
+              </div>
+              <div>
+                <p className="text-sm font-bold text-amber-950">
+                  {supersededCount} overlapping rate period{supersededCount > 1 ? 's' : ''} detected on {mpMeta.label}
+                </p>
+                <p className="text-xs text-amber-800 mt-0.5">
+                  Earlier rate periods were left open when new rates were added. Auto-closing sets their end date to the day before their successors started.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleAutoCloseAllSuperseded}
+              disabled={autoClosingAll}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-amber-700 text-white rounded-xl text-xs font-bold hover:bg-amber-800 disabled:opacity-50 transition-all shadow-sm"
+            >
+              {autoClosingAll ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Closing Overlaps…
+                </>
+              ) : (
+                <>
+                  <span>✓</span> Auto-Close All Overlaps (1-Click)
+                </>
+              )}
+            </button>
+          </div>
+        )}
+
+        <FeeTypeCoveragePanel
+          feeType={type}
+          coverage={coverage}
+          marketplace={marketplace}
+          sellerAccount={sellerAccount}
+          onConfigureCategory={(cat) => setDrawer({
+            category: cat,
+            rows: [],
+            editIds: null,
+            isCopy: false,
+            copyFromCat: null,
+          })}
+        />
+
+        {/* Controls bar */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-sm text-secondary flex-1">{config.description}</p>
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="flex bg-surface-container rounded-xl p-0.5">
+              {[['active', '● Active Now'], ['all', '⊙ All History']].map(([v, l]) => (
+                <button key={v} onClick={() => setViewMode(v)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    viewMode === v ? 'bg-surface text-ink shadow-sm' : 'text-secondary hover:text-ink'
+                  }`}>{l}</button>
+              ))}
+            </div>
+            <button
+              onClick={() => setDrawer({ category: '', rows: [], editIds: null, isCopy: false, copyFromCat: null })}
+              className={`flex items-center gap-1.5 text-xs px-4 py-2 rounded-xl text-white font-semibold ${colorBgMap[config.color] || 'bg-primary'} hover:opacity-90 shadow-sm transition-all`}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Add Rate Period
+            </button>
+          </div>
+        </div>
+
+        <p className="text-xs text-outline">
+          {viewMode === 'active'
+            ? `${visibleCategories.length} categor${visibleCategories.length !== 1 ? 'ies' : 'y'} with active rates on ${mpMeta.label}`
+            : `${allCategories.length} total categor${allCategories.length !== 1 ? 'ies' : 'y'} · ${rows.length} rows in database`}
+          {viewMode === 'active' && allCategories.length > visibleCategories.length &&
+            ` — ${allCategories.length - visibleCategories.length} have no active rate (switch to All History to see them)`}
+        </p>
+
+        {/* Category cards */}
+        {visibleCategories.length === 0 ? (
+          <div className="text-center py-16 border-2 border-dashed border-border rounded-2xl">
+            <div className="text-5xl mb-3">{config.icon}</div>
+            <p className="text-secondary font-bold text-base">No rates configured yet for {mpMeta.label}</p>
+            <p className="text-outline text-sm mt-1 mb-5">Add one rate period per product category to get started</p>
+            <button
+              onClick={() => setDrawer({ category: '', rows: [], editIds: null, isCopy: false, copyFromCat: null })}
+              className="text-sm px-5 py-2.5 bg-primary text-white rounded-xl hover:bg-primary font-semibold shadow-sm"
+            >
+              + Add First Rate Period
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {visibleCategories.map(cat => (
+              <CategoryCard
+                key={cat}
+                category={cat}
+                allRows={byCategory[cat]}
+                config={config}
+                onEdit={(category, activeRows) => setDrawer({ category, rows: activeRows, editIds: null, isCopy: false, copyFromCat: null })}
+                onEditPeriod={handleEditPeriod}
+                onCopyPeriod={handleCopyPeriod}
+                onDelete={handleDeletePeriod}
+                onClosePeriod={handleClosePeriod}
+              />
             ))}
           </div>
-          <button
-            onClick={() => setDrawer({ category: '', rows: [], editIds: null, isCopy: false, copyFromCat: null })}
-            className={`flex items-center gap-1.5 text-xs px-4 py-2 rounded-xl text-white font-semibold ${colorBgMap[config.color] || 'bg-primary'} hover:opacity-90 shadow-sm transition-all`}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            Add Rate Period
-          </button>
-        </div>
-      </div>
+        )}
 
-      <p className="text-xs text-outline">
-        {viewMode === 'active'
-          ? `${visibleCategories.length} categor${visibleCategories.length !== 1 ? 'ies' : 'y'} with active rates on ${mpMeta.label}`
-          : `${allCategories.length} total categor${allCategories.length !== 1 ? 'ies' : 'y'} · ${rows.length} rows in database`}
-        {viewMode === 'active' && allCategories.length > visibleCategories.length &&
-          ` — ${allCategories.length - visibleCategories.length} have no active rate (switch to All History to see them)`}
-      </p>
-
-      {/* Category cards */}
-      {visibleCategories.length === 0 ? (
-        <div className="text-center py-16 border-2 border-dashed border-border rounded-2xl">
-          <div className="text-5xl mb-3">{config.icon}</div>
-          <p className="text-secondary font-bold text-base">No rates configured yet for {mpMeta.label}</p>
-          <p className="text-outline text-sm mt-1 mb-5">Add one rate period per product category to get started</p>
-          <button
-            onClick={() => setDrawer({ category: '', rows: [], editIds: null, isCopy: false, copyFromCat: null })}
-            className="text-sm px-5 py-2.5 bg-primary text-white rounded-xl hover:bg-primary font-semibold shadow-sm"
-          >
-            + Add First Rate Period
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {visibleCategories.map(cat => (
-            <CategoryCard
-              key={cat}
-              category={cat}
-              allRows={byCategory[cat]}
-              config={config}
-              onEdit={(category, activeRows) => setDrawer({ category, rows: activeRows, editIds: null, isCopy: false, copyFromCat: null })}
-              onEditPeriod={handleEditPeriod}
-              onCopyPeriod={handleCopyPeriod}
-              onDelete={handleDeletePeriod}
-              onClosePeriod={handleClosePeriod}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Drawer */}
+        {/* Drawer */}
       {drawer && (
         <RatePeriodDrawer
           type={type}
@@ -2602,6 +2631,331 @@ function RateCardVersionPanel({ marketplace, sellerAccount, onRestored }) {
   );
 }
 
+/* ─── Flipkart Rate Card Live Sync & New Category Discovery ──── */
+function FlipkartAutomationPanel({ onSyncComplete }) {
+  const [status, setStatus] = useState(null);
+  const [unconfigured, setUnconfigured] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [customCat, setCustomCat] = useState('');
+  const [inspecting, setInspecting] = useState(false);
+  const [inspectResult, setInspectResult] = useState(null);
+  const [toast, setToast] = useState('');
+  const [error, setError] = useState('');
+
+  const loadStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [sData, uData] = await Promise.all([
+        fetchFlipkartSyncStatus().catch(() => null),
+        fetchUnconfiguredCategories().catch(() => ({ categories: [] }))
+      ]);
+      setStatus(sData);
+      setUnconfigured(uData?.categories || []);
+    } catch (e) {
+      console.warn('Status load note:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+  }, [loadStatus]);
+
+  const handleSyncAll = async () => {
+    setSyncing(true);
+    setError('');
+    setToast('');
+    try {
+      const res = await syncFlipkartRateCards({ forceUpdate: true });
+      if (res.success) {
+        setToast(`✓ Successfully synced ${res.scrapedCount || 0} categories from Flipkart Seller Hub!`);
+        if (onSyncComplete) onSyncComplete();
+        loadStatus();
+      } else {
+        setError(res.error || 'Failed to sync Flipkart rate cards');
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleCheckCategory = async (categoryName, autoSync = false) => {
+    const cat = (categoryName || customCat || '').trim();
+    if (!cat) return;
+    setInspecting(true);
+    setError('');
+    setToast('');
+    try {
+      const res = await checkCategoryRateCard(cat, autoSync);
+      if (res.success) {
+        setInspectResult(res);
+        if (autoSync) {
+          setToast(`✓ Category "${cat}" rate card successfully extracted and saved to DB!`);
+          if (onSyncComplete) onSyncComplete();
+          loadStatus();
+        }
+      } else {
+        setError(res.error || `Could not find rate card for category "${cat}" on Flipkart`);
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Category check failed');
+    } finally {
+      setInspecting(false);
+    }
+  };
+
+  const handleCommitInspected = async () => {
+    if (!inspectResult?.category) return;
+    await handleCheckCategory(inspectResult.category, true);
+  };
+
+  return (
+    <div className="bg-surface rounded-2xl border border-border shadow-sm overflow-hidden mb-6">
+      {/* Header bar */}
+      <div className="p-4 sm:p-5 bg-gradient-to-r from-primary/10 via-primary-container/20 to-surface border-b border-border flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center text-white text-xl shadow-md">
+            🛒
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-ink">Flipkart Live Rate Card Automation</h3>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                Live Sync Engine
+              </span>
+            </div>
+            <p className="text-xs text-secondary mt-0.5">
+              Directly checks & extracts Commission, Fixed Fee, and Reverse Shipping from Flipkart Seller Hub (<strong className="text-ink">EthnicJunction</strong>).
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {status?.latestVersion && (
+            <div className="hidden sm:block text-right pr-2 border-r border-border">
+              <p className="text-[10px] text-outline uppercase font-semibold">Latest Version</p>
+              <p className="text-xs font-mono font-bold text-primary truncate max-w-[140px]" title={status.latestVersion.version_name}>
+                {status.latestVersion.version_name}
+              </p>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={handleSyncAll}
+            disabled={syncing || inspecting}
+            className="px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold hover:bg-primary-hover active:scale-95 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+          >
+            {syncing ? (
+              <>
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                <span>Scraping & Syncing...</span>
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                <span>Sync All Rates Now</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {toast && (
+        <div className="px-5 py-2.5 bg-emerald-50 border-b border-emerald-200 text-xs font-semibold text-emerald-800 flex items-center justify-between">
+          <span>{toast}</span>
+          <button type="button" onClick={() => setToast('')} className="text-emerald-600 hover:text-emerald-900">✕</button>
+        </div>
+      )}
+
+      {error && (
+        <div className="px-5 py-2.5 bg-rose-50 border-b border-rose-200 text-xs font-semibold text-rose-800 flex items-center justify-between">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError('')} className="text-rose-600 hover:text-rose-900">✕</button>
+        </div>
+      )}
+
+      {/* Dynamic New Category Discovery & Checker */}
+      <div className="p-4 sm:p-5 space-y-4">
+        {/* Unconfigured categories chips */}
+        {unconfigured.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold text-secondary uppercase tracking-wider">
+                Unconfigured Categories in Orders ({unconfigured.length})
+              </span>
+              <span className="text-[10px] text-outline">Click any category to inspect Flipkart rate card live:</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {unconfigured.map(c => (
+                <button
+                  key={c.category}
+                  type="button"
+                  onClick={() => handleCheckCategory(c.category)}
+                  disabled={inspecting}
+                  className="px-2.5 py-1 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-semibold transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                >
+                  <span>{c.category}</span>
+                  <span className="px-1.5 py-0.2 rounded-full bg-amber-200/80 text-[10px] text-amber-800">
+                    {c.order_count} orders
+                  </span>
+                  <span className="text-amber-700 font-bold">🔍 Check</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Custom Category Input & Check Tool */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
+          <div className="flex-1 min-w-[220px]">
+            <input
+              type="text"
+              value={customCat}
+              onChange={e => setCustomCat(e.target.value)}
+              placeholder="Check ANY category (e.g. lehenga_choli, blouse, gown, dupatta, shirt)..."
+              className="w-full px-3 py-2 rounded-xl border border-border text-xs text-ink placeholder:text-outline focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => handleCheckCategory(customCat, false)}
+            disabled={inspecting || !customCat.trim()}
+            className="px-3.5 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high border border-border text-ink text-xs font-semibold transition-colors disabled:opacity-40 flex items-center gap-1"
+          >
+            {inspecting ? (
+              <span>Inspecting Flipkart...</span>
+            ) : (
+              <>
+                <span>🔍 Inspect Rates</span>
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleCheckCategory(customCat, true)}
+            disabled={inspecting || !customCat.trim()}
+            className="px-3.5 py-2 rounded-xl bg-primary-container hover:bg-primary-container/80 text-primary text-xs font-bold transition-colors disabled:opacity-40 flex items-center gap-1"
+          >
+            <span>⚡ Inspect & Sync to DB</span>
+          </button>
+        </div>
+
+        {/* Live Inspection Result Card */}
+        {inspectResult && (
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-3 animate-[modal-fade-in_200ms_ease-out]">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-primary/10 pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-ink">
+                  Rate Card for <span className="text-primary capitalize">{inspectResult.category}</span>
+                </span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  inspectResult.isConfiguredInDb ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {inspectResult.isConfiguredInDb ? 'Configured in DB' : 'New / Unconfigured'}
+                </span>
+                <span className="text-[11px] text-secondary">
+                  (Found 9 tables on Flipkart)
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {!inspectResult.synced && (
+                  <button
+                    type="button"
+                    onClick={handleCommitInspected}
+                    disabled={inspecting}
+                    className="px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-bold hover:bg-primary-hover shadow-sm active:scale-95 transition-all"
+                  >
+                    💾 Save to Database
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setInspectResult(null)}
+                  className="text-xs text-outline hover:text-ink px-1.5 py-1"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Fees Breakdown Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              {/* Commission */}
+              <div className="p-3 rounded-lg bg-surface border border-border space-y-1.5">
+                <p className="font-bold text-ink flex items-center gap-1">
+                  <span>💰</span> Commission Slabs ({inspectResult.rates?.commissionsCount || 0})
+                </p>
+                <div className="space-y-1 text-secondary">
+                  {(inspectResult.rates?.data?.commissions || []).slice(0, 4).map((c, idx) => (
+                    <div key={idx} className="flex justify-between text-[11px]">
+                      <span>₹{c.price_min} - ₹{c.price_max}</span>
+                      <strong className="text-ink">{(c.rate * 100).toFixed(1)}%</strong>
+                    </div>
+                  ))}
+                  {(!inspectResult.rates?.data?.commissions || inspectResult.rates.data.commissions.length === 0) && (
+                    <p className="text-[11px] text-outline">0% standard rate</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Fixed Fee */}
+              <div className="p-3 rounded-lg bg-surface border border-border space-y-1.5">
+                <p className="font-bold text-ink flex items-center gap-1">
+                  <span>🏷️</span> Fixed Fee Slabs ({inspectResult.rates?.fixedFeesCount || 0})
+                </p>
+                <div className="space-y-1 text-secondary">
+                  {(inspectResult.rates?.data?.fixedFees || [])
+                    .filter(f => f.fulfilment_type === 'Silver' || f.fulfilment_type === 'Bronze')
+                    .slice(0, 3)
+                    .map((f, idx) => (
+                      <div key={idx} className="flex justify-between text-[11px]">
+                        <span>{f.fulfilment_type} (₹{f.price_min} - ₹{f.price_max})</span>
+                        <strong className="text-ink">₹{f.rate}</strong>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              {/* Reverse Shipping */}
+              <div className="p-3 rounded-lg bg-surface border border-border space-y-1.5">
+                <p className="font-bold text-ink flex items-center gap-1">
+                  <span>🚚</span> Reverse Shipping Slabs ({inspectResult.rates?.reverseShippingCount || 0})
+                </p>
+                <div className="space-y-1 text-secondary">
+                  {(inspectResult.rates?.data?.reverseShipping || []).slice(0, 2).map((r, idx) => (
+                    <div key={idx} className="text-[11px] leading-tight">
+                      <div className="font-semibold text-ink">{r.weight_slab}</div>
+                      <div className="text-outline">Local: ₹{r.local_fee} | Zonal: ₹{r.zonal_fee} | Nat: ₹{r.national_fee}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Changes detected count */}
+            {inspectResult.changesCount > 0 && (
+              <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 font-medium">
+                ⚡ <strong>{inspectResult.changesCount} rate differences detected</strong> compared to currently active rates.
+                {!inspectResult.synced && ' Click "Save to Database" to auto-close prior periods and activate these rates.'}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ─── Main page ───────────────────────────────────────────────── */
 function RateCardNotificationPanel() {
   const [data, setData] = useState(null);
@@ -2763,112 +3117,144 @@ export default function RateCardConfigPage() {
         actions={<div />}
       />
 
-      <div className="flex flex-col md:flex-row gap-6">
-        <div className="w-full md:w-64 shrink-0 space-y-6">
-          <div className="bg-surface rounded-xl border border-border/80 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-border">
-              <p className="text-[10px] font-bold text-outline uppercase tracking-widest mb-3">Marketplace</p>
-              <div className="flex gap-2 flex-wrap">
-                {MARKETPLACES.map(mp => (
-                  <button
-                    key={mp.id}
-                    onClick={() => handleMarketplaceChange(mp.id)}
-                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold transition-all border ${
-                      marketplace === mp.id
-                        ? 'bg-primary text-white border-primary shadow-sm'
-                        : 'bg-surface text-secondary border-border hover:border-border hover:bg-surface-container-low'
-                    }`}
-                  >
-                    <span className="text-base leading-none">{mp.emoji}</span>
-                    {mp.label}
-                  </button>
-                ))}
-              </div>
-              {MARKETPLACES.find(m => m.id === marketplace)?.note && (
-                <p className="text-[11px] text-outline mt-2">{MARKETPLACES.find(m => m.id === marketplace).note}</p>
-              )}
-            </div>
-            <div className="px-5 py-3 bg-surface-container-low/50">
-              <AccountStrip marketplace={marketplace} value={sellerAccount} onChange={setAccount} />
-            </div>
+      {/* ── 1. Top Marketplace Selector Navigation Bar ── */}
+      <div className="bg-surface rounded-2xl border border-border shadow-sm p-4">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-primary" />
+            <p className="text-xs font-bold text-secondary uppercase tracking-wider">Select Marketplace Channel</p>
           </div>
+          {MARKETPLACES.find(m => m.id === marketplace)?.note && (
+            <span className="text-[11px] text-outline font-medium">
+              {MARKETPLACES.find(m => m.id === marketplace).note}
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5">
+          {MARKETPLACES.map(mp => {
+            const isSelected = marketplace === mp.id;
+            return (
+              <button
+                key={mp.id}
+                type="button"
+                onClick={() => handleMarketplaceChange(mp.id)}
+                className={`flex flex-col items-start gap-1 p-3 rounded-xl border text-left transition-all ${
+                  isSelected
+                    ? 'bg-primary text-white border-primary shadow-md ring-2 ring-primary/25'
+                    : 'bg-surface text-secondary border-border hover:border-primary/40 hover:bg-primary-container/20'
+                }`}
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span className="text-xl">{mp.emoji}</span>
+                  {isSelected && (
+                    <span className="w-2 h-2 rounded-full bg-white/80 animate-pulse" />
+                  )}
+                </div>
+                <span className={`text-xs font-bold mt-1 ${isSelected ? 'text-white' : 'text-ink'}`}>
+                  {mp.label}
+                </span>
+                <span className={`text-[10px] ${isSelected ? 'text-white/80' : 'text-outline'}`}>
+                  {mp.id.includes('myntra') ? 'Myntra MJIPL' : mp.id === 'flipkart' ? 'Flipkart & Shopsy' : 'Active Channel'}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
-        <div className="flex-1 space-y-6 min-w-0">
-          <>
-            <RateCardVersionPanel
-              marketplace={marketplace}
-              sellerAccount={sellerAccount}
-              onRestored={handleCoverageDirty}
-            />
+        {/* Account strip & utility bar */}
+        <div className="mt-4 pt-3.5 border-t border-border flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-secondary">Account:</span>
+            <AccountStrip marketplace={marketplace} value={sellerAccount} onChange={setAccount} />
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowHelp(v => !v)}
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-border text-secondary hover:text-ink hover:bg-surface-container transition-colors flex items-center gap-1.5"
+            >
+              <svg className="w-3.5 h-3.5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              {showHelp ? 'Hide Guide' : 'How Rate Cards Work'}
+            </button>
+          </div>
+        </div>
+      </div>
 
-              <div className="rounded-2xl border border-primary overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setShowHelp(v => !v)}
-                  className="w-full px-5 py-3 flex items-center justify-between gap-3 bg-primary-container/60 hover:bg-primary-container transition-colors text-left"
-                >
-                  <div className="flex items-center gap-2">
-                    <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span className="text-sm font-bold text-primary">How rate cards work</span>
-                  </div>
-                  <span className="text-xs text-primary font-semibold">{showHelp ? 'Hide' : 'Show guide'}</span>
-                </button>
-                {showHelp && (
-                  <div className="px-5 py-4 bg-surface border-t border-primary text-xs text-secondary leading-relaxed space-y-2">
-                    <p>① Pick marketplace and account above.</p>
-                    <p>② Click <strong>Add Rate Period</strong> → select category → set dates → enter slabs → Save.</p>
-                    <p>③ When rates change, add a new period — the old rate auto-closes. Past orders use the rate active on their order date.</p>
-                    <p>④ Use <strong>Edit</strong> on any historical period to fix dates or values.</p>
-                  </div>
+      {showHelp && (
+        <div className="rounded-2xl border border-primary/30 bg-primary-container/30 p-4 text-xs text-secondary leading-relaxed space-y-2 animate-[modal-fade-in_200ms_ease-out]">
+          <div className="flex items-center gap-2 text-primary font-bold">
+            <span>💡</span>
+            <span>Rate Card Workflow Guide</span>
+          </div>
+          <p>① <strong>Pick Marketplace &amp; Account</strong> above to configure rates specific to that legal entity.</p>
+          <p>② <strong>Add Rate Period:</strong> Enter Effective From date, rates, and slabs. Leaving End Date blank marks it as the current active rate.</p>
+          <p>③ <strong>Auto-Close:</strong> When adding a new active period, the previous rate automatically ends on the day before, ensuring historical order reconciliation remains 100% accurate.</p>
+          <p>④ <strong>Resolving Overlaps:</strong> If earlier historical periods were left open, use the 1-click &quot;Auto-Close All Overlaps&quot; button to clean up transition dates instantly.</p>
+        </div>
+      )}
+
+      {coverage !== null && (
+        <MarketplaceCoverageSummary coverage={coverage} marketplace={marketplace} />
+      )}
+
+      {marketplace === 'flipkart' && (
+        <FlipkartAutomationPanel onSyncComplete={handleCoverageDirty} />
+      )}
+
+      <RateCardVersionPanel
+        marketplace={marketplace}
+        sellerAccount={sellerAccount}
+        onRestored={handleCoverageDirty}
+      />
+
+      {/* ── 2. Fee Type Tabs Bar ── */}
+      <div id="fee-type-tabs" className="bg-surface rounded-2xl border border-border shadow-sm overflow-hidden">
+        <div className="border-b border-border px-3 pt-3 flex gap-1.5 flex-wrap bg-surface-container-low/40">
+          {TABS.map(key => {
+            const cfg    = FEE_CONFIGS[key];
+            const isAct  = tab === key;
+            const gapCnt = coverage?.gaps?.[key]?.length || 0;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTab(key)}
+                className={`flex items-center gap-2 px-4 py-3 text-xs sm:text-sm font-semibold rounded-t-xl transition-all ${
+                  isAct
+                    ? 'bg-primary text-white -mb-px border-t border-x border-primary shadow-sm'
+                    : 'text-secondary hover:text-ink hover:bg-surface-container-low border-t border-x border-transparent'
+                }`}
+              >
+                <span className="text-base">{cfg.icon}</span>
+                <span>{cfg.title}</span>
+                {coverage && (
+                  gapCnt > 0 ? (
+                    <span className={`ml-1 min-w-[20px] h-[20px] px-1 text-[10px] font-bold rounded-full leading-none flex items-center justify-center ${
+                      isAct ? 'bg-white/20 text-white' : 'bg-amber-500 text-white'
+                    }`}>
+                      {gapCnt}
+                    </span>
+                  ) : (
+                    <span className={`ml-1 text-[11px] font-bold ${isAct ? 'text-white/90' : 'text-emerald-600'}`}>
+                      ✓
+                    </span>
+                  )
                 )}
-              </div>
-
-              {coverage !== null && (
-                <MarketplaceCoverageSummary coverage={coverage} marketplace={marketplace} />
-              )}
-
-              <div id="fee-type-tabs" className="bg-surface rounded-xl border border-border/80 shadow-sm overflow-hidden">
-                <div className="border-b border-border px-3 pt-3 flex gap-1 flex-wrap bg-surface-container-low/40">
-                  {TABS.map(key => {
-                    const cfg    = FEE_CONFIGS[key];
-                    const color  = TAB_COLORS[key];
-                    const isAct  = tab === key;
-                    const gapCnt = coverage?.gaps?.[key]?.length || 0;
-                    return (
-                      <button key={key} onClick={() => setTab(key)}
-                        className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold rounded-t-xl transition-all ${
-                          isAct
-                            ? `${ACTIVE_MAP[color]} -mb-px border border-b-white border-border`
-                            : 'text-secondary hover:text-ink hover:bg-surface-container-low'
-                        }`}>
-                        <span>{cfg.icon}</span>
-                        {cfg.title}
-                        {gapCnt > 0 && (
-                          <span className={`ml-0.5 min-w-[18px] h-[18px] px-1 text-[10px] font-bold rounded-full leading-none flex items-center justify-center ${
-                            isAct ? 'bg-white/25 text-white' : 'bg-orange-500 text-white'
-                          }`}>
-                            {gapCnt}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="p-5">
-                  <FeeTypeView
-                    key={`${tab}_${marketplace}_${sellerAccount}`}
-                    type={tab}
-                    marketplace={marketplace}
-                    sellerAccount={sellerAccount}
-                    coverage={coverage}
-                    onCoverageDirty={handleCoverageDirty}
-                  />
-                </div>
-              </div>
-            </>
+              </button>
+            );
+          })}
+        </div>
+        <div className="p-4 sm:p-6">
+          <FeeTypeView
+            key={`${tab}_${marketplace}_${sellerAccount}`}
+            type={tab}
+            marketplace={marketplace}
+            sellerAccount={sellerAccount}
+            coverage={coverage}
+            onCoverageDirty={handleCoverageDirty}
+          />
         </div>
       </div>
     </div>

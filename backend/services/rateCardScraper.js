@@ -10,10 +10,12 @@ const __dirname = path.dirname(__filename);
 
 puppeteer.use(StealthPlugin());
 
-const COOKIES_PATH = path.join(__dirname, '../../cookies.json');
+const delay = (ms) => new Promise(res => setTimeout(res, ms));
+const COOKIES_PATH = path.join(__dirname, '../../.runtime/cookies.json');
 
 async function saveCookies(page) {
   const cookies = await page.cookies();
+  await fs.mkdir(path.dirname(COOKIES_PATH), { recursive: true });
   await fs.writeFile(COOKIES_PATH, JSON.stringify(cookies, null, 2));
 }
 
@@ -66,7 +68,7 @@ export async function scrapeRateCard(options = {}) {
         await page.type('input[name="username"]', email, { delay: 50 });
         await page.click('button[type="submit"]'); // Click Next/Continue
         
-        await page.waitForTimeout(2000);
+        await delay(2000);
         
         // Wait for password or OTP
         // Assuming password for now
@@ -93,7 +95,7 @@ export async function scrapeRateCard(options = {}) {
     // The exact URL depends on the seller dashboard structure.
     // Assuming standard URL path or clicking through menu:
     await page.goto('https://seller.flipkart.com/index.html#dashboard/payments/rate-card', { waitUntil: 'networkidle2' });
-    await page.waitForTimeout(5000);
+    await delay(5000);
 
     // -------------------------------------------------------------
     // EXTRACTION LOGIC

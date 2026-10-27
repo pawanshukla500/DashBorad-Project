@@ -157,21 +157,21 @@ function MyntraAccountToolbar({ accounts, sellerAccount, onAccountChange, onUplo
     }
   };
 
-  return <div className="rounded-xl border border-pink-200 bg-pink-50/70 p-4">
+  return <div className="rounded-xl border border-border bg-primary-container/30 p-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="text-sm font-bold text-ink">Myntra account and file</h2>
         <p className="mt-1 text-xs leading-relaxed text-secondary">Choose the account first. The whole uploaded file is stored under that account, so VB and EJ payments, exceptions, and rate cards cannot mix.</p>
       </div>
-      <button type="button" onClick={downloadTemplate} className="rounded-lg border border-pink-200 bg-surface px-3 py-2 text-xs font-bold text-pink-700 hover:bg-pink-100">Download template</button>
+      <button type="button" onClick={downloadTemplate} className="rounded-lg border border-border bg-surface px-3 py-2 text-xs font-bold text-primary hover:bg-primary-container">Download template</button>
     </div>
     <div className="mt-3 flex flex-wrap items-center gap-2">
       <label className="text-xs font-bold text-secondary" htmlFor="myntra-account">View account</label>
-      <select id="myntra-account" value={sellerAccount} onChange={event => onAccountChange(event.target.value)} disabled={!accounts.length || uploading} className="rounded-lg border border-pink-200 bg-surface px-3 py-2 text-xs font-semibold text-ink outline-none focus:border-pink-400">
+      <select id="myntra-account" value={sellerAccount} onChange={event => onAccountChange(event.target.value)} disabled={!accounts.length || uploading} className="rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold text-ink outline-none focus:border-primary">
         <option value="">All Myntra accounts</option>
         {accounts.map(account => <option key={account.account_id} value={account.account_id}>{account.display_name}</option>)}
       </select>
-      <label className={`cursor-pointer rounded-lg px-3 py-2 text-xs font-bold text-white ${sellerAccount && !uploading ? 'bg-pink-600 hover:bg-pink-700' : 'cursor-not-allowed bg-surface-container-highest'}`}>
+      <label className={`cursor-pointer rounded-lg px-3 py-2 text-xs font-bold ${sellerAccount && !uploading ? 'bg-primary hover:bg-indigo-dark text-on-primary' : 'cursor-not-allowed bg-surface-container-highest text-secondary'}`}>
         <input type="file" accept=".xlsx,.xls,.csv" className="sr-only" disabled={!sellerAccount || uploading} onChange={uploadFile} />
         {uploading ? 'Uploading…' : `Upload for ${selectedName}`}
       </label>
@@ -235,10 +235,10 @@ function InvoicePaymentPanel({ market }) {
     {isMyntra && <MyntraAccountToolbar accounts={accounts} sellerAccount={sellerAccount} onAccountChange={setSellerAccount} onUploaded={() => setRefreshKey(value => Math.max(Date.now(), value + 1))} />}
 
     {/* Rate Card Integration Status Banner */}
-    <div className={`rounded-xl border p-4 transition ${!rateCardStatus ? 'border-border bg-surface-container-low/70' : rateCardConfigured ? 'border-primary bg-gradient-to-r from-indigo-50/80 to-blue-50/60' : 'border-amber-200 bg-amber-50/70'}`}>
+    <div className={`rounded-xl border p-4 transition ${!rateCardStatus ? 'border-border bg-surface-container-low/70' : rateCardConfigured ? 'border-primary/20 bg-primary-container/40' : 'border-amber-200 bg-amber-50/70'}`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl font-bold text-lg ${!rateCardStatus ? 'bg-surface-container-highest text-white' : rateCardConfigured ? 'bg-primary text-white shadow-sm' : 'bg-amber-500 text-white'}`}>
+          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl font-bold text-lg ${!rateCardStatus ? 'bg-surface-container-highest text-secondary' : rateCardConfigured ? 'bg-primary text-on-primary shadow-sm' : 'bg-amber-500 text-white'}`}>
             {!rateCardStatus ? '…' : rateCardConfigured ? '✓' : '⚠️'}
           </div>
           <div>
@@ -470,7 +470,7 @@ function SetupPanel({ market }) {
       </Link>
     </div>
     <div className="mt-4 flex gap-2">
-      <Link to="/upload" className="inline-flex rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white">Open data upload</Link>
+      <Link to="/upload" className="inline-flex rounded-lg bg-primary px-3 py-2 text-xs font-bold text-on-primary hover:bg-indigo-dark transition-colors">Open data upload</Link>
     </div>
   </div>;
 }
@@ -571,17 +571,17 @@ export default function PaymentReconciliationPage() {
       <PageHeader title="Payment Check" subtitle="One place to review marketplace payments, fee discrepancies, pending payouts, and downloadable case evidence." />
       <Link
         to={`/rate-card-config?marketplace=${active?.marketplace || 'flipkart'}`}
-        className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-primary transition"
+        className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-xs font-bold text-on-primary shadow-sm hover:bg-indigo-dark transition"
       >
         <span>⚙️</span>
         <span>Configure Rate Cards</span>
       </Link>
     </div>
-    <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs leading-relaxed text-blue-900"><b>Safe discrepancy rule:</b> a fee is called a potential leak only when an imported payment charge exceeds a verified rate-card rule. Missing rate cards and return credits stay visible but are not labelled as an overcharge.</div>
+    <div className="rounded-xl border border-border bg-surface-container-low px-4 py-3 text-xs leading-relaxed text-secondary"><b>Safe discrepancy rule:</b> a fee is called a potential leak only when an imported payment charge exceeds a verified rate-card rule. Missing rate cards and return credits stay visible but are not labelled as an overcharge.</div>
     {configError && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">Marketplace configuration could not be refreshed. Showing the core payment tabs.</div>}
     <div className="flex gap-2 overflow-x-auto rounded-xl border border-border bg-surface p-2" role="tablist" aria-label="Marketplace payment checks">
-      <button type="button" onClick={() => setActiveKey('sku-benchmark')} role="tab" aria-selected={activeKey === 'sku-benchmark'} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-bold transition ${activeKey === 'sku-benchmark' ? 'bg-primary text-white shadow-sm' : 'text-secondary hover:bg-surface-container-low'}`}>SKU Benchmark</button>
-      {markets.map(market => <button key={market.marketplace} type="button" onClick={() => setActiveKey(market.marketplace)} role="tab" aria-selected={activeKey === market.marketplace} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-bold transition ${activeKey === market.marketplace ? 'bg-primary text-white shadow-sm' : 'text-secondary hover:bg-surface-container-low'}`}>{market.display_name}{market.reco_type === 'setup' && <span className="ml-1.5 text-[10px] font-medium opacity-70">Setup</span>}</button>)}
+      <button type="button" onClick={() => setActiveKey('sku-benchmark')} role="tab" aria-selected={activeKey === 'sku-benchmark'} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-bold transition ${activeKey === 'sku-benchmark' ? 'bg-primary text-on-primary shadow-sm' : 'text-secondary hover:bg-surface-container-low'}`}>SKU Benchmark</button>
+      {markets.map(market => <button key={market.marketplace} type="button" onClick={() => setActiveKey(market.marketplace)} role="tab" aria-selected={activeKey === market.marketplace} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-bold transition ${activeKey === market.marketplace ? 'bg-primary text-on-primary shadow-sm' : 'text-secondary hover:bg-surface-container-low'}`}>{market.display_name}{market.reco_type === 'setup' && <span className="ml-1.5 text-[10px] font-medium opacity-70">Setup</span>}</button>)}
     </div>
     {configLoading && !config ? <LoadingPanel label="marketplace configuration" /> : activeKey === 'sku-benchmark' ? <SettlementBenchmarkPanel /> : active?.marketplace === 'flipkart' ? <FlipkartFeeAudit embedded /> : active?.marketplace === 'amazon' ? <AmazonReconciliationPanel embedded /> : active?.marketplace === 'myntra' ? <MyntraReconciliationPanel market={active} embedded /> : active?.marketplace === 'meesho' ? <MeeshoReconciliationPanel market={active} embedded /> : active?.reco_type === 'invoice' ? <InvoicePaymentPanel market={active} /> : active?.reco_type === 'ledger' ? <LedgerPaymentPanel market={active} /> : <SetupPanel market={active || PRESET_MARKETS[0]} />}
   </div>;

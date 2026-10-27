@@ -20,6 +20,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3001
+      NODE_OPTIONS: "--max-old-space-size=768"
       CLIENT_DIST_PATH: /app/frontend/dist
       PG_SSL: ${PG_SSL:-false}
       PG_POOL_MAX: ${PG_POOL_MAX:-20}

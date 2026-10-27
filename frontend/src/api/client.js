@@ -376,6 +376,8 @@ export const deleteRateCardRow = (type, id, marketplace = 'flipkart', sellerAcco
 export const seedRateCard         = ()           => api.post('/rate-card/config/seed').then(r => r.data);
 export const saveRateCardPeriod   = (type, body) => api.post(`/rate-card/config/${type}/save-period`, body).then(r => r.data);
 export const closeRateCardPeriod  = (type, body) => api.post(`/rate-card/config/${type}/close-period`, body).then(r => r.data);
+export const autoCloseSupersededPeriods = (type, marketplace = 'flipkart', sellerAccount = 'default') =>
+  api.post(`/rate-card/config/${type}/auto-close-superseded`, { marketplace, seller_account: sellerAccount }).then(r => r.data);
 export const fetchFeeIntelligence = (refreshToken) => api.get('/rate-card/intelligence', { params: refreshToken ? { _refresh: refreshToken } : {} }).then(r => r.data);
 // AI-powered rate card screenshot parser (uses Gemini Vision on backend)
 export const parseRateCardImage   = (body)       => api.post('/rate-card/parse-image', body).then(r => r.data);
@@ -395,6 +397,14 @@ export const fetchRateCardConfigStatus = (marketplace = 'flipkart', sellerAccoun
   api.get('/rate-card/config-status', { params: { marketplace, seller_account: sellerAccount, ...(refreshToken ? { _refresh: refreshToken } : {}) } }).then(r => r.data);
 export const fetchMpInvoiceRateAudit = (marketplace = 'myntra', sellerAccount = '') =>
   api.get('/mp-settlement/invoices/rate-audit', { params: { marketplace, ...(sellerAccount ? { seller_account: sellerAccount } : {}) } }).then(r => r.data);
+
+// Flipkart Rate Card Automation & Scraper Engine
+export const fetchFlipkartSyncStatus      = () => api.get('/rate-card/sync-status').then(r => r.data);
+export const fetchFlipkartVerticals       = () => api.get('/rate-card/verticals').then(r => r.data);
+export const fetchUnconfiguredCategories  = () => api.get('/rate-card/unconfigured-categories').then(r => r.data);
+export const checkCategoryRateCard        = (category, sync = false) => api.post('/rate-card/check-category', { category, sync }).then(r => r.data);
+export const syncFlipkartRateCards        = (options = {}) => api.post('/rate-card/sync-flipkart', options).then(r => r.data);
+
 
 
 // RC Entry Reconciliation (RC entry → matching orders with expected vs actual fee)
@@ -737,5 +747,21 @@ export const fetchSorStatement = (portal, params = {}) =>
 
 export const downloadSorLedgerReport = (portal, params = {}) =>
   api.get(`/sor/${portal}/ledger-report`, { params, responseType: 'blob', timeout: 300000 }).then(r => r.data);
+
+// ── Marketplace Accounts & Credentials Center ──────────────────────────
+export const fetchMarketplaceCredentialAccounts = () =>
+  api.get('/marketplace-accounts', { cache: false }).then(r => r.data);
+
+export const saveMarketplaceAccount = (body) =>
+  api.post('/marketplace-accounts', body).then(r => r.data);
+
+export const updateMarketplaceAccount = (id, body) =>
+  api.put(`/marketplace-accounts/${id}`, body).then(r => r.data);
+
+export const revealMarketplacePassword = (id) =>
+  api.get(`/marketplace-accounts/${id}/reveal`, { cache: false }).then(r => r.data);
+
+export const deactivateMarketplaceAccount = (id) =>
+  api.delete(`/marketplace-accounts/${id}`).then(r => r.data);
 
 

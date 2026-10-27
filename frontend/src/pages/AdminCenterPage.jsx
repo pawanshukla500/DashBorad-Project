@@ -1,5 +1,15 @@
-﻿import { useState, useEffect } from 'react';
-import { fetchUsers, createUser, updateUserRole, deleteUser, fetchUploadStatus } from '../api/client';
+import { useState, useEffect } from 'react';
+import { 
+  fetchUsers, 
+  createUser, 
+  updateUserRole, 
+  deleteUser, 
+  fetchUploadStatus,
+  fetchMarketplaceCredentialAccounts,
+  updateMarketplaceAccount,
+  saveMarketplaceAccount,
+  revealMarketplacePassword
+} from '../api/client';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
@@ -75,12 +85,82 @@ function DbBanner({ configured, dbConnected, counts, lastUploads, fkSettlementPe
   );
 }
 
-// Upload log data types by marketplace (see LOG_TYPE_MAP in UploadPage).
-const MARKETPLACE_CARDS = [
-  { key: 'amazon', label: 'Amazon IN', icon: 'shopping_bag', matches: type => type.startsWith('amazon_') },
-  { key: 'flipkart', label: 'Flipkart', icon: 'shopping_bag', matches: type => type.startsWith('fk_') || ['orders', 'returns', 'settlements'].includes(type) },
-  { key: 'myntra', label: 'Myntra (VB & EJ)', icon: 'checkroom', matches: type => type.startsWith('myntra_') },
-  { key: 'meesho', label: 'Meesho', icon: 'storefront', matches: type => type.startsWith('meesho_') },
+// Default Marketplace Configurations with Brandfetch CDN official logos
+const DEFAULT_MARKETPLACE_CONFIGS = [
+  {
+    key: 'flipkart',
+    marketplace: 'flipkart',
+    account_id: 'default',
+    label: 'Flipkart',
+    portal_url: 'https://seller.flipkart.com/',
+    logo_url: 'https://cdn.brandfetch.io/idWdImNSUt/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177459816idZyD0yYjDWqQ88x6B',
+    matches: type => type.startsWith('fk_') || ['orders', 'returns', 'settlements'].includes(type),
+  },
+  {
+    key: 'amazon',
+    marketplace: 'amazon',
+    account_id: 'default',
+    label: 'Amazon IN',
+    portal_url: 'https://sellercentral.amazon.in/',
+    logo_url: 'https://cdn.brandfetch.io/idomDO5Jzv/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177472711idZyD0yYjDdIjVoG73',
+    matches: type => type.startsWith('amazon_'),
+  },
+  {
+    key: 'myntra_vb',
+    marketplace: 'myntra',
+    account_id: 'myntra_vb',
+    label: 'Myntra (VB)',
+    seller_id: '10708',
+    portal_url: 'https://partners.myntra.com/',
+    logo_url: 'https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177484037idZyD0yYjDtAenWdeL',
+    matches: type => type === 'myntra_vb' || type.includes('10708') || (type.startsWith('myntra_') && !type.includes('ej') && !type.includes('45833')),
+  },
+  {
+    key: 'myntra_ej',
+    marketplace: 'myntra',
+    account_id: 'myntra_ej',
+    label: 'Myntra (EJ)',
+    seller_id: '45833',
+    portal_url: 'https://partners.myntra.com/',
+    logo_url: 'https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177484037idZyD0yYjDtAenWdeL',
+    matches: type => type === 'myntra_ej' || type.includes('45833') || type.includes('ej'),
+  },
+  {
+    key: 'ajio',
+    marketplace: 'ajio',
+    account_id: 'default',
+    label: 'Reliance Retail (AJIO)',
+    portal_url: 'https://supplier.ajio.com/',
+    logo_url: 'https://cdn.brandfetch.io/idr5xgDFc2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177490710idZyD0yYjDeHmQHVu1',
+    matches: type => type.startsWith('ajio_') || type.startsWith('mp_invoices'),
+  },
+  {
+    key: 'meesho',
+    marketplace: 'meesho',
+    account_id: 'default',
+    label: 'Meesho',
+    portal_url: 'https://supplier.meesho.com/',
+    logo_url: 'https://cdn.brandfetch.io/idyeTDctmi/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177498057idZyD0yYjDdWnJrl50',
+    matches: type => type.startsWith('meesho_'),
+  },
+  {
+    key: 'cocoblu',
+    marketplace: 'cocoblu',
+    account_id: 'default',
+    label: 'Cocoblu Retails',
+    portal_url: 'https://cocoblu.biz/',
+    logo_url: 'https://cdn.brandfetch.io/iduQ6iAglk/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177520125idZyD0yYjDnFplzDd_',
+    matches: type => type.startsWith('cocoblu_') || type.startsWith('sor_cocoblu'),
+  },
+  {
+    key: 'shopify',
+    marketplace: 'shopify',
+    account_id: 'default',
+    label: 'Shopify',
+    portal_url: 'https://admin.shopify.com/',
+    logo_url: 'https://cdn.brandfetch.io/idAgPm7IvG/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177511905idZyD0yYjDkUgFPWU1',
+    matches: type => type.startsWith('shopify_'),
+  },
 ];
 
 function latestUploadFor(lastUploads, matches) {
@@ -122,16 +202,116 @@ export default function AdminCenterPage() {
   // System status state
   const [dbStatus, setDbStatus] = useState(null);
 
-  const [activeTab, setActiveTab] = useState('user');
+  const [activeTab, setActiveTab] = useState('marketplace');
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [emailNotifs, setEmailNotifs] = useState(true);
   const [twoFactor, setTwoFactor] = useState(true);
   const [weeklyReports, setWeeklyReports] = useState(false);
 
+  // Marketplace accounts & credentials state
+  const [marketplaceAccounts, setMarketplaceAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [modalLoginId, setModalLoginId] = useState('');
+  const [modalPassword, setModalPassword] = useState('');
+  const [modalSellerId, setModalSellerId] = useState('');
+  const [modalDisplayName, setModalDisplayName] = useState('');
+  const [modalPortalUrl, setModalPortalUrl] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [revealingPassword, setRevealingPassword] = useState(false);
+  const [savingAccount, setSavingAccount] = useState(false);
+
   useEffect(() => {
     loadUsers();
     loadDbStatus();
+    loadMarketplaceAccounts();
   }, []);
+
+  const loadMarketplaceAccounts = async () => {
+    setAccountsLoading(true);
+    try {
+      const res = await fetchMarketplaceCredentialAccounts();
+      if (res?.accounts) {
+        setMarketplaceAccounts(res.accounts);
+      }
+    } catch (err) {
+      console.error('Failed to load marketplace accounts:', err);
+    } finally {
+      setAccountsLoading(false);
+    }
+  };
+
+  const handleOpenAccountModal = (acc) => {
+    setSelectedAccount(acc);
+    setModalDisplayName(acc.display_name || acc.label || '');
+    setModalLoginId(acc.login_id || '');
+    setModalPassword('');
+    setModalSellerId(acc.seller_id || '');
+    setModalPortalUrl(acc.portal_url || '');
+    setShowPassword(false);
+    setEditModalOpen(true);
+  };
+
+  const handleToggleRevealPassword = async () => {
+    if (showPassword) {
+      setShowPassword(false);
+      return;
+    }
+    if (selectedAccount?.id && !modalPassword && selectedAccount.has_password) {
+      setRevealingPassword(true);
+      setError('');
+      try {
+        const res = await revealMarketplacePassword(selectedAccount.id);
+        if (res?.password) {
+          setModalPassword(res.password);
+          setShowPassword(true);
+        } else {
+          setError('Failed to retrieve decrypted credential.');
+        }
+      } catch (err) {
+        console.error('Failed to reveal password:', err);
+        setError('Failed to decrypt credential. Please ensure you have operator/admin privileges.');
+      } finally {
+        setRevealingPassword(false);
+      }
+    } else {
+      setShowPassword(true);
+    }
+  };
+
+  const handleSaveAccount = async (e) => {
+    e.preventDefault();
+    if (!selectedAccount) return;
+    setSavingAccount(true);
+    setError('');
+    setSuccess('');
+    try {
+      const payload = {
+        marketplace: selectedAccount.marketplace,
+        account_id: selectedAccount.account_id,
+        display_name: modalDisplayName,
+        seller_id: modalSellerId,
+        login_id: modalLoginId,
+        portal_url: modalPortalUrl,
+      };
+      if (modalPassword !== '') {
+        payload.password = modalPassword;
+      }
+      if (selectedAccount.id) {
+        await updateMarketplaceAccount(selectedAccount.id, payload);
+      } else {
+        await saveMarketplaceAccount(payload);
+      }
+      setSuccess(`Marketplace credentials for ${modalDisplayName} updated successfully!`);
+      setEditModalOpen(false);
+      await loadMarketplaceAccounts();
+    } catch (err) {
+      setError(err?.response?.data?.error || err.message || 'Failed to update credentials');
+    } finally {
+      setSavingAccount(false);
+    }
+  };
 
   const loadDbStatus = async () => {
     try { 
@@ -386,35 +566,165 @@ export default function AdminCenterPage() {
         </section>
       )}
 
-      {/* TAB: MARKETPLACE CONNECTIONS */}
+      {/* TAB: MARKETPLACE CONNECTIONS & CREDENTIALS */}
       {activeTab === 'marketplace' && (
-        <section className="mb-8">
-          <h2 className="font-display text-headline-md font-bold text-ink mb-1">Marketplace Data</h2>
-          <p className="text-body-sm text-secondary mb-4">
-            Marketplace data is imported from report files on the Uploads page. Times below are the latest successful upload per marketplace.
-          </p>
+        <section className="mb-8 space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="font-display text-headline-md font-bold text-ink mb-1">
+                Marketplace Credentials Center
+              </h2>
+              <p className="text-body-sm text-secondary">
+                Configure official seller portals, merchant IDs, and encrypted credentials (AES-256-GCM) for automated scrapers, rate cards, and financial reconciliations.
+              </p>
+            </div>
+            <button
+              onClick={() => loadMarketplaceAccounts()}
+              disabled={accountsLoading}
+              className="self-start sm:self-auto px-3.5 py-2 border border-border bg-surface hover:bg-surface-container rounded-lg text-xs font-semibold text-secondary hover:text-ink flex items-center gap-1.5 transition-colors"
+            >
+              <span className={`material-symbols-outlined text-sm ${accountsLoading ? 'animate-spin' : ''}`}>refresh</span>
+              {accountsLoading ? 'Refreshing...' : 'Refresh Accounts'}
+            </button>
+          </div>
+
+          {/* Core Invariant Banner */}
+          <div className="bg-primary-container/40 border border-primary/20 rounded-xl p-4 flex items-start gap-3">
+            <span className="material-symbols-outlined text-primary text-xl mt-0.5">verified_user</span>
+            <div className="text-xs space-y-1">
+              <p className="font-bold text-ink">
+                Accounting & Channel Separation Standards:
+              </p>
+              <p className="text-secondary">
+                • <strong className="text-ink">Myntra VB (Seller ID 10708)</strong> and <strong className="text-ink">Myntra EJ (Seller ID 45833)</strong> operate as completely segregated financial ledgers. Mismatched uploads are rejected automatically.
+              </p>
+              <p className="text-secondary">
+                • Passwords are stored in PostgreSQL using <strong className="text-ink">AES-256-GCM authenticated encryption</strong> with unique initialization vectors (IVs). Plaintext credentials are never logged or exposed.
+              </p>
+            </div>
+          </div>
+
+          {/* Cards Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {MARKETPLACE_CARDS.map(card => {
-              const lastUpload = latestUploadFor(dbStatus?.lastUploads, card.matches);
+            {DEFAULT_MARKETPLACE_CONFIGS.map(def => {
+              const live = marketplaceAccounts.find(
+                a => a.marketplace === def.marketplace && a.account_id === def.account_id
+              );
+              const card = {
+                ...def,
+                ...(live || {}),
+                display_name: live?.display_name || def.label,
+                seller_id: live?.seller_id || def.seller_id || '',
+                portal_url: live?.portal_url || def.portal_url,
+                logo_url: live?.logo_url || def.logo_url,
+              };
+
+              const lastUpload = latestUploadFor(dbStatus?.lastUploads, def.matches);
+              const isConfigured = Boolean(card.login_id && card.has_password);
+
               return (
-                <div key={card.key} className="bg-surface border border-border rounded-xl p-5 shadow-sm flex flex-col">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="w-10 h-10 rounded bg-surface-container-low border border-border flex items-center justify-center">
-                      <span className="material-symbols-outlined text-outline">{card.icon}</span>
+                <div 
+                  key={def.key} 
+                  className="bg-surface border border-border rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between"
+                >
+                  <div>
+                    {/* Header: Logo + Status Badge */}
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="w-12 h-12 rounded-xl bg-surface border border-border flex items-center justify-center p-2 shadow-xs">
+                        <img 
+                          src={card.logo_url} 
+                          alt={card.display_name} 
+                          className="w-full h-full object-contain"
+                          onError={(e) => {
+                            e.target.onerror = null;
+                            e.target.style.display = 'none';
+                            e.target.nextSibling.style.display = 'block';
+                          }}
+                        />
+                        <span className="material-symbols-outlined text-outline hidden text-2xl">storefront</span>
+                      </div>
+                      <div className="flex flex-col items-end gap-1">
+                        {isConfigured ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold tracking-wider uppercase">
+                            <span className="material-symbols-outlined text-[12px]">lock</span> Configured
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-bold tracking-wider uppercase">
+                            <span className="material-symbols-outlined text-[12px]">key</span> Setup Needed
+                          </span>
+                        )}
+                        {lastUpload ? (
+                          <span className="px-1.5 py-0.5 rounded bg-surface-container-low text-secondary border border-border text-[9px] font-semibold">
+                            Data loaded
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                    {dbStatus && (
-                      lastUpload
-                        ? <span className="px-2 py-0.5 rounded-sm bg-emerald-50 text-emerald-600 border border-emerald-100 text-[10px] font-bold tracking-wider uppercase">Data loaded</span>
-                        : <span className="px-2 py-0.5 rounded-sm bg-surface-container-low text-secondary border border-border text-[10px] font-bold tracking-wider uppercase">No uploads</span>
-                    )}
+
+                    {/* Title & Seller ID */}
+                    <div className="mb-3">
+                      <h3 className="font-bold text-ink text-base flex items-center gap-1.5">
+                        {card.display_name}
+                      </h3>
+                      {card.seller_id ? (
+                        <div className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-md bg-surface-container-low border border-border text-[11px] font-mono text-secondary">
+                          <span className="text-outline text-[10px] font-sans">Seller ID:</span>
+                          <span className="font-bold text-ink">{card.seller_id}</span>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-outline mt-1 italic">Seller ID: Not configured</p>
+                      )}
+                    </div>
+
+                    {/* Credential summary box */}
+                    <div className="bg-surface-container-lowest border border-border/80 rounded-lg p-2.5 space-y-1.5 mb-4 text-xs font-sans">
+                      <div className="flex justify-between items-center">
+                        <span className="text-secondary text-[11px]">Login ID:</span>
+                        <span className="font-mono text-ink text-[11px] truncate max-w-[130px]">
+                          {card.login_id || <span className="text-outline italic">Empty</span>}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-secondary text-[11px]">Password:</span>
+                        <span className="font-mono text-ink text-[11px]">
+                          {card.has_password ? '••••••••' : <span className="text-outline italic">Not set</span>}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center pt-1 border-t border-border/50 text-[10px] text-secondary">
+                        <span>Latest Upload:</span>
+                        <span>{lastUpload ? formatUploadTime(lastUpload) : 'None'}</span>
+                      </div>
+                    </div>
                   </div>
-                  <h3 className="font-bold text-ink">{card.label}</h3>
-                  <p className="text-xs text-secondary mt-1 mb-5">
-                    {!dbStatus ? 'Loading…' : lastUpload ? `Last upload: ${formatUploadTime(lastUpload)}` : 'No files uploaded yet'}
-                  </p>
-                  <Link to="/upload" className="mt-auto w-full py-2 border border-border rounded font-bold text-sm text-center text-secondary hover:text-ink hover:bg-surface-container transition-colors">
-                    Go to Uploads
-                  </Link>
+
+                  {/* Action Buttons */}
+                  <div className="space-y-2 mt-auto pt-2 border-t border-border">
+                    <button
+                      onClick={() => handleOpenAccountModal(card)}
+                      className="w-full py-2 bg-primary hover:bg-primary-dark text-on-primary rounded-lg font-semibold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-sm">tune</span>
+                      Configure Credentials
+                    </button>
+                    <div className="flex gap-2">
+                      <a
+                        href={card.portal_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex-1 py-1.5 border border-border rounded-lg text-xs font-medium text-secondary hover:text-ink hover:bg-surface-container text-center transition-colors flex items-center justify-center gap-1"
+                      >
+                        <span className="material-symbols-outlined text-xs">open_in_new</span>
+                        Portal
+                      </a>
+                      <Link
+                        to="/upload"
+                        className="flex-1 py-1.5 border border-border rounded-lg text-xs font-medium text-secondary hover:text-ink hover:bg-surface-container text-center transition-colors flex items-center justify-center gap-1"
+                      >
+                        <span className="material-symbols-outlined text-xs">upload</span>
+                        Uploads
+                      </Link>
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -604,6 +914,167 @@ export default function AdminCenterPage() {
                   className="py-2.5 px-5 bg-primary hover:bg-primary/90 disabled:opacity-50 text-surface rounded-xl font-semibold text-sm shadow-sm transition-colors"
                 >
                   {createLoading ? 'Registering...' : 'Invite Member'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* MODAL: EDIT MARKETPLACE CREDENTIALS */}
+      {editModalOpen && selectedAccount && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/40 backdrop-blur-xs p-4 animate-fade-in">
+          <div className="bg-surface rounded-2xl max-w-lg w-full p-6 border border-border shadow-xl space-y-5 animate-scale-up">
+            <div className="flex items-center justify-between pb-4 border-b border-border">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-surface border border-border flex items-center justify-center p-1.5 shadow-xs">
+                  <img
+                    src={selectedAccount.logo_url}
+                    alt={selectedAccount.display_name}
+                    className="w-full h-full object-contain"
+                    onError={(e) => { e.target.style.display = 'none'; }}
+                  />
+                </div>
+                <div>
+                  <h3 className="font-display text-lg font-bold text-ink">
+                    Configure {selectedAccount.display_name}
+                  </h3>
+                  <p className="text-xs text-secondary">
+                    Channel Key: <span className="font-mono text-ink font-semibold">{selectedAccount.marketplace}</span> • Account: <span className="font-mono text-ink font-semibold">{selectedAccount.account_id}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditModalOpen(false)}
+                className="text-secondary hover:text-ink rounded-lg p-1.5 hover:bg-surface-container transition-colors"
+              >
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            {/* Invariant Note */}
+            {selectedAccount.marketplace === 'myntra' && (
+              <div className="bg-primary-container/30 border border-primary/20 rounded-xl p-3 text-xs flex items-start gap-2">
+                <span className="material-symbols-outlined text-primary text-base shrink-0 mt-0.5">info</span>
+                <div className="text-ink">
+                  <strong className="text-primary font-bold">Strict Myntra Invariant:</strong>
+                  {selectedAccount.account_id === 'myntra_vb' && (
+                    <span> Seller ID is strictly locked to <strong className="text-primary font-mono font-bold">10708</strong> for Myntra VB per accounting guidelines.</span>
+                  )}
+                  {selectedAccount.account_id === 'myntra_ej' && (
+                    <span> Seller ID is strictly locked to <strong className="text-primary font-mono font-bold">45833</strong> for Myntra EJ per accounting guidelines.</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveAccount} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-secondary uppercase mb-1.5">
+                  Display Name
+                </label>
+                <input
+                  type="text"
+                  value={modalDisplayName}
+                  onChange={(e) => setModalDisplayName(e.target.value)}
+                  className="w-full px-3.5 py-2 bg-surface-container-low border border-border rounded-xl text-ink focus:outline-none focus:border-primary text-sm font-medium"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-secondary uppercase mb-1.5">
+                  Seller / Merchant ID
+                </label>
+                <input
+                  type="text"
+                  value={modalSellerId}
+                  onChange={(e) => setModalSellerId(e.target.value)}
+                  readOnly={selectedAccount.marketplace === 'myntra'}
+                  placeholder="e.g. 10708, A21TJ6UNN4Z098"
+                  className={`w-full px-3.5 py-2 bg-surface-container-low border border-border rounded-xl text-ink focus:outline-none focus:border-primary text-sm font-mono ${
+                    selectedAccount.marketplace === 'myntra' ? 'bg-surface-container opacity-80 cursor-not-allowed' : ''
+                  }`}
+                />
+                {selectedAccount.marketplace === 'myntra' && (
+                  <p className="text-[11px] text-outline mt-1">Locked per Myntra legal entity accounting policy.</p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-secondary uppercase mb-1.5">
+                  Login ID / Username / Email
+                </label>
+                <input
+                  type="text"
+                  value={modalLoginId}
+                  onChange={(e) => setModalLoginId(e.target.value)}
+                  placeholder="seller@vbexports.co.in"
+                  className="w-full px-3.5 py-2 bg-surface-container-low border border-border rounded-xl text-ink focus:outline-none focus:border-primary text-sm font-medium"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <label className="text-xs font-semibold text-secondary uppercase">
+                    Portal Password / Token
+                  </label>
+                  {selectedAccount.has_password && (
+                    <button
+                      type="button"
+                      onClick={handleToggleRevealPassword}
+                      disabled={revealingPassword}
+                      className="text-xs text-primary font-semibold hover:underline flex items-center gap-1"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">
+                        {showPassword ? 'visibility_off' : 'visibility'}
+                      </span>
+                      {revealingPassword ? 'Decrypting...' : showPassword ? 'Hide Password' : 'Show Current Password'}
+                    </button>
+                  )}
+                </div>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={modalPassword}
+                    onChange={(e) => setModalPassword(e.target.value)}
+                    placeholder={selectedAccount.has_password ? 'Leave empty to keep existing encrypted password' : 'Enter portal password'}
+                    className="w-full px-3.5 py-2 bg-surface-container-low border border-border rounded-xl text-ink focus:outline-none focus:border-primary text-sm font-mono"
+                  />
+                </div>
+                <p className="text-[11px] text-outline mt-1">
+                  Stored securely using AES-256-GCM with distinct IVs. Never exposed in logs.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-secondary uppercase mb-1.5">
+                  Seller Portal URL
+                </label>
+                <input
+                  type="url"
+                  value={modalPortalUrl}
+                  onChange={(e) => setModalPortalUrl(e.target.value)}
+                  placeholder="https://sellercentral.amazon.in/"
+                  className="w-full px-3.5 py-2 bg-surface-container-low border border-border rounded-xl text-ink focus:outline-none focus:border-primary text-sm font-medium"
+                />
+              </div>
+
+              <div className="pt-4 flex justify-end gap-3 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => setEditModalOpen(false)}
+                  className="py-2.5 px-5 hover:bg-surface-container text-secondary rounded-xl font-semibold text-sm transition-colors border border-border"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingAccount}
+                  className="py-2.5 px-5 bg-primary hover:bg-primary-dark disabled:opacity-50 text-on-primary rounded-xl font-semibold text-sm shadow-sm transition-colors flex items-center gap-2"
+                >
+                  <span className="material-symbols-outlined text-sm">lock</span>
+                  {savingAccount ? 'Encrypting & Saving...' : 'Save Credentials'}
                 </button>
               </div>
             </form>
