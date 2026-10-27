@@ -226,8 +226,11 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
         { id: 101, password_encrypted: initialPayload }
       ];
 
+      const executedQueries = [];
+
       const mockDb = {
         query: vi.fn(async (sql, params) => {
+          executedQueries.push({ sql, params });
           if (/SELECT id, password_encrypted/i.test(sql)) {
             // Return old ciphertext from SELECT, then simulate concurrent modification happening before UPDATE
             const returnedRows = [{ id: 101, password_encrypted: initialPayload }];
@@ -237,8 +240,17 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
           if (/UPDATE marketplace_accounts SET password_encrypted/i.test(sql)) {
             const [newCipher, id, expectedOldCipher] = params;
             const rec = mockDbRecords.find(r => r.id === id);
-            // Verify conditional query matches WHERE id = $2 AND password_encrypted = $3
-            if (rec && rec.password_encrypted === expectedOldCipher) {
+            // Emulate real database behavior based on actual SQL text:
+            const hasConcurrencyGuard = /WHERE\s+id\s*=\s*\$2\s+AND\s+password_encrypted\s*=\s*\$3/i.test(sql);
+            if (hasConcurrencyGuard) {
+              if (rec && rec.password_encrypted === expectedOldCipher) {
+                rec.password_encrypted = newCipher;
+                return { rowCount: 1 };
+              }
+              return { rowCount: 0 };
+            }
+            // If the SQL omitted the predicate, the UPDATE would overwrite the concurrent change
+            if (rec) {
               rec.password_encrypted = newCipher;
               return { rowCount: 1 };
             }
@@ -249,6 +261,15 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
       };
 
       const result = await reencryptMarketplaceCredentials(mockDb);
+
+      // Verify UPDATE was called with the exact optimistic concurrency predicate and original ciphertext param
+      const updateCall = executedQueries.find(q => /UPDATE marketplace_accounts/i.test(q.sql));
+      expect(updateCall).toBeDefined();
+      expect(updateCall.sql).toMatch(/WHERE\s+id\s*=\s*\$2\s+AND\s+password_encrypted\s*=\s*\$3/i);
+      expect(updateCall.params).toHaveLength(3);
+      expect(updateCall.params[1]).toBe(101);
+      expect(updateCall.params[2]).toBe(initialPayload);
+
       // Migration attempts update with expectedOldCipher = initialPayload, which fails against concurrentPayload
       expect(result.reencrypted).toBe(0);
       expect(result.total).toBe(1);
