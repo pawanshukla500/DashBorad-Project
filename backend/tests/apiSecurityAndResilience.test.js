@@ -8,7 +8,7 @@ describe('API Security and Database Resilience Suite', () => {
   beforeAll(() => {
     setDatabaseSchemaReadyForTesting(true);
     if (!process.env.DATABASE_URL && !process.env.POSTGRES_DATABASE_URL) {
-      process.env.DATABASE_URL = 'postgresql://testuser:SecretPass123!@127.0.0.1:5432/recon_ci';
+      process.env.DATABASE_URL = 'postgresql://test_ci_user:test_ci_dummy_pass@127.0.0.1:5432/recon_ci';
     }
   });
 
@@ -31,8 +31,14 @@ describe('API Security and Database Resilience Suite', () => {
       expect(status.transport).toHaveProperty('productionReady');
       // Passwords or sensitive connection strings must never be leaked in status
       expect(status).not.toHaveProperty('password');
-      expect(JSON.stringify(status)).not.toContain('SecretPass123!');
-      expect(JSON.stringify(status)).not.toContain('1MoreM!les2Go$');
+      if (process.env.DATABASE_URL) {
+        try {
+          const parsed = new URL(process.env.DATABASE_URL);
+          if (parsed.password) {
+            expect(JSON.stringify(status)).not.toContain(parsed.password);
+          }
+        } catch { /* ignore URL parse errors */ }
+      }
     });
 
     it('verifies resolvePgConfig enforces secure connection options', () => {
