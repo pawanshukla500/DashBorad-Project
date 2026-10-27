@@ -178,7 +178,7 @@ function isLoopbackRequest(req) {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
-function publicDatabaseStatus(database) {
+export function publicDatabaseStatus(database) {
   return {
     configured: database.configured,
     connected: database.connected,

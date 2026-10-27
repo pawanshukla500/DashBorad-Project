@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
-import { app, setDatabaseSchemaReadyForTesting } from '../server.js';
+import { app, setDatabaseSchemaReadyForTesting, publicDatabaseStatus } from '../server.js';
 import { getDatabaseStatus, isDbConfigured, resolvePgConfig } from '../db/index.js';
 
 describe('API Security and Database Resilience Suite', () => {
@@ -104,6 +104,29 @@ describe('API Security and Database Resilience Suite', () => {
             expect(bodyStr).not.toContain(process.env.DATABASE_URL);
           } catch { /* ignore URL parse errors */ }
         }
+
+        // Exercise public health projection branch directly to verify internal diagnostic field omission
+        const internalDiagnosticDetail = {
+          configured: true,
+          connected: true,
+          lastSuccessAt: Date.now(),
+          schemaReady: true,
+          engine: 'postgresql',
+          transport: { tlsEnabled: true, productionReady: true },
+          pool: { totalCount: 5, idleCount: 4, waitingCount: 0 },
+          internalError: 'PostgreSQL connection timeout on internal socket',
+        };
+        const publicProjection = publicDatabaseStatus(internalDiagnosticDetail);
+        expect(publicProjection).toEqual({
+          configured: true,
+          connected: true,
+          lastSuccessAt: internalDiagnosticDetail.lastSuccessAt,
+          schemaReady: true,
+          engine: 'postgresql',
+        });
+        expect(publicProjection).not.toHaveProperty('transport');
+        expect(publicProjection).not.toHaveProperty('pool');
+        expect(publicProjection).not.toHaveProperty('internalError');
       } finally {
         server.close();
       }
