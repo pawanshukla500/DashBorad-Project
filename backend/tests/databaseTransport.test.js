@@ -30,6 +30,7 @@ describe('PostgreSQL transport policy', () => {
     process.env.DATABASE_URL = 'postgresql://payments:secret@db.example.com:5432/reconciliation';
     process.env.PG_SSL = 'true';
     delete process.env.PG_SSL_REJECT_UNAUTHORIZED;
+    delete process.env.PG_READ_STATEMENT_TIMEOUT_MS;
 
     expect(resolvePgConfig().ssl).toEqual({ rejectUnauthorized: true });
     expect(resolvePgConfig().statement_timeout).toBe(45_000);

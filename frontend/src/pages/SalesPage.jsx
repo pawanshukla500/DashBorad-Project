@@ -119,30 +119,30 @@ export default function SalesPage() {
                     <td className="px-4 py-2.5"><StatusBadge status={o.ordersStatus} /></td>
                     <td className="px-4 py-2.5"><ReturnTypeBadge type={o.returnType} /></td>
                     {showRc && !hasRc && (
-                      <td colSpan={10} className="px-4 py-2.5 text-center text-outline text-[10px] bg-indigo-50/30">RC not configured</td>
+                      <td colSpan={10} className="px-4 py-2.5 text-center text-outline text-[10px] bg-primary-container/20">RC not configured</td>
                     )}
                     {showRc && hasRc && (
                       <>
-                        <td className="px-3 py-2.5 text-right text-[11px] bg-indigo-50/30 whitespace-nowrap">
-                          <span className="text-primary">₹{toNum(o.rcCommission).toFixed(0)}</span>
-                          {o.rcCommissionRate != null && <span className="text-indigo-400 ml-1 text-[10px]">({(+o.rcCommissionRate).toFixed(1)}%)</span>}
+                        <td className="px-3 py-2.5 text-right text-[11px] bg-primary-container/20 whitespace-nowrap">
+                          <span className="text-primary font-semibold">₹{toNum(o.rcCommission).toFixed(0)}</span>
+                          {o.rcCommissionRate != null && <span className="text-outline ml-1 text-[10px]">({(+o.rcCommissionRate).toFixed(1)}%)</span>}
                           {commVar != null && Math.abs(commVar) > 2 && (
                             <span className={`ml-1 text-[10px] font-bold ${commVar > 0 ? 'text-rose-500' : 'text-emerald-600'}`} title={`RC vs FK variance: ${commVar > 0 ? '+' : ''}₹${commVar.toFixed(0)}`}>
                               {commVar > 0 ? '▲' : '▼'}₹{Math.abs(commVar).toFixed(0)}
                             </span>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-[11px] text-primary bg-indigo-50/30 whitespace-nowrap">₹{toNum(o.rcFixedFee).toFixed(0)}</td>
-                        <td className="px-3 py-2.5 text-right text-[11px] text-primary bg-indigo-50/30 whitespace-nowrap">₹{toNum(o.rcCollectionFee).toFixed(0)}</td>
-                        <td className="px-3 py-2.5 text-right text-[11px] text-primary bg-indigo-50/30 whitespace-nowrap">{o.rcPickPack != null ? `₹${toNum(o.rcPickPack).toFixed(0)}` : '—'}</td>
-                        <td className="px-3 py-2.5 text-right text-[11px] text-primary bg-indigo-50/30 whitespace-nowrap">₹{toNum(o.rcGstOnFees).toFixed(0)}</td>
-                        <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-primary bg-indigo-50/30 whitespace-nowrap">₹{toNum(o.rcTotalFees).toFixed(0)}</td>
-                        <td className="px-3 py-2.5 text-right text-[11px] font-medium text-emerald-700 bg-indigo-50/30 whitespace-nowrap">₹{toNum(o.rcNetToSeller).toFixed(0)}</td>
-                        <td className="px-3 py-2.5 text-right text-[11px] text-orange-600 bg-indigo-50/30 whitespace-nowrap">{+o.cogs > 0 ? `₹${toNum(o.cogs).toFixed(0)}` : <span className="text-outline">—</span>}</td>
-                        <td className={`px-3 py-2.5 text-right text-[11px] font-semibold bg-indigo-50/30 whitespace-nowrap ${+o.rcProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        <td className="px-3 py-2.5 text-right text-[11px] text-primary bg-primary-container/20 whitespace-nowrap">₹{toNum(o.rcFixedFee).toFixed(0)}</td>
+                        <td className="px-3 py-2.5 text-right text-[11px] text-primary bg-primary-container/20 whitespace-nowrap">₹{toNum(o.rcCollectionFee).toFixed(0)}</td>
+                        <td className="px-3 py-2.5 text-right text-[11px] text-primary bg-primary-container/20 whitespace-nowrap">{o.rcPickPack != null ? `₹${toNum(o.rcPickPack).toFixed(0)}` : '—'}</td>
+                        <td className="px-3 py-2.5 text-right text-[11px] text-primary bg-primary-container/20 whitespace-nowrap">₹{toNum(o.rcGstOnFees).toFixed(0)}</td>
+                        <td className="px-3 py-2.5 text-right text-[11px] font-semibold text-primary bg-primary-container/20 whitespace-nowrap">₹{toNum(o.rcTotalFees).toFixed(0)}</td>
+                        <td className="px-3 py-2.5 text-right text-[11px] font-medium text-emerald-700 bg-primary-container/20 whitespace-nowrap">₹{toNum(o.rcNetToSeller).toFixed(0)}</td>
+                        <td className="px-3 py-2.5 text-right text-[11px] text-orange-600 bg-primary-container/20 whitespace-nowrap">{+o.cogs > 0 ? `₹${toNum(o.cogs).toFixed(0)}` : <span className="text-outline">—</span>}</td>
+                        <td className={`px-3 py-2.5 text-right text-[11px] font-semibold bg-primary-container/20 whitespace-nowrap ${+o.rcProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                           {+o.rcProfit < 0 ? '−' : ''}₹{Math.abs(toNum(o.rcProfit)).toFixed(0)}
                         </td>
-                        <td className={`px-3 py-2.5 text-right text-[11px] font-semibold bg-indigo-50/30 whitespace-nowrap ${+o.rcMarginPct >= 20 ? 'text-emerald-600' : +o.rcMarginPct >= 0 ? 'text-amber-600' : 'text-rose-600'}`}>
+                        <td className={`px-3 py-2.5 text-right text-[11px] font-semibold bg-primary-container/20 whitespace-nowrap ${+o.rcMarginPct >= 20 ? 'text-emerald-600' : +o.rcMarginPct >= 0 ? 'text-amber-600' : 'text-rose-600'}`}>
                           {toNum(o.rcMarginPct).toFixed(1)}%
                         </td>
                       </>
@@ -164,7 +164,7 @@ export default function SalesPage() {
 
 // ── Brand helpers ─────────────────────────────────────────────────────────────
 const BRAND_PALETTE = {
-  'Youthnic':        { bg: 'bg-indigo-50', text: 'text-indigo-700', dot: 'bg-indigo-600', bar: 'bg-indigo-500' },
+  'Youthnic':        { bg: 'bg-primary-container/50', text: 'text-primary', dot: 'bg-primary', bar: 'bg-primary' },
   'Ethnic Junction': { bg: 'bg-emerald-100', text: 'text-emerald-700', dot: 'bg-emerald-500', bar: 'bg-emerald-400' },
   'Sangria':         { bg: 'bg-rose-100',    text: 'text-rose-700',    dot: 'bg-rose-500',    bar: 'bg-rose-400' },
   'Divastri':        { bg: 'bg-purple-100',  text: 'text-purple-700',  dot: 'bg-purple-500',  bar: 'bg-purple-400' },
@@ -176,7 +176,7 @@ const BRAND_DEFAULT = { bg: 'bg-surface-container', text: 'text-secondary', dot:
 function brandPalette(name) { return BRAND_PALETTE[name] || BRAND_DEFAULT; }
 
 const MP_BADGE = {
-  flipkart: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
+  flipkart: 'bg-primary-container text-primary border border-primary/20',
   amazon:   'bg-amber-50  text-amber-700',
   myntra:   'bg-pink-50   text-pink-700',
   meesho:   'bg-purple-50 text-purple-700',
@@ -412,7 +412,7 @@ function SectionSkeleton({ title }) {
 function CategoryBadge({ cat }) {
   if (!cat) return null;
   return (
-    <span className="inline-block bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize whitespace-nowrap">
+    <span className="inline-block bg-primary-container/40 text-primary border border-primary/20 px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize whitespace-nowrap">
       {cat.replace(/_/g, ' ')}
     </span>
   );

@@ -226,13 +226,13 @@ function OrderSearch() {
 
 // Marketplace display config — add new marketplaces here
 const MP_CONFIG = {
-  flipkart:  { label: 'Flipkart',    bg: 'bg-primary-container', border: 'border-primary', badge: 'bg-primary', text: 'text-primary' },
-  amazon:    { label: 'Amazon',      bg: 'bg-amber-50',  border: 'border-amber-200',  badge: 'bg-amber-500',  text: 'text-amber-700'  },
-  myntra:    { label: 'Myntra',      bg: 'bg-pink-50',   border: 'border-pink-200',   badge: 'bg-pink-600',   text: 'text-pink-700'   },
-  myntra_vb: { label: 'Myntra (VB)', bg: 'bg-pink-50',   border: 'border-pink-200',   badge: 'bg-pink-600',   text: 'text-pink-700'   },
-  myntra_ej: { label: 'Myntra (EJ)', bg: 'bg-rose-50',   border: 'border-rose-200',   badge: 'bg-rose-600',   text: 'text-rose-700'   },
-  meesho:    { label: 'Meesho',      bg: 'bg-purple-50', border: 'border-purple-200', badge: 'bg-purple-600', text: 'text-purple-700' },
-  ajio:      { label: 'Ajio',        bg: 'bg-orange-50', border: 'border-orange-200', badge: 'bg-orange-500', text: 'text-orange-700' },
+  flipkart:  { label: 'Flipkart',    bg: 'bg-primary-container', border: 'border-primary', badge: 'bg-primary', text: 'text-on-primary-container' },
+  amazon:    { label: 'Amazon',      bg: 'bg-amber-50',  border: 'border-amber-200',  badge: 'bg-amber-600',  text: 'text-amber-800'  },
+  myntra:    { label: 'Myntra',      bg: 'bg-primary-container/50', border: 'border-primary/20', badge: 'bg-primary', text: 'text-primary' },
+  myntra_vb: { label: 'Myntra (VB)', bg: 'bg-primary-container/50', border: 'border-primary/20', badge: 'bg-primary', text: 'text-primary' },
+  myntra_ej: { label: 'Myntra (EJ)', bg: 'bg-primary-container/70', border: 'border-primary/30', badge: 'bg-primary', text: 'text-primary' },
+  meesho:    { label: 'Meesho',      bg: 'bg-surface-container-high', border: 'border-border', badge: 'bg-secondary', text: 'text-secondary' },
+  ajio:      { label: 'Ajio',        bg: 'bg-amber-50', border: 'border-amber-200', badge: 'bg-amber-600', text: 'text-amber-800' },
 };
 function mpCfg(id) {
   return MP_CONFIG[(id || '').toLowerCase()] || { label: id, bg: 'bg-surface-container-low', border: 'border-border', badge: 'bg-secondary', text: 'text-ink' };
@@ -282,7 +282,7 @@ export default function Dashboard() {
           title="Total Orders"
           value={num(summary?.totalOrders)}
           sub={`${num(summary?.returnCount || 0)} returned`}
-          color="indigo"
+          color="primary"
           icon={<OrderIcon />}
         />
         <KPICard

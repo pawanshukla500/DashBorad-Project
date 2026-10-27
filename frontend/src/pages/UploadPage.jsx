@@ -499,7 +499,7 @@ export default function UploadPage() {
                   alert('Template download failed: ' + (e?.response?.data?.error || e.message));
                 }
               }}
-              className="mt-4 w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs font-semibold border border-dashed border-primary text-primary bg-indigo-50/60 hover:bg-indigo-50 hover:border-primary transition-colors"
+              className="mt-4 w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs font-semibold border border-dashed border-primary text-primary bg-primary-container/40 hover:bg-primary-container/70 hover:border-primary transition-colors"
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
@@ -680,7 +680,7 @@ function DropZone({ onFile, error, lastUpload }) {
   return (
     <div className="px-6 py-5">
       <div 
-        className="border-2 border-dashed border-primary rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer hover:bg-indigo-50 transition-colors"
+        className="border-2 border-dashed border-primary rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer hover:bg-primary-container/30 transition-colors"
         onClick={() => fileInputRef.current?.click()}
         onDragOver={e => e.preventDefault()}
         onDrop={e => { e.preventDefault(); if (e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]); }}
@@ -1684,7 +1684,7 @@ function UploadHistory({ logs, counts = {}, onRemarkSaved, activeTab, marketplac
                         : <span className="text-[11px] text-outline">No remark — add one to track this batch</span>
                       }
                       <button onClick={() => startEdit(log)}
-                        className="flex items-center gap-1 text-[10px] text-primary hover:text-primary font-semibold px-1.5 py-0.5 rounded hover:bg-indigo-50 transition-colors">
+                        className="flex items-center gap-1 text-[10px] text-primary hover:text-primary font-semibold px-1.5 py-0.5 rounded hover:bg-primary-container/40 transition-colors">
                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                         </svg>
@@ -2012,7 +2012,7 @@ function UploadLog({ refreshToken, onRefresh }) {
                                 ? <span className="text-secondary italic text-xs truncate" title={log.remark}>"{log.remark}"</span>
                                 : <span className="text-[10px] text-outline italic group-hover:text-secondary transition-colors">Add remark</span>
                               }
-                              <button onClick={() => startEdit(log)} className="text-[10px] text-primary hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-indigo-50 shrink-0">
+                              <button onClick={() => startEdit(log)} className="text-[10px] text-primary hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-primary-container/40 shrink-0">
                                 Edit
                               </button>
                             </div>

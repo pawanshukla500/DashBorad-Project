@@ -254,7 +254,7 @@ function SaleStatementView({ data }) {
                     </tr>
                     {isOpen && (
                       <tr key={r.saleMonth + '_d'}>
-                        <td colSpan={8} className="px-0 py-0 bg-indigo-50/40 border-b border-primary">
+                        <td colSpan={8} className="px-0 py-0 bg-primary-container/30 border-b border-primary">
                           <SaleFeeDetail row={r} />
                         </td>
                       </tr>
@@ -374,7 +374,7 @@ function SaleFeeDetail({ row }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-surface">
-            <tr className="bg-indigo-50/40">
+            <tr className="bg-primary-container/30">
               <td className="px-4 py-2 font-semibold text-ink">Gross Sale ({row.orderCount} orders)</td>
               <td className="px-4 py-2 text-right text-primary font-semibold">{currencyFull(row.grossSale)}</td>
               <td className="px-4 py-2 text-right text-primary">{currencyFull(row.grossSale)}</td>
@@ -555,7 +555,7 @@ function RecoView({ data }) {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {/* Gross Sale */}
-              <tr className="bg-indigo-50/50">
+              <tr className="bg-primary-container/30">
                 <td className="px-4 py-3 font-semibold text-ink">Gross Sale Amount</td>
                 <td className="px-4 py-3 text-right font-semibold text-primary">{currencyFull(mpSale)}</td>
                 <td className="px-4 py-3 text-right font-medium text-primary">
@@ -812,7 +812,7 @@ function SummaryView({ data }) {
                     const isHot   = pctDiff !== null && Math.abs(pctDiff) > 1;
                     const isUp    = pctDiff > 0;
                     return (
-                      <tr key={i} className={`hover:bg-surface-container-low/60 ${isHot?(isUp?'bg-emerald-50/50':'bg-rose-50/50'):item.description==='Sale Amount'?'bg-indigo-50/40':''}`}>
+                      <tr key={i} className={`hover:bg-surface-container-low/60 ${isHot?(isUp?'bg-emerald-50/50':'bg-rose-50/50'):item.description==='Sale Amount'?'bg-primary-container/30':''}`}>
                         <td className="px-4 py-2.5 font-medium text-ink">{item.description}</td>
                         <td className="px-4 py-2.5">
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold" style={{backgroundColor:(CAT_COLOR[item.category]||'#94a3b8')+'20',color:CAT_COLOR[item.category]||'#94a3b8'}}>

@@ -50,7 +50,7 @@ function RuleForm({ catalog, tab, initialRule, onSave, onCancel, saving }) {
   };
 
   return (
-    <form onSubmit={submit} className="rounded-xl border border-primary bg-indigo-50/40 p-4 mb-4">
+    <form onSubmit={submit} className="rounded-xl border border-primary/20 bg-primary-container/30 p-4 mb-4">
       <div className="mb-3 flex items-start justify-between gap-4">
         <div>
           <h3 className="text-sm font-bold text-ink">{initialRule?.id ? 'Edit rate parameter' : 'Add rate parameter'}</h3>
