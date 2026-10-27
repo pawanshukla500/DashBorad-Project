@@ -22,6 +22,7 @@ import exportRoutes from './export.js';
 import uploadHealthRoutes from './uploadHealth.js';
 import sorRoutes from './sor.js';
 import sorUploadRoutes from './sorUpload.js';
+import marketplaceAccountsRoutes from './marketplaceAccounts.js';
 import {
   authMiddleware,
   mutationAccessGuard,
@@ -112,6 +113,9 @@ export function mountApiRoutes(app) {
 
   protectMutations(app, '/api/mp-settlement');
   app.use('/api/mp-settlement', mpSettlementRoutes);
+
+  protectMutations(app, '/api/marketplace-accounts');
+  app.use('/api/marketplace-accounts', marketplaceAccountsRoutes);
 
   // SOR (Sales Order Reconciliation) — invoice-grain outstanding ledger
   // across Myntra Jabong, Zepto, AJIO, Cocoblu. Read-only endpoints —

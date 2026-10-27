@@ -683,4 +683,61 @@ is not connected to dashboard reporting (`unified_settlements` /
 `order_settlement_totals`). Flipkart settlements must be uploaded via the
 dedicated workbook uploader (`POST /api/flipkart-settlement`).
 
+---
+
+## 11. Marketplace Credentials Storage & Multi-Account Architecture
+
+### 11.1 Supported Marketplaces & Legal Account Segregation
+
+| Marketplace Key | Channel Name | Legal Entity / Seller ID | Portal URL | Brandfetch CDN Logo |
+| :--- | :--- | :--- | :--- | :--- |
+| `amazon_in` | Amazon India | VB Exports (`amazon_in`) | `https://sellercentral.amazon.in` | `https://cdn.brandfetch.io/idomDO5Jzv/w/128/h/128/fallback/lettermark/icon.webp...` |
+| `cocoblu` | Cocoblu Retails | Cocoblu Vendor (`cocoblu`) | `https://vendor.cocoblu.biz` | `https://cdn.brandfetch.io/iduQ6iAglk/w/128/h/128/fallback/lettermark/icon.webp...` |
+| `myntra_vb` | Myntra (VB Exports) | **Seller ID: `10708`** | `https://partners.myntra.com` | `https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp...` |
+| `myntra_ej` | Myntra (Ethnic Junction) | **Seller ID: `45833`** | `https://partners.myntra.com` | `https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp...` |
+| `flipkart` | Flipkart Seller Hub | Ethnic Junction (`flipkart`) | `https://seller.flipkart.com` | `https://cdn.brandfetch.io/idWdImNSUt/w/128/h/128/fallback/lettermark/icon.webp...` |
+| `reliance_ajio` | Reliance Retail (AJIO) | Supplier Hub (`reliance_ajio`) | `https://supplier.ajio.com` | `https://cdn.brandfetch.io/idr5xgDFc2/w/128/h/128/fallback/lettermark/icon.webp...` |
+| `meesho` | Meesho Supplier Panel | Supplier Panel (`meesho`) | `https://supplier.meesho.com` | `https://cdn.brandfetch.io/idyeTDctmi/w/128/h/128/fallback/lettermark/icon.webp...` |
+| `shopify` | Shopify Store | D2C Admin (`shopify`) | `https://admin.shopify.com` | `https://cdn.brandfetch.io/idAgPm7IvG/w/128/h/128/fallback/lettermark/icon.webp...` |
+
+### 11.2 Database Schema: `marketplace_accounts`
+
+```sql
+CREATE TABLE IF NOT EXISTS marketplace_accounts (
+    id SERIAL PRIMARY KEY,
+    marketplace VARCHAR(50) NOT NULL UNIQUE,
+    account_name VARCHAR(100) NOT NULL,
+    seller_id VARCHAR(100),
+    login_id VARCHAR(255),
+    password_encrypted TEXT,
+    portal_url VARCHAR(255),
+    logo_url TEXT,
+    auth_type VARCHAR(50) DEFAULT 'password_otp',
+    is_active BOOLEAN DEFAULT TRUE,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by VARCHAR(100)
+);
+
+CREATE INDEX IF NOT EXISTS IX_marketplace_accounts_active ON marketplace_accounts (marketplace) WHERE is_active = TRUE;
+```
+
+### 11.3 Cryptographic Security (AES-256-GCM)
+Marketplace passwords and session secrets are encrypted in PostgreSQL via AES-256-GCM (`backend/utils/credentialCrypto.js`):
+1. **Algorithm**: `AES-256-GCM`
+2. **IV (Nonce)**: 12 bytes generated cryptographically via `crypto.randomBytes(12)` for every single encryption.
+3. **Auth Tag**: 16 bytes GCM authentication tag for tamper resistance.
+4. **Ciphertext Storage Format**: `iv:authTag:encryptedContent` in base64 / hex.
+5. **Key Resolution**: Derived from `CREDENTIAL_ENCRYPTION_KEY` or derived securely from the system master key.
+6. **Masking**: Standard GET endpoints (`/api/marketplace-accounts`) strictly return `password_masked: '••••••••'`. Only authorized operators/admins can invoke `/api/marketplace-accounts/:id/reveal`, which writes an immediate immutable audit trail entry.
+
+### 11.4 Desktop Application & Scraper Integration
+The ReconCentral desktop rate card worker communicates directly with the local engine:
+1. Loads active marketplace configurations from `GET /api/desktop/marketplace-accounts`.
+2. Provides 1-click **Launch Interactive Login** for each account to open Puppeteer Chromium for manual 2FA/OTP login.
+3. Isolates browser sessions per marketplace in `.runtime/cookies.json` and `%APPDATA%\ReconCentral RateCard Worker\`.
+4. Executes headless rate card extraction, change detection, and multi-sheet Excel generation.
+
+
 

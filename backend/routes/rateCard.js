@@ -8,13 +8,21 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
-import { normalizeCategory } from '../services/rateCard.js';
+import { normalizeCategory, clearRateCardCache } from '../services/rateCard.js';
 import { scrapeRateCard } from '../services/rateCardScraper.js';
-import { clearRateCardCache } from '../services/rateCard.js';
+import { scrapeFlipkartRateCards, getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
+import { detectRateChanges, syncRateCardsToDatabase } from '../services/rateCardSyncEngine.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { checkRateRow } from '../utils/rateCardRowChecks.js';
+import { 
+  getRealTimeBrandFsnSamples, 
+  buildBrandRateCardSet, 
+  detectBrandRateChanges, 
+  syncBrandRateCardsToDatabase 
+} from '../services/brandRateCardService.js';
+import { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } from '../services/brandwiseExcelExport.js';
 
 const router = express.Router();
 
@@ -1502,4 +1510,287 @@ Rules:
 router.get('/rc-entry-reco', (req, res) => res.json({ commission: [], fixed_fee: [], pick_pack: [], franchise_fee: [] }));
 router.get('/rc-entry-orders', (req, res) => res.json({ orders: [], total: 0 }));
 
+// ── Flipkart Rate Card Automation Endpoints ─────────────────────────────────────
+
+/**
+ * GET /api/rate-card/verticals
+ * Lists distinct Flipkart verticals in orders table along with available samples
+ */
+router.get('/verticals', async (req, res) => {
+  try {
+    const verticals = await getFlipkartVerticals();
+    const pool = getPool();
+    const sampleFsns = await pool.query(`
+      SELECT DISTINCT ON (category) category, fsn, sku 
+      FROM orders 
+      WHERE marketplace ILIKE '%flipkart%' AND fsn IS NOT NULL AND fsn != ''
+      LIMIT 30
+    `);
+    res.json({
+      verticals,
+      samples: sampleFsns.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/sync-status
+ * Current status of Flipkart credentials, session cookies, and latest rate card version
+ */
+router.get('/sync-status', async (req, res) => {
+  try {
+    const pool = getPool();
+    const latestVersion = await pool.query(`
+      SELECT id, version_name, status, effective_from, created_at, published_at 
+      FROM rate_card_versions 
+      WHERE marketplace = 'flipkart'
+      ORDER BY id DESC 
+      LIMIT 1
+    `);
+
+    // Check cookies
+    let hasCookies = false;
+    try {
+      const fsSync = await import('fs');
+      const pathMod = (await import('path')).default;
+      const p = pathMod.join(process.cwd(), '.runtime/cookies.json');
+      hasCookies = fsSync.existsSync(p);
+    } catch {}
+
+    res.json({
+      marketplace: 'flipkart',
+      hasCookies,
+      latestVersion: latestVersion.rows[0] || null,
+      sellerAccount: 'default'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/sync-flipkart
+ * Trigger end-to-end extraction, change detection, and DB update for Flipkart
+ */
+router.post('/sync-flipkart', async (req, res) => {
+  try {
+    const { verticals, headless = 'new', forceUpdate = false } = req.body || {};
+    
+    // 1. Scrape rates from Flipkart Seller Hub
+    const scrapeResult = await scrapeFlipkartRateCards({
+      verticals,
+      headless
+    });
+
+    if (!scrapeResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: scrapeResult.error
+      });
+    }
+
+    // 2. Commit to Database and Detect Changes
+    const syncResult = await syncRateCardsToDatabase(scrapeResult.data, {
+      marketplace: 'flipkart',
+      sellerAccount: 'default',
+      forceUpdate
+    });
+
+    res.json({
+      success: true,
+      scrapedCount: scrapeResult.count,
+      syncResult
+    });
+  } catch (err) {
+    console.error('[sync-flipkart] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/detect-changes
+ * Preview changes without committing to the database
+ */
+router.post('/detect-changes', async (req, res) => {
+  try {
+    const { scrapedData } = req.body || {};
+    if (!Array.isArray(scrapedData)) {
+      return res.status(400).json({ error: 'scrapedData array is required' });
+    }
+    const changes = await detectRateChanges(scrapedData, 'flipkart', 'default');
+    res.json({
+      changesCount: changes.length,
+      changes
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/unconfigured-categories
+ * List categories found in Flipkart orders that do not have active rate cards in DB
+ */
+router.get('/unconfigured-categories', async (req, res) => {
+  try {
+    const pool = getPool();
+    const result = await pool.query(`
+      SELECT DISTINCT o.category, COUNT(o.id) as order_count
+      FROM orders o
+      WHERE o.marketplace ILIKE '%flipkart%'
+        AND o.category IS NOT NULL AND o.category != ''
+        AND o.category NOT IN (
+          SELECT DISTINCT c.category 
+          FROM rc_commission c 
+          WHERE c.marketplace = 'flipkart' AND c.end_date IS NULL
+        )
+      GROUP BY o.category
+      ORDER BY order_count DESC, o.category ASC
+      LIMIT 25
+    `);
+    res.json({
+      marketplace: 'flipkart',
+      unconfiguredCount: result.rows.length,
+      categories: result.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/check-category
+ * Inspect or dynamically import a single category from Flipkart Seller Hub
+ */
+router.post('/check-category', async (req, res) => {
+  try {
+    const { category, sync = false } = req.body || {};
+    if (!category || typeof category !== 'string' || !category.trim()) {
+      return res.status(400).json({ error: 'Valid category name is required' });
+    }
+
+    const cleanCategory = category.trim().toLowerCase();
+    const pool = getPool();
+
+    // Check existing DB status
+    const existing = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM rc_commission 
+      WHERE marketplace = 'flipkart' AND category = $1 AND end_date IS NULL
+    `, [cleanCategory]);
+    const isConfiguredInDb = parseInt(existing.rows[0].count, 10) > 0;
+
+    // Scrape live rates for this single category
+    const scrapeResult = await scrapeFlipkartRateCards({
+      verticals: [cleanCategory],
+      headless: 'new'
+    });
+
+    if (!scrapeResult.success || !scrapeResult.data.length) {
+      return res.status(500).json({
+        success: false,
+        error: scrapeResult.error || `No rate tables found on Flipkart for vertical "${cleanCategory}"`
+      });
+    }
+
+    const categoryData = scrapeResult.data[0];
+    const changes = await detectRateChanges([categoryData], 'flipkart', 'default');
+
+    let syncResult = null;
+    if (sync) {
+      syncResult = await syncRateCardsToDatabase([categoryData], {
+        marketplace: 'flipkart',
+        sellerAccount: 'default',
+        forceUpdate: true
+      });
+    }
+
+    res.json({
+      success: true,
+      category: cleanCategory,
+      isConfiguredInDb,
+      changesCount: changes.length,
+      changes,
+      rates: {
+        commissionsCount: categoryData.commissions.length,
+        fixedFeesCount: categoryData.fixedFees.length,
+        collectionFeesCount: categoryData.collectionFees.length,
+        reverseShippingCount: categoryData.reverseShipping.length,
+        data: categoryData
+      },
+      synced: Boolean(sync),
+      syncResult
+    });
+  } catch (err) {
+    console.error('[check-category] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/brand-fsn-catalog
+ * Real-time discovery of sample FSNs and SKUs grouped by (marketplace, category, brand)
+ */
+router.get('/brand-fsn-catalog', async (req, res) => {
+  try {
+    const pool = getPool();
+    const catalog = await getRealTimeBrandFsnSamples(pool);
+    res.json({
+      success: true,
+      count: catalog.length,
+      catalog
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/sync-brand-rates
+ * Brand-wise rate sync for Flipkart and Shopsy with real-time FSN sampling
+ */
+router.post('/sync-brand-rates', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { forceUpdate = false, effectiveDate, exportExcel = true } = req.body || {};
+
+    const brandRateCards = await buildBrandRateCardSet(pool);
+    const syncResult = await syncBrandRateCardsToDatabase(brandRateCards, {
+      forceUpdate,
+      effectiveDate: effectiveDate || new Date().toISOString().slice(0, 10)
+    }, pool);
+
+    let excelResult = null;
+    if (exportExcel) {
+      excelResult = await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
+    }
+
+    res.json({
+      success: true,
+      brandCount: brandRateCards.length,
+      syncResult,
+      excelExport: excelResult
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/export-brandwise-excel
+ * Generate and download brand-wise Flipkart & Shopsy rate card Excel
+ */
+router.get('/export-brandwise-excel', async (req, res) => {
+  try {
+    const pool = getPool();
+    const excelResult = await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
+    res.download(excelResult.filePath, 'Flipkart_Shopsy_Brandwise_RateCard.xlsx');
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 export default router;
+

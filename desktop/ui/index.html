@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReconCentral RateCard Automation & Scraper Worker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-logo">
+          <span class="logo-icon">⚡</span>
+          <div class="logo-text">
+            <span class="logo-title">ReconCentral</span>
+            <span class="logo-sub">RateCard Desktop Center v2.0</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-tab="dashboard">
+          <span class="nav-icon">📊</span>
+          <span>Dashboard</span>
+        </button>
+        <button class="nav-item" data-tab="catalog">
+          <span class="nav-icon">🏷️</span>
+          <span>Catalog & FSNs</span>
+        </button>
+        <button class="nav-item" data-tab="scraper">
+          <span class="nav-icon">🤖</span>
+          <span>Live Scraper</span>
+        </button>
+        <button class="nav-item" data-tab="diff">
+          <span class="nav-icon">🔍</span>
+          <span>Review & DB Sync</span>
+          <span class="badge" id="changes-badge" style="display: none;">0</span>
+        </button>
+        <button class="nav-item" data-tab="excel">
+          <span class="nav-icon">📑</span>
+          <span>Desktop Excel</span>
+        </button>
+        <button class="nav-item" data-tab="settings">
+          <span class="nav-icon">⚙️</span>
+          <span>Settings</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-indicator-box">
+          <div class="status-dot active"></div>
+          <div class="status-info">
+            <span class="status-label">Worker Engine</span>
+            <span class="status-val" id="engine-status">Ready</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="content-area">
+      <!-- Top Header -->
+      <header class="app-header">
+        <div class="header-left">
+          <h1 id="page-title">Dashboard & Operations</h1>
+          <p id="page-desc">Automated Flipkart & Shopsy rate card extraction, change detection, and database synchronization</p>
+        </div>
+        <div class="header-right">
+          <div class="user-auth-badge" id="user-auth-badge" style="display: none; align-items: center; gap: 8px; background: rgba(144, 42, 74, 0.2); border: 1px solid var(--primary); padding: 5px 12px; border-radius: 20px; font-size: 12px;">
+            <span id="user-badge-role" class="badge" style="background: var(--primary); color: #fff; font-size: 11px; padding: 2px 6px;">Admin</span>
+            <span id="user-badge-name" style="font-weight: 600; color: #fff;">Pawan Shukla</span>
+            <button id="btn-header-logout" title="Sign out / Deauthorize" style="background: transparent; border: none; color: #f87171; cursor: pointer; font-size: 12px; padding: 0 4px; margin-left: 4px;">🚪 Sign Out</button>
+          </div>
+          <button class="btn btn-sm btn-secondary" id="btn-quick-excel">📑 Export Excel</button>
+          <button class="btn btn-sm btn-secondary" id="btn-quick-open-excel">📂 Open Excel</button>
+          <span class="badge badge-portal">Flipkart & Shopsy</span>
+          <span class="badge badge-account">Multi-Brand</span>
+        </div>
+      </header>
+
+      <!-- Views Wrapper -->
+      <div class="views-wrapper">
+        <!-- 1. DASHBOARD VIEW -->
+        <section id="view-dashboard" class="tab-view active">
+          <!-- Shopsy Notice Banner -->
+          <div class="notice-banner" style="background: rgba(144, 42, 74, 0.15); border: 1px solid var(--primary); padding: 14px 18px; border-radius: var(--radius); margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+            <div>
+              <strong style="color: #fbe9f0; font-size: 14px;">🛍️ Shopsy Rate Card Policy:</strong>
+              <span style="color: #cbd5e1; font-size: 13px; margin-left: 8px;">Flat <strong>0% Commission</strong> across all brands | Tiered Closing Fee (<strong>₹0</strong> for ≤ ₹1,500, <strong>₹10</strong> for &gt; ₹1,500) | Full Return Shipping Matrix (0-0.5kg & 0.5-1kg)</span>
+            </div>
+            <span class="badge" style="background: var(--primary); color: #fff;">Verified Live</span>
+          </div>
+
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <span class="kpi-icon">🍪</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Session Status</span>
+                <span class="kpi-val" id="dash-session-status">Checking...</span>
+                <span class="kpi-sub" id="dash-session-sub">Session cookies valid</span>
+              </div>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-icon">🗄️</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Database Connection</span>
+                <span class="kpi-val" id="dash-db-status">Checking...</span>
+                <span class="kpi-sub">Hostinger VPS PostgreSQL</span>
+              </div>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-icon">🏷️</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Brands Configured</span>
+                <span class="kpi-val" id="dash-brands-count">5 Brands</span>
+                <span class="kpi-sub">EJ, Youthnic, Sangria, Divastri</span>
+              </div>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-icon">📑</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Desktop Excel</span>
+                <span class="kpi-val" id="dash-excel-status">6 Sheets Ready</span>
+                <span class="kpi-sub">Flipkart_Shopsy_Brandwise</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card card-action-banner">
+            <div class="banner-text">
+              <h3>Start Flipkart & Shopsy Rate Card Automation</h3>
+              <p>Extract brand-specific fee slabs, verify 0% Shopsy commissions with return fees, inspect diffs, and sync to PostgreSQL.</p>
+            </div>
+            <div class="banner-buttons">
+              <button class="btn btn-secondary" id="btn-dash-catalog">🏷️ View Sample FSNs</button>
+              <button class="btn btn-secondary" id="btn-dash-tour">👁️ Live Chrome Tour</button>
+              <button class="btn btn-primary" id="btn-dash-run">🚀 Run Extraction</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. CATALOG & FSNS VIEW -->
+        <section id="view-catalog" class="tab-view">
+          <div class="card" style="margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <h3 style="font-size: 16px; font-weight: 600;">Real-Time Brand & FSN Sampling Catalog</h3>
+                <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Dynamic FSN and SKU samples pulled directly from live database order history.</p>
+              </div>
+              <div style="display: flex; gap: 10px;">
+                <select id="filter-catalog-mp" class="form-input" style="width: 140px;">
+                  <option value="all">All Portals</option>
+                  <option value="flipkart">Flipkart</option>
+                  <option value="shopsy">Shopsy</option>
+                </select>
+                <select id="filter-catalog-brand" class="form-input" style="width: 160px;">
+                  <option value="all">All Brands</option>
+                  <option value="Ethnic Junction">Ethnic Junction</option>
+                  <option value="Youthnic">Youthnic</option>
+                  <option value="Sangria">Sangria</option>
+                  <option value="Divastri">Divastri</option>
+                </select>
+                <button class="btn btn-secondary" id="btn-refresh-catalog">🔄 Refresh</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card table-card">
+            <table class="data-table" id="table-catalog">
+              <thead>
+                <tr>
+                  <th>Marketplace</th>
+                  <th>Vertical / Category</th>
+                  <th>Brand Name</th>
+                  <th>Sample FSN</th>
+                  <th>Sample SKU</th>
+                  <th>Order Count in DB</th>
+                </tr>
+              </thead>
+              <tbody id="catalog-tbody">
+                <tr>
+                  <td colspan="6" class="empty-state">Loading real-time catalog from database...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 3. SCRAPER WORKER VIEW -->
+        <section id="view-scraper" class="tab-view">
+          <div class="scraper-controls-card card">
+            <div class="control-row">
+              <div class="control-group">
+                <label>Marketplace Channel</label>
+                <select id="select-marketplace" class="form-input">
+                  <option value="flipkart" data-portal="https://seller.flipkart.com/" selected>Flipkart & Shopsy Seller Hub</option>
+                  <option value="myntra_vb" data-portal="https://partners.myntra.com/">Myntra (VB) — Seller ID: 10708</option>
+                  <option value="myntra_ej" data-portal="https://partners.myntra.com/">Myntra (EJ) — Seller ID: 45833</option>
+                  <option value="amazon" data-portal="https://sellercentral.amazon.in/">Amazon IN Seller Central</option>
+                  <option value="ajio" data-portal="https://supplier.ajio.com/">Reliance Retail (AJIO) Supplier Hub</option>
+                  <option value="meesho" data-portal="https://supplier.meesho.com/">Meesho Supplier Panel</option>
+                  <option value="cocoblu" data-portal="https://cocoblu.biz/">Cocoblu Retails Portal</option>
+                  <option value="shopify" data-portal="https://admin.shopify.com/">Shopify Admin Center</option>
+                </select>
+                <div id="account-credentials-hint" style="font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; align-items: center; gap: 6px;">
+                  <span>🔒 AES-256 encrypted credentials linked</span>
+                </div>
+              </div>
+
+              <div class="control-group">
+                <label>Execution Mode</label>
+                <select id="select-mode" class="form-input">
+                  <option value="visible" selected>👁️ Visible Chrome Window (Watch Live)</option>
+                  <option value="headless">⚡ Background Stealth Mode</option>
+                </select>
+              </div>
+
+              <div class="control-group">
+                <label>Brand Filter</label>
+                <select id="select-brand" class="form-input">
+                  <option value="all" selected>All Brands (EJ, Youthnic, Sangria, Divastri)</option>
+                  <option value="Ethnic Junction">Ethnic Junction</option>
+                  <option value="Youthnic">Youthnic</option>
+                  <option value="Sangria">Sangria (Tiered)</option>
+                  <option value="Divastri">Divastri</option>
+                </select>
+              </div>
+
+              <div class="control-actions">
+                <button class="btn btn-secondary" id="btn-interactive-login" title="Open visible browser window to log in or handle OTP manually">
+                  🔑 Human Login (2FA)
+                </button>
+                <button class="btn btn-primary" id="btn-start-scrape">
+                  ⚡ Run Scraper Worker
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Live Terminal Output -->
+          <div class="terminal-card card">
+            <div class="terminal-header">
+              <div class="terminal-dots">
+                <span class="dot red"></span>
+                <span class="dot yellow"></span>
+                <span class="dot green"></span>
+              </div>
+              <span class="terminal-title">Worker Console Logs</span>
+              <button class="btn-terminal-clear" id="btn-clear-terminal">Clear</button>
+            </div>
+            <div class="terminal-body" id="terminal-body">
+              <div class="log-line info">[System] Ready to begin rate card automation. Click "Run Scraper Worker" to start.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. CHANGE REVIEW & DIFF VIEW -->
+        <section id="view-diff" class="tab-view">
+          <div class="card diff-header-card">
+            <div class="diff-summary">
+              <h3>Rate Card Change Review & Database Sync</h3>
+              <p>Compare extracted Flipkart & Shopsy rate cards against active PostgreSQL database records (rc_commission, rc_fixed_fee, rc_reverse_shipping).</p>
+            </div>
+            <div class="diff-actions">
+              <button class="btn btn-secondary" id="btn-load-preview">Load Active Rates</button>
+              <button class="btn btn-secondary" id="btn-export-diff">Export JSON</button>
+              <button class="btn btn-success" id="btn-commit-db">✓ Commit & Auto-Close in Database</button>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+            <button class="btn btn-sm btn-secondary filter-tab active" data-filter="all">All Fee Types</button>
+            <button class="btn btn-sm btn-secondary filter-tab" data-filter="commission">Commissions</button>
+            <button class="btn btn-sm btn-secondary filter-tab" data-filter="fixed">Fixed Fees (Closing Fee)</button>
+            <button class="btn btn-sm btn-secondary filter-tab" data-filter="reverse">Reverse Shipping (Return Fee)</button>
+          </div>
+
+          <div class="card table-card">
+            <table class="data-table" id="table-diff">
+              <thead>
+                <tr>
+                  <th>Fee Type</th>
+                  <th>Marketplace</th>
+                  <th>Category</th>
+                  <th>Brand</th>
+                  <th>Slab / Condition</th>
+                  <th>Previous Active Rate</th>
+                  <th>New Scraped Rate</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="diff-tbody">
+                <tr>
+                  <td colspan="8" class="empty-state">No scraped or preview data loaded. Click "Load Active Rates" or run the scraper worker.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 5. DESKTOP EXCEL VIEW -->
+        <section id="view-excel" class="tab-view">
+          <div class="card" style="margin-bottom: 24px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <h3 style="font-size: 18px; font-weight: 700;">Desktop Multi-Sheet Excel Center</h3>
+                <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+                  All 6 sheets formatted with auto-width columns, verified Shopsy 0% commissions, ₹0/₹10 tiered closing fees, and reverse shipping weight matrices.
+                </p>
+              </div>
+              <div style="display: flex; gap: 12px;">
+                <button class="btn btn-secondary" id="btn-generate-excel">🔄 Regenerate Excel</button>
+                <button class="btn btn-primary" id="btn-launch-excel">📂 Open in Microsoft Excel</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 24px;">
+            <div class="kpi-card">
+              <span class="kpi-icon">1️⃣</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Sheet 1</span>
+                <span class="kpi-val" style="font-size: 15px;">Brand Commission Summary</span>
+                <span class="kpi-sub">EJ/YT 0%, Sangria tiered, Shopsy 0%</span>
+              </div>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-icon">2️⃣</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Sheet 2 & 3</span>
+                <span class="kpi-val" style="font-size: 15px;">Flipkart & Shopsy Rates</span>
+                <span class="kpi-sub">Detailed price slab matrices</span>
+              </div>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-icon">3️⃣</span>
+              <div class="kpi-content">
+                <span class="kpi-label">Sheet 4, 5 & 6</span>
+                <span class="kpi-val" style="font-size: 15px;">Fixed, Return & FSN Catalog</span>
+                <span class="kpi-sub">Closing fees, return shipping, sample FSNs</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="padding: 20px;">
+            <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Default File Location:</h4>
+            <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid var(--border); padding: 12px 16px; border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #38bdf8; display: flex; justify-content: space-between; align-items: center;">
+              <span id="excel-path-display">C:\Users\Pawan Shukla\Desktop\Flipkart_Shopsy_Brandwise_RateCard.xlsx</span>
+              <span class="badge" style="background: #10b981; color: #fff;">127 KB</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 6. SETTINGS VIEW -->
+        <section id="view-settings" class="tab-view">
+          <div class="card settings-card">
+            <h3>Marketplace Authentication</h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>Seller Email / Username</label>
+                <input type="text" id="cfg-email" class="form-input" placeholder="Vbexports@outlook.com">
+              </div>
+              <div class="form-group">
+                <label>Seller Password (FK_PASSWORD)</label>
+                <input type="password" id="cfg-password" class="form-input" placeholder="••••••••••••">
+              </div>
+            </div>
+
+            <h3 style="margin-top: 24px;">PostgreSQL Database Connection</h3>
+            <div class="form-grid">
+              <div class="form-group full-width">
+                <label>DATABASE_URL (ReconCentral dedicated PostgreSQL)</label>
+                <input type="text" id="cfg-db-url" class="form-input" placeholder="postgresql://user:pass@host:5433/paymentapp">
+              </div>
+            </div>
+            <div style="margin-top: 8px;">
+              <button class="btn btn-secondary" id="btn-test-db">Test DB Connection</button>
+              <span id="db-test-result" style="margin-left: 12px; font-size: 13px;"></span>
+            </div>
+
+            <h3 style="margin-top: 24px;">Automation & Alerts</h3>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>Daily Scheduled Run Time (24h)</label>
+                <div style="display: flex; gap: 8px;">
+                  <input type="number" id="cfg-hour" class="form-input" min="0" max="23" value="6" style="width: 80px;">
+                  <span style="align-self: center;">:</span>
+                  <input type="number" id="cfg-minute" class="form-input" min="0" max="59" value="0" style="width: 80px;">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Alert Email Address</label>
+                <input type="email" id="cfg-alert-email" class="form-input" value="payments@youthnic.shop">
+              </div>
+              <div class="form-group full-width">
+                <label>
+                  <input type="checkbox" id="cfg-auto-sync">
+                  Auto-commit to database without manual review when no anomalies are detected
+                </label>
+              </div>
+            </div>
+
+            <div style="margin-top: 24px; text-align: right;">
+              <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- Firebase Login & PC Authorization Modal -->
+  <div id="auth-modal" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.95); z-index: 9999; backdrop-filter: blur(8px); align-items: center; justify-content: center;">
+    <div class="modal-card" style="background: #1e293b; border: 1px solid rgba(144, 42, 74, 0.4); border-radius: 16px; width: 480px; max-width: 90vw; padding: 32px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div style="font-size: 40px; margin-bottom: 8px;">⚡</div>
+        <h2 style="font-size: 20px; font-weight: 700; color: #fff;">ReconCentral Desktop Authorization</h2>
+        <p style="font-size: 13px; color: #94a3b8; margin-top: 6px;">Sign in with your Firebase credentials to authorize this PC for database access & scraper control.</p>
+      </div>
+
+      <div id="auth-error-banner" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; color: #fca5a5;"></div>
+
+      <form id="form-auth-login">
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Firebase Email</label>
+          <input type="email" id="auth-input-email" class="form-input" placeholder="returnorders@vbexports.co.in" required style="width: 100%; box-sizing: border-box;">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Firebase Password</label>
+          <input type="password" id="auth-input-password" class="form-input" placeholder="••••••••••••" required style="width: 100%; box-sizing: border-box;">
+        </div>
+
+        <details style="margin-bottom: 20px; font-size: 12px; color: #94a3b8;">
+          <summary style="cursor: pointer; color: #38bdf8; font-weight: 500;">⚙️ Advanced Connection Settings</summary>
+          <div style="margin-top: 10px; padding: 12px; background: rgba(15, 23, 42, 0.6); border-radius: 8px; border: 1px solid #334155;">
+            <p style="font-size: 11px; color: #10b981; margin-bottom: 8px;">🔒 Database access is securely auto-provisioned over TLS upon sign-in. Manual entry is optional.</p>
+            <label style="display: block; font-size: 11px; margin-bottom: 4px; color: #94a3b8;">PostgreSQL Connection Override (Optional)</label>
+            <input type="text" id="auth-input-db" class="form-input" style="width: 100%; font-size: 11px; box-sizing: border-box;" placeholder="Auto-provisioned or postgresql://user:pass@host:5433/paymentapp">
+            <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px;">
+              <button type="button" id="btn-auth-test-db" class="btn btn-sm btn-secondary">Test DB Ping</button>
+              <span id="auth-db-ping-status" style="font-size: 11px;"></span>
+            </div>
+          </div>
+        </details>
+
+        <button type="submit" id="btn-auth-submit" class="btn btn-primary" style="width: 100%; padding: 12px; font-size: 14px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px;">
+          <span id="auth-spinner" style="display: none;">⏳</span>
+          <span>Sign In & Authorize PC</span>
+        </button>
+      </form>
+
+      <div style="margin-top: 20px; text-align: center; font-size: 11px; color: #64748b;">
+        ReconCentral Security Policy • Roles: Admin, Operator, Analyst
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

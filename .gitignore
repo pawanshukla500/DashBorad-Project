@@ -63,3 +63,9 @@ frontend/*.cjs
 # Agent/tool scratch output (headless Chrome profiles, one-off analysis scripts)
 .codex-tmp/
 **/.codex-tmp/
+desktop/dist-release/
+desktop/node_modules/
+released/*.exe
+relased/*.exe
+reports/
+
