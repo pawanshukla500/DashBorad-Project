@@ -7,10 +7,12 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
   authLogout: () => ipcRenderer.invoke('auth-logout'),
   authVerifyDb: (dbUrl) => ipcRenderer.invoke('auth-verify-db', dbUrl),
 
-  // Configuration
+  // Configuration & Marketplaces
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   testDbConnection: (dbUrl) => ipcRenderer.invoke('test-db-connection', dbUrl),
+  getMarketplaces: () => ipcRenderer.invoke('get-marketplaces'),
+  getMarketplaceAccounts: () => ipcRenderer.invoke('get-marketplace-accounts'),
 
   // Authentication & Live Browser
   runInteractiveLogin: (marketplace) => ipcRenderer.invoke('interactive-login', marketplace),

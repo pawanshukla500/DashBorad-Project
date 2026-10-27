@@ -14,8 +14,8 @@
     <!-- Sidebar Navigation -->
     <aside class="sidebar">
       <div class="sidebar-header">
-        <div class="brand-logo">
-          <span class="logo-icon">⚡</span>
+        <div class="brand-logo" style="display: flex; align-items: center; gap: 12px;">
+          <img src="icon.png" alt="ReconCentral" style="width: 38px; height: 38px; object-fit: contain; border-radius: 8px; background: rgba(144, 42, 74, 0.15); padding: 2px; border: 1px solid rgba(144, 42, 74, 0.4);">
           <div class="logo-text">
             <span class="logo-title">ReconCentral</span>
             <span class="logo-sub">RateCard Desktop Center v2.0</span>
@@ -76,10 +76,20 @@
             <span id="user-badge-name" style="font-weight: 600; color: #fff;">Pawan Shukla</span>
             <button id="btn-header-logout" title="Sign out / Deauthorize" style="background: transparent; border: none; color: #f87171; cursor: pointer; font-size: 12px; padding: 0 4px; margin-left: 4px;">🚪 Sign Out</button>
           </div>
+          <select id="header-select-marketplace" class="form-input" style="width: auto; font-size: 12px; padding: 4px 10px; background: rgba(144, 42, 74, 0.25); border: 1px solid var(--primary); color: #fff; border-radius: 8px; cursor: pointer;">
+            <option value="flipkart_shopsy" selected>Flipkart & Shopsy</option>
+            <option value="myntra_vb">Myntra (VB - 10708)</option>
+            <option value="myntra_ej">Myntra (EJ - 45833)</option>
+            <option value="meesho">Meesho Supplier Hub</option>
+            <option value="amazon">Amazon IN Seller Central (2FA Only)</option>
+            <option value="ajio">Reliance Retail (AJIO) (2FA Only)</option>
+            <option value="cocoblu">Cocoblu Retails (2FA Only)</option>
+            <option value="shopify">Shopify Admin Center (2FA Only)</option>
+          </select>
           <button class="btn btn-sm btn-secondary" id="btn-quick-excel">📑 Export Excel</button>
           <button class="btn btn-sm btn-secondary" id="btn-quick-open-excel">📂 Open Excel</button>
-          <span class="badge badge-portal">Flipkart & Shopsy</span>
-          <span class="badge badge-account">Multi-Brand</span>
+          <span class="badge badge-portal" id="header-badge-channel">Flipkart & Shopsy</span>
+          <span class="badge badge-account">Multi-Marketplace</span>
         </div>
       </header>
 
@@ -127,6 +137,63 @@
                 <span class="kpi-label">Desktop Excel</span>
                 <span class="kpi-val" id="dash-excel-status">6 Sheets Ready</span>
                 <span class="kpi-sub">Flipkart_Shopsy_Brandwise</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Marketplace Channels Grid -->
+          <div class="card" style="margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+              <div>
+                <h3 style="font-size: 15px; font-weight: 600;">Integrated Marketplace Channels</h3>
+                <p style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Dedicated cookie vaults and automation profiles per channel (Isolated session stores).</p>
+              </div>
+              <span class="badge" style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981;">4 Channels Configured</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;">
+              <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span style="font-weight: 600; font-size: 13px;">Flipkart & Shopsy</span>
+                  <span class="badge badge-portal" style="font-size: 10px;">Primary</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted);">Seller Hub & Rate Card Center</div>
+                <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                  <span id="status-ch-flipkart" style="font-size: 11px; color: #10b981;">Ready</span>
+                  <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="flipkart_shopsy" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
+                </div>
+              </div>
+              <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span style="font-weight: 600; font-size: 13px;">Myntra (VB)</span>
+                  <span class="badge" style="background: rgba(144, 42, 74, 0.3); border: 1px solid var(--primary); color: #fff; font-size: 10px;">ID: 10708</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted);">Partners Portal (VB Exports)</div>
+                <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                  <span id="status-ch-myntra-vb" style="font-size: 11px; color: #94a3b8;">Isolated Vault</span>
+                  <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="myntra_vb" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
+                </div>
+              </div>
+              <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span style="font-weight: 600; font-size: 13px;">Myntra (EJ)</span>
+                  <span class="badge" style="background: rgba(144, 42, 74, 0.3); border: 1px solid var(--primary); color: #fff; font-size: 10px;">ID: 45833</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted);">Partners Portal (Ethnic Junction)</div>
+                <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                  <span id="status-ch-myntra-ej" style="font-size: 11px; color: #94a3b8;">Isolated Vault</span>
+                  <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="myntra_ej" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
+                </div>
+              </div>
+              <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span style="font-weight: 600; font-size: 13px;">Meesho</span>
+                  <span class="badge badge-account" style="font-size: 10px;">Supplier</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted);">Supplier Panel Automation</div>
+                <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                  <span id="status-ch-meesho" style="font-size: 11px; color: #94a3b8;">Ready</span>
+                  <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="meesho" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
+                </div>
               </div>
             </div>
           </div>
@@ -198,14 +265,14 @@
               <div class="control-group">
                 <label>Marketplace Channel</label>
                 <select id="select-marketplace" class="form-input">
-                  <option value="flipkart" data-portal="https://seller.flipkart.com/" selected>Flipkart & Shopsy Seller Hub</option>
-                  <option value="myntra_vb" data-portal="https://partners.myntra.com/">Myntra (VB) — Seller ID: 10708</option>
-                  <option value="myntra_ej" data-portal="https://partners.myntra.com/">Myntra (EJ) — Seller ID: 45833</option>
-                  <option value="amazon" data-portal="https://sellercentral.amazon.in/">Amazon IN Seller Central</option>
-                  <option value="ajio" data-portal="https://supplier.ajio.com/">Reliance Retail (AJIO) Supplier Hub</option>
+                  <option value="flipkart_shopsy" data-portal="https://seller.flipkart.com/" selected>Flipkart & Shopsy Seller Hub</option>
+                  <option value="myntra_vb" data-portal="https://partnerportal.myntra.com/">Myntra (VB) — Seller ID: 10708</option>
+                  <option value="myntra_ej" data-portal="https://partnerportal.myntra.com/">Myntra (EJ) — Seller ID: 45833</option>
                   <option value="meesho" data-portal="https://supplier.meesho.com/">Meesho Supplier Panel</option>
-                  <option value="cocoblu" data-portal="https://cocoblu.biz/">Cocoblu Retails Portal</option>
-                  <option value="shopify" data-portal="https://admin.shopify.com/">Shopify Admin Center</option>
+                  <option value="amazon" data-portal="https://sellercentral.amazon.in/">Amazon IN Seller Central (2FA Only)</option>
+                  <option value="ajio" data-portal="https://supplier.ajio.com/">Reliance Retail (AJIO) (2FA Only)</option>
+                  <option value="cocoblu" data-portal="https://cocoblu.biz/">Cocoblu Retails Portal (2FA Only)</option>
+                  <option value="shopify" data-portal="https://admin.shopify.com/">Shopify Admin Center (2FA Only)</option>
                 </select>
                 <div id="account-credentials-hint" style="font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; align-items: center; gap: 6px;">
                   <span>🔒 AES-256 encrypted credentials linked</span>
@@ -405,6 +472,54 @@
               </div>
             </div>
 
+            <h3 style="margin-top: 24px;">Marketplace Accounts & Vault Status (AES-256 GCM)</h3>
+            <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px; margin-bottom: 12px;">
+              Manage encrypted channel sessions and cookie vaults synced from ReconCentral.
+            </p>
+            <div class="card table-card" style="margin-bottom: 20px;">
+              <table class="data-table" id="table-marketplace-accounts">
+                <thead>
+                  <tr>
+                    <th>Marketplace</th>
+                    <th>Account / Seller ID</th>
+                    <th>Portal URL</th>
+                    <th>Vault Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="tbody-marketplace-accounts">
+                  <tr>
+                    <td><strong>Flipkart & Shopsy</strong></td>
+                    <td>Vbexports@outlook.com</td>
+                    <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">https://seller.flipkart.com/</td>
+                    <td><span class="badge" style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981;">Vault Active</span></td>
+                    <td><button class="btn btn-sm btn-secondary btn-ch-login" data-channel="flipkart_shopsy" style="padding: 2px 8px; font-size: 11px;">2FA Login</button></td>
+                  </tr>
+                  <tr>
+                    <td><strong>Myntra (VB)</strong></td>
+                    <td>Seller ID: 10708 (VB Exports)</td>
+                    <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">https://partnerportal.myntra.com/</td>
+                    <td><span class="badge" style="background: rgba(144, 42, 74, 0.2); border: 1px solid var(--primary); color: #fff;">Isolated Vault</span></td>
+                    <td><button class="btn btn-sm btn-secondary btn-ch-login" data-channel="myntra_vb" style="padding: 2px 8px; font-size: 11px;">2FA Login</button></td>
+                  </tr>
+                  <tr>
+                    <td><strong>Myntra (EJ)</strong></td>
+                    <td>Seller ID: 45833 (Ethnic Junction)</td>
+                    <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">https://partnerportal.myntra.com/</td>
+                    <td><span class="badge" style="background: rgba(144, 42, 74, 0.2); border: 1px solid var(--primary); color: #fff;">Isolated Vault</span></td>
+                    <td><button class="btn btn-sm btn-secondary btn-ch-login" data-channel="myntra_ej" style="padding: 2px 8px; font-size: 11px;">2FA Login</button></td>
+                  </tr>
+                  <tr>
+                    <td><strong>Meesho</strong></td>
+                    <td>Supplier Panel Hub</td>
+                    <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">https://supplier.meesho.com/</td>
+                    <td><span class="badge badge-account" style="font-size: 10px;">Active</span></td>
+                    <td><button class="btn btn-sm btn-secondary btn-ch-login" data-channel="meesho" style="padding: 2px 8px; font-size: 11px;">2FA Login</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
             <div style="margin-top: 24px; text-align: right;">
               <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
             </div>
@@ -418,7 +533,7 @@
   <div id="auth-modal" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.95); z-index: 9999; backdrop-filter: blur(8px); align-items: center; justify-content: center;">
     <div class="modal-card" style="background: #1e293b; border: 1px solid rgba(144, 42, 74, 0.4); border-radius: 16px; width: 480px; max-width: 90vw; padding: 32px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);">
       <div style="text-align: center; margin-bottom: 24px;">
-        <div style="font-size: 40px; margin-bottom: 8px;">⚡</div>
+        <img src="icon.png" alt="ReconCentral" style="width: 56px; height: 56px; margin: 0 auto 12px; display: block; border-radius: 12px; box-shadow: 0 4px 12px rgba(144, 42, 74, 0.4); background: rgba(144, 42, 74, 0.1); padding: 4px; border: 1px solid rgba(144, 42, 74, 0.4);">
         <h2 style="font-size: 20px; font-weight: 700; color: #fff;">ReconCentral Desktop Authorization</h2>
         <p style="font-size: 13px; color: #94a3b8; margin-top: 6px;">Sign in with your Firebase credentials to authorize this PC for database access & scraper control.</p>
       </div>

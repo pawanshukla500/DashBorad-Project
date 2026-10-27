@@ -7,10 +7,17 @@
 import XLSX from 'xlsx';
 import path from 'path';
 import fs from 'fs/promises';
+import os from 'os';
 import { getRealTimeBrandFsnSamples, buildBrandRateCardSet } from './brandRateCardService.js';
 import { getPool } from '../db/index.js';
 
-export const DEFAULT_EXCEL_PATH = 'C:\\Users\\Pawan Shukla\\Desktop\\Flipkart_Shopsy_Brandwise_RateCard.xlsx';
+function resolveDefaultExcelPath() {
+  const homeDir = os.homedir();
+  const desktopDir = path.join(homeDir, 'Desktop');
+  return path.join(desktopDir, 'Flipkart_Shopsy_Brandwise_RateCard.xlsx');
+}
+
+export const DEFAULT_EXCEL_PATH = resolveDefaultExcelPath();
 
 export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_PATH, pool = null) {
   const p = pool || getPool();

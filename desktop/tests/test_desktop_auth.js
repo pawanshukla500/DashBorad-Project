@@ -1,6 +1,7 @@
 /**
  * End-to-End Verification Test for Desktop Auth, Authorization & Database Connectivity
  */
+import http from 'http';
 import { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
@@ -169,11 +170,533 @@ async function runTests() {
     failed++;
   }
 
+  // Test 6: Behavioral HTTP Test for Multi-Marketplace Gating, Scraper Protection & Channel Isolation
+  try {
+    console.log('\n[Test 6] Exercising desktop server HTTP routes for multi-marketplace gating & isolation...');
+    const { server } = await import('../desktopServer.mjs');
+    const { filterRateCardsByChannel, verifyDesktopTokenAuthorization } = await import('../authValidation.js');
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const testPort = server.address().port;
+    const testBase = `http://127.0.0.1:${testPort}`;
+
+    // 1. Unknown marketplace rejection test (Must return HTTP 400)
+    const unkRes = await fetch(`${testBase}/api/scrape/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketplace: 'invalid_test_channel' })
+    });
+    const unkData = await unkRes.json();
+    const isUnkRejected = unkRes.status === 400 && unkData.error?.includes('Unsupported marketplace');
+    console.log(`  • Unknown channel rejection (HTTP ${unkRes.status}): Passed = ${isUnkRejected}`);
+
+    // 2. Gated marketplace scraper test: ALL 7 Phase 2 channels must return HTTP 400
+    const phase2Channels = ['myntra_vb', 'myntra_ej', 'meesho', 'amazon', 'ajio', 'cocoblu', 'shopify'];
+    const phase2Results = await Promise.all(phase2Channels.map(async (ch) => {
+      const res = await fetch(`${testBase}/api/scrape/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marketplace: ch })
+      });
+      const data = await res.json();
+      return res.status === 400 && data.error?.includes('Automated scraping is not yet implemented');
+    }));
+    const allPhase2Blocked = phase2Results.every(Boolean);
+    console.log(`  • All 7 Phase 2 channels scraper gate (HTTP 400 for ${phase2Channels.join(', ')}): Passed = ${allPhase2Blocked}`);
+
+    // 3. Channel-filtered preview route isolation test
+    const previewRes = await fetch(`${testBase}/api/preview?marketplace=myntra_vb`);
+    const previewData = await previewRes.json();
+    const previewCards = Array.isArray(previewData.rateCards) ? previewData.rateCards : [];
+    // Every card in previewData must belong to requested channel (zero cross-channel leakage)
+    const allCardsMatchRequested = previewCards.every(rc => (
+      String(rc.account_id || '').toLowerCase() === 'myntra_vb' ||
+      (String(rc.marketplace || '').toLowerCase() === 'myntra' && String(rc.seller_id || rc.account || '') === '10708')
+    ));
+    const isPreviewIsolated = previewRes.status === 200 && allCardsMatchRequested;
+    console.log(`  • Channel-filtered preview isolation (HTTP ${previewRes.status}, count: ${previewCards.length}, leak-free: ${allCardsMatchRequested}): Passed = ${isPreviewIsolated}`);
+
+    // 4. Marketplaces catalog test (8 channels, all 7 Phase 2 channels flagged hasScraper: false, flipkart_shopsy hasScraper: true)
+    const mpRes = await fetch(`${testBase}/api/desktop/marketplaces`);
+    const mpData = await mpRes.json();
+    const allCatalogPhase2Gated = phase2Channels.every(ch => mpData.marketplaces?.find(m => m.id === ch)?.hasScraper === false);
+    const flipkartActive = mpData.marketplaces?.find(m => m.id === 'flipkart_shopsy')?.hasScraper === true;
+    const isMpListValid = mpRes.status === 200 && mpData.marketplaces?.length === 8 && allCatalogPhase2Gated && flipkartActive;
+    console.log(`  • Marketplaces catalog API (8 channels, 7 gated Phase 2, 1 active): Passed = ${isMpListValid}`);
+
+    // 5. Account-specific Myntra VB (10708) and EJ (45833) string & numeric seller ID normalization using production filterRateCardsByChannel
+    const controlledFixtures = [
+      { marketplace: 'flipkart', category: 'sari' },
+      { marketplace: 'shopsy', category: 'sari' },
+      { marketplace: 'meesho', category: 'kurta' },
+      { marketplace: 'myntra', account_id: 'myntra_vb', seller_id: '10708', category: 'kurta' }, // string 10708
+      { marketplace: 'myntra', seller_id: 10708, category: 'dress' }, // numeric 10708
+      { marketplace: 'myntra', account_id: 'myntra_ej', seller_id: 45833, category: 'kurta' }, // numeric 45833
+      { marketplace: 'myntra', seller_id: '45833', category: 'lehenga' } // string 45833
+    ];
+
+    const vbFiltered = filterRateCardsByChannel('myntra_vb', controlledFixtures);
+    const ejFiltered = filterRateCardsByChannel('myntra_ej', controlledFixtures);
+    const flipkartFiltered = filterRateCardsByChannel('flipkart', controlledFixtures);
+    const meeshoFiltered = filterRateCardsByChannel('meesho', controlledFixtures);
+
+    const isAccountFilteringValid = vbFiltered.length === 2 && vbFiltered.every(rc => String(rc.seller_id) === '10708') &&
+                                    ejFiltered.length === 2 && ejFiltered.every(rc => String(rc.seller_id) === '45833') &&
+                                    flipkartFiltered.length === 1 && flipkartFiltered[0].marketplace === 'flipkart' &&
+                                    meeshoFiltered.length === 1 && meeshoFiltered[0].marketplace === 'meesho';
+    console.log(`  • Production filterRateCardsByChannel fixtures (string/number 10708 & 45833 normalization): Passed = ${isAccountFilteringValid}`);
+
+    // 6. Flipkart/Shopsy combined channel filter: must strictly include flipkart & shopsy, and exclude all other marketplaces
+    const fkShopsyFiltered = filterRateCardsByChannel('flipkart_shopsy', controlledFixtures);
+    const isFkShopsyIsolated = fkShopsyFiltered.length === 2 &&
+      fkShopsyFiltered.every(rc => rc.marketplace === 'flipkart' || rc.marketplace === 'shopsy') &&
+      !fkShopsyFiltered.some(rc => rc.marketplace === 'myntra' || rc.marketplace === 'meesho');
+    console.log(`  • Production flipkart_shopsy combined filter isolation (only flipkart & shopsy, zero leak): Passed = ${isFkShopsyIsolated}`);
+
+    // 7. Interactive login auth gate: Unauthenticated request must return HTTP 401
+    const unauthLoginRes = await fetch(`${testBase}/api/interactive-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
+    });
+    const unauthLoginData = await unauthLoginRes.json();
+    const isInteractiveLoginGated = unauthLoginRes.status === 401 && unauthLoginData.error?.includes('ReconCentral session');
+    console.log(`  • Interactive login unauthenticated gate (HTTP 401): Passed = ${isInteractiveLoginGated}`);
+
+    // 7b. Interactive login fake bearer token gate: Arbitrary bearer string must return HTTP 401
+    const fakeBearerRes = await fetch(`${testBase}/api/interactive-login`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer invalid_garbage_token_999'
+      },
+      body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
+    });
+    const isFakeBearerBlocked = fakeBearerRes.status === 401;
+    console.log(`  • Interactive login invalid bearer rejection (HTTP 401): Passed = ${isFakeBearerBlocked}`);
+
+    // 7c. Cryptographic signature gate: Unsigned or forged admin JWT (alg: none) must return HTTP 401
+    const forgedAdminJwt = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64') + '.' +
+                           Buffer.from(JSON.stringify({ recon_role: 'admin', uid: 'attacker-123', email: 'attacker@evil.com' })).toString('base64') +
+                           '.invalid_signature';
+    const forgedAdminRes = await fetch(`${testBase}/api/interactive-login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${forgedAdminJwt}`
+      },
+      body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
+    });
+    const isForgedAdminBlocked = forgedAdminRes.status === 401;
+    console.log(`  • Cryptographic signature verification (forged alg:none admin JWT HTTP 401): Passed = ${isForgedAdminBlocked}`);
+
+    // 7d. Revocation check gate at the route boundary:
+    // Exercises revocation directly through the production verifier at the route boundary:
+    // A token with valid signature that has been revoked produces the production revocation error and returns HTTP 401.
+    let verifierCalledWithCheckRevoked = false;
+    const { setDesktopTokenVerifier, resetDesktopTokenVerifier } = await import('../desktopServer.mjs');
+    
+    const mockRevokedAdminAuth = {
+      verifyIdToken: async (tok, checkRevoked) => {
+        verifierCalledWithCheckRevoked = Boolean(checkRevoked);
+        if (checkRevoked) {
+          const err = new Error('The Firebase ID token has been revoked');
+          err.code = 'auth/id-token-revoked';
+          throw err;
+        }
+        return { uid: 'user_1', recon_role: 'admin' };
+      }
+    };
+    
+    // Wire production verifyDesktopTokenAuthorization with the revoked auth provider
+    setDesktopTokenVerifier(async (token, checkRevoked) => {
+      return verifyDesktopTokenAuthorization(token, checkRevoked, { auth: mockRevokedAdminAuth });
+    });
+
+    const revokedRes = await fetch(`${testBase}/api/interactive-login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer test-valid-format-revoked-token'
+      },
+      body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
+    });
+    const revokedData = await revokedRes.json();
+    const isRevokedTokenBlocked = revokedRes.status === 401 && 
+                                  verifierCalledWithCheckRevoked === true &&
+                                  revokedData.error?.includes('Firebase ID token has been revoked');
+    resetDesktopTokenVerifier();
+    console.log(`  • Revocation verification gate at route boundary (HTTP 401 with production revocation error): Passed = ${isRevokedTokenBlocked}`);
+
+    // 8. DNS rebinding protection: Invalid Host header must return HTTP 403
+    const rebindingStatusCode = await new Promise((resolve, reject) => {
+      const httpReq = http.request({
+        host: '127.0.0.1',
+        port: testPort,
+        path: '/api/desktop/marketplaces',
+        headers: { 'Host': 'evil-attacker.example.com' }
+      }, (res) => {
+        resolve(res.statusCode);
+      });
+      httpReq.on('error', reject);
+      httpReq.end();
+    });
+    const isRebindingBlocked = rebindingStatusCode === 403;
+    console.log(`  • DNS rebinding prevention (invalid Host header HTTP 403): Passed = ${isRebindingBlocked}`);
+
+    server.close();
+
+    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked) {
+      console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, preview filtering, and endpoint security verified.');
+      passed++;
+    } else {
+      console.error('  ✗ Fail: Behavioral route verification failed:', {
+        isUnkRejected,
+        allPhase2Blocked,
+        isPreviewIsolated,
+        isMpListValid,
+        isAccountFilteringValid,
+        isFkShopsyIsolated,
+        isInteractiveLoginGated,
+        isFakeBearerBlocked,
+        isForgedAdminBlocked,
+        isRevokedTokenBlocked,
+        isRebindingBlocked
+      });
+      failed++;
+    }
+  } catch (err) {
+    console.error('  ✗ Fail:', err.message);
+    failed++;
+  }
+
+  // Test 7: Fail-Closed Role-Claim Token Verification Invariant Using Production authValidation
+  try {
+    console.log('\n[Test 7] Verifying fail-closed role-claim token verification across session persistence paths...');
+    const { 
+      validateDesktopTokenRole, 
+      validateTokenRoleMatchesDatabase,
+      verifyFirebaseTokenCryptographically,
+      verifyDesktopTokenAuthorization,
+      verifyFallbackTokenRevocation,
+      extractRoleFromToken, 
+      isAuthorizedDesktopRole, 
+      saveEncryptedCookies,
+      loadEncryptedCookies,
+      FIREBASE_ROLE_CLAIM, 
+      AUTHORIZED_ROLES 
+    } = await import('../authValidation.js');
+
+    const createMockJwt = (payload) => {
+      const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64');
+      const body = Buffer.from(JSON.stringify(payload)).toString('base64');
+      return `${header}.${body}.signature`;
+    };
+
+    // 1. Verify FIREBASE_ROLE_CLAIM constant matches backend definition ('recon_role')
+    const isClaimConstantValid = FIREBASE_ROLE_CLAIM === 'recon_role';
+    console.log(`  • Claim constant matches backend ('recon_role'): Passed = ${isClaimConstantValid}`);
+
+    // 2. Token with actual namespaced custom claim 'recon_role: admin' (Must pass check)
+    const tokenAdminRecon = createMockJwt({ email: 'returnorders@vbexports.co.in', uid: 'admin-uid', recon_role: 'admin' });
+    const adminValidation = validateDesktopTokenRole(tokenAdminRecon);
+    const isAdminPassed = adminValidation.authorized === true && adminValidation.role === 'admin';
+    console.log(`  • Token with recon_role='admin': Allowed = ${adminValidation.authorized} (Expected true)`);
+
+    // 3. Token with actual namespaced custom claim 'recon_role: operator' and 'analyst' (Must pass check)
+    const tokenOperator = createMockJwt({ email: 'ops@vbexports.co.in', uid: 'ops-uid', recon_role: 'operator' });
+    const tokenAnalyst = createMockJwt({ email: 'analyst@vbexports.co.in', uid: 'analyst-uid', recon_role: 'analyst' });
+    const isOpsPassed = validateDesktopTokenRole(tokenOperator).authorized === true;
+    const isAnalystPassed = validateDesktopTokenRole(tokenAnalyst).authorized === true;
+    console.log(`  • Tokens with recon_role in ['operator', 'analyst']: Allowed = ${isOpsPassed && isAnalystPassed} (Expected true)`);
+
+    // 4. Token with actual namespaced custom claim 'recon_role: viewer' (Must fail closed)
+    const tokenViewer = createMockJwt({ email: 'viewer@vbexports.co.in', uid: 'viewer-uid', recon_role: 'viewer' });
+    const viewerValidation = validateDesktopTokenRole(tokenViewer);
+    const isViewerRejected = viewerValidation.authorized === false && viewerValidation.role === 'viewer';
+    console.log(`  • Token with recon_role='viewer': Allowed = ${viewerValidation.authorized} (Expected false)`);
+
+    // 5. Token without any role claim (Must fail closed)
+    const tokenNoRole = createMockJwt({ email: 'returnorders@vbexports.co.in', uid: 'test-uid' });
+    const noRoleValidation = validateDesktopTokenRole(tokenNoRole);
+    const isNoRoleRejected = noRoleValidation.authorized === false && noRoleValidation.role === null;
+    console.log(`  • Token without role claim: Allowed = ${noRoleValidation.authorized} (Expected false)`);
+
+    // 6. Token with legacy 'role: admin' fallback claim (Must pass check)
+    const tokenLegacyAdmin = createMockJwt({ email: 'returnorders@vbexports.co.in', uid: 'admin-uid', role: 'admin' });
+    const isLegacyAdminPassed = validateDesktopTokenRole(tokenLegacyAdmin).authorized === true;
+    console.log(`  • Token with legacy fallback role='admin': Allowed = ${isLegacyAdminPassed} (Expected true)`);
+
+    // 7. Token role vs Database role matching invariant (Must reject mismatches even if both roles are authorized)
+    // 7a. dbUser is 'operator', but token carries 'admin' -> MUST FAIL
+    const mismatchValidation = validateTokenRoleMatchesDatabase(tokenAdminRecon, 'operator');
+    const isMismatchRejected = mismatchValidation.valid === false && mismatchValidation.tokenRole === 'admin' && mismatchValidation.expectedRole === 'operator';
+    console.log(`  • Token role ('admin') vs DB role ('operator') mismatch: Blocked = ${isMismatchRejected} (Expected true)`);
+
+    // 7b. dbUser is 'operator', and token carries 'operator' -> MUST PASS
+    const matchOperator = validateTokenRoleMatchesDatabase(tokenOperator, 'operator');
+    const isOperatorMatched = matchOperator.valid === true && matchOperator.tokenRole === 'operator';
+    console.log(`  • Token role ('operator') vs DB role ('operator') match: Allowed = ${isOperatorMatched} (Expected true)`);
+
+    // 7c. dbUser is 'admin', and token carries 'admin' -> MUST PASS
+    const matchAdmin = validateTokenRoleMatchesDatabase(tokenAdminRecon, 'admin');
+    const isAdminMatched = matchAdmin.valid === true && matchAdmin.tokenRole === 'admin';
+    console.log(`  • Token role ('admin') vs DB role ('admin') match: Allowed = ${isAdminMatched} (Expected true)`);
+
+    // 8. Encrypted cookie vault verification (AES-256-GCM encryption & decryption)
+    const os = await import('os');
+    const testCookieFile = path.join(os.tmpdir(), `test_cookie_vault_${Date.now()}.json`);
+    const mockCookies = [
+      { name: 'session_token', value: 'secret_seller_session_token_xyz999', domain: '.flipkart.com' },
+      { name: 'auth_id', value: 'seller_vb_10708', domain: '.myntra.com' }
+    ];
+    saveEncryptedCookies(testCookieFile, mockCookies);
+    const rawSaved = fs.readFileSync(testCookieFile, 'utf8');
+    const isEncryptedFormat = rawSaved.includes(':') && !rawSaved.includes('secret_seller_session_token_xyz999');
+    const decryptedCookies = loadEncryptedCookies(testCookieFile);
+    const isDecryptedAccurate = Array.isArray(decryptedCookies) &&
+      decryptedCookies.length === 2 &&
+      decryptedCookies[0].value === 'secret_seller_session_token_xyz999' &&
+      decryptedCookies[1].value === 'seller_vb_10708';
+    try { fs.unlinkSync(testCookieFile); } catch {}
+    console.log(`  • AES-256-GCM encrypted cookie vault (no plaintext leakage, accurate round-trip): Passed = ${isEncryptedFormat && isDecryptedAccurate}`);
+
+    // 9. Production session persistence gate simulation across all paths (API login & direct DB fallback)
+    const simulatePersistenceGate = async ({ idToken, refreshToken, customToken, dbUser, mockRefreshFn, mockExchangeFn }) => {
+      let currentIdToken = idToken;
+      let currentRefreshToken = refreshToken;
+
+      // Candidate API custom token exchange
+      if (customToken && mockExchangeFn) {
+        const exchanged = await mockExchangeFn(customToken);
+        if (exchanged?.idToken) currentIdToken = exchanged.idToken;
+      }
+
+      // Production invariant check: Token must match database role
+      let match = validateTokenRoleMatchesDatabase(currentIdToken, dbUser?.role);
+
+      // Refresh fallback
+      if (!match.valid && currentRefreshToken && mockRefreshFn) {
+        const refreshed = await mockRefreshFn(currentRefreshToken);
+        if (refreshed?.idToken) {
+          currentIdToken = refreshed.idToken;
+          match = validateTokenRoleMatchesDatabase(currentIdToken, dbUser?.role);
+        }
+      }
+
+      if (!match.valid) {
+        return { 
+          success: false, 
+          error: `Authentication failed: The session token role ('${match.tokenRole || 'none'}') does not match verified database role ('${match.expectedRole}').` 
+        };
+      }
+
+      return { success: true, sessionSaved: true, role: match.tokenRole };
+    };
+
+    // 9a. Direct DB fallback path where token has no role and refresh fails (MUST fail closed)
+    const dbFallbackFail = await simulatePersistenceGate({
+      idToken: tokenNoRole,
+      refreshToken: 'bad-refresh',
+      customToken: null,
+      dbUser: { role: 'admin' },
+      mockRefreshFn: async () => null
+    });
+    const isDbFallbackBlocked = dbFallbackFail.success === false && dbFallbackFail.error?.includes('Authentication failed');
+    console.log(`  • Direct DB fallback with un-renewed token: Blocked = ${isDbFallbackBlocked} (Expected true)`);
+
+    // 9b. Direct DB fallback where token carries 'admin' but dbUser is 'operator' (MUST fail closed on mismatch)
+    const dbMismatchFail = await simulatePersistenceGate({
+      idToken: tokenAdminRecon,
+      refreshToken: 'bad-refresh',
+      customToken: null,
+      dbUser: { role: 'operator' },
+      mockRefreshFn: async () => null
+    });
+    const isDbMismatchBlocked = dbMismatchFail.success === false && dbMismatchFail.error?.includes('does not match verified database role');
+    console.log(`  • DB fallback with role mismatch (token admin vs db operator): Blocked = ${isDbMismatchBlocked} (Expected true)`);
+
+    // 9c. Candidate API path where custom token yields recon_role (MUST succeed)
+    const apiSuccess = await simulatePersistenceGate({
+      idToken: tokenNoRole,
+      refreshToken: 'valid-refresh',
+      customToken: 'mock-custom-token',
+      dbUser: { role: 'admin' },
+      mockExchangeFn: async () => ({ idToken: tokenAdminRecon })
+    });
+    const isApiSuccessPassed = apiSuccess.success === true && apiSuccess.role === 'admin';
+    console.log(`  • API path with customToken -> recon_role exchange: Succeeded = ${isApiSuccessPassed} (Expected true)`);
+
+    // 10. Cryptographic verification of forged/unsigned tokens (Must fail closed)
+    const forgedJwt = createMockJwt({ recon_role: 'admin', uid: 'attacker-123', email: 'attacker@evil.com' });
+    const cryptoVerifyResult = await verifyFirebaseTokenCryptographically(forgedJwt);
+    const isCryptoForgedRejected = cryptoVerifyResult === null;
+    const authVerifyResult = await verifyDesktopTokenAuthorization(forgedJwt);
+    const isAuthForgedRejected = authVerifyResult.authorized === false;
+    console.log(`  • Cryptographic verification rejecting unsigned/forged token: Passed = ${isCryptoForgedRejected && isAuthForgedRejected}`);
+
+    // 11. Revocation verification tests exercising production verifiers:
+    // 11a. Admin SDK verification test: assert auth.verifyIdToken is invoked with checkRevoked: true and catches auth/id-token-revoked
+    let capturedCheckRevokedParam = null;
+    let capturedTokenParam = null;
+    const mockAdminAuth = {
+      verifyIdToken: async (tok, checkRevoked) => {
+        capturedTokenParam = tok;
+        capturedCheckRevokedParam = checkRevoked;
+        const err = new Error('The Firebase ID token has been revoked');
+        err.code = 'auth/id-token-revoked';
+        throw err;
+      }
+    };
+    const adminRevokedResult = await verifyFirebaseTokenCryptographically('mock-token-sample', true, { auth: mockAdminAuth });
+    const isAdminRevocationVerified = capturedCheckRevokedParam === true && 
+                                     capturedTokenParam === 'mock-token-sample' && 
+                                     adminRevokedResult === null;
+    console.log(`  • Production Admin SDK verifier invoked with checkRevoked=true & rejects revoked token: Passed = ${isAdminRevocationVerified}`);
+
+    // 11b. Fallback Identity Toolkit test: Revoked token (auth_time < validSince) -> returns null
+    const revokedTokenPayload = { uid: 'user_1', recon_role: 'admin', auth_time: 1000 };
+    const mockRevokedToken = createMockJwt(revokedTokenPayload);
+    const mockFetchRevoked = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: '2000' }] })
+    });
+    const fallbackRevokedResult = await verifyFirebaseTokenCryptographically(mockRevokedToken, true, { auth: null, fetchFn: mockFetchRevoked });
+    const isFallbackRevokedRejected = fallbackRevokedResult === null;
+    console.log(`  • Fallback verifier rejects revoked token (auth_time 1000 < validSince 2000): Passed = ${isFallbackRevokedRejected}`);
+
+    // 11c. Fallback Identity Toolkit test: Non-revoked token (auth_time >= validSince) -> returns decoded payload
+    const activeTokenPayload = { uid: 'user_1', recon_role: 'admin', auth_time: 2500 };
+    const mockActiveToken = createMockJwt(activeTokenPayload);
+    const mockFetchActive = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: '2000' }] })
+    });
+    const fallbackActiveResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchActive });
+    const isFallbackActiveAccepted = fallbackActiveResult !== null && fallbackActiveResult.recon_role === 'admin' && fallbackActiveResult.auth_time === 2500;
+    console.log(`  • Fallback verifier accepts active token (auth_time 2500 >= validSince 2000): Passed = ${isFallbackActiveAccepted}`);
+
+    // 11d. Fallback Identity Toolkit test: Missing/malformed validSince or timestamp (Fail-closed) -> returns null
+    const mockFetchMalformedNull = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: null }] })
+    });
+    const fallbackNullResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchMalformedNull });
+    const isFallbackNullRejected = fallbackNullResult === null;
+
+    // Test non-empty malformed validSince such as "2000junk" and "2000.9" (must NOT be parsed via parseInt prefix!)
+    const mockFetchJunk = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: '2000junk' }] })
+    });
+    const fallbackJunkResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchJunk });
+    const isFallbackJunkRejected = fallbackJunkResult === null;
+
+    const mockFetchDecimal = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: '2000.9' }] })
+    });
+    const fallbackDecimalResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchDecimal });
+    const isFallbackDecimalRejected = fallbackDecimalResult === null;
+
+    // Test whitespace-padded validSince values such as " 2000 " (must strictly fail closed without trimming)
+    const mockFetchWhitespace = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: ' 2000 ' }] })
+    });
+    const fallbackWhitespaceResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchWhitespace });
+    const isFallbackWhitespaceRejected = fallbackWhitespaceResult === null;
+
+    // Direct unit assertions on verifyFallbackTokenRevocation:
+    const isDirectJunkBlocked = verifyFallbackTokenRevocation({ validSince: '2000junk' }, { auth_time: 2001 }) === false;
+    const isDirectDecimalBlocked = verifyFallbackTokenRevocation({ validSince: '2000.9' }, { auth_time: 2001 }) === false;
+    const isDirectWhitespaceBlocked = verifyFallbackTokenRevocation({ validSince: ' 2000 ' }, { auth_time: 2001 }) === false;
+    const isDirectLeadingSpaceBlocked = verifyFallbackTokenRevocation({ validSince: ' 2000' }, { auth_time: 2001 }) === false;
+    const isDirectTrailingSpaceBlocked = verifyFallbackTokenRevocation({ validSince: '2000 ' }, { auth_time: 2001 }) === false;
+    const isDirectValidAccepted = verifyFallbackTokenRevocation({ validSince: '2000' }, { auth_time: 2001 }) === true;
+    const isDirectRevokedBlocked = verifyFallbackTokenRevocation({ validSince: '2000' }, { auth_time: 1999 }) === false;
+    const isDirectFloatTimeBlocked = verifyFallbackTokenRevocation({ validSince: '2000' }, { auth_time: 2001.5 }) === false;
+
+    const noTimeTokenPayload = { uid: 'user_1', recon_role: 'admin' };
+    const mockNoTimeToken = createMockJwt(noTimeTokenPayload);
+    const fallbackNoTimeResult = await verifyFirebaseTokenCryptographically(mockNoTimeToken, true, { auth: null, fetchFn: mockFetchActive });
+    const isFallbackNoTimeRejected = fallbackNoTimeResult === null;
+
+    const isMalformedRejected = isFallbackNullRejected && 
+                                isFallbackJunkRejected && 
+                                isFallbackDecimalRejected && 
+                                isFallbackWhitespaceRejected && 
+                                isDirectJunkBlocked && 
+                                isDirectDecimalBlocked && 
+                                isDirectWhitespaceBlocked && 
+                                isDirectLeadingSpaceBlocked && 
+                                isDirectTrailingSpaceBlocked && 
+                                isDirectValidAccepted && 
+                                isDirectRevokedBlocked && 
+                                isDirectFloatTimeBlocked && 
+                                isFallbackNoTimeRejected;
+    console.log(`  • Fallback verifier fails closed on malformed validSince ('2000junk', '2000.9', ' 2000 ') & missing timestamps: Passed = ${isMalformedRejected}`);
+
+    const isRevokedCheckPassed = isAdminRevocationVerified && 
+                                 isFallbackRevokedRejected && 
+                                 isFallbackActiveAccepted && 
+                                 isMalformedRejected;
+
+    if (
+      isClaimConstantValid &&
+      isAdminPassed &&
+      isOpsPassed &&
+      isAnalystPassed &&
+      isViewerRejected &&
+      isNoRoleRejected &&
+      isLegacyAdminPassed &&
+      isMismatchRejected &&
+      isOperatorMatched &&
+      isAdminMatched &&
+      isEncryptedFormat &&
+      isDecryptedAccurate &&
+      isDbFallbackBlocked &&
+      isDbMismatchBlocked &&
+      isApiSuccessPassed &&
+      isCryptoForgedRejected &&
+      isAuthForgedRejected &&
+      isRevokedCheckPassed
+    ) {
+      console.log('  ✓ Pass: Production fail-closed token role-claim validation invariant verified across all paths.');
+      passed++;
+    } else {
+      console.error('  ✗ Fail: Role claim token validation invariant failed:', {
+        isClaimConstantValid,
+        isAdminPassed,
+        isOpsPassed,
+        isAnalystPassed,
+        isViewerRejected,
+        isNoRoleRejected,
+        isLegacyAdminPassed,
+        isMismatchRejected,
+        isOperatorMatched,
+        isAdminMatched,
+        isEncryptedFormat,
+        isDecryptedAccurate,
+        isDbFallbackBlocked,
+        isDbMismatchBlocked,
+        isApiSuccessPassed,
+        isCryptoForgedRejected,
+        isAuthForgedRejected,
+        isRevokedCheckPassed
+      });
+      failed++;
+    }
+  } catch (err) {
+    console.error('  ✗ Fail:', err.message);
+    failed++;
+  }
+
   console.log('\n=================================================================');
   console.log(` Summary: ${passed} passed, ${failed} failed.`);
   console.log('=================================================================');
 
   if (failed > 0) process.exit(1);
+  process.exit(0);
 }
 
 runTests().catch(err => {

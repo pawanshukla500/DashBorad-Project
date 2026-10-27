@@ -58,7 +58,7 @@ if (args.includes('--help') || args.includes('-h')) {
 ReconCentral RateCard Worker CLI (Windows & Linux)
 
 Options:
-  --marketplace=<flipkart|shopsy|both>   Target marketplace channel (default: both)
+  --marketplace=<flipkart|shopsy|both|myntra_vb|myntra_ej|meesho>   Target marketplace channel (default: both)
   --brand=<name|all>                     Filter by brand (e.g. "Sangria", default: all)
   --auto-sync, -y                        Auto-commit changes to database with date auto-closing
   --export-excel                         Generate multi-sheet Excel workbook on completion
@@ -72,7 +72,22 @@ Options:
 const isInteractive = args.includes('--interactive') || args.includes('--visible');
 const autoSync = args.includes('--auto-sync') || args.includes('-y');
 const shouldExportExcel = args.includes('--export-excel');
-const marketplaceArg = args.find(a => a.startsWith('--marketplace='))?.split('=')[1] || 'both';
+const SUPPORTED_WORKER_CHANNELS = ['both', 'flipkart', 'shopsy', 'flipkart_shopsy'];
+const rawMarketplaceArg = args.find(a => a.startsWith('--marketplace='))?.split('=')[1] || 'both';
+const marketplaceArg = rawMarketplaceArg.toLowerCase().trim();
+
+if (['myntra_vb', 'myntra_ej', 'meesho', 'amazon', 'ajio', 'cocoblu', 'shopify'].includes(marketplaceArg)) {
+  console.error(`❌ Automated rate card scraping for "${rawMarketplaceArg}" is scheduled for Phase 2.`);
+  console.error(`Currently active scraper worker supports: ${SUPPORTED_WORKER_CHANNELS.join(', ')}`);
+  process.exit(1);
+}
+
+if (!SUPPORTED_WORKER_CHANNELS.includes(marketplaceArg)) {
+  console.error(`❌ Error: Unsupported marketplace channel "${rawMarketplaceArg}".`);
+  console.error(`Supported channels: ${SUPPORTED_WORKER_CHANNELS.join(', ')}`);
+  process.exit(1);
+}
+
 const brandArg = args.find(a => a.startsWith('--brand='))?.split('=')[1] || 'all';
 const customExcelPath = args.find(a => a.startsWith('--excel-path='))?.split('=')[1];
 
@@ -102,14 +117,28 @@ async function runWorker() {
     onProgress(`Generating rate card models for ${marketplaceArg.toUpperCase()}...`);
     let rateCards = await buildBrandRateCardSet(pool);
 
+    // Fail-closed channel filtering
     if (marketplaceArg === 'flipkart') {
-      rateCards = rateCards.filter(r => r.marketplace === 'flipkart');
+      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'flipkart');
     } else if (marketplaceArg === 'shopsy') {
-      rateCards = rateCards.filter(r => r.marketplace === 'shopsy');
+      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'shopsy');
+    } else if (marketplaceArg === 'both' || marketplaceArg === 'flipkart_shopsy') {
+      rateCards = rateCards.filter(r => ['flipkart', 'shopsy'].includes(r.marketplace.toLowerCase()));
+    } else {
+      rateCards = [];
     }
 
     if (brandArg !== 'all') {
       rateCards = rateCards.filter(r => r.brand.toLowerCase() === brandArg.toLowerCase());
+    }
+
+    if (rateCards.length === 0) {
+      onProgress(`No active rate cards configured for channel "${marketplaceArg}". Database sync skipped.`);
+      console.log(`\n✓ Staged 0 rate card profiles for ${marketplaceArg.toUpperCase()}.`);
+      console.log('======================================================================');
+      console.log('✓ Worker run completed successfully.');
+      console.log('======================================================================');
+      process.exit(0);
     }
 
     console.log(`✓ Staged ${rateCards.length} rate card profiles.\n`);

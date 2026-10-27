@@ -11,20 +11,29 @@ const __dirname = path.dirname(__filename);
 puppeteer.use(StealthPlugin());
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
-const COOKIES_PATH = path.join(__dirname, '../../.runtime/cookies.json');
+import { 
+  getResolvedCookiesPath, 
+  saveEncryptedCookies, 
+  loadEncryptedCookies 
+} from '../utils/cookieVault.js';
+
+const COOKIES_PATH = getResolvedCookiesPath('flipkart_shopsy');
 
 async function saveCookies(page) {
   const cookies = await page.cookies();
-  await fs.mkdir(path.dirname(COOKIES_PATH), { recursive: true });
-  await fs.writeFile(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+  const cookiesPath = getResolvedCookiesPath('flipkart_shopsy');
+  saveEncryptedCookies(cookiesPath, cookies);
 }
 
 async function loadCookies(page) {
   try {
-    const cookiesString = await fs.readFile(COOKIES_PATH, 'utf8');
-    const cookies = JSON.parse(cookiesString);
-    await page.setCookie(...cookies);
-    return true;
+    const cookiesPath = getResolvedCookiesPath('flipkart_shopsy');
+    const cookies = loadEncryptedCookies(cookiesPath);
+    if (cookies && Array.isArray(cookies) && cookies.length > 0) {
+      await page.setCookie(...cookies);
+      return true;
+    }
+    return false;
   } catch (err) {
     return false;
   }

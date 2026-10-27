@@ -7,9 +7,36 @@
  */
 import http from 'http';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { exec, spawn } from 'child_process';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+puppeteer.use(StealthPlugin());
+
+import { 
+  decodeJwtPayload, 
+  extractRoleFromToken, 
+  isAuthorizedDesktopRole, 
+  validateDesktopTokenRole, 
+  validateTokenRoleMatchesDatabase,
+  verifyFirebaseTokenCryptographically,
+  verifyDesktopTokenAuthorization,
+  filterRateCardsByChannel, 
+  saveEncryptedCookies,
+  loadEncryptedCookies,
+  AUTHORIZED_ROLES, 
+  FIREBASE_ROLE_CLAIM 
+} from './authValidation.js';
+
+let activeTokenVerifier = verifyDesktopTokenAuthorization;
+export function setDesktopTokenVerifier(verifier) {
+  activeTokenVerifier = typeof verifier === 'function' ? verifier : verifyDesktopTokenAuthorization;
+}
+export function resetDesktopTokenVerifier() {
+  activeTokenVerifier = verifyDesktopTokenAuthorization;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -50,9 +77,155 @@ import { DEFAULT_MARKETPLACE_METADATA } from '../backend/routes/marketplaceAccou
 
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');
-const CONFIG_FILE = path.join(__dirname, 'worker-config.json');
-const SESSION_FILE = path.join(__dirname, 'auth-session.json');
-const STAGING_DIR = path.join(__dirname, 'staging');
+
+function resolveUserDataDir() {
+  if (process.env.RECONCENTRAL_USER_DATA) return process.env.RECONCENTRAL_USER_DATA;
+  if (process.env.RECON_USER_DATA_DIR) return process.env.RECON_USER_DATA_DIR;
+  if (process.platform === 'win32' && process.env.APPDATA) {
+    return path.join(process.env.APPDATA, 'ReconCentral RateCard Worker');
+  }
+  if (process.platform === 'linux' && process.env.XDG_CONFIG_HOME) {
+    return path.join(process.env.XDG_CONFIG_HOME, 'reconcentral-ratecard-worker');
+  }
+  if (process.platform === 'linux' && process.env.HOME) {
+    return path.join(process.env.HOME, '.config', 'reconcentral-ratecard-worker');
+  }
+  return path.join(__dirname, '.runtime');
+}
+
+const USER_DATA_DIR = resolveUserDataDir();
+process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
+fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+
+const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
+const SESSION_FILE = path.join(USER_DATA_DIR, 'auth-session.json');
+const COOKIES_PATH = path.join(USER_DATA_DIR, 'cookies.json');
+process.env.RECON_COOKIES_PATH = COOKIES_PATH;
+const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
+fs.mkdirSync(STAGING_DIR, { recursive: true });
+
+function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
+  const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const dir = path.join(USER_DATA_DIR, 'cookies');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `cookies_${safeId}.json`);
+}
+
+const CANDIDATE_API_SERVERS = [
+  process.env.API_SERVER_URL,
+  'https://payments.youthnic.shop',
+  'https://reconcentral.srv1845788.hstgr.cloud',
+  'https://recon.srv1845788.hstgr.cloud',
+  'http://localhost:3001'
+].filter(Boolean);
+
+const SUPPORTED_MARKETPLACES = [
+  {
+    id: 'flipkart_shopsy',
+    name: 'Flipkart & Shopsy',
+    marketplace: 'flipkart',
+    portalUrl: 'https://seller.flipkart.com',
+    loginUrl: 'https://seller.flipkart.com/',
+    dashboardUrl: 'https://seller.flipkart.com/index.html#dashboard/home-page',
+    rateCardUrl: 'https://seller.flipkart.com/index.html#dashboard/payments/rate-card',
+    defaultAccount: 'Vbexports@outlook.com',
+    hasScraper: true,
+    description: 'Flipkart Seller Hub fee tiers (Commission, Fixed, Collection, Reverse Shipping)'
+  },
+  {
+    id: 'myntra_vb',
+    name: 'Myntra (VB Exports - 10708)',
+    marketplace: 'myntra',
+    account_id: 'myntra_vb',
+    sellerId: '10708',
+    portalUrl: 'https://partnerportal.myntra.com',
+    loginUrl: 'https://partnerportal.myntra.com/',
+    dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
+    rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Myntra Partner Portal for VB Exports (Seller ID 10708) — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
+  },
+  {
+    id: 'myntra_ej',
+    name: 'Myntra (Ethnic Junction - 45833)',
+    marketplace: 'myntra',
+    account_id: 'myntra_ej',
+    sellerId: '45833',
+    portalUrl: 'https://partnerportal.myntra.com',
+    loginUrl: 'https://partnerportal.myntra.com/',
+    dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
+    rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Myntra Partner Portal for Ethnic Junction (Seller ID 45833) — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
+  },
+  {
+    id: 'meesho',
+    name: 'Meesho Supplier Panel',
+    marketplace: 'meesho',
+    account_id: 'meesho',
+    portalUrl: 'https://supplier.meesho.com',
+    loginUrl: 'https://supplier.meesho.com/panel/v2/new/login',
+    dashboardUrl: 'https://supplier.meesho.com/panel/v2/new/home',
+    rateCardUrl: 'https://supplier.meesho.com/panel/v2/new/growth/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Meesho Supplier Panel — 2FA Session Linked (Rate card scraping scheduled for Phase 2)'
+  },
+  {
+    id: 'amazon',
+    name: 'Amazon Seller Central',
+    marketplace: 'amazon',
+    account_id: 'amazon',
+    portalUrl: 'https://sellercentral.amazon.in/',
+    loginUrl: 'https://sellercentral.amazon.in/',
+    dashboardUrl: 'https://sellercentral.amazon.in/',
+    rateCardUrl: 'https://sellercentral.amazon.in/help/hub/reference/G200336920',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Amazon IN Seller Central'
+  },
+  {
+    id: 'ajio',
+    name: 'Reliance Retail (AJIO)',
+    marketplace: 'ajio',
+    account_id: 'ajio',
+    portalUrl: 'https://supplier.ajio.com/',
+    loginUrl: 'https://supplier.ajio.com/',
+    dashboardUrl: 'https://supplier.ajio.com/',
+    rateCardUrl: 'https://supplier.ajio.com/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Reliance Retail (AJIO) Supplier Hub'
+  },
+  {
+    id: 'cocoblu',
+    name: 'Cocoblu Retails',
+    marketplace: 'cocoblu',
+    account_id: 'cocoblu',
+    portalUrl: 'https://cocoblu.biz/',
+    loginUrl: 'https://cocoblu.biz/',
+    dashboardUrl: 'https://cocoblu.biz/',
+    rateCardUrl: 'https://cocoblu.biz/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Cocoblu Retails Portal'
+  },
+  {
+    id: 'shopify',
+    name: 'Shopify Admin',
+    marketplace: 'shopify',
+    account_id: 'shopify',
+    portalUrl: 'https://admin.shopify.com/',
+    loginUrl: 'https://admin.shopify.com/',
+    dashboardUrl: 'https://admin.shopify.com/',
+    rateCardUrl: 'https://admin.shopify.com/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Shopify Admin Center'
+  }
+];
 
 const FIREBASE_API_KEY = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
 
@@ -69,6 +242,42 @@ async function authenticateWithFirebase(email, password) {
     throw new Error(errorMsg);
   }
   return data;
+}
+
+async function exchangeFirebaseCustomToken(customToken) {
+  if (!customToken) return null;
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${FIREBASE_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: customToken, returnSecureToken: true })
+  });
+  if (response.ok) {
+    const data = await response.json();
+    return {
+      idToken: data.idToken,
+      refreshToken: data.refreshToken
+    };
+  }
+  return null;
+}
+
+async function refreshFirebaseIdToken(refreshToken) {
+  if (!refreshToken) return null;
+  const url = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
+  });
+  if (response.ok) {
+    const data = await response.json();
+    return {
+      idToken: data.id_token || data.access_token,
+      refreshToken: data.refresh_token
+    };
+  }
+  return null;
 }
 
 function loadAuthSession() {
@@ -104,8 +313,6 @@ function clearAuthSession() {
   }
 }
 
-fs.mkdirSync(STAGING_DIR, { recursive: true });
-
 const sseClients = new Set();
 let activeScrapeJob = {
   running: false,
@@ -135,9 +342,10 @@ function broadcastProgress(msg) {
 
 // Default Configuration
 const DEFAULT_CONFIG = {
-  marketplace: 'both', // 'flipkart', 'shopsy', or 'both'
+  marketplace: 'flipkart_shopsy', // 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'
   email: 'Vbexports@outlook.com',
   password: process.env.FK_PASSWORD || '',
+  apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
   databaseUrl: process.env.DATABASE_URL || '',
   scheduledHour: 6,
   scheduledMinute: 0,
@@ -147,13 +355,27 @@ const DEFAULT_CONFIG = {
   selectedVerticals: [
     'ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric',
     'blouse', 'lehenga_choli', 'gown', 'shopsy_kurta', 'shopsy_ethnic_set'
-  ]
+  ],
+  accounts: {
+    flipkart_shopsy: { email: 'Vbexports@outlook.com', portalUrl: 'https://seller.flipkart.com' },
+    myntra_vb: { email: 'returnorders@vbexports.co.in', sellerId: '10708', portalUrl: 'https://partnerportal.myntra.com' },
+    myntra_ej: { email: 'returnorders@vbexports.co.in', sellerId: '45833', portalUrl: 'https://partnerportal.myntra.com' },
+    meesho: { email: 'returnorders@vbexports.co.in', portalUrl: 'https://supplier.meesho.com' }
+  }
 };
 
 function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
-      return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) };
+      const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
+        parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
+      }
+      return { 
+        ...DEFAULT_CONFIG, 
+        ...parsed, 
+        accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) } 
+      };
     }
   } catch (err) {
     console.error('Failed to read config:', err);
@@ -191,8 +413,28 @@ const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = urlObj.pathname;
 
-  // CORS headers for local API consumers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Validate Host header to prevent DNS rebinding attacks on local control port
+  const host = req.headers.host || '';
+  const isLoopbackHost = !host || /^localhost(:\d+)?$/i.test(host) || /^127\.0\.0\.1(:\d+)?$/i.test(host);
+  if (!isLoopbackHost) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false, error: 'Forbidden: Invalid Host header for desktop control server.' }));
+    return;
+  }
+
+  // CORS headers for local API consumers and official origins
+  const origin = req.headers.origin || '';
+  const isAllowedOrigin = !origin || origin === 'null' 
+    || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
+    || origin.includes('youthnic.shop')
+    || origin.includes('vbexports.co.in')
+    || origin.includes('srv1845788.hstgr.cloud');
+
+  if (isAllowedOrigin && origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else if (!origin) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -267,46 +509,6 @@ const server = http.createServer(async (req, res) => {
       return sendJson(200, loadConfig());
     }
 
-    // GET /api/desktop/marketplace-accounts
-    if (pathname === '/api/desktop/marketplace-accounts' && req.method === 'GET') {
-      try {
-        const pool = getPool();
-        const { rows } = await pool.query(`
-          SELECT id, marketplace, account_id, display_name, seller_id, login_id, password_encrypted, portal_url, logo_url, is_active
-          FROM marketplace_accounts
-          WHERE is_active = true OR account_id IN ('myntra_vb', 'myntra_ej')
-          ORDER BY 
-            CASE 
-              WHEN marketplace = 'flipkart' THEN 1
-              WHEN marketplace = 'amazon' THEN 2
-              WHEN marketplace = 'myntra' AND account_id = 'myntra_vb' THEN 3
-              WHEN marketplace = 'myntra' AND account_id = 'myntra_ej' THEN 4
-              WHEN marketplace = 'ajio' THEN 5
-              WHEN marketplace = 'meesho' THEN 6
-              WHEN marketplace = 'cocoblu' THEN 7
-              WHEN marketplace = 'shopify' THEN 8
-              ELSE 9
-            END,
-            id ASC
-        `);
-        const accounts = rows.map(r => ({
-          id: r.id,
-          marketplace: r.marketplace,
-          account_id: r.account_id,
-          display_name: r.display_name,
-          seller_id: r.seller_id,
-          login_id: r.login_id || '',
-          has_password: Boolean(r.password_encrypted),
-          password: decryptCredential(r.password_encrypted) || '',
-          portal_url: r.portal_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.portal_url || '',
-          logo_url: r.logo_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.logo_url || '',
-          is_active: r.is_active
-        }));
-        return sendJson(200, { success: true, count: accounts.length, accounts });
-      } catch (err) {
-        return sendJson(500, { success: false, error: err.message });
-      }
-    }
 
     // GET /api/catalog
     if (pathname === '/api/catalog' && req.method === 'GET') {
@@ -324,7 +526,9 @@ const server = http.createServer(async (req, res) => {
       try {
         const pool = getPool();
         const rateCards = await buildBrandRateCardSet(pool);
-        return sendJson(200, { success: true, count: rateCards.length, rateCards });
+        const targetMp = urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || '';
+        const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
+        return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
@@ -425,16 +629,30 @@ const server = http.createServer(async (req, res) => {
         let dbUser = null;
         let provisionedDbUrl = dbUrl;
 
-        // 1. Query ReconCentral Backend Server
-        if (config.apiServerUrl && fbResult.idToken) {
+        // 1. Query ReconCentral Backend Server across candidate endpoints with auto-failover
+        for (const serverBase of CANDIDATE_API_SERVERS) {
+          if (dbUser) break;
+          const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
           try {
-            const srvRes = await fetch(`${config.apiServerUrl}/api/auth/desktop-config`, {
-              method: 'GET',
+            let srvRes = await fetch(`${normalizedBase}/api/auth/desktop-login`, {
+              method: 'POST',
               headers: {
                 'Authorization': `Bearer ${fbResult.idToken}`,
+                'Content-Type': 'application/json',
                 'Accept': 'application/json'
               }
             });
+
+            if (!srvRes.ok && srvRes.status === 404) {
+              srvRes = await fetch(`${normalizedBase}/api/auth/desktop-config`, {
+                method: 'GET',
+                headers: {
+                  'Authorization': `Bearer ${fbResult.idToken}`,
+                  'Accept': 'application/json'
+                }
+              });
+            }
+
             if (srvRes.ok) {
               const srvData = await srvRes.json();
               if (srvData && srvData.success && srvData.user) {
@@ -442,20 +660,70 @@ const server = http.createServer(async (req, res) => {
                 if (srvData.databaseUrl && !dbUrl) {
                   provisionedDbUrl = srvData.databaseUrl;
                 }
+                config.apiServerUrl = normalizedBase;
+                saveConfig(config);
+
+                // Reissue fresh ID token carrying newly updated role claim
+                let tokenRenewed = false;
+                if (srvData.customToken) {
+                  try {
+                    const customAuth = await exchangeFirebaseCustomToken(srvData.customToken);
+                    if (customAuth && customAuth.idToken) {
+                      fbResult.idToken = customAuth.idToken;
+                      if (customAuth.refreshToken) fbResult.refreshToken = customAuth.refreshToken;
+                      tokenRenewed = true;
+                    }
+                  } catch (ctErr) {
+                    console.warn('[desktopServer] Custom token exchange warning:', ctErr.message);
+                  }
+                }
+
+                if (!tokenRenewed && fbResult.refreshToken) {
+                  try {
+                    const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
+                    if (refreshed && refreshed.idToken) {
+                      fbResult.idToken = refreshed.idToken;
+                      if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
+                      tokenRenewed = true;
+                    }
+                  } catch (refreshErr) {
+                    console.warn('[desktopServer] Token refresh warning:', refreshErr.message);
+                  }
+                }
+
+                // Fail closed: do not persist session if role-claim token renewal failed
+                if (!tokenRenewed) {
+                  return sendJson(401, {
+                    success: false,
+                    error: 'Failed to refresh authentication token with newly assigned desktop role claims. Please verify your network connection and try logging in again.'
+                  });
+                }
+                break;
+              }
+            } else if (srvRes.status === 403) {
+              const errData = await srvRes.json().catch(() => ({}));
+              if (errData.code === 'ACCESS_NOT_GRANTED') {
+                return sendJson(403, {
+                  success: false,
+                  error: `User account '${userEmail}' authenticated in Firebase, but has not been granted access in ReconCentral. Please contact an administrator to add your email in Admin Center.`
+                });
+              }
+              if (errData.error && errData.error.includes('not authorized')) {
+                return sendJson(403, { success: false, error: errData.error });
               }
             }
           } catch (srvErr) {
-            console.warn('[desktopServer] Backend server query skipped:', srvErr.message);
+            console.warn(`[desktopServer] Candidate server ${normalizedBase} query failed:`, srvErr.message);
           }
         }
 
-        // 2. Direct pool verification fallback
-        if (!dbUser) {
+        // 2. Strict direct PostgreSQL verification only if candidate servers were unreachable
+        if (!dbUser && firebaseUid) {
           try {
             const pool = getPool();
             const res = await pool.query(
-              'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
-              [firebaseUid, userEmail]
+              'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 LIMIT 1',
+              [firebaseUid]
             );
             if (res.rows.length > 0) {
               dbUser = res.rows[0];
@@ -466,14 +734,39 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (!dbUser) {
-          return sendJson(403, { success: false, error: 'User authenticated in Firebase, but not found in ReconCentral database users.' });
+          return sendJson(403, { success: false, error: `User authenticated in Firebase, but no corresponding account with verified UID was found in ReconCentral database (${userEmail}). Please sign in through ReconCentral web app first to link your account.` });
         }
 
         const authorizedRoles = ['admin', 'operator', 'analyst'];
-        if (!authorizedRoles.includes(dbUser.role)) {
+        const normalizedDbRole = String(dbUser.role || '').toLowerCase().trim();
+        if (!authorizedRoles.includes(normalizedDbRole)) {
           return sendJson(403, {
             success: false,
             error: `Access denied. Role (${dbUser.role || 'viewer'}) is not authorized to operate rate card scrapers or synchronize database records.`
+          });
+        }
+
+        // Strict invariant: Ensure the session token carries a verified role claim matching the DB user's role
+        let tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
+
+        // If the token lacks the role claim OR doesn't match the DB user's role, attempt refresh
+        if (!tokenMatch.valid && fbResult.refreshToken) {
+          try {
+            const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
+            if (refreshed && refreshed.idToken) {
+              fbResult.idToken = refreshed.idToken;
+              if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
+              tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
+            }
+          } catch (refErr) {
+            console.warn('[desktopServer] Final token refresh warning:', refErr.message);
+          }
+        }
+
+        if (!tokenMatch.valid) {
+          return sendJson(403, {
+            success: false,
+            error: `Authentication failed: The issued session token role ('${tokenMatch.tokenRole || 'none'}') does not match verified database role ('${normalizedDbRole}'). Please sign in through ReconCentral web app or verify user permissions in Admin Center.`
           });
         }
 
@@ -492,9 +785,90 @@ const server = http.createServer(async (req, res) => {
         };
 
         saveAuthSession(session);
+
+        if (provisionedDbUrl && provisionedDbUrl !== config.databaseUrl) {
+          config.databaseUrl = provisionedDbUrl;
+          saveConfig(config);
+        }
+
         return sendJson(200, { success: true, session });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
+      }
+    }
+
+    // GET /api/desktop/marketplaces
+    if (pathname === '/api/desktop/marketplaces' && req.method === 'GET') {
+      const list = SUPPORTED_MARKETPLACES.map(m => {
+        const cookiesPath = getMarketplaceCookiesPath(m.id);
+        const hasCookies = fs.existsSync(cookiesPath);
+        return {
+          ...m,
+          hasCookies,
+          cookiesPath
+        };
+      });
+      return sendJson(200, { success: true, marketplaces: list });
+    }
+
+    // GET /api/desktop/marketplace-accounts
+    if (pathname === '/api/desktop/marketplace-accounts' && req.method === 'GET') {
+      const session = loadAuthSession();
+      const config = loadConfig();
+      if (!session || !session.idToken) {
+        return sendJson(401, { success: false, error: 'Not authenticated with ReconCentral.' });
+      }
+
+      for (const serverBase of CANDIDATE_API_SERVERS) {
+        const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
+        try {
+          const res = await fetch(`${normalizedBase}/api/marketplace-accounts`, {
+            headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
+          });
+          if (res.ok) {
+            const body = await res.json();
+            const accounts = Array.isArray(body) ? body : (body.accounts || []);
+            return sendJson(200, { success: true, accounts });
+          }
+        } catch {}
+      }
+
+      // Fallback to local database if candidate API servers are unreachable
+      try {
+        const pool = getPool();
+        const { rows } = await pool.query(`
+          SELECT id, marketplace, account_id, display_name, seller_id, login_id, password_encrypted, portal_url, logo_url, is_active
+          FROM marketplace_accounts
+          WHERE is_active = true OR account_id IN ('myntra_vb', 'myntra_ej')
+          ORDER BY 
+            CASE 
+              WHEN marketplace = 'flipkart' THEN 1
+              WHEN marketplace = 'amazon' THEN 2
+              WHEN marketplace = 'myntra' AND account_id = 'myntra_vb' THEN 3
+              WHEN marketplace = 'myntra' AND account_id = 'myntra_ej' THEN 4
+              WHEN marketplace = 'ajio' THEN 5
+              WHEN marketplace = 'meesho' THEN 6
+              WHEN marketplace = 'cocoblu' THEN 7
+              WHEN marketplace = 'shopify' THEN 8
+              ELSE 9
+            END,
+            id ASC
+        `);
+        const accounts = rows.map(r => ({
+          id: r.id,
+          marketplace: r.marketplace,
+          account_id: r.account_id,
+          display_name: r.display_name,
+          seller_id: r.seller_id,
+          login_id: r.login_id || '',
+          has_password: Boolean(r.password_encrypted),
+          portal_url: r.portal_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.portal_url || '',
+          logo_url: r.logo_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.logo_url || '',
+          is_active: r.is_active
+        }));
+        return sendJson(200, { success: true, count: accounts.length, accounts });
+      } catch (dbErr) {
+        return sendJson(502, { success: false, error: 'Could not connect to ReconCentral API or Database to fetch marketplace accounts.' });
       }
     }
 
@@ -587,6 +961,23 @@ const server = http.createServer(async (req, res) => {
       const body = await parseJsonBody();
       const config = loadConfig();
       const targetMp = body.marketplace || config.marketplace || 'both';
+      const normalizedChannel = String(targetMp).toLowerCase().trim();
+      const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === normalizedChannel || m.marketplace === normalizedChannel);
+      const validFlipkartAliases = ['both', 'flipkart', 'shopsy', 'flipkart_shopsy'];
+
+      if (!mpConfig && !validFlipkartAliases.includes(normalizedChannel)) {
+        return sendJson(400, {
+          success: false,
+          error: `Unsupported marketplace: '${targetMp}'. Supported channels are: ${SUPPORTED_MARKETPLACES.map(m => m.id).join(', ')}.`
+        });
+      }
+
+      if (mpConfig && !mpConfig.hasScraper) {
+        return sendJson(400, {
+          success: false,
+          error: `Automated scraping is not yet implemented for ${mpConfig.name}. Automated scrapers are currently active for Flipkart & Shopsy. Use "🔑 Human Login (2FA)" to authorize and store your session for Phase 2.`
+        });
+      }
       const isVisible = body.mode === 'visible' || body.visible === true;
       const targetBrands = body.brands || config.selectedBrands;
       const targetVerticals = body.verticals || config.selectedVerticals;
@@ -651,29 +1042,152 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // POST /api/interactive-login
+    // POST /api/interactive-login (Standalone Puppeteer with Encrypted Cookie Vault Capture)
     if (pathname === '/api/interactive-login' && req.method === 'POST') {
+      const authHeader = req.headers['authorization'];
+      const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+      const session = loadAuthSession();
+
+      let isAuthorized = false;
+      let authError = null;
+      if (session && session.authenticated && session.idToken) {
+        const check = await activeTokenVerifier(session.idToken, true);
+        if (check.authorized) {
+          isAuthorized = true;
+        } else if (check.error) {
+          authError = check.error;
+        }
+      }
+      if (!isAuthorized && bearerToken) {
+        const check = await activeTokenVerifier(bearerToken, true);
+        if (check.authorized) {
+          isAuthorized = true;
+        } else if (check.error) {
+          authError = check.error;
+        }
+      }
+
+      if (!isAuthorized) {
+        return sendJson(401, {
+          success: false,
+          error: `Unauthorized: ${authError || 'Valid cryptographically verified ReconCentral session or bearer token with authorized role required.'}`
+        });
+      }
+
       try {
         const body = await parseJsonBody();
-        const portalUrl = body.portal_url || 'https://seller.flipkart.com/';
+        const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId) || SUPPORTED_MARKETPLACES[0];
+        const portalUrl = mpConfig.loginUrl || mpConfig.portalUrl || body.portal_url || 'https://seller.flipkart.com/';
+        const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
         const chromePath = getChromeExecutablePath();
-        const userDataDir = path.join(__dirname, '.runtime', 'chrome-user-data');
-        if (!fs.existsSync(userDataDir)) {
-          fs.mkdirSync(userDataDir, { recursive: true });
-        }
+        const tempProfileDir = fs.mkdtempSync(path.join(os.tmpdir(), `recon-login-${targetId}-`));
 
-        broadcastProgress(`Launching interactive browser for ${body.display_name || body.marketplace || 'Portal'} at ${portalUrl}...`);
-        const args = [
-          `--user-data-dir=${userDataDir}`,
-          '--no-first-run',
-          '--no-default-browser-check',
-          portalUrl
-        ];
-        const child = spawn(chromePath, args, { detached: true, stdio: 'ignore' });
-        child.unref();
+        broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
 
-        broadcastProgress(`✓ Browser window opened. Please complete 2FA or human login in the window.`);
-        return sendJson(200, { success: true, message: 'Browser launched successfully', portal_url: portalUrl });
+        // Execute login asynchronously without blocking HTTP response
+        (async () => {
+          let browser = null;
+          try {
+            browser = await puppeteer.launch({
+              headless: false,
+              executablePath: chromePath,
+              userDataDir: tempProfileDir,
+              defaultViewport: null,
+              args: [
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--window-size=1280,800'
+              ]
+            });
+            const pages = await browser.pages();
+            const page = pages.length > 0 ? pages[0] : await browser.newPage();
+
+            // Load existing encrypted session cookies if present
+            if (fs.existsSync(cookiesPath)) {
+              const existing = loadEncryptedCookies(cookiesPath);
+              if (existing && Array.isArray(existing) && existing.length > 0) {
+                await page.setCookie(...existing);
+              }
+            } else if (fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+              const existing = loadEncryptedCookies(COOKIES_PATH);
+              if (existing && Array.isArray(existing) && existing.length > 0) {
+                await page.setCookie(...existing);
+              }
+            }
+
+            await page.goto(portalUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+            broadcastProgress(`✓ Browser window opened for ${mpConfig.name}. Please complete 2FA or human login in the window...`);
+
+            await page.waitForFunction((id) => {
+              const href = window.location.href.toLowerCase();
+              const body = document.body ? document.body.innerText.toLowerCase() : '';
+              const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
+              if (hasPasswordInput) return false;
+              const hasLoginForm = Boolean(document.querySelector('form[action*="login" i], form[action*="signin" i], form[action*="auth" i]'));
+              if (hasLoginForm && (href.includes('/login') || href.includes('/auth') || href.includes('/signin'))) return false;
+
+              if (id === 'myntra_vb' || id === 'myntra_ej') {
+                return href.includes('partnerportal.myntra.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
+              }
+              if (id === 'meesho') {
+                return href.includes('supplier.meesho.com') && !href.includes('/login') && (href.includes('panel') || href.includes('dashboard') || body.includes('logout'));
+              }
+              if (id === 'amazon') {
+                return href.includes('sellercentral.amazon.in') && !href.includes('/signin') && (href.includes('home') || href.includes('dashboard') || body.includes('sign out') || body.includes('logout'));
+              }
+              if (id === 'ajio') {
+                return href.includes('supplier.ajio.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
+              }
+              if (id === 'cocoblu') {
+                const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
+                const onAuthRoute = href.includes('/dashboard') || href.includes('/orders') || href.includes('/vendor') || href.includes('/portal') || href.includes('/reports');
+                const hasLogoutAction = body.includes('logout') || body.includes('sign out') || Boolean(document.querySelector('a[href*="logout"], button[class*="logout"]'));
+                return href.includes('cocoblu.biz') && notLogin && (onAuthRoute || hasLogoutAction);
+              }
+              if (id === 'shopify') {
+                const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin') && !href.includes('/signup');
+                const onStoreRoute = (href.includes('/store/') || href.includes('/admin/')) && (
+                  href.includes('/home') ||
+                  href.includes('/orders') ||
+                  href.includes('/products') ||
+                  href.includes('/settings') ||
+                  href.includes('/analytics') ||
+                  /\/store\/[a-zA-Z0-9\-_]+(\/?$|\?)/.test(href)
+                );
+                const hasAuthenticatedUi = Boolean(document.querySelector(
+                  '#AppFrameMain, nav[aria-label*="Navigation" i], nav[aria-label*="Main" i], [data-portal-id], a[href*="logout"], button[class*="logout"], [aria-label*="log out" i], [aria-label*="Store menu" i], [aria-label*="Account menu" i]'
+                ));
+                const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
+                return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
+              }
+              return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
+            }, { timeout: 300000 }, mpConfig.id);
+
+            const cookies = await page.cookies();
+            saveEncryptedCookies(cookiesPath, cookies);
+            if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
+              saveEncryptedCookies(COOKIES_PATH, cookies);
+            }
+            broadcastProgress(`✓ Authentication detected! Encrypted and saved ${cookies.length} session cookies into vault.`);
+          } catch (loginErr) {
+            broadcastProgress(`❌ Interactive login error for ${mpConfig.name}: ${loginErr.message}`);
+          } finally {
+            if (browser) {
+              await browser.close().catch(() => {});
+            }
+            try {
+              fs.rmSync(tempProfileDir, { recursive: true, force: true });
+            } catch {}
+          }
+        })();
+
+        return sendJson(200, { 
+          success: true, 
+          message: `Interactive login window launched for ${mpConfig.name}. Please complete login in the window. Cookies will be encrypted and saved to the cookie vault.`, 
+          portal_url: portalUrl 
+        });
       } catch (err) {
         broadcastProgress(`❌ Failed to launch browser: ${err.message}`);
         return sendJson(500, { success: false, error: err.message });
@@ -747,11 +1261,16 @@ function launchChromeApp() {
   }
 }
 
-server.listen(PORT, () => {
-  console.log('======================================================================');
-  console.log(`⚡ ReconCentral RateCard Desktop Control Server running on port ${PORT}`);
-  console.log(`Platform: ${process.platform} (${process.arch}) | Node: ${process.version}`);
-  console.log(`Desktop UI URL: http://localhost:${PORT}`);
-  console.log('======================================================================\n');
-  launchChromeApp();
-});
+const isDirectRun = Boolean(process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename));
+if (isDirectRun) {
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log('======================================================================');
+    console.log(`⚡ ReconCentral RateCard Desktop Control Server running on port ${PORT}`);
+    console.log(`Platform: ${process.platform} (${process.arch}) | Node: ${process.version}`);
+    console.log(`Desktop UI URL: http://127.0.0.1:${PORT}`);
+    console.log('======================================================================\n');
+    launchChromeApp();
+  });
+}
+
+export { server, PORT, SUPPORTED_MARKETPLACES, launchChromeApp };

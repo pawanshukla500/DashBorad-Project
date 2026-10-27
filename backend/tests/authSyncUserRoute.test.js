@@ -6,7 +6,10 @@ let directory;
 const setFirebaseRole = vi.fn(async () => {});
 
 vi.mock('../utils/firebaseAdmin.js', () => ({
-  auth: { verifyIdToken: vi.fn(async () => decodedToken) },
+  auth: { 
+    verifyIdToken: vi.fn(async () => decodedToken),
+    createCustomToken: vi.fn(async () => 'mock-custom-token')
+  },
 }));
 vi.mock('../services/firebaseRoleClaims.js', () => ({
   FIREBASE_ROLE_CLAIM: 'recon_role',
@@ -66,3 +69,41 @@ describe('POST /api/auth/sync-user', () => {
     expect(setFirebaseRole).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /api/auth/desktop-login', () => {
+  const desktopLogin = (headers = { Authorization: 'Bearer token' }) => 
+    fetch(`${baseUrl}/desktop-login`, { method: 'POST', headers });
+
+  it('authorizes operator, syncs user, sets role claim, and returns databaseUrl', async () => {
+    decodedToken = { uid: 'fb-7', email: 'ops@example.com', email_verified: true };
+    const response = await desktopLogin();
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(data.user.role).toBe('operator');
+    expect(data.databaseUrl).toBeDefined();
+    expect(setFirebaseRole).toHaveBeenCalledWith('fb-7', 'operator');
+  });
+
+  it('refuses viewer role from desktop login with 403', async () => {
+    directory = [{ id: 8, email: 'viewer@example.com', username: 'ViewOnly', role: 'viewer', firebase_uid: null }];
+    decodedToken = { uid: 'fb-8', email: 'viewer@example.com', email_verified: true };
+    const response = await desktopLogin();
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.error).toContain('not authorized to operate desktop scraper');
+  });
+
+  it('refuses unknown email with 403 ACCESS_NOT_GRANTED', async () => {
+    decodedToken = { uid: 'fb-x', email: 'stranger@example.com', email_verified: true };
+    const response = await desktopLogin();
+    expect(response.status).toBe(403);
+    expect((await response.json()).code).toBe('ACCESS_NOT_GRANTED');
+  });
+
+  it('returns 401 when Authorization header is missing', async () => {
+    const response = await desktopLogin({});
+    expect(response.status).toBe(401);
+  });
+});
+
