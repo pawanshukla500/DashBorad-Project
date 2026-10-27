@@ -664,7 +664,8 @@ const server = http.createServer(async (req, res) => {
             headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
           });
           if (res.ok) {
-            const accounts = await res.json();
+            const body = await res.json();
+            const accounts = Array.isArray(body) ? body : (body.accounts || []);
             return sendJson(200, { success: true, accounts });
           }
         } catch {}

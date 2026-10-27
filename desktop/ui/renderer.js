@@ -732,41 +732,53 @@ function setupEventListeners() {
 async function loadMarketplaceAccountsUI() {
   try {
     const res = await window.ratecardAPI.getMarketplaceAccounts();
-    if (res && res.success && Array.isArray(res.accounts) && res.accounts.length > 0) {
+    const accounts = Array.isArray(res) 
+      ? res 
+      : (Array.isArray(res?.accounts) ? res.accounts : (res?.accounts?.accounts || []));
+
+    if (accounts.length > 0) {
       const tbody = document.getElementById('tbody-marketplace-accounts');
       if (tbody) {
-        tbody.innerHTML = res.accounts.map(acc => `
-          <tr>
-            <td><strong>${acc.marketplace_name || acc.marketplace}</strong></td>
-            <td>${acc.account_name || acc.seller_id || 'Primary'}</td>
-            <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${acc.portal_url || '—'}</td>
-            <td>
-              <span class="badge ${acc.has_credentials ? 'badge-account' : 'badge-portal'}" style="font-size: 10px;">
-                ${acc.has_credentials ? '🔒 Vault Encrypted' : 'Configured'}
-              </span>
-            </td>
-            <td>
-              <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="${(acc.marketplace || '').toLowerCase()}" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
-            </td>
-          </tr>
-        `).join('');
+        tbody.innerHTML = accounts.map(acc => {
+          const hasPassword = Boolean(acc.has_password || acc.has_credentials);
+          const channelKey = acc.account_id || (acc.marketplace || '').toLowerCase();
+          const accountLabel = acc.login_id || acc.account_id || (acc.seller_id ? 'Seller ID: ' + acc.seller_id : 'Primary');
+          return `
+            <tr>
+              <td><strong>${acc.display_name || acc.marketplace_name || acc.marketplace}</strong></td>
+              <td>${accountLabel}</td>
+              <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${acc.portal_url || '—'}</td>
+              <td>
+                <span class="badge ${hasPassword ? 'badge-account' : 'badge-portal'}" style="font-size: 10px;">
+                  ${hasPassword ? '🔒 Vault Encrypted' : 'Configured'}
+                </span>
+              </td>
+              <td>
+                <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="${channelKey}" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
       }
 
       // Update Channel Status indicators on Dashboard
-      res.accounts.forEach(acc => {
+      accounts.forEach(acc => {
         const mp = (acc.marketplace || '').toLowerCase();
+        const accId = (acc.account_id || '').toLowerCase();
+        const hasPw = Boolean(acc.has_password || acc.has_credentials);
+
         if (mp.includes('flipkart') || mp.includes('shopsy')) {
           const el = document.getElementById('status-ch-flipkart');
-          if (el) el.innerText = acc.has_credentials ? 'Ready (Linked)' : 'Ready';
-        } else if (mp.includes('myntra') && (mp.includes('vb') || String(acc.seller_id) === '10708')) {
+          if (el) el.innerText = hasPw ? 'Ready (Linked)' : 'Ready';
+        } else if (accId === 'myntra_vb' || (mp.includes('myntra') && String(acc.seller_id) === '10708')) {
           const el = document.getElementById('status-ch-myntra-vb');
-          if (el) el.innerText = acc.has_credentials ? 'Vault Linked (10708)' : 'Ready';
-        } else if (mp.includes('myntra') && (mp.includes('ej') || String(acc.seller_id) === '45833')) {
+          if (el) el.innerText = hasPw ? 'Vault Linked (10708)' : 'Ready';
+        } else if (accId === 'myntra_ej' || (mp.includes('myntra') && String(acc.seller_id) === '45833')) {
           const el = document.getElementById('status-ch-myntra-ej');
-          if (el) el.innerText = acc.has_credentials ? 'Vault Linked (45833)' : 'Ready';
+          if (el) el.innerText = hasPw ? 'Vault Linked (45833)' : 'Ready';
         } else if (mp.includes('meesho')) {
           const el = document.getElementById('status-ch-meesho');
-          if (el) el.innerText = acc.has_credentials ? 'Supplier Linked' : 'Ready';
+          if (el) el.innerText = hasPw ? 'Supplier Linked' : 'Ready';
         }
       });
     }

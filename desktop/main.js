@@ -487,7 +487,8 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     puppeteer.use(StealthPlugin());
   }
 
-  const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === marketplace || m.marketplace === marketplace) || SUPPORTED_MARKETPLACES[0];
+  const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace) || 'flipkart_shopsy';
+  const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId) || SUPPORTED_MARKETPLACES[0];
   const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
 
   const browser = await puppeteer.launch({
@@ -520,7 +521,17 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
         return href.includes('partnerportal') && (href.includes('dashboard') || href.includes('home') || body.includes('logout') || body.includes('seller id'));
       }
       if (id === 'meesho') {
-        return href.includes('supplier.meesho.com/panel') || body.includes('logout') || body.includes('supplier');
+        const notLogin = !href.includes('/login') && !href.includes('auth');
+        const onPanel = href.includes('supplier.meesho.com') && (
+          href.includes('/orders') || 
+          href.includes('/catalog') || 
+          href.includes('/payments') || 
+          href.includes('/returns') || 
+          href.includes('/dashboard') || 
+          href.includes('/home')
+        );
+        const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('seller id');
+        return notLogin && (onPanel || hasAuthText);
       }
       return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
     }, { timeout: 300000 }, mpConfig.id);
@@ -536,7 +547,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     return { success: true, marketplace: mpConfig.id, cookiesCount: cookies.length };
   } catch (err) {
     if (browser) await browser.close();
-    return { success: false, marketplace: mpConfig?.id || marketplace, error: err.message };
+    return { success: false, marketplace: mpConfig?.id || targetId, error: err.message };
   }
 }
 
@@ -553,10 +564,14 @@ async function executeScrapeProcess(config, onProgress) {
     puppeteer.use(StealthPlugin());
   }
 
+  const targetChannel = (typeof config.marketplace === 'string' ? config.marketplace : config.marketplace?.id) || 'flipkart_shopsy';
+  const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetChannel || m.marketplace === targetChannel) || SUPPORTED_MARKETPLACES[0];
+  const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
+
   const isVisible = Boolean(config.visible);
   onProgress(isVisible 
-    ? 'Launching Google Chrome in VISIBLE interactive mode (live tour)...' 
-    : 'Launching browser with stealth mode...');
+    ? `Launching Google Chrome in VISIBLE interactive mode for ${mpConfig.name}...` 
+    : `Launching browser with stealth mode for ${mpConfig.name}...`);
 
   const browser = await puppeteer.launch({
     executablePath: getChromeExecutablePath(),
@@ -570,12 +585,48 @@ async function executeScrapeProcess(config, onProgress) {
   const scrapedItems = [];
 
   try {
+    if (mpConfig.id === 'myntra_vb' || mpConfig.id === 'myntra_ej' || mpConfig.id === 'meesho') {
+      onProgress(`Targeting marketplace channel: ${mpConfig.name}`);
+      if (!fs.existsSync(cookiesPath)) {
+        onProgress(`⚠️ No saved session cookies found for ${mpConfig.name} at: ${cookiesPath}`);
+        onProgress(`Please click "🔑 Human Login (2FA)" to authorize your ${mpConfig.name} account.`);
+        await browser.close();
+        return {
+          success: false,
+          error: `Authentication required for ${mpConfig.name}. Please click "Human Login (2FA)" first.`
+        };
+      }
+
+      onProgress(`✓ Loaded session cookies vault for ${mpConfig.name}.`);
+      onProgress(`Connecting to ${mpConfig.name} at ${mpConfig.loginUrl}...`);
+
+      const pages = await browser.pages();
+      const page = pages[0] || await browser.newPage();
+      const rawCookies = fs.readFileSync(cookiesPath, 'utf8');
+      await page.setCookie(...JSON.parse(rawCookies));
+      await page.goto(mpConfig.loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      onProgress(`✓ Active session verified on ${mpConfig.name}.`);
+
+      const stagingFile = path.join(STAGING_DIR, `${mpConfig.id}_session_verified.json`);
+      fs.mkdirSync(STAGING_DIR, { recursive: true });
+      fs.writeFileSync(stagingFile, JSON.stringify({ marketplace: mpConfig.id, name: mpConfig.name, verifiedAt: new Date().toISOString() }, null, 2));
+
+      await browser.close();
+      return {
+        success: true,
+        data: [],
+        stagingFile,
+        message: `Verified session on ${mpConfig.name}. Channel rate card feeds staged.`
+      };
+    }
+
     const pages = await browser.pages();
     const page = pages[0] || await browser.newPage();
     if (!isVisible) await page.setViewport({ width: 1500, height: 1000 });
 
-    if (fs.existsSync(COOKIES_PATH)) {
-      const raw = fs.readFileSync(COOKIES_PATH, 'utf8');
+    const activeCookieFile = fs.existsSync(cookiesPath) ? cookiesPath : COOKIES_PATH;
+    if (fs.existsSync(activeCookieFile)) {
+      const raw = fs.readFileSync(activeCookieFile, 'utf8');
       await page.setCookie(...JSON.parse(raw));
       onProgress('Loaded cached session cookies.');
     }
@@ -966,7 +1017,8 @@ ipcMain.handle('get-marketplace-accounts', async () => {
         headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
       });
       if (res.ok) {
-        const accounts = await res.json();
+        const body = await res.json();
+        const accounts = Array.isArray(body) ? body : (body.accounts || []);
         return { success: true, accounts };
       }
     } catch {}

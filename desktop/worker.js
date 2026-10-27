@@ -103,18 +103,31 @@ async function runWorker() {
     let rateCards = await buildBrandRateCardSet(pool);
 
     if (marketplaceArg === 'flipkart') {
-      rateCards = rateCards.filter(r => r.marketplace === 'flipkart');
+      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'flipkart');
     } else if (marketplaceArg === 'shopsy') {
-      rateCards = rateCards.filter(r => r.marketplace === 'shopsy');
-    } else if (marketplaceArg === 'myntra_vb' || marketplaceArg === 'myntra_ej' || marketplaceArg === 'meesho') {
-      const channelPrefix = marketplaceArg.split('_')[0];
-      const matched = rateCards.filter(r => r.marketplace.toLowerCase().includes(channelPrefix));
-      if (matched.length > 0) rateCards = matched;
-      onProgress(`Marketplace channel targeted: ${marketplaceArg} (${rateCards.length} rate profiles).`);
+      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'shopsy');
+    } else if (marketplaceArg === 'myntra_vb') {
+      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'myntra_vb' || (r.marketplace.toLowerCase() === 'myntra' && String(r.seller_id) === '10708'));
+      onProgress(`Marketplace channel targeted: Myntra VB (10708) — ${rateCards.length} rate profiles found.`);
+    } else if (marketplaceArg === 'myntra_ej') {
+      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'myntra_ej' || (r.marketplace.toLowerCase() === 'myntra' && String(r.seller_id) === '45833'));
+      onProgress(`Marketplace channel targeted: Myntra EJ (45833) — ${rateCards.length} rate profiles found.`);
+    } else if (marketplaceArg === 'meesho') {
+      rateCards = rateCards.filter(r => r.marketplace.toLowerCase() === 'meesho');
+      onProgress(`Marketplace channel targeted: Meesho — ${rateCards.length} rate profiles found.`);
     }
 
     if (brandArg !== 'all') {
       rateCards = rateCards.filter(r => r.brand.toLowerCase() === brandArg.toLowerCase());
+    }
+
+    if (rateCards.length === 0) {
+      onProgress(`No active rate cards configured for channel "${marketplaceArg}". Database sync skipped.`);
+      console.log(`\n✓ Staged 0 rate card profiles for ${marketplaceArg.toUpperCase()}.`);
+      console.log('======================================================================');
+      console.log('✓ Worker run completed successfully.');
+      console.log('======================================================================');
+      process.exit(0);
     }
 
     console.log(`✓ Staged ${rateCards.length} rate card profiles.\n`);
