@@ -27,7 +27,7 @@
     "type": "git",
     "url": "https://github.com/pawanshukla500/DashBorad-Project.git"
   },
-  "author": "ReconCentral Team",
+  "author": "ReconCentral Team <returnorders@vbexports.co.in>",
   "license": "ISC",
   "dependencies": {
     "dotenv": "^16.4.5",
