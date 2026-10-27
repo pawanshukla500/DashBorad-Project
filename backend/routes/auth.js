@@ -59,6 +59,27 @@ router.get('/me', authMiddleware, (req, res) => {
   res.json({ user: req.user });
 });
 
+// ── 4. Desktop Engine Configuration (Authorized Roles Only) ───────────────
+// Securely provisions runtime database connection to authenticated desktop workers
+// over TLS, ensuring database credentials are never baked into the installer binary.
+router.get('/desktop-config', authMiddleware, (req, res) => {
+  const role = normalizedRole(req.user?.role);
+  if (!['admin', 'operator', 'analyst'].includes(role)) {
+    return res.status(403).json({ error: 'Unauthorized role for desktop engine' });
+  }
+  res.json({
+    success: true,
+    user: {
+      id: req.user.id,
+      email: req.user.email,
+      username: req.user.username,
+      role: role
+    },
+    databaseUrl: process.env.DATABASE_URL || '',
+    serverTime: new Date().toISOString()
+  });
+});
+
 // ── 5. User Management (Admin Only): Read list of users ──────────────────────
 router.get('/users', requireAdmin, async (req, res) => {
   const pool = getPool();

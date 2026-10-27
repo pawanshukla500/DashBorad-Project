@@ -378,19 +378,48 @@ const server = http.createServer(async (req, res) => {
 
         const firebaseUid = fbResult.localId;
         const userEmail = fbResult.email || email;
-        const pool = getPool();
-
+        const config = loadConfig();
         let dbUser = null;
-        try {
-          const res = await pool.query(
-            'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
-            [firebaseUid, userEmail]
-          );
-          if (res.rows.length > 0) {
-            dbUser = res.rows[0];
+        let provisionedDbUrl = dbUrl;
+
+        // 1. Query ReconCentral Backend Server
+        if (config.apiServerUrl && fbResult.idToken) {
+          try {
+            const srvRes = await fetch(`${config.apiServerUrl}/api/auth/desktop-config`, {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${fbResult.idToken}`,
+                'Accept': 'application/json'
+              }
+            });
+            if (srvRes.ok) {
+              const srvData = await srvRes.json();
+              if (srvData && srvData.success && srvData.user) {
+                dbUser = srvData.user;
+                if (srvData.databaseUrl && !dbUrl) {
+                  provisionedDbUrl = srvData.databaseUrl;
+                }
+              }
+            }
+          } catch (srvErr) {
+            console.warn('[desktopServer] Backend server query skipped:', srvErr.message);
           }
-        } catch (dbErr) {
-          return sendJson(500, { success: false, error: `Database error: ${dbErr.message}` });
+        }
+
+        // 2. Direct pool verification fallback
+        if (!dbUser) {
+          try {
+            const pool = getPool();
+            const res = await pool.query(
+              'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
+              [firebaseUid, userEmail]
+            );
+            if (res.rows.length > 0) {
+              dbUser = res.rows[0];
+            }
+          } catch (dbErr) {
+            return sendJson(500, { success: false, error: `Database error: ${dbErr.message}` });
+          }
         }
 
         if (!dbUser) {

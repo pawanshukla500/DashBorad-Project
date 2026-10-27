@@ -72,11 +72,14 @@ function clearAuthSession() {
 }
 
 // Default Configuration with Flipkart & Shopsy Verticals and Brands
+// NOTE: Database credentials are never hardcoded in the installer bundle.
+// They are securely provisioned over TLS upon successful Firebase authentication & role verification.
 const DEFAULT_CONFIG = {
   marketplace: 'both', // 'flipkart', 'shopsy', or 'both'
   email: 'Vbexports@outlook.com',
   password: '',
-  databaseUrl: 'postgresql://pawanshukla:Xchange4SQL%24@200.141.1.119:5433/paymentapp',
+  apiServerUrl: process.env.API_SERVER_URL || 'https://payment.youthnic.shop',
+  databaseUrl: process.env.DATABASE_URL || '',
   scheduledHour: 6, // 06:00 AM
   scheduledMinute: 0,
   autoSyncToDb: false,
@@ -716,28 +719,56 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
 
     const firebaseUid = fbResult.localId;
     const userEmail = fbResult.email || email;
-
     const config = loadConfig();
-    const targetDbUrl = dbUrl || config.databaseUrl;
-    const pool = new Pool({
-      connectionString: targetDbUrl,
-      ssl: { rejectUnauthorized: false }
-    });
 
     let dbUser = null;
-    try {
-      const res = await pool.query(
-        'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
-        [firebaseUid, userEmail]
-      );
-      if (res.rows.length > 0) {
-        dbUser = res.rows[0];
+    let provisionedDbUrl = dbUrl;
+
+    // 1. Attempt to obtain verified authorization & database config from ReconCentral Backend Server
+    if (config.apiServerUrl && fbResult.idToken) {
+      try {
+        const srvRes = await fetch(`${config.apiServerUrl}/api/auth/desktop-config`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${fbResult.idToken}`,
+            'Accept': 'application/json'
+          }
+        });
+        if (srvRes.ok) {
+          const srvData = await srvRes.json();
+          if (srvData && srvData.success && srvData.user) {
+            dbUser = srvData.user;
+            if (srvData.databaseUrl && !dbUrl) {
+              provisionedDbUrl = srvData.databaseUrl;
+            }
+          }
+        }
+      } catch (srvErr) {
+        console.warn('[Desktop Auth] Backend server query skipped or offline:', srvErr.message);
       }
-    } catch (dbErr) {
-      await pool.end();
-      return { success: false, error: `Database connection error: ${dbErr.message}` };
     }
-    await pool.end();
+
+    // 2. Direct PostgreSQL verification if server was offline or direct DB provided
+    const targetDbUrl = provisionedDbUrl || config.databaseUrl;
+    if (!dbUser && targetDbUrl) {
+      const pool = new Pool({
+        connectionString: targetDbUrl,
+        ssl: { rejectUnauthorized: false }
+      });
+      try {
+        const res = await pool.query(
+          'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
+          [firebaseUid, userEmail]
+        );
+        if (res.rows.length > 0) {
+          dbUser = res.rows[0];
+        }
+      } catch (dbErr) {
+        await pool.end();
+        return { success: false, error: `Database connection error: ${dbErr.message}` };
+      }
+      await pool.end();
+    }
 
     if (!dbUser) {
       return { success: false, error: 'User authenticated in Firebase, but no corresponding account was found in ReconCentral database.' };
@@ -767,8 +798,8 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
 
     saveAuthSession(session);
 
-    if (dbUrl && dbUrl !== config.databaseUrl) {
-      config.databaseUrl = dbUrl;
+    if (provisionedDbUrl && provisionedDbUrl !== config.databaseUrl) {
+      config.databaseUrl = provisionedDbUrl;
       saveConfig(config);
     }
 

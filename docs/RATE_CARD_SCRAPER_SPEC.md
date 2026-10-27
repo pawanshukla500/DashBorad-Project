@@ -528,3 +528,31 @@ Whenever an AI model is asked to add a new marketplace, category, or fee compone
 3. **Preserve Shopsy Invariant**: Shopsy commission is always 0.00%. Do not assign Flipkart standard commission tiers to Shopsy listings.
 4. **Retain Dual Execution**: Ensure all tools function both in native Electron and in standalone Chrome App Mode / CLI.
 5. **Sync with TaskFlow Pro**: Call `sync_coding_work` at milestone boundaries and transition tasks through `in_progress` -> `in_review` -> `done`.
+
+---
+
+## 9. Windows Installer Release & Zero-Secret Security Architecture
+
+### 9.1 Zero-Secret Installer Invariant
+The production installer executable (`released/ReconCentral-RateCard-Worker-Setup.exe`) contains **zero hardcoded database credentials, passwords, or master secrets**.
+1. **Packaging**: Electron Builder packages only the compiled UI, IPC handlers, and scraper engine. Sensitive configuration defaults to empty strings (`databaseUrl: process.env.DATABASE_URL || ''`).
+2. **Dynamic TLS Provisioning**:
+   - The user launches the installed application on their PC.
+   - The user logs in with their ReconCentral Firebase credentials (e.g. `returnorders@vbexports.co.in`).
+   - The desktop engine sends the Firebase `idToken` to the ReconCentral backend endpoint `GET /api/auth/desktop-config`.
+   - The backend validates the ID token via `firebase-admin`, checks that `users.role` is in `['admin', 'operator', 'analyst']`, and securely provisions the database connection string over TLS directly into the desktop client's active memory.
+3. **OS Profile Isolation**:
+   - The provisioned session is stored locally in the current user's roaming application directory (`%APPDATA%\ReconCentral RateCard Worker\worker-config.json` and `auth-session.json`).
+   - This ensures credentials and active session state are protected by Windows OS user-level ACL permissions and never shared across PC user accounts.
+
+### 9.2 Release Artifacts
+
+All release files are deployed into the **`released/`** directory:
+
+| Artifact | Format | Description |
+| :--- | :--- | :--- |
+| `ReconCentral-RateCard-Worker-Setup.exe` | NSIS Executable (~81.8 MB) | Production 1-click Windows installer with Desktop icon and uninstaller. |
+| `ReconCentral-RateCard-Worker-Portable.exe` | Standalone Executable (~81.7 MB) | Portable single-file executable for standalone or USB execution. |
+| `linux/install-linux.sh` | Shell Script | Automated Linux installer deploying binary to `/opt/` and creating systemd service. |
+| `INSTALLATION_AND_AUTHORIZATION_GUIDE.md` | Markdown Manual | Operator manual for installation, login, and authorization. |
+
