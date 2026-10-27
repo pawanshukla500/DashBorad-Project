@@ -113,7 +113,7 @@ const DEFAULT_MARKETPLACE_CONFIGS = [
     seller_id: '10708',
     portal_url: 'https://partners.myntra.com/',
     logo_url: 'https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177484037idZyD0yYjDtAenWdeL',
-    matches: type => type.startsWith('myntra_'),
+    matches: type => type === 'myntra_vb' || type.includes('10708') || (type.startsWith('myntra_') && !type.includes('ej') && !type.includes('45833')),
   },
   {
     key: 'myntra_ej',
@@ -123,7 +123,7 @@ const DEFAULT_MARKETPLACE_CONFIGS = [
     seller_id: '45833',
     portal_url: 'https://partners.myntra.com/',
     logo_url: 'https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177484037idZyD0yYjDtAenWdeL',
-    matches: type => type.startsWith('myntra_'),
+    matches: type => type === 'myntra_ej' || type.includes('45833') || type.includes('ej'),
   },
   {
     key: 'ajio',
@@ -254,20 +254,30 @@ export default function AdminCenterPage() {
   };
 
   const handleToggleRevealPassword = async () => {
-    if (!showPassword && selectedAccount?.id && !modalPassword && selectedAccount.has_password) {
+    if (showPassword) {
+      setShowPassword(false);
+      return;
+    }
+    if (selectedAccount?.id && !modalPassword && selectedAccount.has_password) {
       setRevealingPassword(true);
+      setError('');
       try {
         const res = await revealMarketplacePassword(selectedAccount.id);
         if (res?.password) {
           setModalPassword(res.password);
+          setShowPassword(true);
+        } else {
+          setError('Failed to retrieve decrypted credential.');
         }
       } catch (err) {
         console.error('Failed to reveal password:', err);
+        setError('Failed to decrypt credential. Please ensure you have operator/admin privileges.');
       } finally {
         setRevealingPassword(false);
       }
+    } else {
+      setShowPassword(true);
     }
-    setShowPassword(prev => !prev);
   };
 
   const handleSaveAccount = async (e) => {

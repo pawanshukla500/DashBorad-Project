@@ -439,6 +439,21 @@ function setupEventListeners() {
 
   btnLoadPreview?.addEventListener('click', loadRateCardPreview);
 
+  btnExportDiff?.addEventListener('click', () => {
+    if (!currentDiff || currentDiff.length === 0) {
+      alert('No rate changes currently displayed to export.');
+      return;
+    }
+    const blob = new Blob([JSON.stringify(currentDiff, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `RateCard_Diff_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    appendTerminalLine(`✓ Exported ${currentDiff.length} rate changes to JSON.`);
+  });
+
   // Human interactive login & 2FA
   btnInteractiveLogin?.addEventListener('click', async () => {
     const selectEl = document.getElementById('select-marketplace');

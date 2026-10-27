@@ -2,6 +2,7 @@ import express from 'express';
 import { getPool } from '../db/index.js';
 import { requireRole, requireAdmin } from '../utils/authMiddleware.js';
 import { encryptCredential, decryptCredential, maskCredential } from '../utils/credentialCrypto.js';
+import { writeAudit } from '../services/auditLog.js';
 
 const router = express.Router();
 
@@ -134,6 +135,18 @@ router.get('/:id/reveal', requireRole('operator', 'admin'), async (req, res) => 
 
     const acc = rows[0];
     const password = decryptCredential(acc.password_encrypted);
+
+    // Explicit audit log for password reveal since GET requests bypass mutation audit middleware
+    await writeAudit(req, {
+      action: 'REVEAL_CREDENTIAL',
+      entityType: 'marketplace_accounts',
+      entityId: acc.id,
+      details: {
+        marketplace: acc.marketplace,
+        account_id: acc.account_id,
+        login_id: acc.login_id || '',
+      },
+    });
 
     return res.json({
       id: acc.id,

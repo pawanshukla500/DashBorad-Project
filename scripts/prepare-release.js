@@ -2,13 +2,15 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import os from 'os';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
 const desktopDist = path.join(projectRoot, 'desktop', 'dist-release');
 const releasedDir = path.join(projectRoot, 'released');
-const userDesktopReleased = path.join('C:', 'Users', 'Pawan Shukla', 'Desktop', 'released');
+const userDesktopReleased = path.join(os.homedir(), 'Desktop', 'released');
 const relasedTypoDir = path.join(projectRoot, 'relased');
 
 const targetDirs = [releasedDir, userDesktopReleased, relasedTypoDir];
