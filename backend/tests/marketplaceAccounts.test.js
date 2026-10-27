@@ -221,6 +221,7 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
       process.env.CREDENTIALS_ENCRYPTION_KEY = 'active-key-v2';
       process.env.PREVIOUS_ENCRYPTION_KEYS = 'old-key-v1';
 
+      const concurrentPayload = encryptCredential('ConcurrentlyChangedSecret');
       const mockDbRecords = [
         { id: 101, password_encrypted: initialPayload }
       ];
@@ -228,12 +229,15 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
       const mockDb = {
         query: vi.fn(async (sql, params) => {
           if (/SELECT id, password_encrypted/i.test(sql)) {
-            return { rows: mockDbRecords };
+            // Return old ciphertext from SELECT, then simulate concurrent modification happening before UPDATE
+            const returnedRows = [{ id: 101, password_encrypted: initialPayload }];
+            mockDbRecords[0].password_encrypted = concurrentPayload;
+            return { rows: returnedRows };
           }
           if (/UPDATE marketplace_accounts SET password_encrypted/i.test(sql)) {
             const [newCipher, id, expectedOldCipher] = params;
             const rec = mockDbRecords.find(r => r.id === id);
-            // Verify conditional query uses WHERE id = $2 AND password_encrypted = $3
+            // Verify conditional query matches WHERE id = $2 AND password_encrypted = $3
             if (rec && rec.password_encrypted === expectedOldCipher) {
               rec.password_encrypted = newCipher;
               return { rowCount: 1 };
@@ -244,12 +248,14 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
         })
       };
 
-      // Simulate concurrent change right before update executes
-      mockDbRecords[0].password_encrypted = encryptCredential('ConcurrentlyChangedSecret');
-
       const result = await reencryptMarketplaceCredentials(mockDb);
+      // Migration attempts update with expectedOldCipher = initialPayload, which fails against concurrentPayload
       expect(result.reencrypted).toBe(0);
       expect(result.total).toBe(1);
+
+      // Verify the concurrent value remains completely intact and was not overwritten
+      expect(mockDbRecords[0].password_encrypted).toBe(concurrentPayload);
+      expect(decryptCredential(mockDbRecords[0].password_encrypted)).toBe('ConcurrentlyChangedSecret');
     } finally {
       process.env = origEnv;
     }
