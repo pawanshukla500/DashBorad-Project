@@ -743,26 +743,55 @@ async function loadMarketplaceAccountsUI() {
     if (accounts.length > 0) {
       const tbody = document.getElementById('tbody-marketplace-accounts');
       if (tbody) {
-        tbody.innerHTML = accounts.map(acc => {
+        tbody.innerHTML = '';
+        accounts.forEach(acc => {
           const hasPassword = Boolean(acc.has_password || acc.has_credentials);
           const channelKey = acc.account_id || (acc.marketplace || '').toLowerCase();
           const accountLabel = acc.login_id || acc.account_id || (acc.seller_id ? 'Seller ID: ' + acc.seller_id : 'Primary');
-          return `
-            <tr>
-              <td><strong>${acc.display_name || acc.marketplace_name || acc.marketplace}</strong></td>
-              <td>${accountLabel}</td>
-              <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${acc.portal_url || '—'}</td>
-              <td>
-                <span class="badge ${hasPassword ? 'badge-account' : 'badge-portal'}" style="font-size: 10px;">
-                  ${hasPassword ? '🔒 Vault Encrypted' : 'Configured'}
-                </span>
-              </td>
-              <td>
-                <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="${channelKey}" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
-              </td>
-            </tr>
-          `;
-        }).join('');
+
+          const tr = document.createElement('tr');
+
+          // TD 1: Display name
+          const tdName = document.createElement('td');
+          const strongName = document.createElement('strong');
+          strongName.textContent = acc.display_name || acc.marketplace_name || acc.marketplace || 'Marketplace';
+          tdName.appendChild(strongName);
+          tr.appendChild(tdName);
+
+          // TD 2: Account label
+          const tdLabel = document.createElement('td');
+          tdLabel.textContent = accountLabel;
+          tr.appendChild(tdLabel);
+
+          // TD 3: Portal URL
+          const tdPortal = document.createElement('td');
+          tdPortal.style.fontFamily = "'JetBrains Mono', monospace";
+          tdPortal.style.fontSize = '11px';
+          tdPortal.textContent = acc.portal_url || '—';
+          tr.appendChild(tdPortal);
+
+          // TD 4: Badge
+          const tdBadge = document.createElement('td');
+          const spanBadge = document.createElement('span');
+          spanBadge.className = `badge ${hasPassword ? 'badge-account' : 'badge-portal'}`;
+          spanBadge.style.fontSize = '10px';
+          spanBadge.textContent = hasPassword ? '🔒 Vault Encrypted' : 'Configured';
+          tdBadge.appendChild(spanBadge);
+          tr.appendChild(tdBadge);
+
+          // TD 5: 2FA Login Button
+          const tdBtn = document.createElement('td');
+          const btn = document.createElement('button');
+          btn.className = 'btn btn-sm btn-secondary btn-ch-login';
+          btn.setAttribute('data-channel', channelKey);
+          btn.style.padding = '2px 8px';
+          btn.style.fontSize = '11px';
+          btn.textContent = '2FA Login';
+          tdBtn.appendChild(btn);
+          tr.appendChild(tdBtn);
+
+          tbody.appendChild(tr);
+        });
       }
 
       // Update Channel Status indicators on Dashboard

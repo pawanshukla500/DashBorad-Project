@@ -141,6 +141,58 @@ const SUPPORTED_MARKETPLACES = [
     defaultAccount: 'returnorders@vbexports.co.in',
     hasScraper: true,
     description: 'Meesho Supplier Panel 0% commission & tiered weight-slab logistics'
+  },
+  {
+    id: 'amazon',
+    name: 'Amazon Seller Central',
+    marketplace: 'amazon',
+    account_id: 'amazon',
+    portalUrl: 'https://sellercentral.amazon.in/',
+    loginUrl: 'https://sellercentral.amazon.in/',
+    dashboardUrl: 'https://sellercentral.amazon.in/',
+    rateCardUrl: 'https://sellercentral.amazon.in/help/hub/reference/G200336920',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Amazon IN Seller Central'
+  },
+  {
+    id: 'ajio',
+    name: 'Reliance Retail (AJIO)',
+    marketplace: 'ajio',
+    account_id: 'ajio',
+    portalUrl: 'https://supplier.ajio.com/',
+    loginUrl: 'https://supplier.ajio.com/',
+    dashboardUrl: 'https://supplier.ajio.com/',
+    rateCardUrl: 'https://supplier.ajio.com/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Reliance Retail (AJIO) Supplier Hub'
+  },
+  {
+    id: 'cocoblu',
+    name: 'Cocoblu Retails',
+    marketplace: 'cocoblu',
+    account_id: 'cocoblu',
+    portalUrl: 'https://cocoblu.biz/',
+    loginUrl: 'https://cocoblu.biz/',
+    dashboardUrl: 'https://cocoblu.biz/',
+    rateCardUrl: 'https://cocoblu.biz/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Cocoblu Retails Portal'
+  },
+  {
+    id: 'shopify',
+    name: 'Shopify Admin',
+    marketplace: 'shopify',
+    account_id: 'shopify',
+    portalUrl: 'https://admin.shopify.com/',
+    loginUrl: 'https://admin.shopify.com/',
+    dashboardUrl: 'https://admin.shopify.com/',
+    rateCardUrl: 'https://admin.shopify.com/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Shopify Admin Center'
   }
 ];
 

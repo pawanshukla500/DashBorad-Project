@@ -135,6 +135,58 @@ const SUPPORTED_MARKETPLACES = [
     defaultAccount: 'returnorders@vbexports.co.in',
     hasScraper: true,
     description: 'Meesho Supplier Panel 0% commission & tiered weight-slab logistics'
+  },
+  {
+    id: 'amazon',
+    name: 'Amazon Seller Central',
+    marketplace: 'amazon',
+    account_id: 'amazon',
+    portalUrl: 'https://sellercentral.amazon.in/',
+    loginUrl: 'https://sellercentral.amazon.in/',
+    dashboardUrl: 'https://sellercentral.amazon.in/',
+    rateCardUrl: 'https://sellercentral.amazon.in/help/hub/reference/G200336920',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Amazon IN Seller Central'
+  },
+  {
+    id: 'ajio',
+    name: 'Reliance Retail (AJIO)',
+    marketplace: 'ajio',
+    account_id: 'ajio',
+    portalUrl: 'https://supplier.ajio.com/',
+    loginUrl: 'https://supplier.ajio.com/',
+    dashboardUrl: 'https://supplier.ajio.com/',
+    rateCardUrl: 'https://supplier.ajio.com/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Reliance Retail (AJIO) Supplier Hub'
+  },
+  {
+    id: 'cocoblu',
+    name: 'Cocoblu Retails',
+    marketplace: 'cocoblu',
+    account_id: 'cocoblu',
+    portalUrl: 'https://cocoblu.biz/',
+    loginUrl: 'https://cocoblu.biz/',
+    dashboardUrl: 'https://cocoblu.biz/',
+    rateCardUrl: 'https://cocoblu.biz/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Cocoblu Retails Portal'
+  },
+  {
+    id: 'shopify',
+    name: 'Shopify Admin',
+    marketplace: 'shopify',
+    account_id: 'shopify',
+    portalUrl: 'https://admin.shopify.com/',
+    loginUrl: 'https://admin.shopify.com/',
+    dashboardUrl: 'https://admin.shopify.com/',
+    rateCardUrl: 'https://admin.shopify.com/',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: false,
+    description: 'Shopify Admin Center'
   }
 ];
 
@@ -537,6 +589,18 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
         const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('seller id');
         return notLogin && (onPanel || hasAuthText);
       }
+      if (id === 'amazon') {
+        return href.includes('sellercentral.amazon.in') && !href.includes('/signin') && (href.includes('home') || href.includes('dashboard') || body.includes('sign out') || body.includes('logout'));
+      }
+      if (id === 'ajio') {
+        return href.includes('supplier.ajio.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
+      }
+      if (id === 'cocoblu') {
+        return href.includes('cocoblu.biz') && !href.includes('/login');
+      }
+      if (id === 'shopify') {
+        return href.includes('admin.shopify.com') && !href.includes('/login');
+      }
       return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
     }, { timeout: 300000 }, mpConfig.id);
 
@@ -573,6 +637,12 @@ async function executeScrapeProcess(config, onProgress) {
   if (!mpConfig) {
     const validIds = SUPPORTED_MARKETPLACES.map(m => m.id).join(', ');
     return { success: false, error: `Unsupported scraping channel: "${targetChannel}". Supported channels: ${validIds}` };
+  }
+  if (!mpConfig.hasScraper) {
+    return {
+      success: false,
+      error: `Scraper worker is not yet implemented for ${mpConfig.name}. Automated scrapers are currently active for Flipkart & Shopsy, Myntra VB (10708), Myntra EJ (45833), and Meesho.`
+    };
   }
   const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
 
