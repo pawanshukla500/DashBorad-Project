@@ -122,7 +122,8 @@ function rowStatus(row, date = TODAY) {
 // Shopsy is a sub-channel of Flipkart — its categories appear under Flipkart
 // as "shopsy_kurta", "shopsy_ethnic_set" etc. (prefixed, not a separate marketplace).
 const MARKETPLACES = [
-  { id: 'flipkart', label: 'Flipkart',  emoji: '🛒', note: 'Includes Shopsy sub-channel (shopsy_* categories)' },
+  { id: 'flipkart', label: 'Flipkart',  emoji: '🛒', note: 'Flipkart Marketplace fee cards' },
+  { id: 'shopsy',   label: 'Shopsy',    emoji: '🛍️', note: 'Shopsy (0% Commission, Tiered Closing Fee & Return Shipping)' },
   { id: 'amazon',   label: 'Amazon',    emoji: '📦' },
   { id: 'meesho',   label: 'Meesho',    emoji: '🎀' },
   { id: 'myntra_vb', label: 'Myntra (VB)', emoji: '👗', defaultAccount: 'myntra_vb', note: 'VB Exports (Seller ID: 10708)' },

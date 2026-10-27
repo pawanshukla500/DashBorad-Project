@@ -1,13 +1,26 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('ratecardAPI', {
+  // Configuration
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   testDbConnection: (dbUrl) => ipcRenderer.invoke('test-db-connection', dbUrl),
+
+  // Authentication & Live Browser
   runInteractiveLogin: (marketplace) => ipcRenderer.invoke('interactive-login', marketplace),
   startScrape: (options) => ipcRenderer.invoke('start-scrape', options),
-  detectChanges: (scrapedData) => ipcRenderer.invoke('detect-changes', scrapedData),
-  syncToDb: (scrapedData) => ipcRenderer.invoke('sync-to-db', scrapedData),
+
+  // Brand-Wise & FSN Catalog
+  getBrandFsnCatalog: () => ipcRenderer.invoke('get-brand-fsn-catalog'),
+  getRateCardPreview: (options) => ipcRenderer.invoke('get-ratecard-preview', options),
+
+  // Change Detection & Database Sync
+  detectBrandRateChanges: (brandRateCards) => ipcRenderer.invoke('detect-brand-rate-changes', brandRateCards),
+  syncBrandRateCards: (brandRateCards, options) => ipcRenderer.invoke('sync-brand-rate-cards', brandRateCards, options),
+
+  // Excel Export & System Launcher
+  exportDesktopExcel: (outputPath) => ipcRenderer.invoke('export-desktop-excel', outputPath),
+  openExcelFile: (filePath) => ipcRenderer.invoke('open-excel-file', filePath),
   exportFile: (format, data) => ipcRenderer.invoke('export-file', format, data),
   
   // Real-time Event Listeners

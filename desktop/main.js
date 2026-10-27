@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Notification, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs').promises;
@@ -10,9 +10,9 @@ const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
 const COOKIES_PATH = path.join(USER_DATA_DIR, 'cookies.json');
 const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
 
-// Default Configuration
+// Default Configuration with Flipkart & Shopsy Verticals and Brands
 const DEFAULT_CONFIG = {
-  marketplace: 'flipkart',
+  marketplace: 'both', // 'flipkart', 'shopsy', or 'both'
   email: 'Vbexports@outlook.com',
   password: '',
   databaseUrl: 'postgresql://pawanshukla:Xchange4SQL%24@200.141.1.119:5433/paymentapp',
@@ -20,7 +20,11 @@ const DEFAULT_CONFIG = {
   scheduledMinute: 0,
   autoSyncToDb: false,
   notificationEmail: 'payments@youthnic.shop',
-  selectedVerticals: ['ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric']
+  selectedBrands: ['Ethnic Junction', 'Youthnic', 'Sangria', 'Divastri', 'General'],
+  selectedVerticals: [
+    'ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric',
+    'blouse', 'lehenga_choli', 'gown', 'shopsy_kurta', 'shopsy_ethnic_set'
+  ]
 };
 
 function loadConfig() {
@@ -47,12 +51,12 @@ function saveConfig(config) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 850,
-    minWidth: 1024,
-    minHeight: 700,
+    width: 1360,
+    height: 900,
+    minWidth: 1080,
+    minHeight: 720,
     backgroundColor: '#0f172a',
-    title: 'ReconCentral RateCard Automation & Scraper Worker',
+    title: 'ReconCentral RateCard Automation & Scraper Worker (Flipkart & Shopsy)',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -133,9 +137,11 @@ function getChromeExecutablePath() {
   return possiblePaths.find(p => fs.existsSync(p)) || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 }
 
-// ── Table Parsing Logic ──────────────────────────────────────────────────────
-function parseRateCardTables(tables, vertical, effectiveDate) {
+// ── Table Parsing Logic with Shopsy Fee Rules ────────────────────────────────
+function parseRateCardTables(tables, vertical, effectiveDate, marketplace = 'flipkart') {
+  const isShopsy = marketplace === 'shopsy' || vertical.toLowerCase().startsWith('shopsy_');
   const parsed = {
+    marketplace: isShopsy ? 'shopsy' : 'flipkart',
     vertical,
     effectiveDate,
     commissions: [],
@@ -168,6 +174,38 @@ function parseRateCardTables(tables, vertical, effectiveDate) {
     return parseFloat(clean) || 0;
   }
 
+  // Shopsy Specific Rules:
+  // 1. Commission is 0% across all slabs
+  // 2. Fixed closing fee: ₹0 for 0-1500, ₹10 for 1501+
+  // 3. Reverse shipping: 0-0.5kg & 0.5-1kg slabs
+  if (isShopsy) {
+    parsed.commissions.push({
+      price_min: 0,
+      price_max: 999999,
+      rate: 0.0
+    });
+
+    const tiers = ['Bronze', 'Silver', 'Gold', 'Diamond'];
+    for (const tier of tiers) {
+      parsed.fixedFees.push(
+        { fulfilment_type: tier, price_min: 0, price_max: 1500, rate: 0 },
+        { fulfilment_type: tier, price_min: 1501, price_max: 999999, rate: 10 }
+      );
+    }
+
+    parsed.reverseShipping.push(
+      { weight_slab: '0kg-0.5kg', price_min: 0, price_max: 500, local_fee: 122, zonal_fee: 142, national_fee: 182 },
+      { weight_slab: '0kg-0.5kg', price_min: 501, price_max: 1000, local_fee: 147, zonal_fee: 167, national_fee: 207 },
+      { weight_slab: '0kg-0.5kg', price_min: 1001, price_max: 999999, local_fee: 157, zonal_fee: 177, national_fee: 217 },
+      { weight_slab: '0.5kg-1kg', price_min: 0, price_max: 500, local_fee: 152, zonal_fee: 177, national_fee: 227 },
+      { weight_slab: '0.5kg-1kg', price_min: 501, price_max: 1000, local_fee: 177, zonal_fee: 202, national_fee: 252 },
+      { weight_slab: '0.5kg-1kg', price_min: 1001, price_max: 999999, local_fee: 187, zonal_fee: 212, national_fee: 262 }
+    );
+
+    return parsed;
+  }
+
+  // Standard Flipkart parsing
   for (const table of tables) {
     if (!table || table.length === 0) continue;
     const headerRow = table[0].join(' ').toLowerCase();
@@ -296,7 +334,6 @@ async function executeInteractiveLogin(marketplace) {
     console.log('[InteractiveLogin] Opening Flipkart Seller Hub...');
     await page.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2' });
 
-    // Wait until logged in (dashboard home page loaded)
     console.log('[InteractiveLogin] Waiting for seller dashboard navigation or user login...');
     await page.waitForFunction(() => {
       return window.location.href.includes('#dashboard') || 
@@ -318,7 +355,7 @@ async function executeInteractiveLogin(marketplace) {
   }
 }
 
-// ── Automated Scraper Process ────────────────────────────────────────────────
+// ── Automated Scraper Process (Supports Visible Chrome Mode) ──────────────────
 async function executeScrapeProcess(config, onProgress) {
   let puppeteer, StealthPlugin;
   try {
@@ -331,18 +368,26 @@ async function executeScrapeProcess(config, onProgress) {
     puppeteer.use(StealthPlugin());
   }
 
-  onProgress('Launching browser with stealth mode...');
+  const isVisible = Boolean(config.visible);
+  onProgress(isVisible 
+    ? 'Launching Google Chrome in VISIBLE interactive mode (live tour)...' 
+    : 'Launching browser with stealth mode...');
+
   const browser = await puppeteer.launch({
     executablePath: getChromeExecutablePath(),
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1500,1000']
+    headless: isVisible ? false : 'new',
+    defaultViewport: isVisible ? null : { width: 1500, height: 1000 },
+    args: isVisible 
+      ? ['--start-maximized', '--no-sandbox', '--disable-setuid-sandbox'] 
+      : ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1500,1000']
   });
 
   const scrapedItems = [];
 
   try {
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1500, height: 1000 });
+    const pages = await browser.pages();
+    const page = pages[0] || await browser.newPage();
+    if (!isVisible) await page.setViewport({ width: 1500, height: 1000 });
 
     if (fs.existsSync(COOKIES_PATH)) {
       const raw = fs.readFileSync(COOKIES_PATH, 'utf8');
@@ -403,24 +448,36 @@ async function executeScrapeProcess(config, onProgress) {
       onProgress('Authentication verified via active cookies.');
     }
 
-    const verticals = config.selectedVerticals?.length ? config.selectedVerticals : ['ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric'];
+    const targetMarketplace = config.marketplace || 'both';
+    let verticals = config.selectedVerticals?.length ? config.selectedVerticals : [
+      'ethnic_set', 'kurta', 'sari', 'top', 'fabric', 'blouse', 'lehenga_choli', 'gown', 'shopsy_kurta', 'shopsy_ethnic_set'
+    ];
+
+    if (targetMarketplace === 'shopsy') {
+      verticals = verticals.filter(v => v.startsWith('shopsy_'));
+      if (verticals.length === 0) verticals = ['shopsy_kurta', 'shopsy_ethnic_set'];
+    } else if (targetMarketplace === 'flipkart') {
+      verticals = verticals.filter(v => !v.startsWith('shopsy_'));
+    }
+
     const effectiveDate = new Date().toISOString().slice(0, 10);
-    onProgress(`Extracting rate cards across ${verticals.length} verticals...`);
+    onProgress(`Extracting rate cards across ${verticals.length} verticals (${targetMarketplace.toUpperCase()})...`);
 
     for (let i = 0; i < verticals.length; i++) {
       const vert = verticals[i];
-      onProgress(`[${i + 1}/${verticals.length}] Processing vertical: "${vert}"...`);
+      const isShopsyVertical = vert.startsWith('shopsy_');
+      onProgress(`[${i + 1}/${verticals.length}] Processing vertical: "${vert}" (${isShopsyVertical ? 'SHOPSY' : 'FLIPKART'})...`);
 
       for (const fulfillment of ['non-fbf', 'fbf']) {
         const queryObj = {
-          marketplace: 'flipkart',
+          marketplace: isShopsyVertical ? 'shopsy' : 'flipkart',
           fulfillment: fulfillment,
           date: `${effectiveDate} 12:00:00`,
           vertical: vert
         };
         const targetUrl = `https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=${encodeURIComponent(JSON.stringify(queryObj))}`;
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 35000 });
-        await new Promise(r => setTimeout(r, 4500));
+        await new Promise(r => setTimeout(r, isVisible ? 3000 : 2000));
 
         const docData = await page.evaluate(() => {
           const tables = Array.from(document.querySelectorAll('table')).map(t => 
@@ -431,12 +488,10 @@ async function executeScrapeProcess(config, onProgress) {
           return { tables, rawText: document.body.innerText };
         });
 
-        if (docData.tables.length > 2) {
-          const parsed = parseRateCardTables(docData.tables, vert, effectiveDate);
-          parsed.fulfilment_type = fulfillment === 'fbf' ? 'FBF' : 'NON_FBF';
-          scrapedItems.push(parsed);
-          onProgress(`  ✓ ${vert} (${fulfillment}): ${parsed.commissions.length} comm, ${parsed.fixedFees.length} fixed, ${parsed.reverseShipping.length} rev shipping slabs.`);
-        }
+        const parsed = parseRateCardTables(docData.tables, vert, effectiveDate, isShopsyVertical ? 'shopsy' : 'flipkart');
+        parsed.fulfilment_type = fulfillment === 'fbf' ? 'FBF' : 'NON_FBF';
+        scrapedItems.push(parsed);
+        onProgress(`  ✓ ${vert} (${fulfillment}): ${parsed.commissions.length} comm, ${parsed.fixedFees.length} fixed, ${parsed.reverseShipping.length} rev shipping slabs.`);
       }
     }
 
@@ -459,125 +514,7 @@ async function executeScrapeProcess(config, onProgress) {
   }
 }
 
-// ── Database Change Detection & Sync ─────────────────────────────────────────
-async function executeChangeDetection(scrapedList, config) {
-  const pool = new Pool({
-    connectionString: config.databaseUrl,
-    ssl: { rejectUnauthorized: false }
-  });
-
-  const changes = [];
-  try {
-    for (const item of scrapedList) {
-      const { vertical, commissions, fixedFees, reverseShipping } = item;
-
-      // 1. Commission Diff
-      const commRes = await pool.query(`
-        SELECT price_min, price_max, rate FROM rc_commission
-        WHERE marketplace = 'flipkart' AND seller_account = 'default' AND category = $1 AND end_date IS NULL
-      `, [vertical]);
-
-      for (const sc of commissions) {
-        const match = commRes.rows.find(ac => 
-          Math.abs(parseFloat(ac.price_min) - sc.price_min) < 0.01 &&
-          Math.abs(parseFloat(ac.price_max) - sc.price_max) < 1.0
-        );
-        if (!match) {
-          changes.push({
-            type: 'Commission',
-            category: vertical,
-            slab: `₹${sc.price_min} - ₹${sc.price_max}`,
-            oldRate: 'None',
-            newRate: `${(sc.rate * 100).toFixed(1)}%`,
-            status: 'New Slab'
-          });
-        } else if (Math.abs(parseFloat(match.rate) - sc.rate) > 0.0001) {
-          changes.push({
-            type: 'Commission',
-            category: vertical,
-            slab: `₹${sc.price_min} - ₹${sc.price_max}`,
-            oldRate: `${(parseFloat(match.rate) * 100).toFixed(1)}%`,
-            newRate: `${(sc.rate * 100).toFixed(1)}%`,
-            status: 'Modified'
-          });
-        }
-      }
-
-      // 2. Fixed Fee Diff
-      const fixedRes = await pool.query(`
-        SELECT fulfilment_type, price_min, price_max, rate FROM rc_fixed_fee
-        WHERE marketplace = 'flipkart' AND seller_account = 'default' AND category = $1 AND end_date IS NULL
-      `, [vertical]);
-
-      for (const sf of fixedFees) {
-        const match = fixedRes.rows.find(af => 
-          af.fulfilment_type === sf.fulfilment_type &&
-          Math.abs(parseFloat(af.price_min) - sf.price_min) < 0.01
-        );
-        if (!match) {
-          changes.push({
-            type: 'Fixed Fee',
-            category: vertical,
-            slab: `${sf.fulfilment_type} (₹${sf.price_min} - ₹${sf.price_max})`,
-            oldRate: 'None',
-            newRate: `₹${sf.rate}`,
-            status: 'New Slab'
-          });
-        } else if (Math.abs(parseFloat(match.rate) - sf.rate) > 0.01) {
-          changes.push({
-            type: 'Fixed Fee',
-            category: vertical,
-            slab: `${sf.fulfilment_type} (₹${sf.price_min} - ₹${sf.price_max})`,
-            oldRate: `₹${parseFloat(match.rate)}`,
-            newRate: `₹${sf.rate}`,
-            status: 'Modified'
-          });
-        }
-      }
-
-      // 3. Reverse Shipping Diff
-      const revRes = await pool.query(`
-        SELECT weight_slab, price_min, price_max, local_fee, zonal_fee, national_fee FROM rc_reverse_shipping
-        WHERE marketplace = 'flipkart' AND seller_account = 'default' AND category = $1 AND end_date IS NULL
-      `, [vertical]);
-
-      for (const sr of reverseShipping) {
-        const match = revRes.rows.find(ar => 
-          ar.weight_slab === sr.weight_slab &&
-          Math.abs(parseFloat(ar.price_min) - sr.price_min) < 0.01
-        );
-        if (!match) {
-          changes.push({
-            type: 'Reverse Shipping',
-            category: vertical,
-            slab: `${sr.weight_slab} (₹${sr.price_min} - ₹${sr.price_max})`,
-            oldRate: 'None',
-            newRate: `L: ₹${sr.local_fee}, Z: ₹${sr.zonal_fee}, N: ₹${sr.national_fee}`,
-            status: 'New Slab'
-          });
-        } else if (
-          Math.abs(parseFloat(match.local_fee) - sr.local_fee) > 0.01 ||
-          Math.abs(parseFloat(match.zonal_fee) - sr.zonal_fee) > 0.01 ||
-          Math.abs(parseFloat(match.national_fee) - sr.national_fee) > 0.01
-        ) {
-          changes.push({
-            type: 'Reverse Shipping',
-            category: vertical,
-            slab: `${sr.weight_slab} (₹${sr.price_min} - ₹${sr.price_max})`,
-            oldRate: `L: ₹${match.local_fee}, Z: ₹${match.zonal_fee}, N: ₹${match.national_fee}`,
-            newRate: `L: ₹${sr.local_fee}, Z: ₹${sr.zonal_fee}, N: ₹${sr.national_fee}`,
-            status: 'Modified'
-          });
-        }
-      }
-    }
-  } finally {
-    await pool.end();
-  }
-
-  return changes;
-}
-
+// ── Database Change Detection & Sync (PostgreSQL Constraint-Safe) ─────────────
 async function executeDbSync(scrapedList, config) {
   const pool = new Pool({
     connectionString: config.databaseUrl,
@@ -592,50 +529,66 @@ async function executeDbSync(scrapedList, config) {
     await client.query('BEGIN');
 
     for (const item of scrapedList) {
-      const { vertical, commissions, fixedFees, collectionFees, reverseShipping } = item;
+      const { marketplace, vertical, commissions, fixedFees, reverseShipping } = item;
+      const mp = marketplace || (vertical.startsWith('shopsy_') ? 'shopsy' : 'flipkart');
 
-      // Commissions
+      // 1. Commissions (Clean idempotent replace for today, auto-close prior)
       if (commissions.length > 0) {
         await client.query(`
-          UPDATE rc_commission SET end_date = $1, updated_at = NOW()
-          WHERE marketplace = 'flipkart' AND seller_account = 'default' AND category = $2 AND end_date IS NULL
-        `, [prevDate, vertical]);
+          DELETE FROM rc_commission 
+          WHERE marketplace = $1 AND category = $2 AND start_date = $3::date AND end_date IS NULL
+        `, [mp, vertical, effectiveDate]);
+
+        await client.query(`
+          UPDATE rc_commission SET end_date = $1::date, updated_at = NOW()
+          WHERE marketplace = $2 AND category = $3 AND start_date < $4::date AND (end_date IS NULL OR end_date >= $4::date)
+        `, [prevDate, mp, vertical, effectiveDate]);
 
         for (const c of commissions) {
           await client.query(`
             INSERT INTO rc_commission (category, marketplace, seller_account, price_min, price_max, rate, start_date, end_date, updated_at)
-            VALUES ($1, 'flipkart', 'default', $2, $3, $4, $5, NULL, NOW())
-          `, [vertical, c.price_min, c.price_max, c.rate, effectiveDate]);
+            VALUES ($1, $2, 'default', $3, $4, $5, $6::date, NULL, NOW())
+          `, [vertical, mp, c.price_min, c.price_max, c.rate, effectiveDate]);
         }
       }
 
-      // Fixed Fees
+      // 2. Fixed Fees (Clean idempotent replace for today, auto-close prior)
       if (fixedFees.length > 0) {
         await client.query(`
-          UPDATE rc_fixed_fee SET end_date = $1, updated_at = NOW()
-          WHERE marketplace = 'flipkart' AND seller_account = 'default' AND category = $2 AND end_date IS NULL
-        `, [prevDate, vertical]);
+          DELETE FROM rc_fixed_fee 
+          WHERE marketplace = $1 AND category = $2 AND start_date = $3::date AND end_date IS NULL
+        `, [mp, vertical, effectiveDate]);
+
+        await client.query(`
+          UPDATE rc_fixed_fee SET end_date = $1::date, updated_at = NOW()
+          WHERE marketplace = $2 AND category = $3 AND start_date < $4::date AND (end_date IS NULL OR end_date >= $4::date)
+        `, [prevDate, mp, vertical, effectiveDate]);
 
         for (const f of fixedFees) {
           await client.query(`
             INSERT INTO rc_fixed_fee (category, marketplace, seller_account, fulfilment_type, price_min, price_max, rate, start_date, end_date, updated_at)
-            VALUES ($1, 'flipkart', 'default', $2, $3, $4, $5, $6, NULL, NOW())
-          `, [vertical, f.fulfilment_type, f.price_min, f.price_max, f.rate, effectiveDate]);
+            VALUES ($1, $2, 'default', $3, $4, $5, $6, $7::date, NULL, NOW())
+          `, [vertical, mp, f.fulfilment_type, f.price_min, f.price_max, f.rate, effectiveDate]);
         }
       }
 
-      // Reverse Shipping
+      // 3. Reverse Shipping (Clean idempotent replace for today, auto-close prior)
       if (reverseShipping.length > 0) {
         await client.query(`
-          UPDATE rc_reverse_shipping SET end_date = $1, updated_at = NOW()
-          WHERE marketplace = 'flipkart' AND seller_account = 'default' AND category = $2 AND end_date IS NULL
-        `, [prevDate, vertical]);
+          DELETE FROM rc_reverse_shipping 
+          WHERE marketplace = $1 AND category = $2 AND start_date = $3::date AND end_date IS NULL
+        `, [mp, vertical, effectiveDate]);
+
+        await client.query(`
+          UPDATE rc_reverse_shipping SET end_date = $1::date, updated_at = NOW()
+          WHERE marketplace = $2 AND category = $3 AND start_date < $4::date AND (end_date IS NULL OR end_date >= $4::date)
+        `, [prevDate, mp, vertical, effectiveDate]);
 
         for (const r of reverseShipping) {
           await client.query(`
             INSERT INTO rc_reverse_shipping (category, marketplace, seller_account, weight_slab, price_min, price_max, local_fee, zonal_fee, national_fee, start_date, end_date, updated_at)
-            VALUES ($1, 'flipkart', 'default', $2, $3, $4, $5, $6, $7, $8, NULL, NOW())
-          `, [vertical, r.weight_slab, r.price_min, r.price_max, r.local_fee, r.zonal_fee, r.national_fee, effectiveDate]);
+            VALUES ($1, $2, 'default', $3, $4, $5, $6, $7, $8, $9::date, NULL, NOW())
+          `, [vertical, mp, r.weight_slab, r.price_min, r.price_max, r.local_fee, r.zonal_fee, r.national_fee, effectiveDate]);
         }
       }
     }
@@ -643,7 +596,7 @@ async function executeDbSync(scrapedList, config) {
     const versionName = `desktop-sync-${effectiveDate}-${Date.now().toString().slice(-4)}`;
     await client.query(`
       INSERT INTO rate_card_versions (marketplace, seller_account, version_name, status, effective_from, snapshot, created_at, published_at)
-      VALUES ('flipkart', 'default', $1, 'published', $2, $3, NOW(), NOW())
+      VALUES ('flipkart_shopsy_desktop', 'default', $1, 'published', $2::date, $3, NOW(), NOW())
     `, [versionName, effectiveDate, JSON.stringify({ syncedBy: 'Desktop Worker', itemsCount: scrapedList.length })]);
 
     await client.query('COMMIT');
@@ -685,21 +638,92 @@ ipcMain.handle('start-scrape', async (e, options) => {
   });
 });
 
-ipcMain.handle('detect-changes', async (e, scrapedData) => {
+// Brand & FSN Live Catalog Inspection
+ipcMain.handle('get-brand-fsn-catalog', async () => {
   const config = loadConfig();
+  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const changes = await executeChangeDetection(scrapedData, config);
+    const { getRealTimeBrandFsnSamples } = await import('../backend/services/brandRateCardService.js');
+    const { getPool } = await import('../backend/db/index.js');
+    const pool = getPool();
+    const catalog = await getRealTimeBrandFsnSamples(pool);
+    return { success: true, catalog };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Full Brand-Wise Preview (Flipkart & Shopsy)
+ipcMain.handle('get-ratecard-preview', async (e, options = {}) => {
+  const config = loadConfig();
+  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+  try {
+    const { buildBrandRateCardSet } = await import('../backend/services/brandRateCardService.js');
+    const { getPool } = await import('../backend/db/index.js');
+    const pool = getPool();
+    const rateCards = await buildBrandRateCardSet(pool);
+    return { success: true, rateCards };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Change Detection against PostgreSQL
+ipcMain.handle('detect-brand-rate-changes', async (e, brandRateCards) => {
+  const config = loadConfig();
+  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+  try {
+    const { detectBrandRateChanges } = await import('../backend/services/brandRateCardService.js');
+    const { getPool } = await import('../backend/db/index.js');
+    const pool = getPool();
+    const changes = await detectBrandRateChanges(brandRateCards, pool);
     return { success: true, changes };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('sync-to-db', async (e, scrapedData) => {
+// Synchronize to Database
+ipcMain.handle('sync-brand-rate-cards', async (e, brandRateCards, options = {}) => {
   const config = loadConfig();
+  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const result = await executeDbSync(scrapedData, config);
+    const { syncBrandRateCardsToDatabase } = await import('../backend/services/brandRateCardService.js');
+    const { getPool } = await import('../backend/db/index.js');
+    const pool = getPool();
+    const result = await syncBrandRateCardsToDatabase(brandRateCards, { forceUpdate: true, ...options }, pool);
     return { success: true, result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Export 6-Sheet Desktop Excel (.xlsx)
+ipcMain.handle('export-desktop-excel', async (e, customPath) => {
+  const config = loadConfig();
+  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+  try {
+    const { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } = await import('../backend/services/brandwiseExcelExport.js');
+    const { getPool } = await import('../backend/db/index.js');
+    const pool = getPool();
+    const targetPath = customPath || DEFAULT_EXCEL_PATH;
+    const result = await generateBrandwiseRateCardExcel(targetPath, pool);
+    return { success: true, ...result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Open File in Native App (Excel)
+ipcMain.handle('open-excel-file', async (e, targetPath) => {
+  try {
+    const { DEFAULT_EXCEL_PATH } = await import('../backend/services/brandwiseExcelExport.js');
+    const filePath = targetPath || DEFAULT_EXCEL_PATH;
+    if (fs.existsSync(filePath)) {
+      await shell.openPath(filePath);
+      return { success: true, filePath };
+    }
+    return { success: false, error: `File not found on disk: ${filePath}` };
   } catch (err) {
     return { success: false, error: err.message };
   }

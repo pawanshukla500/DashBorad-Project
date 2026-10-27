@@ -120,7 +120,10 @@ export function resolveReverseShippingSlabs(marketplace, category) {
     return [
       { weight_slab: '0kg-0.5kg', price_min: 0, price_max: 500, local_fee: 122, zonal_fee: 142, national_fee: 182 },
       { weight_slab: '0kg-0.5kg', price_min: 501, price_max: 1000, local_fee: 147, zonal_fee: 167, national_fee: 207 },
-      { weight_slab: '0kg-0.5kg', price_min: 1001, price_max: 999999, local_fee: 157, zonal_fee: 177, national_fee: 217 }
+      { weight_slab: '0kg-0.5kg', price_min: 1001, price_max: 999999, local_fee: 157, zonal_fee: 177, national_fee: 217 },
+      { weight_slab: '0.5kg-1kg', price_min: 0, price_max: 500, local_fee: 152, zonal_fee: 177, national_fee: 227 },
+      { weight_slab: '0.5kg-1kg', price_min: 501, price_max: 1000, local_fee: 177, zonal_fee: 202, national_fee: 252 },
+      { weight_slab: '0.5kg-1kg', price_min: 1001, price_max: 999999, local_fee: 187, zonal_fee: 212, national_fee: 262 }
     ];
   }
 
@@ -138,20 +141,21 @@ export function resolveReverseShippingSlabs(marketplace, category) {
  */
 export function resolveFixedFees(marketplace, category) {
   const isShopsy = marketplace.toLowerCase().includes('shopsy') || category.toLowerCase().startsWith('shopsy_');
-
-  if (isShopsy) {
-    // Shopsy has 0 fixed fee
-    return ['Bronze', 'Silver', 'Gold', 'Diamond'].map(tier => ({
-      fulfilment_type: tier,
-      price_min: 0,
-      price_max: 999999,
-      rate: 0
-    }));
-  }
-
-  // Flipkart standard tiers
   const tiers = ['Bronze', 'Silver', 'Gold', 'Diamond'];
   const fixed = [];
+
+  if (isShopsy) {
+    // Shopsy Fixed Fee: ₹0 for 0-1500, ₹10 above 1501
+    for (const tier of tiers) {
+      fixed.push(
+        { fulfilment_type: tier, price_min: 0, price_max: 1500, rate: 0 },
+        { fulfilment_type: tier, price_min: 1501, price_max: 999999, rate: 10 }
+      );
+    }
+    return fixed;
+  }
+
+  // Flipkart standard tiers: ₹0 for 0-1500, ₹10 above 1501
   for (const tier of tiers) {
     fixed.push(
       { fulfilment_type: tier, price_min: 0, price_max: 1500, rate: 0 },

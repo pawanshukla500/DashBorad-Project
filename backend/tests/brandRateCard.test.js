@@ -54,10 +54,13 @@ describe('Brand-Wise & FSN-Driven Rate Card System', () => {
   });
 
   describe('Fixed Fees & Reverse Shipping Matrix', () => {
-    it('Shopsy charges 0 fixed fees for all seller tiers', () => {
+    it('Shopsy charges tiered fixed fees (₹0 for <= 1500, ₹10 for > 1500)', () => {
       const fixed = resolveFixedFees('shopsy', 'ethnic_set');
-      expect(fixed.every(f => f.rate === 0)).toBe(true);
-      expect(fixed.map(f => f.fulfilment_type)).toEqual(['Bronze', 'Silver', 'Gold', 'Diamond']);
+      expect(fixed.map(f => f.fulfilment_type)).toEqual(['Bronze', 'Bronze', 'Silver', 'Silver', 'Gold', 'Gold', 'Diamond', 'Diamond']);
+      const bronze0 = fixed.find(f => f.fulfilment_type === 'Bronze' && f.price_min === 0);
+      const bronze1500 = fixed.find(f => f.fulfilment_type === 'Bronze' && f.price_min === 1501);
+      expect(bronze0.rate).toBe(0);
+      expect(bronze1500.rate).toBe(10);
     });
 
     it('Flipkart charges tiered fixed fees based on order value', () => {
@@ -69,7 +72,7 @@ describe('Brand-Wise & FSN-Driven Rate Card System', () => {
       expect(bronze1500.rate).toBe(10);
     });
 
-    it('Reverse shipping includes local, zonal, and national fees', () => {
+    it('Reverse shipping includes local, zonal, and national fees for Shopsy and Flipkart', () => {
       const rev = resolveReverseShippingSlabs('flipkart', 'ethnic_set');
       expect(rev.length).toBeGreaterThanOrEqual(3);
       expect(rev[0]).toMatchObject({
@@ -77,6 +80,25 @@ describe('Brand-Wise & FSN-Driven Rate Card System', () => {
         local_fee: 122,
         zonal_fee: 142,
         national_fee: 182
+      });
+
+      const shopsyRev = resolveReverseShippingSlabs('shopsy', 'ethnic_set');
+      expect(shopsyRev.length).toBe(6);
+      expect(shopsyRev[0]).toMatchObject({
+        weight_slab: '0kg-0.5kg',
+        price_min: 0,
+        price_max: 500,
+        local_fee: 122,
+        zonal_fee: 142,
+        national_fee: 182
+      });
+      expect(shopsyRev[3]).toMatchObject({
+        weight_slab: '0.5kg-1kg',
+        price_min: 0,
+        price_max: 500,
+        local_fee: 152,
+        zonal_fee: 177,
+        national_fee: 227
       });
     });
   });
