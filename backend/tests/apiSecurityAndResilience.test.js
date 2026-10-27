@@ -91,7 +91,7 @@ describe('API Security and Database Resilience Suite', () => {
       } finally {
         server.close();
       }
-    });
+    }, 15_000);
 
     it('handles malformed JSON payloads gracefully without exposing stack traces', async () => {
       const server = app.listen(0);
