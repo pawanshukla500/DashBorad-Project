@@ -57,7 +57,7 @@ export function isAuthorizedDesktopRole(role) {
 }
 
 /**
- * Complete token role validation against the authorized roles roster.
+ * Complete token role validation against the authorized roles roster (structure & claim only).
  */
 export function validateDesktopTokenRole(token) {
   const payload = decodeJwtPayload(token);
@@ -68,6 +68,62 @@ export function validateDesktopTokenRole(token) {
     role,
     payload
   };
+}
+
+/**
+ * Cryptographically verifies a Firebase ID token.
+ * Validates token signature, issuer, audience, and expiration via Firebase Admin SDK or Google Identity Toolkit.
+ * Returns verified decoded token payload or null if forged, unsigned (e.g. alg: none), or invalidly signed.
+ */
+export async function verifyFirebaseTokenCryptographically(token) {
+  if (!token || typeof token !== 'string') return null;
+
+  // 1. Local cryptographic signature verification via Firebase Admin SDK if configured
+  try {
+    const { auth } = await import('../backend/utils/firebaseAdmin.js');
+    if (auth && typeof auth.verifyIdToken === 'function') {
+      const decoded = await auth.verifyIdToken(token);
+      if (decoded && decoded.uid) {
+        return decoded;
+      }
+    }
+  } catch (adminErr) {
+    if (adminErr.code?.startsWith('auth/') || adminErr.message?.includes('Firebase ID token')) {
+      return null;
+    }
+  }
+
+  // 2. Cryptographic verification fallback via Google Identity Toolkit API
+  try {
+    const apiKey = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
+    const verifyUrl = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`;
+    const res = await fetch(verifyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: token })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.users && data.users.length > 0) {
+        return decodeJwtPayload(token);
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+/**
+ * Verifies both the cryptographic signature and the authorized role claims of a desktop session token.
+ */
+export async function verifyDesktopTokenAuthorization(token) {
+  const verifiedPayload = await verifyFirebaseTokenCryptographically(token);
+  if (!verifiedPayload) {
+    return { authorized: false, role: null, error: 'Cryptographic signature verification failed' };
+  }
+  const role = extractRoleFromTokenPayload(verifiedPayload);
+  const authorized = isAuthorizedDesktopRole(role);
+  return { authorized, role, verifiedPayload };
 }
 
 /**

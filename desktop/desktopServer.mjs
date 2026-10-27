@@ -21,6 +21,8 @@ import {
   isAuthorizedDesktopRole, 
   validateDesktopTokenRole, 
   validateTokenRoleMatchesDatabase,
+  verifyFirebaseTokenCryptographically,
+  verifyDesktopTokenAuthorization,
   filterRateCardsByChannel, 
   saveEncryptedCookies,
   loadEncryptedCookies,
@@ -1040,18 +1042,18 @@ const server = http.createServer(async (req, res) => {
 
       let isAuthorized = false;
       if (session && session.authenticated && session.idToken) {
-        const check = validateDesktopTokenRole(session.idToken);
+        const check = await verifyDesktopTokenAuthorization(session.idToken);
         if (check.authorized) isAuthorized = true;
       }
       if (!isAuthorized && bearerToken) {
-        const check = validateDesktopTokenRole(bearerToken);
+        const check = await verifyDesktopTokenAuthorization(bearerToken);
         if (check.authorized) isAuthorized = true;
       }
 
       if (!isAuthorized) {
         return sendJson(401, {
           success: false,
-          error: 'Unauthorized: Valid authenticated ReconCentral session or authorized bearer token required to initiate interactive login.'
+          error: 'Unauthorized: Valid cryptographically verified ReconCentral session or bearer token with authorized role required.'
         });
       }
 

@@ -259,7 +259,7 @@ async function runTests() {
       body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
     });
     const unauthLoginData = await unauthLoginRes.json();
-    const isInteractiveLoginGated = unauthLoginRes.status === 401 && unauthLoginData.error?.includes('authenticated ReconCentral session');
+    const isInteractiveLoginGated = unauthLoginRes.status === 401 && unauthLoginData.error?.includes('ReconCentral session');
     console.log(`  • Interactive login unauthenticated gate (HTTP 401): Passed = ${isInteractiveLoginGated}`);
 
     // 7b. Interactive login fake bearer token gate: Arbitrary bearer string must return HTTP 401
@@ -273,6 +273,21 @@ async function runTests() {
     });
     const isFakeBearerBlocked = fakeBearerRes.status === 401;
     console.log(`  • Interactive login invalid bearer rejection (HTTP 401): Passed = ${isFakeBearerBlocked}`);
+
+    // 7c. Cryptographic signature gate: Unsigned or forged admin JWT (alg: none) must return HTTP 401
+    const forgedAdminJwt = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64') + '.' +
+                           Buffer.from(JSON.stringify({ recon_role: 'admin', uid: 'attacker-123', email: 'attacker@evil.com' })).toString('base64') +
+                           '.invalid_signature';
+    const forgedAdminRes = await fetch(`${testBase}/api/interactive-login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${forgedAdminJwt}`
+      },
+      body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
+    });
+    const isForgedAdminBlocked = forgedAdminRes.status === 401;
+    console.log(`  • Cryptographic signature verification (forged alg:none admin JWT HTTP 401): Passed = ${isForgedAdminBlocked}`);
 
     // 8. DNS rebinding protection: Invalid Host header must return HTTP 403
     const rebindingStatusCode = await new Promise((resolve, reject) => {
@@ -292,7 +307,7 @@ async function runTests() {
 
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isRebindingBlocked) {
+    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRebindingBlocked) {
       console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, preview filtering, and endpoint security verified.');
       passed++;
     } else {
@@ -305,6 +320,7 @@ async function runTests() {
         isFkShopsyIsolated,
         isInteractiveLoginGated,
         isFakeBearerBlocked,
+        isForgedAdminBlocked,
         isRebindingBlocked
       });
       failed++;
@@ -320,6 +336,8 @@ async function runTests() {
     const { 
       validateDesktopTokenRole, 
       validateTokenRoleMatchesDatabase,
+      verifyFirebaseTokenCryptographically,
+      verifyDesktopTokenAuthorization,
       extractRoleFromToken, 
       isAuthorizedDesktopRole, 
       saveEncryptedCookies,
@@ -468,6 +486,14 @@ async function runTests() {
     const isApiSuccessPassed = apiSuccess.success === true && apiSuccess.role === 'admin';
     console.log(`  • API path with customToken -> recon_role exchange: Succeeded = ${isApiSuccessPassed} (Expected true)`);
 
+    // 10. Cryptographic verification of forged/unsigned tokens (Must fail closed)
+    const forgedJwt = createMockJwt({ recon_role: 'admin', uid: 'attacker-123', email: 'attacker@evil.com' });
+    const cryptoVerifyResult = await verifyFirebaseTokenCryptographically(forgedJwt);
+    const isCryptoForgedRejected = cryptoVerifyResult === null;
+    const authVerifyResult = await verifyDesktopTokenAuthorization(forgedJwt);
+    const isAuthForgedRejected = authVerifyResult.authorized === false;
+    console.log(`  • Cryptographic verification rejecting unsigned/forged token: Passed = ${isCryptoForgedRejected && isAuthForgedRejected}`);
+
     if (
       isClaimConstantValid &&
       isAdminPassed &&
@@ -483,7 +509,9 @@ async function runTests() {
       isDecryptedAccurate &&
       isDbFallbackBlocked &&
       isDbMismatchBlocked &&
-      isApiSuccessPassed
+      isApiSuccessPassed &&
+      isCryptoForgedRejected &&
+      isAuthForgedRejected
     ) {
       console.log('  ✓ Pass: Production fail-closed token role-claim validation invariant verified across all paths.');
       passed++;
@@ -503,7 +531,9 @@ async function runTests() {
         isDecryptedAccurate,
         isDbFallbackBlocked,
         isDbMismatchBlocked,
-        isApiSuccessPassed
+        isApiSuccessPassed,
+        isCryptoForgedRejected,
+        isAuthForgedRejected
       });
       failed++;
     }
