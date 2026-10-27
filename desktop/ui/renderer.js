@@ -16,7 +16,8 @@ if (!window.ratecardAPI) {
     exportDesktopExcel: (path) => fetch(`${API_BASE}/api/export-excel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.json()),
     openExcelFile: (path) => fetch(`${API_BASE}/api/open-excel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.json()),
     startScrape: (options) => fetch(`${API_BASE}/api/preview`, { method: 'GET' }).then(r => r.json()).then(res => ({ success: true, data: res.rateCards, stagingFile: 'desktop/worker-config.json' })),
-    runInteractiveLogin: () => Promise.resolve({ success: true, cookiesCount: 22 }),
+    runInteractiveLogin: (payload) => fetch(`${API_BASE}/api/interactive-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) }).then(r => r.json()),
+    getMarketplaceAccounts: () => fetch(`${API_BASE}/api/desktop/marketplace-accounts`).then(r => r.json()),
     onProgress: (callback) => {
       try {
         const es = new EventSource(`${API_BASE}/api/events`);
@@ -438,17 +439,30 @@ function setupEventListeners() {
 
   btnLoadPreview?.addEventListener('click', loadRateCardPreview);
 
-  // Human interactive login
+  // Human interactive login & 2FA
   btnInteractiveLogin?.addEventListener('click', async () => {
-    appendTerminalLine('Opening visible browser for human login & 2FA resolution...');
-    appendTerminalLine('Please log in with your credentials on the Flipkart window and complete OTP/2FA.');
+    const selectEl = document.getElementById('select-marketplace');
+    const selectedVal = selectEl?.value || 'flipkart';
+    const selectedOption = selectEl?.selectedOptions?.[0];
+    const portalUrl = selectedOption?.getAttribute('data-portal') || 'https://seller.flipkart.com/';
+    const channelName = selectedOption?.innerText || selectedVal;
+
+    appendTerminalLine(`Opening visible browser for ${channelName}...`);
+    appendTerminalLine(`Target Portal: ${portalUrl}`);
     
-    const result = await window.ratecardAPI.runInteractiveLogin('flipkart');
-    if (result.success) {
-      appendTerminalLine(`✓ Login successful! Stored ${result.cookiesCount} session cookies for future runs.`);
-      alert('Login successful! Session cookies have been saved.');
-    } else {
-      appendTerminalLine(`Login cancelled or timed out: ${result.error}`);
+    try {
+      const result = await window.ratecardAPI.runInteractiveLogin({
+        marketplace: selectedVal,
+        portal_url: portalUrl,
+        display_name: channelName
+      });
+      if (result.success) {
+        appendTerminalLine(`✓ Browser window launched successfully. Complete 2FA / Login in the window.`);
+      } else {
+        appendTerminalLine(`Launch error: ${result.error}`);
+      }
+    } catch (err) {
+      appendTerminalLine(`Execution error: ${err.message}`);
     }
   });
 

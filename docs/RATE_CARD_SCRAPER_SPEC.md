@@ -556,3 +556,44 @@ All release files are deployed into the **`released/`** directory:
 | `linux/install-linux.sh` | Shell Script | Automated Linux installer deploying binary to `/opt/` and creating systemd service. |
 | `INSTALLATION_AND_AUTHORIZATION_GUIDE.md` | Markdown Manual | Operator manual for installation, login, and authorization. |
 
+---
+
+## 10. Marketplace Credentials Storage & Multi-Account Automation Architecture
+
+### 10.1 Multi-Marketplace Accounts & Dual Myntra Separation Invariant
+ReconCentral manages automated rate card scraping and ledger ingestion across 7 major marketplace channels (8 separate legal accounts):
+
+1. **Amazon IN** (`amazon_in`): Seller Central India (`sellercentral.amazon.in`)
+2. **Cocoblu Retails** (`cocoblu`): Cocoblu Vendor Portal (`vendor.cocoblu.biz`)
+3. **Myntra VB** (`myntra_vb`): Partner Portal (`partners.myntra.com`) - **Seller ID `10708`** (VB Exports)
+4. **Myntra EJ** (`myntra_ej`): Partner Portal (`partners.myntra.com`) - **Seller ID `45833`** (Ethnic Junction)
+5. **Flipkart** (`flipkart`): Seller Hub (`seller.flipkart.com`)
+6. **Reliance Retail (AJIO)** (`reliance_ajio`): AJIO Supplier Portal (`supplier.ajio.com`)
+7. **Meesho** (`meesho`): Supplier Panel (`supplier.meesho.com`)
+8. **Shopify** (`shopify`): Direct-to-Consumer Admin Portal (`admin.shopify.com`)
+
+> [!IMPORTANT]
+> **Strict Myntra Invariant**: Myntra accounts must remain strictly segregated into `myntra_vb` (Seller ID 10708) and `myntra_ej` (Seller ID 45833). Files or credentials uploaded to one account must never bleed into the other.
+
+### 10.2 Cryptographic Security (AES-256-GCM)
+Marketplace passwords and session secrets are encrypted in PostgreSQL via AES-256-GCM (`backend/utils/credentialCrypto.js`):
+- **Initialization Vector**: Cryptographically secure random 12-byte IV per encryption operation.
+- **Authentication Tag**: 16-byte GCM authentication tag for tamper resistance and integrity checking.
+- **Zero Plaintext Leaks**: Passwords are masked (`••••••••`) across all standard API endpoints (`GET /api/marketplace-accounts`). Decryption is strictly restricted to authorized operators/admins via `GET /api/marketplace-accounts/:id/reveal` with immediate audit trail recording (`audit_log`).
+
+### 10.3 Brandfetch Official Marketplace Logos
+Official brand assets are resolved and cached via Brandfetch CDN:
+- **Flipkart**: `https://cdn.brandfetch.io/idWdImNSUt/w/128/h/128/fallback/lettermark/icon.webp...`
+- **Amazon IN**: `https://cdn.brandfetch.io/idomDO5Jzv/w/128/h/128/fallback/lettermark/icon.webp...`
+- **Myntra**: `https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp...`
+- **Reliance AJIO**: `https://cdn.brandfetch.io/idr5xgDFc2/w/128/h/128/fallback/lettermark/icon.webp...`
+- **Meesho**: `https://cdn.brandfetch.io/idyeTDctmi/w/128/h/128/fallback/lettermark/icon.webp...`
+- **Cocoblu Retails**: `https://cdn.brandfetch.io/iduQ6iAglk/w/128/h/128/fallback/lettermark/icon.webp...`
+- **Shopify**: `https://cdn.brandfetch.io/idAgPm7IvG/w/128/h/128/fallback/lettermark/icon.webp...`
+
+### 10.4 Desktop Application Interactive Scraper Login
+The desktop rate card worker communicates directly with the local engine (`http://localhost:3737/api/desktop/marketplace-accounts`):
+1. **Channel Selection**: User selects the target marketplace account (e.g., `Flipkart`, `Myntra (VB)`, `Myntra (EJ)`).
+2. **Interactive Browser Spawn**: Clicking **"Launch Interactive Login"** triggers `POST /api/interactive-login`, spawning an isolated Puppeteer Chromium window directed to the marketplace seller portal.
+3. **Session Preservation**: Cookies and session state are persisted in `.runtime/cookies.json` and `%APPDATA%\ReconCentral RateCard Worker\`, enabling automated headless rate card verification without repeating 2FA on every scrape cycle.
+

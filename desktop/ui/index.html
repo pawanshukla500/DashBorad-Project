@@ -198,10 +198,18 @@
               <div class="control-group">
                 <label>Marketplace Channel</label>
                 <select id="select-marketplace" class="form-input">
-                  <option value="both" selected>Both (Flipkart & Shopsy)</option>
-                  <option value="flipkart">Flipkart Seller Hub (Standard)</option>
-                  <option value="shopsy">Shopsy Marketplace (0% Comm + Fees)</option>
+                  <option value="flipkart" data-portal="https://seller.flipkart.com/" selected>Flipkart & Shopsy Seller Hub</option>
+                  <option value="myntra_vb" data-portal="https://partners.myntra.com/">Myntra (VB) — Seller ID: 10708</option>
+                  <option value="myntra_ej" data-portal="https://partners.myntra.com/">Myntra (EJ) — Seller ID: 45833</option>
+                  <option value="amazon" data-portal="https://sellercentral.amazon.in/">Amazon IN Seller Central</option>
+                  <option value="ajio" data-portal="https://supplier.ajio.com/">Reliance Retail (AJIO) Supplier Hub</option>
+                  <option value="meesho" data-portal="https://supplier.meesho.com/">Meesho Supplier Panel</option>
+                  <option value="cocoblu" data-portal="https://cocoblu.biz/">Cocoblu Retails Portal</option>
+                  <option value="shopify" data-portal="https://admin.shopify.com/">Shopify Admin Center</option>
                 </select>
+                <div id="account-credentials-hint" style="font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; align-items: center; gap: 6px;">
+                  <span>🔒 AES-256 encrypted credentials linked</span>
+                </div>
               </div>
 
               <div class="control-group">

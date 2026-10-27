@@ -748,4 +748,20 @@ export const fetchSorStatement = (portal, params = {}) =>
 export const downloadSorLedgerReport = (portal, params = {}) =>
   api.get(`/sor/${portal}/ledger-report`, { params, responseType: 'blob', timeout: 300000 }).then(r => r.data);
 
+// ── Marketplace Accounts & Credentials Center ──────────────────────────
+export const fetchMarketplaceCredentialAccounts = () =>
+  api.get('/marketplace-accounts', { cache: false }).then(r => r.data);
+
+export const saveMarketplaceAccount = (body) =>
+  api.post('/marketplace-accounts', body).then(r => r.data);
+
+export const updateMarketplaceAccount = (id, body) =>
+  api.put(`/marketplace-accounts/${id}`, body).then(r => r.data);
+
+export const revealMarketplacePassword = (id) =>
+  api.get(`/marketplace-accounts/${id}/reveal`, { cache: false }).then(r => r.data);
+
+export const deactivateMarketplaceAccount = (id) =>
+  api.delete(`/marketplace-accounts/${id}`).then(r => r.data);
+
 

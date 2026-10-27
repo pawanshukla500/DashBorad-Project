@@ -45,6 +45,8 @@ import {
 } from '../backend/services/brandwiseExcelExport.js';
 import { getChromeExecutablePath, scrapeFlipkartRateCards } from '../backend/services/flipkartRateCardExtractor.js';
 import { getPool } from '../backend/db/index.js';
+import { decryptCredential } from '../backend/utils/credentialCrypto.js';
+import { DEFAULT_MARKETPLACE_METADATA } from '../backend/routes/marketplaceAccounts.js';
 
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');
@@ -263,6 +265,47 @@ const server = http.createServer(async (req, res) => {
     // GET /api/config
     if (pathname === '/api/config' && req.method === 'GET') {
       return sendJson(200, loadConfig());
+    }
+
+    // GET /api/desktop/marketplace-accounts
+    if (pathname === '/api/desktop/marketplace-accounts' && req.method === 'GET') {
+      try {
+        const pool = getPool();
+        const { rows } = await pool.query(`
+          SELECT id, marketplace, account_id, display_name, seller_id, login_id, password_encrypted, portal_url, logo_url, is_active
+          FROM marketplace_accounts
+          WHERE is_active = true OR account_id IN ('myntra_vb', 'myntra_ej')
+          ORDER BY 
+            CASE 
+              WHEN marketplace = 'flipkart' THEN 1
+              WHEN marketplace = 'amazon' THEN 2
+              WHEN marketplace = 'myntra' AND account_id = 'myntra_vb' THEN 3
+              WHEN marketplace = 'myntra' AND account_id = 'myntra_ej' THEN 4
+              WHEN marketplace = 'ajio' THEN 5
+              WHEN marketplace = 'meesho' THEN 6
+              WHEN marketplace = 'cocoblu' THEN 7
+              WHEN marketplace = 'shopify' THEN 8
+              ELSE 9
+            END,
+            id ASC
+        `);
+        const accounts = rows.map(r => ({
+          id: r.id,
+          marketplace: r.marketplace,
+          account_id: r.account_id,
+          display_name: r.display_name,
+          seller_id: r.seller_id,
+          login_id: r.login_id || '',
+          has_password: Boolean(r.password_encrypted),
+          password: decryptCredential(r.password_encrypted) || '',
+          portal_url: r.portal_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.portal_url || '',
+          logo_url: r.logo_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.logo_url || '',
+          is_active: r.is_active
+        }));
+        return sendJson(200, { success: true, count: accounts.length, accounts });
+      } catch (err) {
+        return sendJson(500, { success: false, error: err.message });
+      }
     }
 
     // GET /api/catalog
@@ -604,6 +647,35 @@ const server = http.createServer(async (req, res) => {
         return sendJson(200, { success: true, ...result });
       } catch (err) {
         broadcastProgress(`❌ Excel export failed: ${err.message}`);
+        return sendJson(500, { success: false, error: err.message });
+      }
+    }
+
+    // POST /api/interactive-login
+    if (pathname === '/api/interactive-login' && req.method === 'POST') {
+      try {
+        const body = await parseJsonBody();
+        const portalUrl = body.portal_url || 'https://seller.flipkart.com/';
+        const chromePath = getChromeExecutablePath();
+        const userDataDir = path.join(__dirname, '.runtime', 'chrome-user-data');
+        if (!fs.existsSync(userDataDir)) {
+          fs.mkdirSync(userDataDir, { recursive: true });
+        }
+
+        broadcastProgress(`Launching interactive browser for ${body.display_name || body.marketplace || 'Portal'} at ${portalUrl}...`);
+        const args = [
+          `--user-data-dir=${userDataDir}`,
+          '--no-first-run',
+          '--no-default-browser-check',
+          portalUrl
+        ];
+        const child = spawn(chromePath, args, { detached: true, stdio: 'ignore' });
+        child.unref();
+
+        broadcastProgress(`✓ Browser window opened. Please complete 2FA or human login in the window.`);
+        return sendJson(200, { success: true, message: 'Browser launched successfully', portal_url: portalUrl });
+      } catch (err) {
+        broadcastProgress(`❌ Failed to launch browser: ${err.message}`);
         return sendJson(500, { success: false, error: err.message });
       }
     }
