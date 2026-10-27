@@ -74,11 +74,82 @@ function clearAuthSession() {
 // Default Configuration with Flipkart & Shopsy Verticals and Brands
 // NOTE: Database credentials are never hardcoded in the installer bundle.
 // They are securely provisioned over TLS upon successful Firebase authentication & role verification.
+const CANDIDATE_API_SERVERS = [
+  process.env.API_SERVER_URL,
+  'https://payments.youthnic.shop',
+  'https://reconcentral.srv1845788.hstgr.cloud',
+  'https://recon.srv1845788.hstgr.cloud',
+  'http://localhost:3001'
+].filter(Boolean);
+
+const SUPPORTED_MARKETPLACES = [
+  {
+    id: 'flipkart_shopsy',
+    name: 'Flipkart & Shopsy',
+    marketplace: 'flipkart',
+    portalUrl: 'https://seller.flipkart.com',
+    loginUrl: 'https://seller.flipkart.com/',
+    dashboardUrl: 'https://seller.flipkart.com/index.html#dashboard/home-page',
+    rateCardUrl: 'https://seller.flipkart.com/index.html#dashboard/payments/rate-card',
+    defaultAccount: 'Vbexports@outlook.com',
+    hasScraper: true,
+    description: 'Flipkart Seller Hub fee tiers (Commission, Fixed, Collection, Reverse Shipping)'
+  },
+  {
+    id: 'myntra_vb',
+    name: 'Myntra (VB Exports - 10708)',
+    marketplace: 'myntra',
+    account_id: 'myntra_vb',
+    sellerId: '10708',
+    portalUrl: 'https://partnerportal.myntra.com',
+    loginUrl: 'https://partnerportal.myntra.com/',
+    dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
+    rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: true,
+    description: 'Myntra Partner Portal for VB Exports (Seller ID 10708)'
+  },
+  {
+    id: 'myntra_ej',
+    name: 'Myntra (Ethnic Junction - 45833)',
+    marketplace: 'myntra',
+    account_id: 'myntra_ej',
+    sellerId: '45833',
+    portalUrl: 'https://partnerportal.myntra.com',
+    loginUrl: 'https://partnerportal.myntra.com/',
+    dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
+    rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: true,
+    description: 'Myntra Partner Portal for Ethnic Junction (Seller ID 45833)'
+  },
+  {
+    id: 'meesho',
+    name: 'Meesho Supplier Panel',
+    marketplace: 'meesho',
+    account_id: 'meesho',
+    portalUrl: 'https://supplier.meesho.com',
+    loginUrl: 'https://supplier.meesho.com/panel/v2/new/login',
+    dashboardUrl: 'https://supplier.meesho.com/panel/v2/new/home',
+    rateCardUrl: 'https://supplier.meesho.com/panel/v2/new/growth/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: true,
+    description: 'Meesho Supplier Panel 0% commission & tiered weight-slab logistics'
+  }
+];
+
+function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
+  const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const dir = path.join(USER_DATA_DIR, 'cookies');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `cookies_${safeId}.json`);
+}
+
 const DEFAULT_CONFIG = {
-  marketplace: 'both', // 'flipkart', 'shopsy', or 'both'
+  marketplace: 'flipkart_shopsy', // 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'
   email: 'Vbexports@outlook.com',
   password: '',
-  apiServerUrl: process.env.API_SERVER_URL || 'https://payment.youthnic.shop',
+  apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
   databaseUrl: process.env.DATABASE_URL || '',
   scheduledHour: 6, // 06:00 AM
   scheduledMinute: 0,
@@ -88,14 +159,29 @@ const DEFAULT_CONFIG = {
   selectedVerticals: [
     'ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric',
     'blouse', 'lehenga_choli', 'gown', 'shopsy_kurta', 'shopsy_ethnic_set'
-  ]
+  ],
+  accounts: {
+    flipkart_shopsy: { email: 'Vbexports@outlook.com', portalUrl: 'https://seller.flipkart.com' },
+    myntra_vb: { email: 'returnorders@vbexports.co.in', sellerId: '10708', portalUrl: 'https://partnerportal.myntra.com' },
+    myntra_ej: { email: 'returnorders@vbexports.co.in', sellerId: '45833', portalUrl: 'https://partnerportal.myntra.com' },
+    meesho: { email: 'returnorders@vbexports.co.in', portalUrl: 'https://supplier.meesho.com' }
+  }
 };
 
 function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
-      return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+      const parsed = JSON.parse(raw);
+      // Auto-heal old typo in apiServerUrl
+      if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
+        parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
+      }
+      return { 
+        ...DEFAULT_CONFIG, 
+        ...parsed, 
+        accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) } 
+      };
     }
   } catch (err) {
     console.error('Failed to read config:', err);
@@ -120,7 +206,8 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 720,
     backgroundColor: '#0f172a',
-    title: 'ReconCentral RateCard Automation & Scraper Worker (Flipkart & Shopsy)',
+    title: 'ReconCentral Multi-Marketplace RateCard Automation & Scraper Worker',
+    icon: path.join(__dirname, 'ui/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -387,8 +474,8 @@ function parseRateCardTables(tables, vertical, effectiveDate, marketplace = 'fli
   return parsed;
 }
 
-// ── Interactive Human Login Flow ─────────────────────────────────────────────
-async function executeInteractiveLogin(marketplace) {
+// ── Interactive Human Login Flow (Multi-Marketplace) ─────────────────────────
+async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   let puppeteer, StealthPlugin;
   try {
     puppeteer = require('puppeteer-extra');
@@ -400,43 +487,56 @@ async function executeInteractiveLogin(marketplace) {
     puppeteer.use(StealthPlugin());
   }
 
+  const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === marketplace || m.marketplace === marketplace) || SUPPORTED_MARKETPLACES[0];
+  const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
+
   const browser = await puppeteer.launch({
     executablePath: getChromeExecutablePath(),
     headless: false, // Visible window for human login / OTP
     defaultViewport: null,
-    args: ['--start-maximized', '--no-sandbox']
+    args: ['--start-maximized', '--no-sandbox', '--disable-setuid-sandbox']
   });
 
   try {
     const pages = await browser.pages();
     const page = pages[0] || await browser.newPage();
 
-    if (fs.existsSync(COOKIES_PATH)) {
+    if (fs.existsSync(cookiesPath)) {
+      const raw = fs.readFileSync(cookiesPath, 'utf8');
+      await page.setCookie(...JSON.parse(raw));
+    } else if (fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
       const raw = fs.readFileSync(COOKIES_PATH, 'utf8');
       await page.setCookie(...JSON.parse(raw));
     }
 
-    console.log('[InteractiveLogin] Opening Flipkart Seller Hub...');
-    await page.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2' });
+    console.log(`[InteractiveLogin] Opening ${mpConfig.name} at ${mpConfig.loginUrl}...`);
+    await page.goto(mpConfig.loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    console.log('[InteractiveLogin] Waiting for seller dashboard navigation or user login...');
-    await page.waitForFunction(() => {
-      return window.location.href.includes('#dashboard') || 
-             document.body.innerText.includes('Seller Dashboard') ||
-             document.body.innerText.includes('EthnicJunction') ||
-             document.body.innerText.includes('Logout');
-    }, { timeout: 300000 }); // 5 minute window for user to log in or enter OTP
+    console.log(`[InteractiveLogin] Waiting for ${mpConfig.name} authenticated navigation...`);
+    await page.waitForFunction((id) => {
+      const href = window.location.href.toLowerCase();
+      const body = document.body ? document.body.innerText.toLowerCase() : '';
+      if (id.startsWith('myntra')) {
+        return href.includes('partnerportal') && (href.includes('dashboard') || href.includes('home') || body.includes('logout') || body.includes('seller id'));
+      }
+      if (id === 'meesho') {
+        return href.includes('supplier.meesho.com/panel') || body.includes('logout') || body.includes('supplier');
+      }
+      return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
+    }, { timeout: 300000 }, mpConfig.id);
 
     const cookies = await page.cookies();
-    fs.mkdirSync(path.dirname(COOKIES_PATH), { recursive: true });
-    fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
-    console.log(`[InteractiveLogin] Logged in successfully! Saved ${cookies.length} session cookies.`);
+    fs.writeFileSync(cookiesPath, JSON.stringify(cookies, null, 2));
+    if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
+      fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+    }
+    console.log(`[InteractiveLogin] Logged in to ${mpConfig.name} successfully! Saved ${cookies.length} session cookies.`);
 
     await browser.close();
-    return { success: true, cookiesCount: cookies.length };
+    return { success: true, marketplace: mpConfig.id, cookiesCount: cookies.length };
   } catch (err) {
     if (browser) await browser.close();
-    return { success: false, error: err.message };
+    return { success: false, marketplace: mpConfig?.id || marketplace, error: err.message };
   }
 }
 
@@ -724,16 +824,32 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
     let dbUser = null;
     let provisionedDbUrl = dbUrl;
 
-    // 1. Attempt to obtain verified authorization & database config from ReconCentral Backend Server
-    if (config.apiServerUrl && fbResult.idToken) {
+    // 1. Attempt to obtain verified authorization & database config across candidate ReconCentral endpoints with auto-failover
+    for (const serverBase of CANDIDATE_API_SERVERS) {
+      if (dbUser) break;
+      const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
       try {
-        const srvRes = await fetch(`${config.apiServerUrl}/api/auth/desktop-config`, {
-          method: 'GET',
+        // Try dedicated desktop-login endpoint first (handles user sync, role claims, and DB provisioning)
+        let srvRes = await fetch(`${normalizedBase}/api/auth/desktop-login`, {
+          method: 'POST',
           headers: {
             'Authorization': `Bearer ${fbResult.idToken}`,
+            'Content-Type': 'application/json',
             'Accept': 'application/json'
           }
         });
+
+        // Fallback to desktop-config endpoint if older version deployed
+        if (!srvRes.ok && srvRes.status === 404) {
+          srvRes = await fetch(`${normalizedBase}/api/auth/desktop-config`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${fbResult.idToken}`,
+              'Accept': 'application/json'
+            }
+          });
+        }
+
         if (srvRes.ok) {
           const srvData = await srvRes.json();
           if (srvData && srvData.success && srvData.user) {
@@ -741,10 +857,24 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
             if (srvData.databaseUrl && !dbUrl) {
               provisionedDbUrl = srvData.databaseUrl;
             }
+            config.apiServerUrl = normalizedBase;
+            saveConfig(config);
+            break;
+          }
+        } else if (srvRes.status === 403) {
+          const errData = await srvRes.json().catch(() => ({}));
+          if (errData.code === 'ACCESS_NOT_GRANTED') {
+            return {
+              success: false,
+              error: `User account '${userEmail}' authenticated in Firebase, but has not been granted access in ReconCentral. Please contact an administrator to add your email in Admin Center.`
+            };
+          }
+          if (errData.error && errData.error.includes('not authorized')) {
+            return { success: false, error: errData.error };
           }
         }
       } catch (srvErr) {
-        console.warn('[Desktop Auth] Backend server query skipped or offline:', srvErr.message);
+        console.warn(`[Desktop Auth] Candidate server ${normalizedBase} query failed:`, srvErr.message);
       }
     }
 
@@ -757,7 +887,7 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
       });
       try {
         const res = await pool.query(
-          'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
+          'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR LOWER(email) = LOWER($2) LIMIT 1',
           [firebaseUid, userEmail]
         );
         if (res.rows.length > 0) {
@@ -771,7 +901,7 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
     }
 
     if (!dbUser) {
-      return { success: false, error: 'User authenticated in Firebase, but no corresponding account was found in ReconCentral database.' };
+      return { success: false, error: `User authenticated in Firebase, but no corresponding account was found in ReconCentral database (${userEmail}).` };
     }
 
     const authorizedRoles = ['admin', 'operator', 'analyst'];
@@ -807,6 +937,42 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
   } catch (err) {
     return { success: false, error: err.message };
   }
+});
+
+ipcMain.handle('get-marketplaces', () => {
+  const list = SUPPORTED_MARKETPLACES.map(m => {
+    const cookiesPath = getMarketplaceCookiesPath(m.id);
+    const hasCookies = fs.existsSync(cookiesPath);
+    return {
+      ...m,
+      hasCookies,
+      cookiesPath
+    };
+  });
+  return { success: true, marketplaces: list };
+});
+
+ipcMain.handle('get-marketplace-accounts', async () => {
+  const session = loadAuthSession();
+  const config = loadConfig();
+  if (!session || !session.idToken) {
+    return { success: false, error: 'Not authenticated with ReconCentral.' };
+  }
+
+  for (const serverBase of CANDIDATE_API_SERVERS) {
+    const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
+    try {
+      const res = await fetch(`${normalizedBase}/api/marketplace-accounts`, {
+        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
+      });
+      if (res.ok) {
+        const accounts = await res.json();
+        return { success: true, accounts };
+      }
+    } catch {}
+  }
+
+  return { success: false, error: 'Could not connect to ReconCentral API to fetch marketplace accounts.' };
 });
 
 ipcMain.handle('auth-get-session', () => loadAuthSession());

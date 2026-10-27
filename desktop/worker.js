@@ -58,7 +58,7 @@ if (args.includes('--help') || args.includes('-h')) {
 ReconCentral RateCard Worker CLI (Windows & Linux)
 
 Options:
-  --marketplace=<flipkart|shopsy|both>   Target marketplace channel (default: both)
+  --marketplace=<flipkart|shopsy|both|myntra_vb|myntra_ej|meesho>   Target marketplace channel (default: both)
   --brand=<name|all>                     Filter by brand (e.g. "Sangria", default: all)
   --auto-sync, -y                        Auto-commit changes to database with date auto-closing
   --export-excel                         Generate multi-sheet Excel workbook on completion
@@ -106,6 +106,11 @@ async function runWorker() {
       rateCards = rateCards.filter(r => r.marketplace === 'flipkart');
     } else if (marketplaceArg === 'shopsy') {
       rateCards = rateCards.filter(r => r.marketplace === 'shopsy');
+    } else if (marketplaceArg === 'myntra_vb' || marketplaceArg === 'myntra_ej' || marketplaceArg === 'meesho') {
+      const channelPrefix = marketplaceArg.split('_')[0];
+      const matched = rateCards.filter(r => r.marketplace.toLowerCase().includes(channelPrefix));
+      if (matched.length > 0) rateCards = matched;
+      onProgress(`Marketplace channel targeted: ${marketplaceArg} (${rateCards.length} rate profiles).`);
     }
 
     if (brandArg !== 'all') {

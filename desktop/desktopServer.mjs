@@ -50,9 +50,99 @@ import { DEFAULT_MARKETPLACE_METADATA } from '../backend/routes/marketplaceAccou
 
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');
-const CONFIG_FILE = path.join(__dirname, 'worker-config.json');
-const SESSION_FILE = path.join(__dirname, 'auth-session.json');
-const STAGING_DIR = path.join(__dirname, 'staging');
+
+function resolveUserDataDir() {
+  if (process.env.RECONCENTRAL_USER_DATA) return process.env.RECONCENTRAL_USER_DATA;
+  if (process.platform === 'win32' && process.env.APPDATA) {
+    return path.join(process.env.APPDATA, 'reconcentral-ratecard-worker');
+  }
+  if (process.platform === 'linux' && process.env.XDG_CONFIG_HOME) {
+    return path.join(process.env.XDG_CONFIG_HOME, 'reconcentral-ratecard-worker');
+  }
+  if (process.platform === 'linux' && process.env.HOME) {
+    return path.join(process.env.HOME, '.config', 'reconcentral-ratecard-worker');
+  }
+  return path.join(__dirname, '.runtime');
+}
+
+const USER_DATA_DIR = resolveUserDataDir();
+fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+
+const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
+const SESSION_FILE = path.join(USER_DATA_DIR, 'auth-session.json');
+const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
+fs.mkdirSync(STAGING_DIR, { recursive: true });
+
+function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
+  const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const dir = path.join(USER_DATA_DIR, 'cookies');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `cookies_${safeId}.json`);
+}
+
+const CANDIDATE_API_SERVERS = [
+  process.env.API_SERVER_URL,
+  'https://payments.youthnic.shop',
+  'https://reconcentral.srv1845788.hstgr.cloud',
+  'https://recon.srv1845788.hstgr.cloud',
+  'http://localhost:3001'
+].filter(Boolean);
+
+const SUPPORTED_MARKETPLACES = [
+  {
+    id: 'flipkart_shopsy',
+    name: 'Flipkart & Shopsy',
+    marketplace: 'flipkart',
+    portalUrl: 'https://seller.flipkart.com',
+    loginUrl: 'https://seller.flipkart.com/',
+    dashboardUrl: 'https://seller.flipkart.com/index.html#dashboard/home-page',
+    rateCardUrl: 'https://seller.flipkart.com/index.html#dashboard/payments/rate-card',
+    defaultAccount: 'Vbexports@outlook.com',
+    hasScraper: true,
+    description: 'Flipkart Seller Hub fee tiers (Commission, Fixed, Collection, Reverse Shipping)'
+  },
+  {
+    id: 'myntra_vb',
+    name: 'Myntra (VB Exports - 10708)',
+    marketplace: 'myntra',
+    account_id: 'myntra_vb',
+    sellerId: '10708',
+    portalUrl: 'https://partnerportal.myntra.com',
+    loginUrl: 'https://partnerportal.myntra.com/',
+    dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
+    rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: true,
+    description: 'Myntra Partner Portal for VB Exports (Seller ID 10708)'
+  },
+  {
+    id: 'myntra_ej',
+    name: 'Myntra (Ethnic Junction - 45833)',
+    marketplace: 'myntra',
+    account_id: 'myntra_ej',
+    sellerId: '45833',
+    portalUrl: 'https://partnerportal.myntra.com',
+    loginUrl: 'https://partnerportal.myntra.com/',
+    dashboardUrl: 'https://partnerportal.myntra.com/dashboard',
+    rateCardUrl: 'https://partnerportal.myntra.com/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: true,
+    description: 'Myntra Partner Portal for Ethnic Junction (Seller ID 45833)'
+  },
+  {
+    id: 'meesho',
+    name: 'Meesho Supplier Panel',
+    marketplace: 'meesho',
+    account_id: 'meesho',
+    portalUrl: 'https://supplier.meesho.com',
+    loginUrl: 'https://supplier.meesho.com/panel/v2/new/login',
+    dashboardUrl: 'https://supplier.meesho.com/panel/v2/new/home',
+    rateCardUrl: 'https://supplier.meesho.com/panel/v2/new/growth/rate-card',
+    defaultAccount: 'returnorders@vbexports.co.in',
+    hasScraper: true,
+    description: 'Meesho Supplier Panel 0% commission & tiered weight-slab logistics'
+  }
+];
 
 const FIREBASE_API_KEY = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
 
@@ -104,8 +194,6 @@ function clearAuthSession() {
   }
 }
 
-fs.mkdirSync(STAGING_DIR, { recursive: true });
-
 const sseClients = new Set();
 let activeScrapeJob = {
   running: false,
@@ -135,9 +223,10 @@ function broadcastProgress(msg) {
 
 // Default Configuration
 const DEFAULT_CONFIG = {
-  marketplace: 'both', // 'flipkart', 'shopsy', or 'both'
+  marketplace: 'flipkart_shopsy', // 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'
   email: 'Vbexports@outlook.com',
   password: process.env.FK_PASSWORD || '',
+  apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
   databaseUrl: process.env.DATABASE_URL || '',
   scheduledHour: 6,
   scheduledMinute: 0,
@@ -147,13 +236,27 @@ const DEFAULT_CONFIG = {
   selectedVerticals: [
     'ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric',
     'blouse', 'lehenga_choli', 'gown', 'shopsy_kurta', 'shopsy_ethnic_set'
-  ]
+  ],
+  accounts: {
+    flipkart_shopsy: { email: 'Vbexports@outlook.com', portalUrl: 'https://seller.flipkart.com' },
+    myntra_vb: { email: 'returnorders@vbexports.co.in', sellerId: '10708', portalUrl: 'https://partnerportal.myntra.com' },
+    myntra_ej: { email: 'returnorders@vbexports.co.in', sellerId: '45833', portalUrl: 'https://partnerportal.myntra.com' },
+    meesho: { email: 'returnorders@vbexports.co.in', portalUrl: 'https://supplier.meesho.com' }
+  }
 };
 
 function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
-      return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) };
+      const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
+        parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
+      }
+      return { 
+        ...DEFAULT_CONFIG, 
+        ...parsed, 
+        accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) } 
+      };
     }
   } catch (err) {
     console.error('Failed to read config:', err);
@@ -425,16 +528,30 @@ const server = http.createServer(async (req, res) => {
         let dbUser = null;
         let provisionedDbUrl = dbUrl;
 
-        // 1. Query ReconCentral Backend Server
-        if (config.apiServerUrl && fbResult.idToken) {
+        // 1. Query ReconCentral Backend Server across candidate endpoints with auto-failover
+        for (const serverBase of CANDIDATE_API_SERVERS) {
+          if (dbUser) break;
+          const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
           try {
-            const srvRes = await fetch(`${config.apiServerUrl}/api/auth/desktop-config`, {
-              method: 'GET',
+            let srvRes = await fetch(`${normalizedBase}/api/auth/desktop-login`, {
+              method: 'POST',
               headers: {
                 'Authorization': `Bearer ${fbResult.idToken}`,
+                'Content-Type': 'application/json',
                 'Accept': 'application/json'
               }
             });
+
+            if (!srvRes.ok && srvRes.status === 404) {
+              srvRes = await fetch(`${normalizedBase}/api/auth/desktop-config`, {
+                method: 'GET',
+                headers: {
+                  'Authorization': `Bearer ${fbResult.idToken}`,
+                  'Accept': 'application/json'
+                }
+              });
+            }
+
             if (srvRes.ok) {
               const srvData = await srvRes.json();
               if (srvData && srvData.success && srvData.user) {
@@ -442,19 +559,33 @@ const server = http.createServer(async (req, res) => {
                 if (srvData.databaseUrl && !dbUrl) {
                   provisionedDbUrl = srvData.databaseUrl;
                 }
+                config.apiServerUrl = normalizedBase;
+                saveConfig(config);
+                break;
+              }
+            } else if (srvRes.status === 403) {
+              const errData = await srvRes.json().catch(() => ({}));
+              if (errData.code === 'ACCESS_NOT_GRANTED') {
+                return sendJson(403, {
+                  success: false,
+                  error: `User account '${userEmail}' authenticated in Firebase, but has not been granted access in ReconCentral. Please contact an administrator to add your email in Admin Center.`
+                });
+              }
+              if (errData.error && errData.error.includes('not authorized')) {
+                return sendJson(403, { success: false, error: errData.error });
               }
             }
           } catch (srvErr) {
-            console.warn('[desktopServer] Backend server query skipped:', srvErr.message);
+            console.warn(`[desktopServer] Candidate server ${normalizedBase} query failed:`, srvErr.message);
           }
         }
 
-        // 2. Direct pool verification fallback
+        // 2. Direct pool verification fallback if server was offline
         if (!dbUser) {
           try {
             const pool = getPool();
             const res = await pool.query(
-              'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
+              'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR LOWER(email) = LOWER($2) LIMIT 1',
               [firebaseUid, userEmail]
             );
             if (res.rows.length > 0) {
@@ -466,7 +597,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (!dbUser) {
-          return sendJson(403, { success: false, error: 'User authenticated in Firebase, but not found in ReconCentral database users.' });
+          return sendJson(403, { success: false, error: `User authenticated in Firebase, but no corresponding account was found in ReconCentral database (${userEmail}).` });
         }
 
         const authorizedRoles = ['admin', 'operator', 'analyst'];
@@ -492,10 +623,54 @@ const server = http.createServer(async (req, res) => {
         };
 
         saveAuthSession(session);
+
+        if (provisionedDbUrl && provisionedDbUrl !== config.databaseUrl) {
+          config.databaseUrl = provisionedDbUrl;
+          saveConfig(config);
+        }
+
         return sendJson(200, { success: true, session });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
+    }
+
+    // GET /api/desktop/marketplaces
+    if (pathname === '/api/desktop/marketplaces' && req.method === 'GET') {
+      const list = SUPPORTED_MARKETPLACES.map(m => {
+        const cookiesPath = getMarketplaceCookiesPath(m.id);
+        const hasCookies = fs.existsSync(cookiesPath);
+        return {
+          ...m,
+          hasCookies,
+          cookiesPath
+        };
+      });
+      return sendJson(200, { success: true, marketplaces: list });
+    }
+
+    // GET /api/desktop/marketplace-accounts
+    if (pathname === '/api/desktop/marketplace-accounts' && req.method === 'GET') {
+      const session = loadAuthSession();
+      const config = loadConfig();
+      if (!session || !session.idToken) {
+        return sendJson(401, { success: false, error: 'Not authenticated with ReconCentral.' });
+      }
+
+      for (const serverBase of CANDIDATE_API_SERVERS) {
+        const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
+        try {
+          const res = await fetch(`${normalizedBase}/api/marketplace-accounts`, {
+            headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
+          });
+          if (res.ok) {
+            const accounts = await res.json();
+            return sendJson(200, { success: true, accounts });
+          }
+        } catch {}
+      }
+
+      return sendJson(502, { success: false, error: 'Could not connect to ReconCentral API to fetch marketplace accounts.' });
     }
 
     // POST /api/auth/logout

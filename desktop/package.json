@@ -11,6 +11,9 @@
     "worker": "node worker.js",
     "worker:both": "node worker.js --marketplace=both",
     "worker:shopsy": "node worker.js --marketplace=shopsy",
+    "worker:myntra:vb": "node worker.js --marketplace=myntra_vb",
+    "worker:myntra:ej": "node worker.js --marketplace=myntra_ej",
+    "worker:meesho": "node worker.js --marketplace=meesho",
     "worker:sync": "node worker.js --marketplace=both --auto-sync",
     "build:win": "electron-builder --win --x64",
     "build:linux": "electron-builder --linux AppImage deb",
@@ -21,6 +24,8 @@
     "scraper",
     "reconcentral",
     "flipkart",
+    "myntra",
+    "meesho",
     "electron"
   ],
   "repository": {
@@ -47,13 +52,22 @@
       "output": "dist-release"
     },
     "win": {
+      "icon": "ui/icon.png",
       "signAndEditExecutable": false,
       "target": [
         "nsis",
         "portable"
       ]
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ReconCentral RateCard Worker"
+    },
     "linux": {
+      "icon": "ui/icon.png",
       "target": [
         "AppImage",
         "deb"

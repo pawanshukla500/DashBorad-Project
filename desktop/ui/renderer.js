@@ -17,6 +17,7 @@ if (!window.ratecardAPI) {
     openExcelFile: (path) => fetch(`${API_BASE}/api/open-excel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.json()),
     startScrape: (options) => fetch(`${API_BASE}/api/preview`, { method: 'GET' }).then(r => r.json()).then(res => ({ success: true, data: res.rateCards, stagingFile: 'desktop/worker-config.json' })),
     runInteractiveLogin: (payload) => fetch(`${API_BASE}/api/interactive-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) }).then(r => r.json()),
+    getMarketplaces: () => fetch(`${API_BASE}/api/desktop/marketplaces`).then(r => r.json()),
     getMarketplaceAccounts: () => fetch(`${API_BASE}/api/desktop/marketplace-accounts`).then(r => r.json()),
     onProgress: (callback) => {
       try {
@@ -86,6 +87,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (isAuthorized) {
     await loadInitialState();
     loadCatalogData();
+    loadMarketplaceAccountsUI();
   }
 });
 
@@ -454,11 +456,40 @@ function setupEventListeners() {
     appendTerminalLine(`✓ Exported ${currentDiff.length} rate changes to JSON.`);
   });
 
+  // Marketplace Channel Synchronization
+  const headerSelectMp = document.getElementById('header-select-marketplace');
+  const scraperSelectMp = document.getElementById('select-marketplace');
+  const headerBadgeChannel = document.getElementById('header-badge-channel');
+
+  const syncMarketplaceSelection = (val) => {
+    if (headerSelectMp && headerSelectMp.value !== val) headerSelectMp.value = val;
+    if (scraperSelectMp && scraperSelectMp.value !== val) scraperSelectMp.value = val;
+    if (headerBadgeChannel) {
+      const selectedOpt = scraperSelectMp?.querySelector(`option[value="${val}"]`);
+      headerBadgeChannel.innerText = selectedOpt?.innerText?.split('—')?.[0]?.trim() || val.toUpperCase();
+    }
+  };
+
+  headerSelectMp?.addEventListener('change', (e) => syncMarketplaceSelection(e.target.value));
+  scraperSelectMp?.addEventListener('change', (e) => syncMarketplaceSelection(e.target.value));
+
+  // Multi-Marketplace 2FA Login buttons (Dashboard & Settings)
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.btn-ch-login');
+    if (!btn) return;
+    const channel = btn.getAttribute('data-channel');
+    if (!channel) return;
+
+    syncMarketplaceSelection(channel);
+    document.querySelector('.nav-item[data-tab="scraper"]')?.click();
+    btnInteractiveLogin?.click();
+  });
+
   // Human interactive login & 2FA
   btnInteractiveLogin?.addEventListener('click', async () => {
     const selectEl = document.getElementById('select-marketplace');
-    const selectedVal = selectEl?.value || 'flipkart';
-    const selectedOption = selectEl?.selectedOptions?.[0];
+    const selectedVal = selectEl?.value || 'flipkart_shopsy';
+    const selectedOption = selectEl?.selectedOptions?.[0] || selectEl?.querySelector(`option[value="${selectedVal}"]`);
     const portalUrl = selectedOption?.getAttribute('data-portal') || 'https://seller.flipkart.com/';
     const channelName = selectedOption?.innerText || selectedVal;
 
@@ -696,3 +727,51 @@ function setupEventListeners() {
     }
   });
 }
+
+// ── Load Connected Marketplace Accounts from Backend ─────────────────────────
+async function loadMarketplaceAccountsUI() {
+  try {
+    const res = await window.ratecardAPI.getMarketplaceAccounts();
+    if (res && res.success && Array.isArray(res.accounts) && res.accounts.length > 0) {
+      const tbody = document.getElementById('tbody-marketplace-accounts');
+      if (tbody) {
+        tbody.innerHTML = res.accounts.map(acc => `
+          <tr>
+            <td><strong>${acc.marketplace_name || acc.marketplace}</strong></td>
+            <td>${acc.account_name || acc.seller_id || 'Primary'}</td>
+            <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">${acc.portal_url || '—'}</td>
+            <td>
+              <span class="badge ${acc.has_credentials ? 'badge-account' : 'badge-portal'}" style="font-size: 10px;">
+                ${acc.has_credentials ? '🔒 Vault Encrypted' : 'Configured'}
+              </span>
+            </td>
+            <td>
+              <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="${(acc.marketplace || '').toLowerCase()}" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      // Update Channel Status indicators on Dashboard
+      res.accounts.forEach(acc => {
+        const mp = (acc.marketplace || '').toLowerCase();
+        if (mp.includes('flipkart') || mp.includes('shopsy')) {
+          const el = document.getElementById('status-ch-flipkart');
+          if (el) el.innerText = acc.has_credentials ? 'Ready (Linked)' : 'Ready';
+        } else if (mp.includes('myntra') && (mp.includes('vb') || String(acc.seller_id) === '10708')) {
+          const el = document.getElementById('status-ch-myntra-vb');
+          if (el) el.innerText = acc.has_credentials ? 'Vault Linked (10708)' : 'Ready';
+        } else if (mp.includes('myntra') && (mp.includes('ej') || String(acc.seller_id) === '45833')) {
+          const el = document.getElementById('status-ch-myntra-ej');
+          if (el) el.innerText = acc.has_credentials ? 'Vault Linked (45833)' : 'Ready';
+        } else if (mp.includes('meesho')) {
+          const el = document.getElementById('status-ch-meesho');
+          if (el) el.innerText = acc.has_credentials ? 'Supplier Linked' : 'Ready';
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Could not load marketplace accounts:', err);
+  }
+}
+

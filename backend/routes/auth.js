@@ -59,7 +59,7 @@ router.get('/me', authMiddleware, (req, res) => {
   res.json({ user: req.user });
 });
 
-// ── 4. Desktop Engine Configuration (Authorized Roles Only) ───────────────
+// ── 4. Desktop Engine Configuration & Authorization (Authorized Roles Only) ─
 // Securely provisions runtime database connection to authenticated desktop workers
 // over TLS, ensuring database credentials are never baked into the installer binary.
 router.get('/desktop-config', authMiddleware, (req, res) => {
@@ -78,6 +78,54 @@ router.get('/desktop-config', authMiddleware, (req, res) => {
     databaseUrl: process.env.DATABASE_URL || '',
     serverTime: new Date().toISOString()
   });
+});
+
+router.post('/desktop-login', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing Firebase token for desktop authorization' });
+    }
+    const token = authHeader.split(' ')[1];
+
+    let identity;
+    try {
+      const decodedToken = await auth.verifyIdToken(token);
+      identity = identityFromFirebaseToken(decodedToken);
+    } catch (err) {
+      return res.status(403).json({ error: 'Invalid or expired Firebase token' });
+    }
+
+    const pool = getPool();
+    const user = await syncFirebaseUser(pool, identity);
+    const role = normalizedRole(user.role);
+    await setFirebaseRole(identity.uid, role);
+
+    if (!['admin', 'operator', 'analyst'].includes(role)) {
+      return res.status(403).json({ error: `Access denied. Role '${role}' is not authorized to operate desktop scraper.` });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        role: role
+      },
+      databaseUrl: process.env.DATABASE_URL || '',
+      serverTime: new Date().toISOString()
+    });
+  } catch (err) {
+    if (err instanceof IdentityConflictError) {
+      return res.status(409).json({ error: err.message });
+    }
+    if (err instanceof AccessNotGrantedError) {
+      return res.status(403).json({ error: err.message, code: 'ACCESS_NOT_GRANTED' });
+    }
+    console.error('[auth/desktop-login error]', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // ── 5. User Management (Admin Only): Read list of users ──────────────────────
