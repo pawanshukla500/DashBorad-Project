@@ -7,6 +7,7 @@
  */
 import http from 'http';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { exec, spawn } from 'child_process';
@@ -1036,8 +1037,22 @@ const server = http.createServer(async (req, res) => {
       const authHeader = req.headers['authorization'];
       const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
       const session = loadAuthSession();
-      if ((!session || !session.authenticated) && !bearerToken) {
-        return sendJson(401, { success: false, error: 'Unauthorized: Session authentication required to initiate interactive login.' });
+
+      let isAuthorized = false;
+      if (session && session.authenticated && session.idToken) {
+        const check = validateDesktopTokenRole(session.idToken);
+        if (check.authorized) isAuthorized = true;
+      }
+      if (!isAuthorized && bearerToken) {
+        const check = validateDesktopTokenRole(bearerToken);
+        if (check.authorized) isAuthorized = true;
+      }
+
+      if (!isAuthorized) {
+        return sendJson(401, {
+          success: false,
+          error: 'Unauthorized: Valid authenticated ReconCentral session or authorized bearer token required to initiate interactive login.'
+        });
       }
 
       try {
@@ -1047,7 +1062,7 @@ const server = http.createServer(async (req, res) => {
         const portalUrl = mpConfig.loginUrl || mpConfig.portalUrl || body.portal_url || 'https://seller.flipkart.com/';
         const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
         const chromePath = getChromeExecutablePath();
-        const channelProfileDir = path.join(USER_DATA_DIR, 'chrome-profiles', targetId);
+        const tempProfileDir = fs.mkdtempSync(path.join(os.tmpdir(), `recon-login-${targetId}-`));
 
         broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
 
@@ -1058,7 +1073,7 @@ const server = http.createServer(async (req, res) => {
             browser = await puppeteer.launch({
               headless: false,
               executablePath: chromePath,
-              userDataDir: channelProfileDir,
+              userDataDir: tempProfileDir,
               defaultViewport: null,
               args: [
                 '--no-first-run',
@@ -1137,10 +1152,15 @@ const server = http.createServer(async (req, res) => {
               saveEncryptedCookies(COOKIES_PATH, cookies);
             }
             broadcastProgress(`✓ Authentication detected! Encrypted and saved ${cookies.length} session cookies into vault.`);
-            await browser.close();
           } catch (loginErr) {
-            if (browser) await browser.close().catch(() => {});
             broadcastProgress(`❌ Interactive login error for ${mpConfig.name}: ${loginErr.message}`);
+          } finally {
+            if (browser) {
+              await browser.close().catch(() => {});
+            }
+            try {
+              fs.rmSync(tempProfileDir, { recursive: true, force: true });
+            } catch {}
           }
         })();
 

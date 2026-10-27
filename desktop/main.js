@@ -758,8 +758,12 @@ async function executeScrapeProcess(config, onProgress) {
 
       const pages = await browser.pages();
       const page = pages[0] || await browser.newPage();
-      const rawCookies = fs.readFileSync(cookiesPath, 'utf8');
-      await page.setCookie(...JSON.parse(rawCookies));
+      if (fs.existsSync(cookiesPath)) {
+        const existing = loadEncryptedCookies(cookiesPath);
+        if (existing && Array.isArray(existing) && existing.length > 0) {
+          await page.setCookie(...existing);
+        }
+      }
       await page.goto(mpConfig.loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
       // Rigorous authentication verification on target portal

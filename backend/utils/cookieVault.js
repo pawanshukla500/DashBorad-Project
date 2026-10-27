@@ -69,7 +69,9 @@ export function getVaultMasterKey() {
   const randomSecret = crypto.randomBytes(32).toString('hex');
   try {
     fs.writeFileSync(keyFilePath, randomSecret, { encoding: 'utf8', mode: 0o600 });
-  } catch {}
+  } catch (err) {
+    throw new Error(`Failed to persist encryption key to ${keyFilePath}: ${err.message}`);
+  }
   return crypto.createHash('sha256').update(randomSecret).digest();
 }
 

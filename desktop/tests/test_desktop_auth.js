@@ -259,8 +259,20 @@ async function runTests() {
       body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
     });
     const unauthLoginData = await unauthLoginRes.json();
-    const isInteractiveLoginGated = unauthLoginRes.status === 401 && unauthLoginData.error?.includes('Session authentication required');
+    const isInteractiveLoginGated = unauthLoginRes.status === 401 && unauthLoginData.error?.includes('authenticated ReconCentral session');
     console.log(`  • Interactive login unauthenticated gate (HTTP 401): Passed = ${isInteractiveLoginGated}`);
+
+    // 7b. Interactive login fake bearer token gate: Arbitrary bearer string must return HTTP 401
+    const fakeBearerRes = await fetch(`${testBase}/api/interactive-login`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer invalid_garbage_token_999'
+      },
+      body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
+    });
+    const isFakeBearerBlocked = fakeBearerRes.status === 401;
+    console.log(`  • Interactive login invalid bearer rejection (HTTP 401): Passed = ${isFakeBearerBlocked}`);
 
     // 8. DNS rebinding protection: Invalid Host header must return HTTP 403
     const rebindingStatusCode = await new Promise((resolve, reject) => {
@@ -280,7 +292,7 @@ async function runTests() {
 
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isRebindingBlocked) {
+    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isRebindingBlocked) {
       console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, preview filtering, and endpoint security verified.');
       passed++;
     } else {
@@ -292,6 +304,7 @@ async function runTests() {
         isAccountFilteringValid,
         isFkShopsyIsolated,
         isInteractiveLoginGated,
+        isFakeBearerBlocked,
         isRebindingBlocked
       });
       failed++;
