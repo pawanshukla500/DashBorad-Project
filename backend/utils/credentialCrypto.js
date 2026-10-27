@@ -53,8 +53,31 @@ export function encryptCredential(plaintext) {
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${ciphertext}`;
 }
 
+const LEGACY_FALLBACK_SECRET = 'reconcentral-credentials-master-aes256-encryption-key-secret';
+
+/**
+ * Attempts single AES-256-GCM payload decryption using the provided key buffer.
+ * Returns decrypted utf8 string or null if deciphering/auth tag validation fails.
+ */
+function attemptAesGcmDecrypt(key, ivHex, authTagHex, ciphertextHex) {
+  try {
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+    decipher.setAuthTag(authTag);
+    
+    let decrypted = decipher.update(ciphertextHex, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Decrypts a serialized payload formatted as `ivHex:authTagHex:ciphertextHex`.
+ * Throws on configuration error in production if master key is missing.
+ * Supports legacy key fallback so existing credentials survive environment key configuration.
  * 
  * @param {string} encryptedPayload - Serialized encrypted payload
  * @returns {string|null} Decrypted plaintext string or null if invalid/corrupt
@@ -74,20 +97,25 @@ export function decryptCredential(encryptedPayload) {
     return null;
   }
   
-  try {
-    const key = getMasterKey();
-    const iv = Buffer.from(ivHex, 'hex');
-    const authTag = Buffer.from(authTagHex, 'hex');
-    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
-    decipher.setAuthTag(authTag);
-    
-    let decrypted = decipher.update(ciphertextHex, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
+  // 1. Resolve master key (throws directly if missing in production, preventing masked configuration errors)
+  const primaryKey = getMasterKey();
+  
+  // 2. Attempt decryption using primary environment-derived key
+  const decrypted = attemptAesGcmDecrypt(primaryKey, ivHex, authTagHex, ciphertextHex);
+  if (decrypted !== null) {
     return decrypted;
-  } catch (err) {
-    // Decryption or authentication failed (e.g., ciphertext tampered with, wrong key)
-    return null;
   }
+  
+  // 3. Fallback decryption for legacy credentials encrypted prior to environment key rotation
+  const legacyKey = crypto.createHash('sha256').update(LEGACY_FALLBACK_SECRET).digest();
+  if (!primaryKey.equals(legacyKey)) {
+    const legacyDecrypted = attemptAesGcmDecrypt(legacyKey, ivHex, authTagHex, ciphertextHex);
+    if (legacyDecrypted !== null) {
+      return legacyDecrypted;
+    }
+  }
+  
+  return null;
 }
 
 /**

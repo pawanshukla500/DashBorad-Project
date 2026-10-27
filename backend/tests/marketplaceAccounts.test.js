@@ -88,6 +88,46 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
       process.env = origEnv;
     }
   });
+
+  it('supports seamless legacy key fallback decryption when a new environment key is configured', () => {
+    const origEnv = { ...process.env };
+    try {
+      // Step A: Encrypt with legacy key (no environment secrets set)
+      delete process.env.CREDENTIALS_ENCRYPTION_KEY;
+      delete process.env.ENCRYPTION_KEY;
+      delete process.env.JWT_SECRET;
+      process.env.NODE_ENV = 'test';
+      const legacyEncrypted = encryptCredential('LegacyPassword987!');
+
+      // Step B: Set new environment master key
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'brand-new-rotated-enterprise-key-2026';
+      
+      // Step C: Decrypt legacy ciphertext under new key
+      const decrypted = decryptCredential(legacyEncrypted);
+      expect(decrypted).toBe('LegacyPassword987!');
+
+      // Step D: New encryptions use the new key and decrypt cleanly
+      const newEncrypted = encryptCredential('NewRotatedSecret456!');
+      expect(decryptCredential(newEncrypted)).toBe('NewRotatedSecret456!');
+    } finally {
+      process.env = origEnv;
+    }
+  });
+
+  it('surfaces fatal configuration error in production if master key is missing instead of returning null', () => {
+    const origEnv = { ...process.env };
+    try {
+      delete process.env.CREDENTIALS_ENCRYPTION_KEY;
+      delete process.env.ENCRYPTION_KEY;
+      delete process.env.JWT_SECRET;
+      process.env.NODE_ENV = 'production';
+
+      const validFormatPayload = '0123456789abcdef01234567:0123456789abcdef0123456789abcdef:1234';
+      expect(() => decryptCredential(validFormatPayload)).toThrow(/Production security violation/);
+    } finally {
+      process.env = origEnv;
+    }
+  });
 });
 
 describe('Marketplace Configuration & Invariants', () => {
