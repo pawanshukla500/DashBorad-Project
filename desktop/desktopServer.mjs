@@ -10,6 +10,15 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { exec, spawn } from 'child_process';
+import { 
+  decodeJwtPayload, 
+  extractRoleFromToken, 
+  isAuthorizedDesktopRole, 
+  validateDesktopTokenRole, 
+  filterRateCardsByChannel, 
+  AUTHORIZED_ROLES, 
+  FIREBASE_ROLE_CLAIM 
+} from './authValidation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -249,18 +258,6 @@ async function refreshFirebaseIdToken(refreshToken) {
   return null;
 }
 
-function decodeJwtPayload(token) {
-  try {
-    const parts = String(token || '').split('.');
-    if (parts.length >= 2) {
-      const decoded = Buffer.from(parts[1], 'base64').toString('utf8');
-      return JSON.parse(decoded);
-    }
-  } catch {}
-  return null;
-}
-
-
 function loadAuthSession() {
   try {
     if (fs.existsSync(SESSION_FILE)) {
@@ -487,23 +484,8 @@ const server = http.createServer(async (req, res) => {
       try {
         const pool = getPool();
         const rateCards = await buildBrandRateCardSet(pool);
-        const targetMp = (urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || '').toLowerCase().trim();
-        let filteredRateCards = rateCards;
-        if (targetMp && targetMp !== 'both' && targetMp !== 'all' && targetMp !== 'flipkart_shopsy') {
-          if (targetMp === 'myntra_vb') {
-            filteredRateCards = rateCards.filter(rc => (
-              String(rc.account_id || '').toLowerCase() === 'myntra_vb' ||
-              (String(rc.marketplace || '').toLowerCase() === 'myntra' && (String(rc.seller_id || '') === '10708' || String(rc.account || '') === '10708'))
-            ));
-          } else if (targetMp === 'myntra_ej') {
-            filteredRateCards = rateCards.filter(rc => (
-              String(rc.account_id || '').toLowerCase() === 'myntra_ej' ||
-              (String(rc.marketplace || '').toLowerCase() === 'myntra' && (String(rc.seller_id || '') === '45833' || String(rc.account || '') === '45833'))
-            ));
-          } else {
-            filteredRateCards = rateCards.filter(rc => (rc.marketplace || '').toLowerCase() === targetMp);
-          }
-        }
+        const targetMp = urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || '';
+        const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
         return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
@@ -722,25 +704,23 @@ const server = http.createServer(async (req, res) => {
         }
 
         // Strict invariant: Ensure the session token carries a verified role claim before persisting
-        let tokenPayload = decodeJwtPayload(fbResult.idToken);
-        let tokenHasRole = tokenPayload && authorizedRoles.includes(tokenPayload.role);
+        let tokenValidation = validateDesktopTokenRole(fbResult.idToken);
 
         // If the token lacks the role claim, attempt to refresh via refreshToken
-        if (!tokenHasRole && fbResult.refreshToken) {
+        if (!tokenValidation.authorized && fbResult.refreshToken) {
           try {
             const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
             if (refreshed && refreshed.idToken) {
               fbResult.idToken = refreshed.idToken;
               if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
-              tokenPayload = decodeJwtPayload(fbResult.idToken);
-              tokenHasRole = tokenPayload && authorizedRoles.includes(tokenPayload.role);
+              tokenValidation = validateDesktopTokenRole(fbResult.idToken);
             }
           } catch (refErr) {
             console.warn('[desktopServer] Final token refresh warning:', refErr.message);
           }
         }
 
-        if (!tokenHasRole) {
+        if (!tokenValidation.authorized) {
           return sendJson(403, {
             success: false,
             error: `Authentication failed: The issued session token does not carry the required role claim (${dbUser.role}). Please sign in through ReconCentral web app or verify user permissions in Admin Center.`

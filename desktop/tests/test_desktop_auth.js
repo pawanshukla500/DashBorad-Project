@@ -172,7 +172,8 @@ async function runTests() {
   // Test 6: Behavioral HTTP Test for Multi-Marketplace Gating, Scraper Protection & Channel Isolation
   try {
     console.log('\n[Test 6] Exercising desktop server HTTP routes for multi-marketplace gating & isolation...');
-    const { server, SUPPORTED_MARKETPLACES } = await import('../desktopServer.mjs');
+    const { server } = await import('../desktopServer.mjs');
+    const { filterRateCardsByChannel } = await import('../authValidation.js');
     await new Promise(resolve => server.listen(0, resolve));
     const testPort = server.address().port;
     const testBase = `http://127.0.0.1:${testPort}`;
@@ -187,75 +188,71 @@ async function runTests() {
     const isUnkRejected = unkRes.status === 400 && unkData.error?.includes('Unsupported marketplace');
     console.log(`  • Unknown channel rejection (HTTP ${unkRes.status}): Passed = ${isUnkRejected}`);
 
-    // 2. Gated marketplace scraper test (Phase 2 channels must return HTTP 400)
-    const [gatedVb, gatedEj, gatedMeesho] = await Promise.all([
-      fetch(`${testBase}/api/scrape/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marketplace: 'myntra_vb' }) }),
-      fetch(`${testBase}/api/scrape/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marketplace: 'myntra_ej' }) }),
-      fetch(`${testBase}/api/scrape/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marketplace: 'meesho' }) })
-    ]);
-    const [vbData, ejData, meeshoData] = await Promise.all([gatedVb.json(), gatedEj.json(), gatedMeesho.json()]);
-    const isGatedBlocked = gatedVb.status === 400 && vbData.error?.includes('Automated scraping is not yet implemented') &&
-                           gatedEj.status === 400 && ejData.error?.includes('Automated scraping is not yet implemented') &&
-                           gatedMeesho.status === 400 && meeshoData.error?.includes('Automated scraping is not yet implemented');
-    console.log(`  • Phase 2 channels scraper gate (Myntra VB, Myntra EJ, Meesho: 400): Passed = ${isGatedBlocked}`);
+    // 2. Gated marketplace scraper test: ALL 7 Phase 2 channels must return HTTP 400
+    const phase2Channels = ['myntra_vb', 'myntra_ej', 'meesho', 'amazon', 'ajio', 'cocoblu', 'shopify'];
+    const phase2Results = await Promise.all(phase2Channels.map(async (ch) => {
+      const res = await fetch(`${testBase}/api/scrape/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marketplace: ch })
+      });
+      const data = await res.json();
+      return res.status === 400 && data.error?.includes('Automated scraping is not yet implemented');
+    }));
+    const allPhase2Blocked = phase2Results.every(Boolean);
+    console.log(`  • All 7 Phase 2 channels scraper gate (HTTP 400 for ${phase2Channels.join(', ')}): Passed = ${allPhase2Blocked}`);
 
-    // 3. Isolated channel preview test (Myntra VB must return isolated 0-count rate cards, no Flipkart leakage)
+    // 3. Channel-filtered preview route isolation test
     const previewRes = await fetch(`${testBase}/api/preview?marketplace=myntra_vb`);
     const previewData = await previewRes.json();
-    const isPreviewIsolated = previewRes.status === 200 && previewData.count === 0 && Array.isArray(previewData.rateCards);
-    console.log(`  • Channel-filtered preview isolation (HTTP ${previewRes.status}, count: ${previewData.count}): Passed = ${isPreviewIsolated}`);
+    const previewCards = Array.isArray(previewData.rateCards) ? previewData.rateCards : [];
+    // Every card in previewData must belong to requested channel (zero cross-channel leakage)
+    const allCardsMatchRequested = previewCards.every(rc => (
+      String(rc.account_id || '').toLowerCase() === 'myntra_vb' ||
+      (String(rc.marketplace || '').toLowerCase() === 'myntra' && String(rc.seller_id || rc.account || '') === '10708')
+    ));
+    const isPreviewIsolated = previewRes.status === 200 && allCardsMatchRequested;
+    console.log(`  • Channel-filtered preview isolation (HTTP ${previewRes.status}, count: ${previewCards.length}, leak-free: ${allCardsMatchRequested}): Passed = ${isPreviewIsolated}`);
 
-    // 4. Marketplaces catalog test (8 channels, only flipkart_shopsy has scraper active)
+    // 4. Marketplaces catalog test (8 channels, all 7 Phase 2 channels flagged hasScraper: false, flipkart_shopsy hasScraper: true)
     const mpRes = await fetch(`${testBase}/api/desktop/marketplaces`);
     const mpData = await mpRes.json();
-    const phase2Channels = ['myntra_vb', 'myntra_ej', 'meesho', 'amazon', 'ajio', 'cocoblu', 'shopify'];
-    const allPhase2Gated = phase2Channels.every(ch => mpData.marketplaces.find(m => m.id === ch)?.hasScraper === false);
-    const flipkartActive = mpData.marketplaces.find(m => m.id === 'flipkart_shopsy')?.hasScraper === true;
-    const isMpListValid = mpRes.status === 200 && mpData.marketplaces?.length === 8 && allPhase2Gated && flipkartActive;
+    const allCatalogPhase2Gated = phase2Channels.every(ch => mpData.marketplaces?.find(m => m.id === ch)?.hasScraper === false);
+    const flipkartActive = mpData.marketplaces?.find(m => m.id === 'flipkart_shopsy')?.hasScraper === true;
+    const isMpListValid = mpRes.status === 200 && mpData.marketplaces?.length === 8 && allCatalogPhase2Gated && flipkartActive;
     console.log(`  • Marketplaces catalog API (8 channels, 7 gated Phase 2, 1 active): Passed = ${isMpListValid}`);
 
-    // 5. Account-specific Myntra VB (10708) and EJ (45833) string & numeric seller ID normalization
-    const mockCards = [
+    // 5. Account-specific Myntra VB (10708) and EJ (45833) string & numeric seller ID normalization using production filterRateCardsByChannel
+    const controlledFixtures = [
       { marketplace: 'flipkart', category: 'sari' },
       { marketplace: 'shopsy', category: 'sari' },
-      { marketplace: 'myntra', account_id: 'myntra_vb', seller_id: '10708', category: 'kurta' },
-      { marketplace: 'myntra', account_id: 'myntra_ej', seller_id: 45833, category: 'kurta' } // numeric seller_id
+      { marketplace: 'meesho', category: 'kurta' },
+      { marketplace: 'myntra', account_id: 'myntra_vb', seller_id: '10708', category: 'kurta' }, // string 10708
+      { marketplace: 'myntra', seller_id: 10708, category: 'dress' }, // numeric 10708
+      { marketplace: 'myntra', account_id: 'myntra_ej', seller_id: 45833, category: 'kurta' }, // numeric 45833
+      { marketplace: 'myntra', seller_id: '45833', category: 'lehenga' } // string 45833
     ];
-    const filterByChannel = (channel, cards) => {
-      const target = String(channel).toLowerCase().trim();
-      if (target === 'myntra_vb') {
-        return cards.filter(rc => (
-          String(rc.account_id || '').toLowerCase() === 'myntra_vb' ||
-          (String(rc.marketplace || '').toLowerCase() === 'myntra' && (String(rc.seller_id || '') === '10708' || String(rc.account || '') === '10708'))
-        ));
-      }
-      if (target === 'myntra_ej') {
-        return cards.filter(rc => (
-          String(rc.account_id || '').toLowerCase() === 'myntra_ej' ||
-          (String(rc.marketplace || '').toLowerCase() === 'myntra' && (String(rc.seller_id || '') === '45833' || String(rc.account || '') === '45833'))
-        ));
-      }
-      return cards.filter(rc => (rc.marketplace || '').toLowerCase() === target);
-    };
 
-    const vbFiltered = filterByChannel('myntra_vb', mockCards);
-    const ejFiltered = filterByChannel('myntra_ej', mockCards);
-    const flipkartFiltered = filterByChannel('flipkart', mockCards);
+    const vbFiltered = filterRateCardsByChannel('myntra_vb', controlledFixtures);
+    const ejFiltered = filterRateCardsByChannel('myntra_ej', controlledFixtures);
+    const flipkartFiltered = filterRateCardsByChannel('flipkart', controlledFixtures);
+    const meeshoFiltered = filterRateCardsByChannel('meesho', controlledFixtures);
 
-    const isAccountFilteringValid = vbFiltered.length === 1 && String(vbFiltered[0].seller_id) === '10708' &&
-                                    ejFiltered.length === 1 && String(ejFiltered[0].seller_id) === '45833' &&
-                                    flipkartFiltered.length === 1 && flipkartFiltered[0].marketplace === 'flipkart';
-    console.log(`  • Account-specific seller ID normalization & isolation (10708 vs 45833): Passed = ${isAccountFilteringValid}`);
+    const isAccountFilteringValid = vbFiltered.length === 2 && vbFiltered.every(rc => String(rc.seller_id) === '10708') &&
+                                    ejFiltered.length === 2 && ejFiltered.every(rc => String(rc.seller_id) === '45833') &&
+                                    flipkartFiltered.length === 1 && flipkartFiltered[0].marketplace === 'flipkart' &&
+                                    meeshoFiltered.length === 1 && meeshoFiltered[0].marketplace === 'meesho';
+    console.log(`  • Production filterRateCardsByChannel fixtures (string/number 10708 & 45833 normalization): Passed = ${isAccountFilteringValid}`);
 
     server.close();
 
-    if (isUnkRejected && isGatedBlocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid) {
+    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid) {
       console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, and preview filtering verified.');
       passed++;
     } else {
       console.error('  ✗ Fail: Behavioral route verification failed:', {
         isUnkRejected,
-        isGatedBlocked,
+        allPhase2Blocked,
         isPreviewIsolated,
         isMpListValid,
         isAccountFilteringValid
@@ -267,49 +264,134 @@ async function runTests() {
     failed++;
   }
 
-  // Test 7: Fail-Closed Role-Claim Token Verification Invariant
+  // Test 7: Fail-Closed Role-Claim Token Verification Invariant Using Production authValidation
   try {
     console.log('\n[Test 7] Verifying fail-closed role-claim token verification across session persistence paths...');
-    const authorizedRoles = ['admin', 'operator', 'analyst'];
+    const { 
+      validateDesktopTokenRole, 
+      extractRoleFromToken, 
+      isAuthorizedDesktopRole, 
+      FIREBASE_ROLE_CLAIM, 
+      AUTHORIZED_ROLES 
+    } = await import('../authValidation.js');
+
     const createMockJwt = (payload) => {
       const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64');
       const body = Buffer.from(JSON.stringify(payload)).toString('base64');
       return `${header}.${body}.signature`;
     };
 
-    const decodeJwtPayload = (token) => {
-      try {
-        const parts = String(token || '').split('.');
-        if (parts.length >= 2) {
-          return JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+    // 1. Verify FIREBASE_ROLE_CLAIM constant matches backend definition ('recon_role')
+    const isClaimConstantValid = FIREBASE_ROLE_CLAIM === 'recon_role';
+    console.log(`  • Claim constant matches backend ('recon_role'): Passed = ${isClaimConstantValid}`);
+
+    // 2. Token with actual namespaced custom claim 'recon_role: admin' (Must pass check)
+    const tokenAdminRecon = createMockJwt({ email: 'returnorders@vbexports.co.in', uid: 'admin-uid', recon_role: 'admin' });
+    const adminValidation = validateDesktopTokenRole(tokenAdminRecon);
+    const isAdminPassed = adminValidation.authorized === true && adminValidation.role === 'admin';
+    console.log(`  • Token with recon_role='admin': Allowed = ${adminValidation.authorized} (Expected true)`);
+
+    // 3. Token with actual namespaced custom claim 'recon_role: operator' and 'analyst' (Must pass check)
+    const tokenOperator = createMockJwt({ email: 'ops@vbexports.co.in', uid: 'ops-uid', recon_role: 'operator' });
+    const tokenAnalyst = createMockJwt({ email: 'analyst@vbexports.co.in', uid: 'analyst-uid', recon_role: 'analyst' });
+    const isOpsPassed = validateDesktopTokenRole(tokenOperator).authorized === true;
+    const isAnalystPassed = validateDesktopTokenRole(tokenAnalyst).authorized === true;
+    console.log(`  • Tokens with recon_role in ['operator', 'analyst']: Allowed = ${isOpsPassed && isAnalystPassed} (Expected true)`);
+
+    // 4. Token with actual namespaced custom claim 'recon_role: viewer' (Must fail closed)
+    const tokenViewer = createMockJwt({ email: 'viewer@vbexports.co.in', uid: 'viewer-uid', recon_role: 'viewer' });
+    const viewerValidation = validateDesktopTokenRole(tokenViewer);
+    const isViewerRejected = viewerValidation.authorized === false && viewerValidation.role === 'viewer';
+    console.log(`  • Token with recon_role='viewer': Allowed = ${viewerValidation.authorized} (Expected false)`);
+
+    // 5. Token without any role claim (Must fail closed)
+    const tokenNoRole = createMockJwt({ email: 'returnorders@vbexports.co.in', uid: 'test-uid' });
+    const noRoleValidation = validateDesktopTokenRole(tokenNoRole);
+    const isNoRoleRejected = noRoleValidation.authorized === false && noRoleValidation.role === null;
+    console.log(`  • Token without role claim: Allowed = ${noRoleValidation.authorized} (Expected false)`);
+
+    // 6. Token with legacy 'role: admin' fallback claim (Must pass check)
+    const tokenLegacyAdmin = createMockJwt({ email: 'returnorders@vbexports.co.in', uid: 'admin-uid', role: 'admin' });
+    const isLegacyAdminPassed = validateDesktopTokenRole(tokenLegacyAdmin).authorized === true;
+    console.log(`  • Token with legacy fallback role='admin': Allowed = ${isLegacyAdminPassed} (Expected true)`);
+
+    // 7. Production session persistence gate simulation across all paths (API login & direct DB fallback)
+    const simulatePersistenceGate = async ({ idToken, refreshToken, customToken, dbUser, mockRefreshFn, mockExchangeFn }) => {
+      let currentIdToken = idToken;
+      let currentRefreshToken = refreshToken;
+
+      // Candidate API custom token exchange
+      if (customToken && mockExchangeFn) {
+        const exchanged = await mockExchangeFn(customToken);
+        if (exchanged?.idToken) currentIdToken = exchanged.idToken;
+      }
+
+      // Production invariant check
+      let validation = validateDesktopTokenRole(currentIdToken);
+
+      // Refresh fallback
+      if (!validation.authorized && currentRefreshToken && mockRefreshFn) {
+        const refreshed = await mockRefreshFn(currentRefreshToken);
+        if (refreshed?.idToken) {
+          currentIdToken = refreshed.idToken;
+          validation = validateDesktopTokenRole(currentIdToken);
         }
-      } catch {}
-      return null;
+      }
+
+      if (!validation.authorized) {
+        return { success: false, error: `Authentication failed: The issued session token does not carry the required role claim (${dbUser?.role}).` };
+      }
+
+      return { success: true, sessionSaved: true, role: validation.role };
     };
 
-    // 1. Token without role claim (Must fail check)
-    const tokenNoRole = createMockJwt({ email: 'returnorders@vbexports.co.in', uid: 'test-uid' });
-    const payloadNoRole = decodeJwtPayload(tokenNoRole);
-    const hasRoleNoRole = payloadNoRole && authorizedRoles.includes(payloadNoRole.role);
-    console.log(`  • Token without role claim: Allowed = ${Boolean(hasRoleNoRole)} (Expected false)`);
+    // 7a. Direct DB fallback path where token has no role and refresh fails (MUST fail closed)
+    const dbFallbackFail = await simulatePersistenceGate({
+      idToken: tokenNoRole,
+      refreshToken: 'bad-refresh',
+      customToken: null,
+      dbUser: { role: 'admin' },
+      mockRefreshFn: async () => null
+    });
+    const isDbFallbackBlocked = dbFallbackFail.success === false && dbFallbackFail.error?.includes('Authentication failed');
+    console.log(`  • Direct DB fallback with un-renewed token: Blocked = ${isDbFallbackBlocked} (Expected true)`);
 
-    // 2. Token with viewer role (Must fail check)
-    const tokenViewer = createMockJwt({ email: 'viewer@vbexports.co.in', uid: 'viewer-uid', role: 'viewer' });
-    const payloadViewer = decodeJwtPayload(tokenViewer);
-    const hasRoleViewer = payloadViewer && authorizedRoles.includes(payloadViewer.role);
-    console.log(`  • Token with viewer role: Allowed = ${Boolean(hasRoleViewer)} (Expected false)`);
+    // 7b. Candidate API path where custom token yields recon_role (MUST succeed)
+    const apiSuccess = await simulatePersistenceGate({
+      idToken: tokenNoRole,
+      refreshToken: 'valid-refresh',
+      customToken: 'mock-custom-token',
+      dbUser: { role: 'admin' },
+      mockExchangeFn: async () => ({ idToken: tokenAdminRecon })
+    });
+    const isApiSuccessPassed = apiSuccess.success === true && apiSuccess.role === 'admin';
+    console.log(`  • API path with customToken -> recon_role exchange: Succeeded = ${isApiSuccessPassed} (Expected true)`);
 
-    // 3. Token with admin role (Must pass check)
-    const tokenAdmin = createMockJwt({ email: 'returnorders@vbexports.co.in', uid: 'admin-uid', role: 'admin' });
-    const payloadAdmin = decodeJwtPayload(tokenAdmin);
-    const hasRoleAdmin = payloadAdmin && authorizedRoles.includes(payloadAdmin.role);
-    console.log(`  • Token with admin role: Allowed = ${Boolean(hasRoleAdmin)} (Expected true)`);
-
-    if (!hasRoleNoRole && !hasRoleViewer && hasRoleAdmin) {
-      console.log('  ✓ Pass: Fail-closed token role-claim validation invariant verified across all paths.');
+    if (
+      isClaimConstantValid &&
+      isAdminPassed &&
+      isOpsPassed &&
+      isAnalystPassed &&
+      isViewerRejected &&
+      isNoRoleRejected &&
+      isLegacyAdminPassed &&
+      isDbFallbackBlocked &&
+      isApiSuccessPassed
+    ) {
+      console.log('  ✓ Pass: Production fail-closed token role-claim validation invariant verified across all paths.');
       passed++;
     } else {
-      console.error('  ✗ Fail: Role claim token validation invariant failed.');
+      console.error('  ✗ Fail: Role claim token validation invariant failed:', {
+        isClaimConstantValid,
+        isAdminPassed,
+        isOpsPassed,
+        isAnalystPassed,
+        isViewerRejected,
+        isNoRoleRejected,
+        isLegacyAdminPassed,
+        isDbFallbackBlocked,
+        isApiSuccessPassed
+      });
       failed++;
     }
   } catch (err) {
