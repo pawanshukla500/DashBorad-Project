@@ -3175,115 +3175,117 @@ export async function ensureMarketplaceCredentialsSchema(db) {
       `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
       [MARKETPLACE_CREDENTIALS_SCHEMA_VERSION],
     );
-    if (rowCount) return;
+    if (!rowCount) {
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS seller_id TEXT`);
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS login_id TEXT`);
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT`);
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS portal_url TEXT`);
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS logo_url TEXT`);
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS auth_type TEXT DEFAULT 'password'`);
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb`);
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`);
+      await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS updated_by TEXT`);
+      await db.query(`CREATE INDEX IF NOT EXISTS IX_marketplace_accounts_active ON marketplace_accounts(marketplace, is_active)`);
 
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS seller_id TEXT`);
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS login_id TEXT`);
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT`);
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS portal_url TEXT`);
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS logo_url TEXT`);
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS auth_type TEXT DEFAULT 'password'`);
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb`);
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`);
-    await db.query(`ALTER TABLE marketplace_accounts ADD COLUMN IF NOT EXISTS updated_by TEXT`);
-    await db.query(`CREATE INDEX IF NOT EXISTS IX_marketplace_accounts_active ON marketplace_accounts(marketplace, is_active)`);
+      const SEED_ACCOUNTS = [
+        {
+          marketplace: 'amazon',
+          account_id: 'default',
+          display_name: 'Amazon IN',
+          seller_id: null,
+          portal_url: 'https://sellercentral.amazon.in/',
+          logo_url: 'https://cdn.brandfetch.io/idomDO5Jzv/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177472711idZyD0yYjDdIjVoG73',
+        },
+        {
+          marketplace: 'flipkart',
+          account_id: 'default',
+          display_name: 'Flipkart',
+          seller_id: null,
+          portal_url: 'https://seller.flipkart.com/',
+          logo_url: 'https://cdn.brandfetch.io/idWdImNSUt/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177459816idZyD0yYjDWqQ88x6B',
+        },
+        {
+          marketplace: 'myntra',
+          account_id: 'myntra_vb',
+          display_name: 'Myntra (VB)',
+          seller_id: '10708',
+          portal_url: 'https://partners.myntra.com/',
+          logo_url: 'https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177484037idZyD0yYjDtAenWdeL',
+        },
+        {
+          marketplace: 'myntra',
+          account_id: 'myntra_ej',
+          display_name: 'Myntra (EJ)',
+          seller_id: '45833',
+          portal_url: 'https://partners.myntra.com/',
+          logo_url: 'https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177484037idZyD0yYjDtAenWdeL',
+        },
+        {
+          marketplace: 'ajio',
+          account_id: 'default',
+          display_name: 'Reliance Retail (AJIO)',
+          seller_id: null,
+          portal_url: 'https://supplier.ajio.com/',
+          logo_url: 'https://cdn.brandfetch.io/idr5xgDFc2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177490710idZyD0yYjDeHmQHVu1',
+        },
+        {
+          marketplace: 'meesho',
+          account_id: 'default',
+          display_name: 'Meesho',
+          seller_id: null,
+          portal_url: 'https://supplier.meesho.com/',
+          logo_url: 'https://cdn.brandfetch.io/idyeTDctmi/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177498057idZyD0yYjDdWnJrl50',
+        },
+        {
+          marketplace: 'cocoblu',
+          account_id: 'default',
+          display_name: 'Cocoblu Retails',
+          seller_id: null,
+          portal_url: 'https://cocoblu.biz/',
+          logo_url: 'https://cdn.brandfetch.io/iduQ6iAglk/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177520125idZyD0yYjDnFplzDd_',
+        },
+        {
+          marketplace: 'shopify',
+          account_id: 'default',
+          display_name: 'Shopify',
+          seller_id: null,
+          portal_url: 'https://admin.shopify.com/',
+          logo_url: 'https://cdn.brandfetch.io/idAgPm7IvG/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177511905idZyD0yYjDkUgFPWU1',
+        },
+      ];
 
-    const SEED_ACCOUNTS = [
-      {
-        marketplace: 'amazon',
-        account_id: 'default',
-        display_name: 'Amazon IN',
-        seller_id: null,
-        portal_url: 'https://sellercentral.amazon.in/',
-        logo_url: 'https://cdn.brandfetch.io/idomDO5Jzv/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177472711idZyD0yYjDdIjVoG73',
-      },
-      {
-        marketplace: 'flipkart',
-        account_id: 'default',
-        display_name: 'Flipkart',
-        seller_id: null,
-        portal_url: 'https://seller.flipkart.com/',
-        logo_url: 'https://cdn.brandfetch.io/idWdImNSUt/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177459816idZyD0yYjDWqQ88x6B',
-      },
-      {
-        marketplace: 'myntra',
-        account_id: 'myntra_vb',
-        display_name: 'Myntra (VB)',
-        seller_id: '10708',
-        portal_url: 'https://partners.myntra.com/',
-        logo_url: 'https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177484037idZyD0yYjDtAenWdeL',
-      },
-      {
-        marketplace: 'myntra',
-        account_id: 'myntra_ej',
-        display_name: 'Myntra (EJ)',
-        seller_id: '45833',
-        portal_url: 'https://partners.myntra.com/',
-        logo_url: 'https://cdn.brandfetch.io/idDW82Qwj2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177484037idZyD0yYjDtAenWdeL',
-      },
-      {
-        marketplace: 'ajio',
-        account_id: 'default',
-        display_name: 'Reliance Retail (AJIO)',
-        seller_id: null,
-        portal_url: 'https://supplier.ajio.com/',
-        logo_url: 'https://cdn.brandfetch.io/idr5xgDFc2/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177490710idZyD0yYjDeHmQHVu1',
-      },
-      {
-        marketplace: 'meesho',
-        account_id: 'default',
-        display_name: 'Meesho',
-        seller_id: null,
-        portal_url: 'https://supplier.meesho.com/',
-        logo_url: 'https://cdn.brandfetch.io/idyeTDctmi/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177498057idZyD0yYjDdWnJrl50',
-      },
-      {
-        marketplace: 'cocoblu',
-        account_id: 'default',
-        display_name: 'Cocoblu Retails',
-        seller_id: null,
-        portal_url: 'https://cocoblu.biz/',
-        logo_url: 'https://cdn.brandfetch.io/iduQ6iAglk/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177520125idZyD0yYjDnFplzDd_',
-      },
-      {
-        marketplace: 'shopify',
-        account_id: 'default',
-        display_name: 'Shopify',
-        seller_id: null,
-        portal_url: 'https://admin.shopify.com/',
-        logo_url: 'https://cdn.brandfetch.io/idAgPm7IvG/w/128/h/128/fallback/lettermark/icon.webp?c=1ax1793177511905idZyD0yYjDkUgFPWU1',
-      },
-    ];
+      for (const acc of SEED_ACCOUNTS) {
+        await db.query(
+          `INSERT INTO marketplace_accounts (marketplace, account_id, display_name, seller_id, portal_url, logo_url, is_active)
+           VALUES ($1, $2, $3, $4, $5, $6, true)
+           ON CONFLICT (marketplace, account_id)
+           DO UPDATE SET
+             display_name = COALESCE(marketplace_accounts.display_name, EXCLUDED.display_name),
+             seller_id = COALESCE(marketplace_accounts.seller_id, EXCLUDED.seller_id),
+             portal_url = COALESCE(marketplace_accounts.portal_url, EXCLUDED.portal_url),
+             logo_url = COALESCE(marketplace_accounts.logo_url, EXCLUDED.logo_url),
+             is_active = true`,
+          [acc.marketplace, acc.account_id, acc.display_name, acc.seller_id, acc.portal_url, acc.logo_url]
+        );
+      }
 
-    for (const acc of SEED_ACCOUNTS) {
+      // Ensure legacy myntra default account is inactive to maintain strict VB & EJ separation
+      await db.query(`
+        UPDATE marketplace_accounts
+        SET is_active = false
+        WHERE marketplace = 'myntra' AND account_id = 'default'
+      `);
+
       await db.query(
-        `INSERT INTO marketplace_accounts (marketplace, account_id, display_name, seller_id, portal_url, logo_url, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, true)
-         ON CONFLICT (marketplace, account_id)
-         DO UPDATE SET
-           display_name = COALESCE(marketplace_accounts.display_name, EXCLUDED.display_name),
-           seller_id = COALESCE(marketplace_accounts.seller_id, EXCLUDED.seller_id),
-           portal_url = COALESCE(marketplace_accounts.portal_url, EXCLUDED.portal_url),
-           logo_url = COALESCE(marketplace_accounts.logo_url, EXCLUDED.logo_url),
-           is_active = true`,
-        [acc.marketplace, acc.account_id, acc.display_name, acc.seller_id, acc.portal_url, acc.logo_url]
+        `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+        [MARKETPLACE_CREDENTIALS_SCHEMA_VERSION],
       );
+      console.log(`[db] Schema ${MARKETPLACE_CREDENTIALS_SCHEMA_VERSION} applied.`);
     }
 
-    // Ensure legacy myntra default account is inactive to maintain strict VB & EJ separation
-    await db.query(`
-      UPDATE marketplace_accounts
-      SET is_active = false
-      WHERE marketplace = 'myntra' AND account_id = 'default'
-    `);
-
-    // Automatically re-encrypt any legacy or rotated credentials in marketplace_accounts to active primary key
+    // Always run re-encryption migration independently of DDL schema versioning,
+    // ensuring already-versioned databases also upgrade credentials on startup or key rotation.
     await reencryptMarketplaceCredentials(db);
-
-    await db.query(
-      `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
-      [MARKETPLACE_CREDENTIALS_SCHEMA_VERSION],
-    );
     console.log(`[db] Schema ${MARKETPLACE_CREDENTIALS_SCHEMA_VERSION} applied.`);
   } catch (err) {
     console.warn('[db] ensureMarketplaceCredentialsSchema failed:', err.message);

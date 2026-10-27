@@ -176,11 +176,14 @@ export async function reencryptMarketplaceCredentials(db) {
     const { plaintext, isCurrentKey } = decryptCredentialWithKeyInfo(row.password_encrypted);
     if (plaintext && !isCurrentKey) {
       const updatedCiphertext = encryptCredential(plaintext);
-      await db.query(
-        `UPDATE marketplace_accounts SET password_encrypted = $1, updated_at = NOW() WHERE id = $2`,
-        [updatedCiphertext, row.id]
+      // Concurrency guard: update only if stored ciphertext has not been concurrently changed
+      const updateResult = await db.query(
+        `UPDATE marketplace_accounts SET password_encrypted = $1, updated_at = NOW() WHERE id = $2 AND password_encrypted = $3`,
+        [updatedCiphertext, row.id, row.password_encrypted]
       );
-      reencrypted++;
+      if (updateResult && (updateResult.rowCount > 0 || updateResult.affectedRows > 0)) {
+        reencrypted++;
+      }
     }
   }
 

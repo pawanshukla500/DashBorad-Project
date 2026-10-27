@@ -144,9 +144,10 @@ router.get('/:id/reveal', requireRole('operator', 'admin'), async (req, res) => 
     if (password && !isCurrentKey) {
       try {
         const reencrypted = encryptCredential(password);
+        // Concurrency guard: update only if stored ciphertext has not been concurrently changed
         await pool.query(
-          `UPDATE marketplace_accounts SET password_encrypted = $1, updated_at = NOW() WHERE id = $2`,
-          [reencrypted, acc.id]
+          `UPDATE marketplace_accounts SET password_encrypted = $1, updated_at = NOW() WHERE id = $2 AND password_encrypted = $3`,
+          [reencrypted, acc.id, acc.password_encrypted]
         );
       } catch (reencryptErr) {
         console.warn('[marketplace-accounts] opportunistic re-encryption failed:', reencryptErr.message);

@@ -106,7 +106,7 @@ frontend/src/
 ## Marketplace Accounts & Desktop Scraper
 
 1. **Credential Security at Rest**:
-   - Marketplace account passwords in `backend/routes/marketplaceAccounts.js` are encrypted using AES-256-GCM authenticated encryption (`backend/utils/credentialCrypto.js`). Master key derivation dynamically resolves environment secrets (`CREDENTIALS_ENCRYPTION_KEY`, `ENCRYPTION_KEY`, or `JWT_SECRET`). In production (`NODE_ENV=production`), missing secrets strictly trigger a fatal configuration error. Keyring rotation (`PREVIOUS_ENCRYPTION_KEYS`), startup migration (`reencryptMarketplaceCredentials`), and opportunistic re-encryption on reveal guarantee zero-downtime rotation and eliminate indefinite reliance on legacy keys.
+   - Marketplace account passwords in `backend/routes/marketplaceAccounts.js` are encrypted using AES-256-GCM authenticated encryption (`backend/utils/credentialCrypto.js`). Master key derivation dynamically resolves environment secrets (`CREDENTIALS_ENCRYPTION_KEY`, `ENCRYPTION_KEY`, or `JWT_SECRET`). In production (`NODE_ENV=production`), missing secrets strictly trigger a fatal configuration error. Keyring rotation (`PREVIOUS_ENCRYPTION_KEYS`), startup migration (`reencryptMarketplaceCredentials` executing across versioned databases), and optimistic concurrency protection (`WHERE password_encrypted = $3`) guarantee zero-downtime rotation and eliminate stale overwrites and legacy key reliance.
    - Logos are sourced directly from Brandfetch SVG endpoints for Amazon, Cocoblu, Myntra, Flipkart, Reliance Retail / AJIO, Meesho, and Shopify.
    - Myntra accounts strictly isolate `myntra_vb` (Seller ID 10708) and `myntra_ej` (Seller ID 45833).
 
@@ -134,4 +134,4 @@ The **SOR Level Payment Reco** workspace (invoice-grain reconciliation across My
 
 ## Verification
 
-From `backend/`, run `npm test` (84 files, 509 tests). From root, run `node desktop/tests/test_desktop_auth.js` (6 tests). From `frontend/`, run `npm run build`. Add a regression test whenever a report definition, permission, or upload parser is changed.
+From `backend/`, run `npm test` (84 files, 511 tests). From root, run `node desktop/tests/test_desktop_auth.js` (6 tests). From `frontend/`, run `npm run build`. Add a regression test whenever a report definition, permission, or upload parser is changed.

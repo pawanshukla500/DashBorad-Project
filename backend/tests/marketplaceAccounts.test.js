@@ -8,6 +8,7 @@ import {
   getMasterKey 
 } from '../utils/credentialCrypto.js';
 import { DEFAULT_MARKETPLACE_METADATA } from '../routes/marketplaceAccounts.js';
+import { ensureMarketplaceCredentialsSchema } from '../db/initDb.js';
 
 describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
   it('encrypts plaintext into iv:authTag:ciphertext format', () => {
@@ -205,6 +206,99 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
       const decryptedWithCurrentOnly = decryptCredentialWithKeyInfo(migratedPayload);
       expect(decryptedWithCurrentOnly.plaintext).toBe('SellerCredentials123');
       expect(decryptedWithCurrentOnly.isCurrentKey).toBe(true);
+    } finally {
+      process.env = origEnv;
+    }
+  });
+
+  it('protects against stale overwrite if record was concurrently changed during re-encryption', async () => {
+    const origEnv = { ...process.env };
+    try {
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'old-key-v1';
+      delete process.env.PREVIOUS_ENCRYPTION_KEYS;
+      const initialPayload = encryptCredential('SellerCredentials123');
+
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'active-key-v2';
+      process.env.PREVIOUS_ENCRYPTION_KEYS = 'old-key-v1';
+
+      const mockDbRecords = [
+        { id: 101, password_encrypted: initialPayload }
+      ];
+
+      const mockDb = {
+        query: vi.fn(async (sql, params) => {
+          if (/SELECT id, password_encrypted/i.test(sql)) {
+            return { rows: mockDbRecords };
+          }
+          if (/UPDATE marketplace_accounts SET password_encrypted/i.test(sql)) {
+            const [newCipher, id, expectedOldCipher] = params;
+            const rec = mockDbRecords.find(r => r.id === id);
+            // Verify conditional query uses WHERE id = $2 AND password_encrypted = $3
+            if (rec && rec.password_encrypted === expectedOldCipher) {
+              rec.password_encrypted = newCipher;
+              return { rowCount: 1 };
+            }
+            return { rowCount: 0 };
+          }
+          return { rows: [] };
+        })
+      };
+
+      // Simulate concurrent change right before update executes
+      mockDbRecords[0].password_encrypted = encryptCredential('ConcurrentlyChangedSecret');
+
+      const result = await reencryptMarketplaceCredentials(mockDb);
+      expect(result.reencrypted).toBe(0);
+      expect(result.total).toBe(1);
+    } finally {
+      process.env = origEnv;
+    }
+  });
+
+  it('runs reencryptMarketplaceCredentials in ensureMarketplaceCredentialsSchema even when database is already versioned', async () => {
+    const origEnv = { ...process.env };
+    try {
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'old-key-v1';
+      delete process.env.PREVIOUS_ENCRYPTION_KEYS;
+      const initialPayload = encryptCredential('LegacyPassword');
+
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'active-key-v2';
+      process.env.PREVIOUS_ENCRYPTION_KEYS = 'old-key-v1';
+
+      const mockDbRecords = [
+        { id: 201, password_encrypted: initialPayload }
+      ];
+
+      const mockDb = {
+        query: vi.fn(async (sql, params) => {
+          if (/SELECT 1 FROM schema_version/i.test(sql)) {
+            // Already versioned!
+            return { rowCount: 1, rows: [{ '?column?': 1 }] };
+          }
+          if (/SELECT id, password_encrypted/i.test(sql)) {
+            return { rows: mockDbRecords };
+          }
+          if (/UPDATE marketplace_accounts SET password_encrypted/i.test(sql)) {
+            const [newCipher, id, expectedOldCipher] = params;
+            const rec = mockDbRecords.find(r => r.id === id);
+            if (rec && rec.password_encrypted === expectedOldCipher) {
+              rec.password_encrypted = newCipher;
+              return { rowCount: 1 };
+            }
+            return { rowCount: 0 };
+          }
+          return { rows: [] };
+        })
+      };
+
+      await ensureMarketplaceCredentialsSchema(mockDb);
+
+      // Verify that re-encryption executed despite schema_version check returning rowCount = 1
+      delete process.env.PREVIOUS_ENCRYPTION_KEYS;
+      const migrated = mockDbRecords.find(r => r.id === 201).password_encrypted;
+      const keyInfo = decryptCredentialWithKeyInfo(migrated);
+      expect(keyInfo.plaintext).toBe('LegacyPassword');
+      expect(keyInfo.isCurrentKey).toBe(true);
     } finally {
       process.env = origEnv;
     }
