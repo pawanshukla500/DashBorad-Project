@@ -95,12 +95,11 @@ export function verifyFallbackTokenRevocation(userRec, payload) {
 
   let validSinceSec;
   if (typeof validSinceRaw === 'string') {
-    const trimmed = validSinceRaw.trim();
-    // Strictly require all digits, rejecting prefixes/suffixes like "2000junk" or decimals like "2000.9"
-    if (!/^\d+$/.test(trimmed)) {
+    // Strictly require all digits without trimming; reject whitespace (e.g. " 2000 "), suffixes ("2000junk"), decimals ("2000.9")
+    if (!/^\d+$/.test(validSinceRaw)) {
       return false;
     }
-    validSinceSec = Number(trimmed);
+    validSinceSec = Number(validSinceRaw);
   } else if (typeof validSinceRaw === 'number' && Number.isFinite(validSinceRaw) && Number.isInteger(validSinceRaw)) {
     validSinceSec = validSinceRaw;
   } else {
@@ -116,14 +115,13 @@ export function verifyFallbackTokenRevocation(userRec, payload) {
 }
 
 /**
- * Cryptographically verifies a Firebase ID token and verifies revocation status.
- * Validates token signature, issuer, audience, expiration, and checks revocation
- * via Firebase Admin SDK (checkRevoked: true) or Google Identity Toolkit (validSince check).
- * Returns verified decoded token payload or null if forged, unsigned, invalidly signed, or revoked.
- * Fails closed if revocation metadata or issue timestamps cannot be established when checkRevoked is true.
+ * Cryptographically verifies a Firebase ID token and determines specific error reasons.
+ * Returns { payload, error, isRevoked }.
  */
-export async function verifyFirebaseTokenCryptographically(token, checkRevoked = true, options = {}) {
-  if (!token || typeof token !== 'string') return null;
+export async function verifyFirebaseTokenWithDetails(token, checkRevoked = true, options = {}) {
+  if (!token || typeof token !== 'string') {
+    return { payload: null, error: 'Token is missing or invalid' };
+  }
 
   // 1. Local cryptographic signature and revocation verification via Firebase Admin SDK if configured
   try {
@@ -132,17 +130,18 @@ export async function verifyFirebaseTokenCryptographically(token, checkRevoked =
     if (auth && typeof auth.verifyIdToken === 'function') {
       const decoded = await auth.verifyIdToken(token, checkRevoked);
       if (decoded && decoded.uid) {
-        return decoded;
+        return { payload: decoded, error: null };
       }
     }
   } catch (adminErr) {
     if (
       adminErr.code === 'auth/id-token-revoked' ||
-      adminErr.code?.startsWith('auth/') || 
-      adminErr.message?.includes('Firebase ID token') ||
       adminErr.message?.includes('revoked')
     ) {
-      return null;
+      return { payload: null, error: 'Firebase ID token has been revoked', isRevoked: true };
+    }
+    if (adminErr.code?.startsWith('auth/') || adminErr.message?.includes('Firebase ID token')) {
+      return { payload: null, error: 'Cryptographic signature verification failed' };
     }
   }
 
@@ -165,25 +164,38 @@ export async function verifyFirebaseTokenCryptographically(token, checkRevoked =
         // Check revocation against validSince timestamp (fail-closed)
         if (checkRevoked) {
           if (!verifyFallbackTokenRevocation(userRec, payload)) {
-            return null;
+            return { payload: null, error: 'Firebase ID token has been revoked or revocation metadata is invalid', isRevoked: true };
           }
         }
-        return payload;
+        return { payload, error: null };
       }
     }
   } catch {}
 
-  return null;
+  return { payload: null, error: 'Cryptographic signature or revocation verification failed' };
+}
+
+/**
+ * Cryptographically verifies a Firebase ID token and verifies revocation status.
+ * Validates token signature, issuer, audience, expiration, and checks revocation
+ * via Firebase Admin SDK (checkRevoked: true) or Google Identity Toolkit (validSince check).
+ * Returns verified decoded token payload or null if forged, unsigned, invalidly signed, or revoked.
+ * Fails closed if revocation metadata or issue timestamps cannot be established when checkRevoked is true.
+ */
+export async function verifyFirebaseTokenCryptographically(token, checkRevoked = true, options = {}) {
+  const result = await verifyFirebaseTokenWithDetails(token, checkRevoked, options);
+  return result.payload;
 }
 
 /**
  * Verifies both the cryptographic signature and the authorized role claims of a desktop session token,
  * strictly verifying that the token has not been revoked (checkRevoked = true).
+ * Preserves specific error details such as explicit token revocation.
  */
 export async function verifyDesktopTokenAuthorization(token, checkRevoked = true, options = {}) {
-  const verifiedPayload = await verifyFirebaseTokenCryptographically(token, checkRevoked, options);
+  const { payload: verifiedPayload, error } = await verifyFirebaseTokenWithDetails(token, checkRevoked, options);
   if (!verifiedPayload) {
-    return { authorized: false, role: null, error: 'Cryptographic signature or revocation verification failed' };
+    return { authorized: false, role: null, error: error || 'Cryptographic signature or revocation verification failed' };
   }
   const role = extractRoleFromTokenPayload(verifiedPayload);
   const authorized = isAuthorizedDesktopRole(role);
