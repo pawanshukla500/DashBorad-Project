@@ -370,46 +370,6 @@ const server = http.createServer(async (req, res) => {
       return sendJson(200, loadConfig());
     }
 
-    // GET /api/desktop/marketplace-accounts
-    if (pathname === '/api/desktop/marketplace-accounts' && req.method === 'GET') {
-      try {
-        const pool = getPool();
-        const { rows } = await pool.query(`
-          SELECT id, marketplace, account_id, display_name, seller_id, login_id, password_encrypted, portal_url, logo_url, is_active
-          FROM marketplace_accounts
-          WHERE is_active = true OR account_id IN ('myntra_vb', 'myntra_ej')
-          ORDER BY 
-            CASE 
-              WHEN marketplace = 'flipkart' THEN 1
-              WHEN marketplace = 'amazon' THEN 2
-              WHEN marketplace = 'myntra' AND account_id = 'myntra_vb' THEN 3
-              WHEN marketplace = 'myntra' AND account_id = 'myntra_ej' THEN 4
-              WHEN marketplace = 'ajio' THEN 5
-              WHEN marketplace = 'meesho' THEN 6
-              WHEN marketplace = 'cocoblu' THEN 7
-              WHEN marketplace = 'shopify' THEN 8
-              ELSE 9
-            END,
-            id ASC
-        `);
-        const accounts = rows.map(r => ({
-          id: r.id,
-          marketplace: r.marketplace,
-          account_id: r.account_id,
-          display_name: r.display_name,
-          seller_id: r.seller_id,
-          login_id: r.login_id || '',
-          has_password: Boolean(r.password_encrypted),
-          password: decryptCredential(r.password_encrypted) || '',
-          portal_url: r.portal_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.portal_url || '',
-          logo_url: r.logo_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.logo_url || '',
-          is_active: r.is_active
-        }));
-        return sendJson(200, { success: true, count: accounts.length, accounts });
-      } catch (err) {
-        return sendJson(500, { success: false, error: err.message });
-      }
-    }
 
     // GET /api/catalog
     if (pathname === '/api/catalog' && req.method === 'GET') {
@@ -671,7 +631,43 @@ const server = http.createServer(async (req, res) => {
         } catch {}
       }
 
-      return sendJson(502, { success: false, error: 'Could not connect to ReconCentral API to fetch marketplace accounts.' });
+      // Fallback to local database if candidate API servers are unreachable
+      try {
+        const pool = getPool();
+        const { rows } = await pool.query(`
+          SELECT id, marketplace, account_id, display_name, seller_id, login_id, password_encrypted, portal_url, logo_url, is_active
+          FROM marketplace_accounts
+          WHERE is_active = true OR account_id IN ('myntra_vb', 'myntra_ej')
+          ORDER BY 
+            CASE 
+              WHEN marketplace = 'flipkart' THEN 1
+              WHEN marketplace = 'amazon' THEN 2
+              WHEN marketplace = 'myntra' AND account_id = 'myntra_vb' THEN 3
+              WHEN marketplace = 'myntra' AND account_id = 'myntra_ej' THEN 4
+              WHEN marketplace = 'ajio' THEN 5
+              WHEN marketplace = 'meesho' THEN 6
+              WHEN marketplace = 'cocoblu' THEN 7
+              WHEN marketplace = 'shopify' THEN 8
+              ELSE 9
+            END,
+            id ASC
+        `);
+        const accounts = rows.map(r => ({
+          id: r.id,
+          marketplace: r.marketplace,
+          account_id: r.account_id,
+          display_name: r.display_name,
+          seller_id: r.seller_id,
+          login_id: r.login_id || '',
+          has_password: Boolean(r.password_encrypted),
+          portal_url: r.portal_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.portal_url || '',
+          logo_url: r.logo_url || DEFAULT_MARKETPLACE_METADATA[r.marketplace]?.logo_url || '',
+          is_active: r.is_active
+        }));
+        return sendJson(200, { success: true, count: accounts.length, accounts });
+      } catch (dbErr) {
+        return sendJson(502, { success: false, error: 'Could not connect to ReconCentral API or Database to fetch marketplace accounts.' });
+      }
     }
 
     // POST /api/auth/logout
@@ -833,7 +829,7 @@ const server = http.createServer(async (req, res) => {
         const body = await parseJsonBody();
         const portalUrl = body.portal_url || 'https://seller.flipkart.com/';
         const chromePath = getChromeExecutablePath();
-        const userDataDir = path.join(__dirname, '.runtime', 'chrome-user-data');
+        const userDataDir = path.join(USER_DATA_DIR, 'chrome-user-data');
         if (!fs.existsSync(userDataDir)) {
           fs.mkdirSync(userDataDir, { recursive: true });
         }

@@ -487,8 +487,12 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     puppeteer.use(StealthPlugin());
   }
 
-  const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace) || 'flipkart_shopsy';
-  const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId) || SUPPORTED_MARKETPLACES[0];
+  const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
+  const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId);
+  if (!mpConfig) {
+    const validIds = SUPPORTED_MARKETPLACES.map(m => m.id).join(', ');
+    return { success: false, marketplace: targetId, error: `Unsupported marketplace channel: "${targetId}". Supported channels: ${validIds}` };
+  }
   const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
 
   const browser = await puppeteer.launch({
@@ -564,8 +568,12 @@ async function executeScrapeProcess(config, onProgress) {
     puppeteer.use(StealthPlugin());
   }
 
-  const targetChannel = (typeof config.marketplace === 'string' ? config.marketplace : config.marketplace?.id) || 'flipkart_shopsy';
-  const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetChannel || m.marketplace === targetChannel) || SUPPORTED_MARKETPLACES[0];
+  const targetChannel = (typeof config.marketplace === 'string' ? config.marketplace : config.marketplace?.id || config.marketplace?.marketplace) || 'flipkart_shopsy';
+  const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetChannel || m.marketplace === targetChannel);
+  if (!mpConfig) {
+    const validIds = SUPPORTED_MARKETPLACES.map(m => m.id).join(', ');
+    return { success: false, error: `Unsupported scraping channel: "${targetChannel}". Supported channels: ${validIds}` };
+  }
   const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
 
   const isVisible = Boolean(config.visible);
@@ -605,18 +613,87 @@ async function executeScrapeProcess(config, onProgress) {
       const rawCookies = fs.readFileSync(cookiesPath, 'utf8');
       await page.setCookie(...JSON.parse(rawCookies));
       await page.goto(mpConfig.loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-      onProgress(`✓ Active session verified on ${mpConfig.name}.`);
+
+      // Rigorous authentication verification on target portal
+      onProgress(`Verifying authenticated session for ${mpConfig.name}...`);
+      let isAuthenticated = false;
+      try {
+        isAuthenticated = await page.waitForFunction((id) => {
+          const href = window.location.href.toLowerCase();
+          const body = document.body ? document.body.innerText.toLowerCase() : '';
+          if (id.startsWith('myntra')) {
+            const onPortal = href.includes('partnerportal') || href.includes('myntra');
+            const hasAuthIndicator = href.includes('dashboard') || href.includes('home') || body.includes('logout') || body.includes('seller id');
+            const notOnLogin = !href.includes('login') && !body.includes('sign in to your account');
+            return onPortal && hasAuthIndicator && notOnLogin;
+          }
+          if (id === 'meesho') {
+            const notLogin = !href.includes('/login') && !href.includes('auth');
+            const onPanel = href.includes('supplier.meesho.com') && (
+              href.includes('/orders') || 
+              href.includes('/catalog') || 
+              href.includes('/payments') || 
+              href.includes('/returns') || 
+              href.includes('/dashboard') || 
+              href.includes('/home')
+            );
+            const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('seller id');
+            return notLogin && (onPanel || hasAuthText);
+          }
+          return false;
+        }, { timeout: 20000 }, mpConfig.id);
+      } catch (authTimeoutErr) {
+        isAuthenticated = false;
+      }
+
+      if (!isAuthenticated) {
+        onProgress(`❌ Session verification failed: Saved session cookies for ${mpConfig.name} have expired or are invalid.`);
+        onProgress(`Please click "🔑 Human Login (2FA)" to re-authenticate ${mpConfig.name}.`);
+        await browser.close();
+        return {
+          success: false,
+          error: `Session for ${mpConfig.name} is expired or invalid. Please re-authenticate via Human Login (2FA).`
+        };
+      }
+
+      onProgress(`✓ Authenticated session confirmed on ${mpConfig.name}.`);
+      onProgress(`Extracting active rate card profiles for ${mpConfig.name}...`);
+
+      let channelRateCards = [];
+      try {
+        if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+        const { getPool } = await import('../backend/db/index.js');
+        const { buildBrandRateCardSet } = await import('../backend/services/brandRateCardService.js');
+        const pool = getPool();
+        const allRateCards = await buildBrandRateCardSet(pool);
+        if (mpConfig.id === 'myntra_vb') {
+          channelRateCards = allRateCards.filter(r => r.marketplace.toLowerCase() === 'myntra_vb' || (r.marketplace.toLowerCase() === 'myntra' && String(r.seller_id) === '10708'));
+        } else if (mpConfig.id === 'myntra_ej') {
+          channelRateCards = allRateCards.filter(r => r.marketplace.toLowerCase() === 'myntra_ej' || (r.marketplace.toLowerCase() === 'myntra' && String(r.seller_id) === '45833'));
+        } else if (mpConfig.id === 'meesho') {
+          channelRateCards = allRateCards.filter(r => r.marketplace.toLowerCase() === 'meesho');
+        }
+      } catch (poolErr) {
+        console.warn(`[executeScrapeProcess] Could not load database rate cards for ${mpConfig.id}:`, poolErr.message);
+      }
 
       const stagingFile = path.join(STAGING_DIR, `${mpConfig.id}_session_verified.json`);
       fs.mkdirSync(STAGING_DIR, { recursive: true });
-      fs.writeFileSync(stagingFile, JSON.stringify({ marketplace: mpConfig.id, name: mpConfig.name, verifiedAt: new Date().toISOString() }, null, 2));
+      fs.writeFileSync(stagingFile, JSON.stringify({ 
+        marketplace: mpConfig.id, 
+        name: mpConfig.name, 
+        verifiedAt: new Date().toISOString(),
+        rateCardsCount: channelRateCards.length,
+        rateCards: channelRateCards
+      }, null, 2));
 
       await browser.close();
       return {
         success: true,
-        data: [],
+        data: channelRateCards,
+        count: channelRateCards.length,
         stagingFile,
-        message: `Verified session on ${mpConfig.name}. Channel rate card feeds staged.`
+        message: `Verified authenticated session and staged ${channelRateCards.length} rate profiles for ${mpConfig.name}.`
       };
     }
 
