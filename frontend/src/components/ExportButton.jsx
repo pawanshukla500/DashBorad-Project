@@ -38,7 +38,7 @@ export default function ExportButton({ buildExport, label = 'Export XLSX', disab
   }
 
   const cfg = {
-    idle:    { bg: 'bg-surface hover:bg-indigo-50 border-border text-ink hover:border-primary hover:text-primary', icon: 'download',  text: label },
+    idle:    { bg: 'bg-surface hover:bg-primary-container/30 border-border text-ink hover:border-primary hover:text-primary', icon: 'download',  text: label },
     loading: { bg: 'bg-primary-container border-primary text-primary cursor-wait',                                  icon: 'progress_activity', text: 'Generating...' },
     done:    { bg: 'bg-emerald-50 border-emerald-300 text-emerald-700',                                           icon: 'check',     text: 'Downloaded!' },
     error:   { bg: 'bg-rose-50 border-rose-300 text-rose-700',                                                     icon: 'error',     text: 'Failed' },

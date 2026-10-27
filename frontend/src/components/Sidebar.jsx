@@ -30,7 +30,7 @@ function Brand() {
   return (
     <div className="flex items-center px-6 mb-6 gap-2.5">
       <span
-        className="h-8 w-8 rounded-lg bg-emerald-700 flex items-center justify-center shrink-0"
+        className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center shrink-0 shadow-sm"
         aria-hidden="true"
       >
         <img src="/logo-white.png" alt="" className="h-5 w-5" />

@@ -1,4 +1,23 @@
 import pg from 'pg';
+import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Ensure .env is loaded reliably regardless of current working directory
+for (const envPath of [
+  path.resolve(__dirname, '../.env'),
+  path.resolve(__dirname, '../../.env'),
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), 'backend/.env')
+]) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath, override: false });
+  }
+}
 
 const { Pool } = pg;
 
@@ -276,7 +295,12 @@ function queryTextFrom(query) {
 // clearly and their normal upload/API flow can safely decide whether to retry.
 function isSafeReadStatement(text) {
   const start = queryTextFrom(text).replace(/^\s*(?:\/\*[\s\S]*?\*\/\s*)*/, '').toLowerCase();
-  return /^(select|show|explain|values)\b/.test(start);
+  if (/^(select|show|explain|values)\b/.test(start)) return true;
+  // CTE queries starting with WITH that only select data
+  if (/^with\b/.test(start) && !/\b(insert\s+into|update\s+|delete\s+from)\b/.test(start)) {
+    return true;
+  }
+  return false;
 }
 
 function markDatabaseOnline() {
@@ -590,21 +614,30 @@ export function getPool() {
     },
 
     async connect() {
-      try {
-        const client = instrumentClient(await _realPool.connect());
-        // Ensure long tasks don't get killed by Postgres session limits
-        await client.query('SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 0;').catch(() => {});
-        restoreSessionLimitsOnRelease(client);
-        markDatabaseOnline();
-        return client;
-      } catch (error) {
-        if (isRetryableConnectionError(error)) {
-          if (isConnectionBreakError(error)) poolRecreateRequested = true;
-          if (!isPoolAcquireTimeout(error)) markDatabaseOffline(error);
-          throw new DatabaseUnavailableError(error);
+      let lastErr = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) {
+          await delay(250);
+          if (poolRecreateRequested) void recoverDatabaseConnection();
         }
-        throw error;
+        try {
+          const client = instrumentClient(await _realPool.connect());
+          // Ensure long tasks don't get killed by Postgres session limits
+          await client.query('SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 0;').catch(() => {});
+          restoreSessionLimitsOnRelease(client);
+          markDatabaseOnline();
+          return client;
+        } catch (error) {
+          lastErr = error;
+          if (!isRetryableConnectionError(error)) throw error;
+          if (isConnectionBreakError(error)) poolRecreateRequested = true;
+          if (attempt === 1) {
+            if (!isPoolAcquireTimeout(error)) markDatabaseOffline(error);
+            break;
+          }
+        }
       }
+      throw new DatabaseUnavailableError(lastErr);
     },
 
     async end() {

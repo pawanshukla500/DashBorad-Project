@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Legend,
   ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie,
@@ -288,7 +288,7 @@ function MarginCell({ value }) {
 }
 
 const CATEGORY_TONES = [
-  'bg-indigo-50 text-indigo-700 border-indigo-200',
+  'bg-primary-container text-primary border-primary/20',
   'bg-sky-50 text-sky-700 border-sky-200',
   'bg-teal-50 text-teal-700 border-teal-200',
   'bg-violet-50 text-violet-700 border-violet-200',
@@ -1093,7 +1093,7 @@ function SkuMasterSection({ onUpdated, initialSubTab = 'vb_catalog', unmergedCou
         <>
           <div
             className={`border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 py-5 cursor-pointer transition-colors ${
-              dragging ? 'border-primary bg-primary-container' : 'border-border hover:border-primary hover:bg-indigo-50/20'
+              dragging ? 'border-primary bg-primary-container' : 'border-border hover:border-primary hover:bg-primary-container/20'
             }`}
             onDragOver={e => { e.preventDefault(); setDragging(true); }}
             onDragLeave={() => setDragging(false)}
@@ -1235,7 +1235,7 @@ function SkuMasterSection({ onUpdated, initialSubTab = 'vb_catalog', unmergedCou
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {adding && (
-                  <tr className="bg-indigo-50/40">
+                  <tr className="bg-primary-container/30">
                     <td className="px-3 py-2"><input autoFocus value={addForm.listing_sku} onChange={e => setAddForm(f => ({...f, listing_sku: e.target.value}))} placeholder="Listing SKU *" className="w-full text-xs border border-primary rounded-lg px-2 py-1 font-mono" /></td>
                     <td className="px-3 py-2"><input value={addForm.master_sku} onChange={e => setAddForm(f => ({...f, master_sku: e.target.value}))} placeholder="VB EXPORT SKU" className="w-full text-xs border border-border rounded-lg px-2 py-1 font-mono" /></td>
                     <td className="px-3 py-2">

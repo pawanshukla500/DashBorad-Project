@@ -639,7 +639,8 @@ function Field({ label, value, mono }) {
 
 function AmountBox({ label, amount, color }) {
   const cols = {
-    indigo:  { bg: 'bg-indigo-50',  text: 'text-indigo-600',  val: 'text-indigo-900' },
+    primary: { bg: 'bg-primary-container',  text: 'text-primary',  val: 'text-ink' },
+    indigo:  { bg: 'bg-primary-container',  text: 'text-primary',  val: 'text-ink' },
     sky:     { bg: 'bg-sky-50',     text: 'text-sky-600',     val: 'text-sky-900'     },
     emerald: { bg: 'bg-emerald-50', text: 'text-emerald-600', val: 'text-emerald-900' },
     rose:    { bg: 'bg-rose-50',    text: 'text-rose-600',    val: 'text-rose-900'    },
@@ -655,7 +656,8 @@ function AmountBox({ label, amount, color }) {
 
 function Tag({ color, children }) {
   const cls = {
-    indigo:  'bg-indigo-50 text-indigo-700 border border-indigo-200',
+    primary: 'bg-primary-container text-primary border border-primary/20',
+    indigo:  'bg-primary-container text-primary border border-primary/20',
     sky:     'bg-sky-100 text-sky-700',
     emerald: 'bg-emerald-100 text-emerald-700',
     rose:    'bg-rose-100 text-rose-700',

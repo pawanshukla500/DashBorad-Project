@@ -1015,7 +1015,7 @@ function RcEntryRecoView({ data, loading, error, marketplace, sellerAccount, onM
                       return (
                         <tr
                           key={r.rc_id}
-                          className="hover:bg-indigo-50/40 cursor-pointer transition-colors"
+                          className="hover:bg-primary-container/20 cursor-pointer transition-colors"
                           onClick={() => onDrill(ft, r.rc_id)}
                           title="Click to drill down into individual orders"
                         >

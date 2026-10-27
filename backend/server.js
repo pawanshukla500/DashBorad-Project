@@ -36,7 +36,18 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-dotenv.config({ override: true });
+// Ensure .env is loaded reliably whether started from root, backend, or sub-processes
+const serverDir = path.dirname(fileURLToPath(import.meta.url));
+for (const envPath of [
+  path.resolve(serverDir, '.env'),
+  path.resolve(serverDir, '../.env'),
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), 'backend/.env')
+]) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath, override: false });
+  }
+}
 
 export const app = express();
 app.disable('x-powered-by');
@@ -55,6 +66,10 @@ app.use((_req, res, next) => {
 
 const PORT = process.env.PORT || 3001;
 let databaseSchemaReady = false;
+
+export function setDatabaseSchemaReadyForTesting(ready = true) {
+  databaseSchemaReady = Boolean(ready);
+}
 
 function configuredCorsOrigins() {
   return new Set(

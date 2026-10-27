@@ -154,7 +154,7 @@ export default function ReturnsPage() {
                     {(returns?.data || []).map((o, i) => (
                       <tr
                         key={i}
-                        className={`border-b border-slate-50 hover:bg-indigo-50/40 transition-colors ${i % 2 === 0 ? 'bg-surface' : 'bg-surface-container-low/30'}`}
+                        className={`border-b border-slate-50 hover:bg-primary-container/20 transition-colors ${i % 2 === 0 ? 'bg-surface' : 'bg-surface-container-low/30'}`}
                       >
                         <td className="px-4 py-3 text-secondary whitespace-nowrap font-mono text-xs">
                           {o.returnDate || <span className="text-surface">—</span>}
@@ -169,7 +169,7 @@ export default function ReturnsPage() {
                         </td>
                         <td className="px-4 py-3">
                           {o.category
-                            ? <span className="bg-indigo-50 text-indigo-700 border border-indigo-200/80 px-2.5 py-1 rounded-full text-xs font-semibold capitalize whitespace-nowrap">{o.category.replace(/_/g, ' ')}</span>
+                            ? <span className="bg-primary-container/40 text-primary border border-primary/20 px-2.5 py-1 rounded-full text-xs font-semibold capitalize whitespace-nowrap">{o.category.replace(/_/g, ' ')}</span>
                             : <span className="text-surface">—</span>}
                         </td>
                         <td className="px-4 py-3 text-secondary whitespace-nowrap text-sm">
@@ -400,7 +400,7 @@ function SkuSummaryView({ filters, dep }) {
               <tr className="bg-surface-container border-b border-border">
                 <th className="sticky left-0 z-20 bg-surface-container px-3 py-2.5 border-r border-border" />
                 {months.flatMap(m => [
-                  <th key={m+'gh'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap border-l border-border bg-indigo-50/60">Gross</th>,
+                  <th key={m+'gh'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap border-l border-border bg-primary-container/30">Gross</th>,
                   <th key={m+'rh'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap bg-orange-50/40">Return</th>,
                   <th key={m+'th'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap bg-purple-50/40">RTO</th>,
                   <th key={m+'nh'} className="px-3 py-2.5 text-center text-secondary font-medium whitespace-nowrap bg-emerald-50/40">Net Sales</th>,
@@ -410,7 +410,7 @@ function SkuSummaryView({ filters, dep }) {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {skuRows.map((row, ri) => (
-                <tr key={row.sku} className={`hover:bg-indigo-50/30 ${ri % 2 === 0 ? '' : 'bg-surface-container-low/40'}`}>
+                <tr key={row.sku} className={`hover:bg-primary-container/20 ${ri % 2 === 0 ? '' : 'bg-surface-container-low/40'}`}>
                   <td className="sticky left-0 z-10 bg-inherit px-3 py-2.5 border-r border-border whitespace-nowrap max-w-[240px]">
                     <button
                       onClick={() => setSelectedSku(row.sku)}
@@ -582,7 +582,7 @@ function SkuDrawer({ sku, onClose }) {
               </thead>
               <tbody className="text-sm">
                 {(drawerData?.data || []).map((o, i) => (
-                  <tr key={i} className={`border-b border-slate-50 hover:bg-indigo-50/40 transition-colors ${i%2===0?'bg-surface':'bg-surface-container-low/30'}`}>
+                  <tr key={i} className={`border-b border-slate-50 hover:bg-primary-container/20 transition-colors ${i%2===0?'bg-surface':'bg-surface-container-low/30'}`}>
                     <td className="px-3 py-2.5 text-secondary font-mono text-xs whitespace-nowrap">{o.orderDate || '—'}</td>
                     <td className="px-3 py-2.5">
                       <button
