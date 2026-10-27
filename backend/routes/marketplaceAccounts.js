@@ -1,7 +1,7 @@
 import express from 'express';
 import { getPool } from '../db/index.js';
 import { requireRole, requireAdmin } from '../utils/authMiddleware.js';
-import { encryptCredential, decryptCredential, maskCredential } from '../utils/credentialCrypto.js';
+import { encryptCredential, decryptCredential, decryptCredentialWithKeyInfo, maskCredential } from '../utils/credentialCrypto.js';
 import { writeAudit } from '../services/auditLog.js';
 
 const router = express.Router();
@@ -134,7 +134,25 @@ router.get('/:id/reveal', requireRole('operator', 'admin'), async (req, res) => 
     }
 
     const acc = rows[0];
-    const password = decryptCredential(acc.password_encrypted);
+    const { plaintext: password, isCurrentKey } = decryptCredentialWithKeyInfo(acc.password_encrypted);
+
+    if (acc.password_encrypted && password === null) {
+      return res.status(500).json({ error: 'Failed to decrypt credential (corrupted payload or missing key in keyring)' });
+    }
+
+    // Opportunistic re-encryption if decrypted with a previous or legacy fallback key
+    if (password && !isCurrentKey) {
+      try {
+        const reencrypted = encryptCredential(password);
+        // Concurrency guard: update only if stored ciphertext has not been concurrently changed
+        await pool.query(
+          `UPDATE marketplace_accounts SET password_encrypted = $1, updated_at = NOW() WHERE id = $2 AND password_encrypted = $3`,
+          [reencrypted, acc.id, acc.password_encrypted]
+        );
+      } catch (reencryptErr) {
+        console.warn('[marketplace-accounts] opportunistic re-encryption failed:', reencryptErr.message);
+      }
+    }
 
     // Explicit audit log for password reveal since GET requests bypass mutation audit middleware
     await writeAudit(req, {
