@@ -188,7 +188,7 @@ export function publicDatabaseStatus(database) {
   };
 }
 
-async function healthCheckHandler(req, res) {
+export async function healthCheckHandler(req, res) {
   const configured = await isDbConfigured();
   let dbConnected = false;
   if (configured) {

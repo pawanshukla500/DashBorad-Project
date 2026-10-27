@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
-import { app, setDatabaseSchemaReadyForTesting, publicDatabaseStatus } from '../server.js';
+import { app, setDatabaseSchemaReadyForTesting, publicDatabaseStatus, healthCheckHandler } from '../server.js';
 import { getDatabaseStatus, isDbConfigured, resolvePgConfig } from '../db/index.js';
 
 describe('API Security and Database Resilience Suite', () => {
@@ -115,6 +115,7 @@ describe('API Security and Database Resilience Suite', () => {
           transport: { tlsEnabled: true, productionReady: true },
           pool: { totalCount: 5, idleCount: 4, waitingCount: 0 },
           internalError: 'PostgreSQL connection timeout on internal socket',
+          lastError: 'connection refused 200.141.1.119:5433',
         };
         const publicProjection = publicDatabaseStatus(internalDiagnosticDetail);
         expect(publicProjection).toEqual({
@@ -127,6 +128,26 @@ describe('API Security and Database Resilience Suite', () => {
         expect(publicProjection).not.toHaveProperty('transport');
         expect(publicProjection).not.toHaveProperty('pool');
         expect(publicProjection).not.toHaveProperty('internalError');
+        expect(publicProjection).not.toHaveProperty('lastError');
+
+        // Exercise the handler from a simulated non-loopback public caller address
+        let publicHandlerResponse = null;
+        const mockPublicRes = {
+          status(code) {
+            return {
+              json(payload) {
+                publicHandlerResponse = { status: code, payload };
+              },
+            };
+          },
+        };
+        await healthCheckHandler({ socket: { remoteAddress: '203.0.113.1' } }, mockPublicRes);
+        expect(publicHandlerResponse).toBeDefined();
+        expect(publicHandlerResponse.payload).toBeDefined();
+        expect(publicHandlerResponse.payload.database).toBeDefined();
+        expect(publicHandlerResponse.payload.database).not.toHaveProperty('transport');
+        expect(publicHandlerResponse.payload.database).not.toHaveProperty('pool');
+        expect(publicHandlerResponse.payload.database).not.toHaveProperty('lastError');
       } finally {
         server.close();
       }
