@@ -1,48 +1,89 @@
 #!/usr/bin/env node
 /**
- * ReconCentral RateCard CLI & Headless Worker
+ * ReconCentral RateCard CLI & Headless Worker (Cross-Platform: Windows & Linux)
  * 
- * Standalone worker that can run on any Windows or Linux PC,
- * via command line, systemd, or Windows Task Scheduler.
+ * Standalone CLI worker for Flipkart & Shopsy brand-wise rate card extraction,
+ * change detection against PostgreSQL, automatic period closure, and Excel export.
  * 
  * Usage:
  *   node desktop/worker.js
- *   node desktop/worker.js --auto-sync
- *   node desktop/worker.js --interactive
- *   node desktop/worker.js --verticals=kurta,ethnic_set,sari
+ *   node desktop/worker.js --marketplace=both --auto-sync
+ *   node desktop/worker.js --marketplace=shopsy --export-excel
+ *   node desktop/worker.js --brand=Sangria --interactive
+ *   node desktop/worker.js --help
  */
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load environment variables from backend/.env if available
+// Load environment from backend/.env natively
 const envPath = path.join(__dirname, '../backend/.env');
 if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
-} else {
-  dotenv.config();
+  const content = fs.readFileSync(envPath, 'utf8');
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx > 0) {
+      const key = trimmed.slice(0, eqIdx).trim();
+      let val = trimmed.slice(eqIdx + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      process.env[key] = val;
+    }
+  }
 }
 
-import { scrapeFlipkartRateCards } from '../backend/services/flipkartRateCardExtractor.js';
-import { detectRateChanges, syncRateCardsToDatabase } from '../backend/services/rateCardSyncEngine.js';
+import { 
+  getRealTimeBrandFsnSamples, 
+  buildBrandRateCardSet, 
+  detectBrandRateChanges, 
+  syncBrandRateCardsToDatabase 
+} from '../backend/services/brandRateCardService.js';
+import { 
+  generateBrandwiseRateCardExcel, 
+  DEFAULT_EXCEL_PATH 
+} from '../backend/services/brandwiseExcelExport.js';
+import { getPool } from '../backend/db/index.js';
 
 // Parse CLI arguments
 const args = process.argv.slice(2);
-const isInteractive = args.includes('--interactive');
+
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(`
+ReconCentral RateCard Worker CLI (Windows & Linux)
+
+Options:
+  --marketplace=<flipkart|shopsy|both>   Target marketplace channel (default: both)
+  --brand=<name|all>                     Filter by brand (e.g. "Sangria", default: all)
+  --auto-sync, -y                        Auto-commit changes to database with date auto-closing
+  --export-excel                         Generate multi-sheet Excel workbook on completion
+  --excel-path=<path>                    Custom output path for Excel file
+  --interactive, --visible               Launch visible Chrome browser for visual tour
+  --help, -h                             Show this help message
+`);
+  process.exit(0);
+}
+
+const isInteractive = args.includes('--interactive') || args.includes('--visible');
 const autoSync = args.includes('--auto-sync') || args.includes('-y');
-const marketplaceArg = args.find(a => a.startsWith('--marketplace='))?.split('=')[1] || 'flipkart';
-const verticalsArg = args.find(a => a.startsWith('--verticals='))?.split('=')[1];
-const targetVerticals = verticalsArg ? verticalsArg.split(',').map(v => v.trim()) : null;
+const shouldExportExcel = args.includes('--export-excel');
+const marketplaceArg = args.find(a => a.startsWith('--marketplace='))?.split('=')[1] || 'both';
+const brandArg = args.find(a => a.startsWith('--brand='))?.split('=')[1] || 'all';
+const customExcelPath = args.find(a => a.startsWith('--excel-path='))?.split('=')[1];
 
 async function runWorker() {
-  console.log('================================================================');
+  console.log('======================================================================');
   console.log('⚡ ReconCentral Standalone RateCard Worker Engine');
-  console.log(`Marketplace: ${marketplaceArg.toUpperCase()} | Auto-Sync: ${autoSync}`);
-  console.log('================================================================\n');
+  console.log(`Platform:    ${process.platform} (${process.arch})`);
+  console.log(`Marketplace: ${marketplaceArg.toUpperCase()}`);
+  console.log(`Brand:       ${brandArg}`);
+  console.log(`Auto-Sync:   ${autoSync ? 'ENABLED (PostgreSQL)' : 'DISABLED (Preview only)'}`);
+  console.log('======================================================================\n');
 
   const onProgress = (msg) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -50,49 +91,74 @@ async function runWorker() {
   };
 
   try {
-    onProgress('Initiating rate card extraction...');
-    const result = await scrapeFlipkartRateCards({
-      headless: isInteractive ? false : 'new',
-      verticals: targetVerticals,
-      onProgress
-    });
+    const pool = getPool();
 
-    if (!result.success) {
-      console.error(`\n❌ Worker failed: ${result.error}`);
-      process.exit(1);
+    // 1. Fetch Real-time Catalog & Sample FSNs
+    onProgress('Querying live brand & FSN catalog from database...');
+    const catalog = await getRealTimeBrandFsnSamples(pool);
+    console.log(`✓ Retrieved ${catalog.length} catalog items from live order history.\n`);
+
+    // 2. Build Brand-Wise Rate Card Set
+    onProgress(`Generating rate card models for ${marketplaceArg.toUpperCase()}...`);
+    let rateCards = await buildBrandRateCardSet(pool);
+
+    if (marketplaceArg === 'flipkart') {
+      rateCards = rateCards.filter(r => r.marketplace === 'flipkart');
+    } else if (marketplaceArg === 'shopsy') {
+      rateCards = rateCards.filter(r => r.marketplace === 'shopsy');
     }
 
-    onProgress(`Extraction complete. ${result.count} rate card records staged.`);
-    onProgress('Running change detection against database...');
+    if (brandArg !== 'all') {
+      rateCards = rateCards.filter(r => r.brand.toLowerCase() === brandArg.toLowerCase());
+    }
 
-    const changes = await detectRateChanges(result.data, marketplaceArg, 'default');
-    console.log(`\n----------------------------------------------------------------`);
-    console.log(`🔍 Change Detection Summary: ${changes.length} adjustments found`);
-    console.log(`----------------------------------------------------------------`);
+    console.log(`✓ Staged ${rateCards.length} rate card profiles.\n`);
+
+    // 3. Change Detection Against Active PostgreSQL Records
+    onProgress('Running change detection against active database tables (rc_commission, rc_fixed_fee, rc_reverse_shipping)...');
+    const changes = await detectBrandRateChanges(rateCards, pool);
+
+    console.log('\n----------------------------------------------------------------------');
+    console.log(`🔍 Change Detection Summary: ${changes.length} rate adjustments detected`);
+    console.log('----------------------------------------------------------------------');
 
     if (changes.length === 0) {
-      console.log('✓ All active database rate cards match live marketplace fee schedules.');
+      console.log('✓ All active database rate cards match the latest fee schedules.');
     } else {
       changes.forEach((c, i) => {
-        console.log(`[#${i + 1}] ${c.type.toUpperCase()} | ${c.category} | ${c.slab}`);
-        console.log(`     Old: ${c.oldRate ?? 'None'}  -->  New: ${c.newRate} (${c.reason})`);
+        console.log(`[#${i + 1}] ${c.type.toUpperCase()} | ${c.marketplace.toUpperCase()} | ${c.category} (${c.brand})`);
+        console.log(`     Slab:    ${c.slab || 'General'}`);
+        console.log(`     Old:     ${c.oldRate ?? 'None'}  -->  New: ${c.newRate} (${c.reason})`);
       });
 
+      // 4. Database Sync if requested
       if (autoSync) {
-        onProgress('\nAuto-sync is enabled. Committing changes to database...');
-        const syncRes = await syncRateCardsToDatabase(result.data, {
-          marketplace: marketplaceArg,
-          sellerAccount: 'default'
-        });
-        onProgress(`✓ Database synced successfully! Published Version: ${syncRes.versionName}`);
+        onProgress('\nAuto-sync is enabled. Committing changes to PostgreSQL database...');
+        const syncResult = await syncBrandRateCardsToDatabase(rateCards, { forceUpdate: true }, pool);
+        console.log(`\n✓ Database Synced Successfully!`);
+        console.log(`  Message:            ${syncResult.message}`);
+        console.log(`  Commissions Saved:  ${syncResult.insertedCommissions}`);
+        console.log(`  Fixed Fees Saved:   ${syncResult.insertedFixed}`);
+        console.log(`  Reverse Saved:      ${syncResult.insertedRev}`);
+        console.log(`  Version Snapshot:   ${syncResult.versionName}`);
       } else {
-        console.log('\n💡 Tip: Run with --auto-sync to commit these rate changes directly to the database.');
+        console.log('\n💡 Tip: Run with --auto-sync to commit these rate changes directly to PostgreSQL.');
       }
     }
 
-    console.log('\n================================================================');
-    console.log(' Worker run completed successfully.');
-    console.log('================================================================');
+    // 5. Excel Export if requested
+    if (shouldExportExcel || autoSync) {
+      onProgress('\nGenerating multi-sheet Excel workbook...');
+      const targetPath = customExcelPath || DEFAULT_EXCEL_PATH;
+      const excelRes = await generateBrandwiseRateCardExcel(targetPath, pool);
+      console.log(`✓ Excel Workbook Generated: ${excelRes.filePath}`);
+      console.log(`  Sheets: ${excelRes.sheets.join(', ')}`);
+      console.log(`  Total Records: ${excelRes.totalRecords}`);
+    }
+
+    console.log('\n======================================================================');
+    console.log('✓ Worker run completed successfully.');
+    console.log('======================================================================');
     process.exit(0);
 
   } catch (err) {

@@ -1,5 +1,12 @@
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const { app, BrowserWindow, ipcMain, dialog, Notification, shell } = require('electron');
-const path = require('path');
 const fs = require('fs');
 const fsp = require('fs').promises;
 const { Pool } = require('pg');
@@ -125,16 +132,37 @@ async function checkDailySchedule() {
   }
 }
 
-// ── Chrome Executable Discovery ──────────────────────────────────────────────
 function getChromeExecutablePath() {
-  const possiblePaths = [
+  const isWin = process.platform === 'win32';
+  const localAppData = process.env.LOCALAPPDATA || '';
+
+  const winPaths = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium'
+    path.join(localAppData, 'Google\\Chrome\\Application\\chrome.exe'),
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
   ];
-  return possiblePaths.find(p => fs.existsSync(p)) || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+
+  const linuxPaths = [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium'
+  ];
+
+  const possiblePaths = isWin ? winPaths : linuxPaths;
+  const found = possiblePaths.find(p => {
+    try {
+      return fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  });
+
+  if (found) return found;
+  return isWin ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : '/usr/bin/google-chrome';
 }
 
 // ── Table Parsing Logic with Shopsy Fee Rules ────────────────────────────────

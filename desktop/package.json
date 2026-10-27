@@ -3,10 +3,15 @@
   "version": "1.0.0",
   "description": "Cross-Platform Flipkart & Marketplace Rate Card Scraper Worker and Desktop App",
   "main": "main.js",
+  "type": "module",
   "scripts": {
     "start": "electron .",
+    "app": "node desktopServer.mjs",
+    "server": "node desktopServer.mjs",
     "worker": "node worker.js",
-    "worker:flipkart": "node worker.js --marketplace=flipkart",
+    "worker:both": "node worker.js --marketplace=both",
+    "worker:shopsy": "node worker.js --marketplace=shopsy",
+    "worker:sync": "node worker.js --marketplace=both --auto-sync",
     "build:win": "electron-builder --win --x64",
     "build:linux": "electron-builder --linux AppImage deb",
     "build:all": "electron-builder -wl"

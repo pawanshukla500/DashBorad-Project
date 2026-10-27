@@ -20,23 +20,40 @@ puppeteer.use(StealthPlugin());
 const COOKIES_PATH = path.join(__dirname, '../../.runtime/cookies.json');
 const CAPTURES_DIR = path.join(__dirname, '../../.runtime/ratecard_captures');
 
-// Chrome executable discovery
+import fsSync from 'fs';
+
+// Chrome executable discovery (Cross-Platform: Windows and Linux)
 export function getChromeExecutablePath() {
-  const possiblePaths = [
+  const isWin = process.platform === 'win32';
+  const localAppData = process.env.LOCALAPPDATA || '';
+
+  const winPaths = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium'
+    path.join(localAppData, 'Google\\Chrome\\Application\\chrome.exe'),
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
   ];
-  return possiblePaths.find(p => {
+
+  const linuxPaths = [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium'
+  ];
+
+  const possiblePaths = isWin ? winPaths : linuxPaths;
+  const found = possiblePaths.find(p => {
     try {
-      import('fs').then(fsSync => fsSync.existsSync(p));
-      return true;
+      return fsSync.existsSync(p);
     } catch {
       return false;
     }
-  }) || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  });
+
+  if (found) return found;
+  return isWin ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : '/usr/bin/google-chrome';
 }
 
 export async function saveCookies(page) {
@@ -241,7 +258,14 @@ export async function scrapeFlipkartRateCards(options = {}) {
   const browser = await puppeteer.launch({
     executablePath: getChromeExecutablePath(),
     headless: headless,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1500,1000']
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-zygote',
+      '--window-size=1500,1000'
+    ]
   });
 
   const allScrapedData = [];
