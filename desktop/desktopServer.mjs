@@ -1042,11 +1042,11 @@ const server = http.createServer(async (req, res) => {
 
       let isAuthorized = false;
       if (session && session.authenticated && session.idToken) {
-        const check = await verifyDesktopTokenAuthorization(session.idToken);
+        const check = await verifyDesktopTokenAuthorization(session.idToken, true);
         if (check.authorized) isAuthorized = true;
       }
       if (!isAuthorized && bearerToken) {
-        const check = await verifyDesktopTokenAuthorization(bearerToken);
+        const check = await verifyDesktopTokenAuthorization(bearerToken, true);
         if (check.authorized) isAuthorized = true;
       }
 

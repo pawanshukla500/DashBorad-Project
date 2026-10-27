@@ -71,17 +71,38 @@ export function validateDesktopTokenRole(token) {
 }
 
 /**
+ * Verifies fallback token revocation status against Identity Toolkit user metadata.
+ * Fail-closed: Requires valid positive issue timestamp, valid positive validSince timestamp,
+ * and strictly enforces that issueTime >= validSinceSec.
+ */
+export function verifyFallbackTokenRevocation(userRec, payload) {
+  if (!userRec || !payload) return false;
+  const issueTime = typeof payload.auth_time === 'number' 
+    ? payload.auth_time 
+    : (typeof payload.iat === 'number' ? payload.iat : null);
+  const validSinceSec = userRec.validSince ? parseInt(userRec.validSince, 10) : null;
+  
+  // Fail closed: must have a valid positive issueTime, valid positive validSinceSec, and issueTime >= validSinceSec
+  if (!issueTime || issueTime <= 0 || !validSinceSec || isNaN(validSinceSec) || validSinceSec <= 0) {
+    return false;
+  }
+  return issueTime >= validSinceSec;
+}
+
+/**
  * Cryptographically verifies a Firebase ID token and verifies revocation status.
  * Validates token signature, issuer, audience, expiration, and checks revocation
  * via Firebase Admin SDK (checkRevoked: true) or Google Identity Toolkit (validSince check).
  * Returns verified decoded token payload or null if forged, unsigned, invalidly signed, or revoked.
+ * Fails closed if revocation metadata or issue timestamps cannot be established when checkRevoked is true.
  */
-export async function verifyFirebaseTokenCryptographically(token, checkRevoked = true) {
+export async function verifyFirebaseTokenCryptographically(token, checkRevoked = true, options = {}) {
   if (!token || typeof token !== 'string') return null;
 
   // 1. Local cryptographic signature and revocation verification via Firebase Admin SDK if configured
   try {
-    const { auth } = await import('../backend/utils/firebaseAdmin.js');
+    const authModule = options.authModule || (options.auth !== undefined ? { auth: options.auth } : await import('../backend/utils/firebaseAdmin.js'));
+    const auth = authModule?.auth;
     if (auth && typeof auth.verifyIdToken === 'function') {
       const decoded = await auth.verifyIdToken(token, checkRevoked);
       if (decoded && decoded.uid) {
@@ -101,9 +122,10 @@ export async function verifyFirebaseTokenCryptographically(token, checkRevoked =
 
   // 2. Cryptographic verification & revocation fallback via Google Identity Toolkit API
   try {
+    const fetchFn = options.fetchFn || fetch;
     const apiKey = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
     const verifyUrl = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`;
-    const res = await fetch(verifyUrl, {
+    const res = await fetchFn(verifyUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ idToken: token })
@@ -114,12 +136,9 @@ export async function verifyFirebaseTokenCryptographically(token, checkRevoked =
         const userRec = data.users[0];
         const payload = decodeJwtPayload(token);
         
-        // Check revocation against validSince timestamp
-        if (checkRevoked && payload && (payload.auth_time || payload.iat)) {
-          const issueTime = payload.auth_time || payload.iat;
-          const validSinceSec = userRec.validSince ? parseInt(userRec.validSince, 10) : 0;
-          if (validSinceSec > 0 && issueTime < validSinceSec) {
-            // Token was issued before revocation timestamp - reject revoked token!
+        // Check revocation against validSince timestamp (fail-closed)
+        if (checkRevoked) {
+          if (!verifyFallbackTokenRevocation(userRec, payload)) {
             return null;
           }
         }
@@ -135,8 +154,8 @@ export async function verifyFirebaseTokenCryptographically(token, checkRevoked =
  * Verifies both the cryptographic signature and the authorized role claims of a desktop session token,
  * strictly verifying that the token has not been revoked (checkRevoked = true).
  */
-export async function verifyDesktopTokenAuthorization(token, checkRevoked = true) {
-  const verifiedPayload = await verifyFirebaseTokenCryptographically(token, checkRevoked);
+export async function verifyDesktopTokenAuthorization(token, checkRevoked = true, options = {}) {
+  const verifiedPayload = await verifyFirebaseTokenCryptographically(token, checkRevoked, options);
   if (!verifiedPayload) {
     return { authorized: false, role: null, error: 'Cryptographic signature or revocation verification failed' };
   }

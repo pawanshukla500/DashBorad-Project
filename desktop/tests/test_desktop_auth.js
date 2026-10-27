@@ -289,17 +289,20 @@ async function runTests() {
     const isForgedAdminBlocked = forgedAdminRes.status === 401;
     console.log(`  • Cryptographic signature verification (forged alg:none admin JWT HTTP 401): Passed = ${isForgedAdminBlocked}`);
 
-    // 7d. Revocation check gate: Revoked or expired token must receive HTTP 401
+    // 7d. Revocation check gate: Token failing cryptographic revocation verification must receive HTTP 401
+    const revokedAdminJwt = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64') + '.' +
+                            Buffer.from(JSON.stringify({ recon_role: 'admin', uid: 'user_revoked', email: 'revoked@vbexports.co.in', auth_time: 1000, exp: 9999999999 })).toString('base64') +
+                            '.revoked_mock_signature';
     const revokedRes = await fetch(`${testBase}/api/interactive-login`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer revoked_token_signature_expired'
+        'Authorization': `Bearer ${revokedAdminJwt}`
       },
       body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
     });
     const isRevokedTokenBlocked = revokedRes.status === 401;
-    console.log(`  • Revocation verification gate (revoked token HTTP 401): Passed = ${isRevokedTokenBlocked}`);
+    console.log(`  • Revocation verification gate (JWT with admin role failing verification HTTP 401): Passed = ${isRevokedTokenBlocked}`);
 
     // 8. DNS rebinding protection: Invalid Host header must return HTTP 403
     const rebindingStatusCode = await new Promise((resolve, reject) => {
@@ -507,14 +510,66 @@ async function runTests() {
     const isAuthForgedRejected = authVerifyResult.authorized === false;
     console.log(`  • Cryptographic verification rejecting unsigned/forged token: Passed = ${isCryptoForgedRejected && isAuthForgedRejected}`);
 
-    // 11. Revocation verification: checkRevoked=true parameter enforcement on verifyIdToken
-    const revokedCheckSimulation = async () => {
-      const revokedErr = new Error('The Firebase ID token has been revoked');
-      revokedErr.code = 'auth/id-token-revoked';
-      return revokedErr.code === 'auth/id-token-revoked';
+    // 11. Revocation verification tests exercising production verifiers:
+    // 11a. Admin SDK verification test: assert auth.verifyIdToken is invoked with checkRevoked: true and catches auth/id-token-revoked
+    let capturedCheckRevokedParam = null;
+    let capturedTokenParam = null;
+    const mockAdminAuth = {
+      verifyIdToken: async (tok, checkRevoked) => {
+        capturedTokenParam = tok;
+        capturedCheckRevokedParam = checkRevoked;
+        const err = new Error('The Firebase ID token has been revoked');
+        err.code = 'auth/id-token-revoked';
+        throw err;
+      }
     };
-    const isRevokedCheckPassed = await revokedCheckSimulation();
-    console.log(`  • Revocation verification logic enforces checkRevoked=true: Passed = ${isRevokedCheckPassed}`);
+    const adminRevokedResult = await verifyFirebaseTokenCryptographically('mock-token-sample', true, { auth: mockAdminAuth });
+    const isAdminRevocationVerified = capturedCheckRevokedParam === true && 
+                                     capturedTokenParam === 'mock-token-sample' && 
+                                     adminRevokedResult === null;
+    console.log(`  • Production Admin SDK verifier invoked with checkRevoked=true & rejects revoked token: Passed = ${isAdminRevocationVerified}`);
+
+    // 11b. Fallback Identity Toolkit test: Revoked token (auth_time < validSince) -> returns null
+    const revokedTokenPayload = { uid: 'user_1', recon_role: 'admin', auth_time: 1000 };
+    const mockRevokedToken = createMockJwt(revokedTokenPayload);
+    const mockFetchRevoked = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: '2000' }] })
+    });
+    const fallbackRevokedResult = await verifyFirebaseTokenCryptographically(mockRevokedToken, true, { auth: null, fetchFn: mockFetchRevoked });
+    const isFallbackRevokedRejected = fallbackRevokedResult === null;
+    console.log(`  • Fallback verifier rejects revoked token (auth_time 1000 < validSince 2000): Passed = ${isFallbackRevokedRejected}`);
+
+    // 11c. Fallback Identity Toolkit test: Non-revoked token (auth_time >= validSince) -> returns decoded payload
+    const activeTokenPayload = { uid: 'user_1', recon_role: 'admin', auth_time: 2500 };
+    const mockActiveToken = createMockJwt(activeTokenPayload);
+    const mockFetchActive = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: '2000' }] })
+    });
+    const fallbackActiveResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchActive });
+    const isFallbackActiveAccepted = fallbackActiveResult !== null && fallbackActiveResult.recon_role === 'admin' && fallbackActiveResult.auth_time === 2500;
+    console.log(`  • Fallback verifier accepts active token (auth_time 2500 >= validSince 2000): Passed = ${isFallbackActiveAccepted}`);
+
+    // 11d. Fallback Identity Toolkit test: Missing/malformed validSince or timestamp (Fail-closed) -> returns null
+    const mockFetchMalformed = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: null }] })
+    });
+    const fallbackMalformedResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchMalformed });
+    const isFallbackMalformedRejected = fallbackMalformedResult === null;
+
+    const noTimeTokenPayload = { uid: 'user_1', recon_role: 'admin' };
+    const mockNoTimeToken = createMockJwt(noTimeTokenPayload);
+    const fallbackNoTimeResult = await verifyFirebaseTokenCryptographically(mockNoTimeToken, true, { auth: null, fetchFn: mockFetchActive });
+    const isFallbackNoTimeRejected = fallbackNoTimeResult === null;
+    console.log(`  • Fallback verifier fails closed when revocation metadata is missing/malformed: Passed = ${isFallbackMalformedRejected && isFallbackNoTimeRejected}`);
+
+    const isRevokedCheckPassed = isAdminRevocationVerified && 
+                                 isFallbackRevokedRejected && 
+                                 isFallbackActiveAccepted && 
+                                 isFallbackMalformedRejected && 
+                                 isFallbackNoTimeRejected;
 
     if (
       isClaimConstantValid &&
