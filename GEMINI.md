@@ -85,12 +85,12 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
    - Expanded `isSafeReadStatement` to recognize Common Table Expressions (`WITH ... SELECT`) as safe read queries, preventing transient socket drops on CTE analytics queries from taking the pool offline.
    - Hardened `getPool().connect()` with a 2-attempt backoff retry loop to absorb transient WAN network resets before throwing `DatabaseUnavailableError`.
 8. **UI/UX Minimalist Polish & Brand Design System**:
-   - Completed full tonal sweep across all pages (`Sales`, `Returns`, `Statement`, `Profit Analysis`, `Upload`, `Amazon Reconcile`, `Amazon Rate Card`, `Order Detail Drawer`, `Export Button`, `Profit & Loss`, `Rate Audit`, and `Sidebar`), replacing all raw `indigo-*` classes with brand burgundy tokens (`bg-primary`, `bg-primary-container`, `text-primary`, `text-on-primary-container`, `border-primary/20`).
+   - Standardized interactive buttons, header surfaces, and primary containers across core views (Statement, Profit Analysis, Upload, Amazon Reconcile, Amazon Rate Card, Export Button, Profit & Loss, Rate Audit, and Sidebar) to brand burgundy tokens (`bg-primary`, `bg-primary-container`, `text-primary`, `text-on-primary-container`, `border-primary/20`), preserving table-row accent highlights on data-dense tables per the pending tonal sweep guideline.
    - Enforced contrast compliance: `text-on-primary-container` on light pink containers; `text-on-primary` on dark burgundy surfaces.
 9. **Marketplace Accounts Center & Desktop Scraper**:
    - Added AES-256-GCM encrypted credential storage for marketplace portals in `backend/routes/marketplaceAccounts.js`.
    - Integrated official SVG brand logos via Brandfetch MCP (Amazon, Cocoblu, Myntra, Flipkart, Reliance Retail / AJIO, Meesho, Shopify).
-   - Built standalone Windows installer in `released/ReconCentral Desktop Setup 1.0.0.exe` with secure session management, role verification, and zero hardcoded database credentials.
+   - Built standalone Windows installer in `released/ReconCentral-RateCard-Worker-Setup.exe` (and portable build `ReconCentral-RateCard-Worker-Portable.exe`) with secure session management, role verification, and zero hardcoded database credentials.
 10. **Cloudflare-Aligned API Security & Resilience Suite**:
    - Added `backend/tests/apiSecurityAndResilience.test.js` verifying 401 barriers on unauthenticated report/mutation access, sanitized health reporting without credential leakage, public vs internal projection isolation via `publicDatabaseStatus`, and graceful malformed JSON handling (400 without stack disclosure).
    - Enforced zero hardcoded secrets in test fixtures through dynamic `DATABASE_URL` credential inspection.

@@ -103,7 +103,8 @@ reached by the API through `DATABASE_URL`.
 ## Desktop Application & Scraper Client
 
 For automated rate card scraping and live portal extraction without browser extensions:
-- **Installer:** Windows standalone setup executable located in [`released/ReconCentral Desktop Setup 1.0.0.exe`](released/ReconCentral%20Desktop%20Setup%201.0.0.exe).
+- **Installer:** Windows standalone setup executable located in [`released/ReconCentral-RateCard-Worker-Setup.exe`](released/ReconCentral-RateCard-Worker-Setup.exe) (portable build available in [`released/ReconCentral-RateCard-Worker-Portable.exe`](released/ReconCentral-RateCard-Worker-Portable.exe)).
+- **Documentation:** Complete setup and authorization guide in [`released/INSTALLATION_AND_AUTHORIZATION_GUIDE.md`](released/INSTALLATION_AND_AUTHORIZATION_GUIDE.md).
 - **Authentication:** Authenticates securely against Firebase Auth and PostgreSQL role claims. Zero administrative secrets or raw database credentials are stored in the client binary.
 - **Marketplace Accounts:** Configurable in Admin Center with AES-256-GCM encrypted portal credentials.
 

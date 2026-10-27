@@ -111,7 +111,7 @@ frontend/src/
    - Myntra accounts strictly isolate `myntra_vb` (Seller ID 10708) and `myntra_ej` (Seller ID 45833).
 
 2. **Standalone Desktop Application**:
-   - Windows installer distributed in `released/ReconCentral Desktop Setup 1.0.0.exe`.
+   - Windows installer distributed in `released/ReconCentral-RateCard-Worker-Setup.exe` (and standalone portable build `released/ReconCentral-RateCard-Worker-Portable.exe`), documented in `released/INSTALLATION_AND_AUTHORIZATION_GUIDE.md`.
    - Direct Puppeteer automation for rate card extraction and order sync without requiring browser extensions or terminal commands.
    - Authenticates against Firebase Auth and PostgreSQL role claims with zero hardcoded administrative credentials in the binary.
 
