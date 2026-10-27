@@ -10,12 +10,15 @@ if (!window.ratecardAPI) {
     saveConfig: (cfg) => fetch(`${API_BASE}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) }).then(r => r.json()),
     testDbConnection: (dbUrl) => fetch(`${API_BASE}/api/test-db`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dbUrl }) }).then(r => r.json()),
     getBrandFsnCatalog: () => fetch(`${API_BASE}/api/catalog`).then(r => r.json()),
-    getRateCardPreview: () => fetch(`${API_BASE}/api/preview`).then(r => r.json()),
+    getRateCardPreview: (options) => {
+      const params = new URLSearchParams(options || {}).toString();
+      return fetch(`${API_BASE}/api/preview${params ? '?' + params : ''}`).then(r => r.json());
+    },
     detectBrandRateChanges: (rateCards) => fetch(`${API_BASE}/api/detect-changes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rateCards }) }).then(r => r.json()),
     syncBrandRateCards: (rateCards, options) => fetch(`${API_BASE}/api/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rateCards, options }) }).then(r => r.json()),
     exportDesktopExcel: (path) => fetch(`${API_BASE}/api/export-excel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.json()),
     openExcelFile: (path) => fetch(`${API_BASE}/api/open-excel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.json()),
-    startScrape: (options) => fetch(`${API_BASE}/api/preview`, { method: 'GET' }).then(r => r.json()).then(res => ({ success: true, data: res.rateCards, stagingFile: 'desktop/worker-config.json' })),
+    startScrape: (options) => fetch(`${API_BASE}/api/scrape/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options || {}) }).then(r => r.json()),
     runInteractiveLogin: (payload) => fetch(`${API_BASE}/api/interactive-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) }).then(r => r.json()),
     getMarketplaces: () => fetch(`${API_BASE}/api/desktop/marketplaces`).then(r => r.json()),
     getMarketplaceAccounts: () => fetch(`${API_BASE}/api/desktop/marketplace-accounts`).then(r => r.json()),
@@ -462,14 +465,17 @@ function setupEventListeners() {
   const headerBadgeChannel = document.getElementById('header-badge-channel');
 
   const syncMarketplaceSelection = (val) => {
-    if (headerSelectMp && headerSelectMp.querySelector(`option[value="${val}"]`)) {
-      headerSelectMp.value = val;
+    if (headerSelectMp) {
+      const matchHeader = Array.from(headerSelectMp.options).find(o => o.value === val);
+      if (matchHeader) headerSelectMp.value = val;
     }
-    if (scraperSelectMp && scraperSelectMp.querySelector(`option[value="${val}"]`)) {
-      scraperSelectMp.value = val;
+    if (scraperSelectMp) {
+      const matchScraper = Array.from(scraperSelectMp.options).find(o => o.value === val);
+      if (matchScraper) scraperSelectMp.value = val;
     }
     if (headerBadgeChannel) {
-      const selectedOpt = scraperSelectMp?.querySelector(`option[value="${val}"]`) || headerSelectMp?.querySelector(`option[value="${val}"]`);
+      const selectedOpt = (scraperSelectMp && Array.from(scraperSelectMp.options).find(o => o.value === val)) ||
+                          (headerSelectMp && Array.from(headerSelectMp.options).find(o => o.value === val));
       headerBadgeChannel.innerText = selectedOpt?.innerText?.split('—')?.[0]?.trim() || val.toUpperCase();
     }
   };

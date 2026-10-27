@@ -632,10 +632,16 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
         return href.includes('supplier.ajio.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
       }
       if (id === 'cocoblu') {
-        return href.includes('cocoblu.biz') && !href.includes('/login');
+        const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
+        const onAuthPage = href.includes('/dashboard') || href.includes('/orders') || href.includes('/home') || href.includes('/portal') || href.includes('/reports');
+        const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('dashboard') || body.includes('welcome');
+        return href.includes('cocoblu.biz') && notLogin && (onAuthPage || hasAuthText);
       }
       if (id === 'shopify') {
-        return href.includes('admin.shopify.com') && !href.includes('/login');
+        const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
+        const onStore = href.includes('/store') || href.includes('/orders') || href.includes('/products') || href.includes('/settings');
+        const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('settings');
+        return href.includes('admin.shopify.com') && notLogin && (onStore || hasAuthText);
       }
       return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
     }, { timeout: 300000 }, mpConfig.id);
@@ -1095,26 +1101,39 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
             saveConfig(config);
 
             // Reissue fresh ID token carrying newly updated role claim
+            let tokenRenewed = false;
             if (srvData.customToken) {
               try {
                 const customAuth = await exchangeFirebaseCustomToken(srvData.customToken);
                 if (customAuth && customAuth.idToken) {
                   fbResult.idToken = customAuth.idToken;
                   if (customAuth.refreshToken) fbResult.refreshToken = customAuth.refreshToken;
+                  tokenRenewed = true;
                 }
               } catch (ctErr) {
                 console.warn('[Desktop Auth] Custom token exchange warning:', ctErr.message);
               }
-            } else if (fbResult.refreshToken) {
+            }
+
+            if (!tokenRenewed && fbResult.refreshToken) {
               try {
                 const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
                 if (refreshed && refreshed.idToken) {
                   fbResult.idToken = refreshed.idToken;
                   if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
+                  tokenRenewed = true;
                 }
               } catch (refreshErr) {
                 console.warn('[Desktop Auth] Token refresh warning:', refreshErr.message);
               }
+            }
+
+            // Fail closed: do not persist session if role-claim token renewal failed
+            if (srvData.customToken && !tokenRenewed) {
+              return {
+                success: false,
+                error: 'Failed to refresh authentication token with newly assigned desktop role claims. Please verify your network connection and try logging in again.'
+              };
             }
             break;
           }
@@ -1312,7 +1331,12 @@ ipcMain.handle('get-ratecard-preview', async (e, options = {}) => {
     const { getPool } = await import('../backend/db/index.js');
     const pool = getPool();
     const rateCards = await buildBrandRateCardSet(pool);
-    return { success: true, rateCards };
+    const targetMp = (options.marketplace || options.channel || '').toLowerCase().trim();
+    let filteredRateCards = rateCards;
+    if (targetMp && targetMp !== 'both' && targetMp !== 'all' && targetMp !== 'flipkart_shopsy') {
+      filteredRateCards = rateCards.filter(rc => (rc.marketplace || '').toLowerCase() === targetMp);
+    }
+    return { success: true, rateCards: filteredRateCards };
   } catch (err) {
     return { success: false, error: err.message };
   }

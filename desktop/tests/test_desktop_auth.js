@@ -169,6 +169,39 @@ async function runTests() {
     failed++;
   }
 
+  // Test 6: Verify Multi-Marketplace Gating, URL Consistency & Scraper Protection
+  try {
+    console.log('\n[Test 6] Verifying multi-marketplace channel configuration & scraper gating...');
+    const desktopServerContent = fs.readFileSync(path.join(projectRoot, 'desktop', 'desktopServer.mjs'), 'utf8');
+    const mainJsContent = fs.readFileSync(path.join(projectRoot, 'desktop', 'main.js'), 'utf8');
+
+    // 1. Myntra canonical URL check
+    const hasCanonicalMyntra = desktopServerContent.includes('https://partnerportal.myntra.com') && mainJsContent.includes('https://partnerportal.myntra.com');
+    // 2. Fail-closed token renewal check
+    const hasFailClosedRenewal = desktopServerContent.includes('Failed to refresh authentication token with newly assigned desktop role claims') &&
+                                mainJsContent.includes('Failed to refresh authentication token with newly assigned desktop role claims');
+    // 3. Unknown channel rejection in desktopServer.mjs
+    const hasUnknownChannelRejection = desktopServerContent.includes('Unsupported marketplace');
+    // 4. Cocoblu positive auth check
+    const hasCocobluAuthCheck = mainJsContent.includes('body.includes(\'logout\') || body.includes(\'sign out\') || body.includes(\'dashboard\')');
+
+    if (hasCanonicalMyntra && hasFailClosedRenewal && hasUnknownChannelRejection && hasCocobluAuthCheck) {
+      console.log('  ✓ Pass: Multi-marketplace channel gating, fail-closed renewal, and URL consistency verified.');
+      passed++;
+    } else {
+      console.error('  ✗ Fail: Multi-marketplace verification check failed:', {
+        hasCanonicalMyntra,
+        hasFailClosedRenewal,
+        hasUnknownChannelRejection,
+        hasCocobluAuthCheck
+      });
+      failed++;
+    }
+  } catch (err) {
+    console.error('  ✗ Fail:', err.message);
+    failed++;
+  }
+
   console.log('\n=================================================================');
   console.log(` Summary: ${passed} passed, ${failed} failed.`);
   console.log('=================================================================');

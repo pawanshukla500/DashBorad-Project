@@ -475,7 +475,12 @@ const server = http.createServer(async (req, res) => {
       try {
         const pool = getPool();
         const rateCards = await buildBrandRateCardSet(pool);
-        return sendJson(200, { success: true, count: rateCards.length, rateCards });
+        const targetMp = (urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || '').toLowerCase().trim();
+        let filteredRateCards = rateCards;
+        if (targetMp && targetMp !== 'both' && targetMp !== 'all' && targetMp !== 'flipkart_shopsy') {
+          filteredRateCards = rateCards.filter(rc => (rc.marketplace || '').toLowerCase() === targetMp);
+        }
+        return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
@@ -611,26 +616,39 @@ const server = http.createServer(async (req, res) => {
                 saveConfig(config);
 
                 // Reissue fresh ID token carrying newly updated role claim
+                let tokenRenewed = false;
                 if (srvData.customToken) {
                   try {
                     const customAuth = await exchangeFirebaseCustomToken(srvData.customToken);
                     if (customAuth && customAuth.idToken) {
                       fbResult.idToken = customAuth.idToken;
                       if (customAuth.refreshToken) fbResult.refreshToken = customAuth.refreshToken;
+                      tokenRenewed = true;
                     }
                   } catch (ctErr) {
                     console.warn('[desktopServer] Custom token exchange warning:', ctErr.message);
                   }
-                } else if (fbResult.refreshToken) {
+                }
+
+                if (!tokenRenewed && fbResult.refreshToken) {
                   try {
                     const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
                     if (refreshed && refreshed.idToken) {
                       fbResult.idToken = refreshed.idToken;
                       if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
+                      tokenRenewed = true;
                     }
                   } catch (refreshErr) {
                     console.warn('[desktopServer] Token refresh warning:', refreshErr.message);
                   }
+                }
+
+                // Fail closed: do not persist session if role-claim token renewal failed
+                if (srvData.customToken && !tokenRenewed) {
+                  return sendJson(401, {
+                    success: false,
+                    error: 'Failed to refresh authentication token with newly assigned desktop role claims. Please verify your network connection and try logging in again.'
+                  });
                 }
                 break;
               }
@@ -872,6 +890,15 @@ const server = http.createServer(async (req, res) => {
       const targetMp = body.marketplace || config.marketplace || 'both';
       const normalizedChannel = String(targetMp).toLowerCase().trim();
       const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === normalizedChannel || m.marketplace === normalizedChannel);
+      const validFlipkartAliases = ['both', 'flipkart', 'shopsy', 'flipkart_shopsy'];
+
+      if (!mpConfig && !validFlipkartAliases.includes(normalizedChannel)) {
+        return sendJson(400, {
+          success: false,
+          error: `Unsupported marketplace: '${targetMp}'. Supported channels are: ${SUPPORTED_MARKETPLACES.map(m => m.id).join(', ')}.`
+        });
+      }
+
       if (mpConfig && !mpConfig.hasScraper) {
         return sendJson(400, {
           success: false,
@@ -948,7 +975,7 @@ const server = http.createServer(async (req, res) => {
         const body = await parseJsonBody();
         const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
         const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId) || SUPPORTED_MARKETPLACES[0];
-        const portalUrl = body.portal_url || mpConfig.loginUrl || mpConfig.portalUrl || 'https://seller.flipkart.com/';
+        const portalUrl = mpConfig.loginUrl || mpConfig.portalUrl || body.portal_url || 'https://seller.flipkart.com/';
         const chromePath = getChromeExecutablePath();
         const channelProfileDir = path.join(USER_DATA_DIR, 'chrome-profiles', targetId);
         if (!fs.existsSync(channelProfileDir)) {

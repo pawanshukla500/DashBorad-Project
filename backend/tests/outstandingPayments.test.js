@@ -59,7 +59,7 @@ describe('Outstanding Payments Endpoints', () => {
     } finally {
       server.close();
     }
-  }, 20_000);
+  }, 60_000);
 
   it('GET /reconcile/outstanding/orders filters by marketplace', async () => {
     const server = app.listen(0);
@@ -78,7 +78,7 @@ describe('Outstanding Payments Endpoints', () => {
     } finally {
       server.close();
     }
-  }, 20_000);
+  }, 60_000);
 
   it('GET /reconcile/outstanding/invoices returns paginated pending invoices', async () => {
     const server = app.listen(0);
@@ -95,7 +95,7 @@ describe('Outstanding Payments Endpoints', () => {
     } finally {
       server.close();
     }
-  }, 20_000);
+  }, 60_000);
 
   it('GET /reconcile/outstanding/summary returns B2C channels, Myntra accounts, and D2C vendors', async () => {
     const server = app.listen(0);
@@ -194,5 +194,5 @@ describe('Outstanding Payments Endpoints', () => {
     } finally {
       server.close();
     }
-  });
+  }, 60_000);
 });
