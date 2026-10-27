@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { encryptCredential, decryptCredential, maskCredential, getMasterKey } from '../utils/credentialCrypto.js';
+import { describe, it, expect, vi } from 'vitest';
+import { 
+  encryptCredential, 
+  decryptCredential, 
+  decryptCredentialWithKeyInfo, 
+  reencryptMarketplaceCredentials, 
+  maskCredential, 
+  getMasterKey 
+} from '../utils/credentialCrypto.js';
 import { DEFAULT_MARKETPLACE_METADATA } from '../routes/marketplaceAccounts.js';
 
 describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
@@ -124,6 +131,80 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
 
       const validFormatPayload = '0123456789abcdef01234567:0123456789abcdef0123456789abcdef:1234';
       expect(() => decryptCredential(validFormatPayload)).toThrow(/Production security violation/);
+    } finally {
+      process.env = origEnv;
+    }
+  });
+
+  it('supports rotating from an earlier environment key to a new one via PREVIOUS_ENCRYPTION_KEYS', () => {
+    const origEnv = { ...process.env };
+    try {
+      // 1. Encrypt with initial environment key
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'enterprise-env-key-v1';
+      delete process.env.PREVIOUS_ENCRYPTION_KEYS;
+      const ciphertextV1 = encryptCredential('SecretPasswordUnderKeyV1');
+
+      // 2. Rotate to new environment key with previous key in keyring
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'enterprise-env-key-v2';
+      process.env.PREVIOUS_ENCRYPTION_KEYS = 'enterprise-env-key-v1';
+
+      const keyInfo = decryptCredentialWithKeyInfo(ciphertextV1);
+      expect(keyInfo.plaintext).toBe('SecretPasswordUnderKeyV1');
+      expect(keyInfo.isCurrentKey).toBe(false);
+      expect(decryptCredential(ciphertextV1)).toBe('SecretPasswordUnderKeyV1');
+
+      // 3. New encryption uses current active key
+      const ciphertextV2 = encryptCredential('SecretPasswordUnderKeyV2');
+      const keyInfoV2 = decryptCredentialWithKeyInfo(ciphertextV2);
+      expect(keyInfoV2.plaintext).toBe('SecretPasswordUnderKeyV2');
+      expect(keyInfoV2.isCurrentKey).toBe(true);
+    } finally {
+      process.env = origEnv;
+    }
+  });
+
+  it('reencryptMarketplaceCredentials migrates legacy and rotated keys to primary key', async () => {
+    const origEnv = { ...process.env };
+    try {
+      // Setup initial key and records
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'old-key-v1';
+      delete process.env.PREVIOUS_ENCRYPTION_KEYS;
+      const initialPayload = encryptCredential('SellerCredentials123');
+
+      // Rotate primary key and configure previous key
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'active-key-v2';
+      process.env.PREVIOUS_ENCRYPTION_KEYS = 'old-key-v1';
+
+      const mockDbRecords = [
+        { id: 101, password_encrypted: initialPayload },
+        { id: 102, password_encrypted: encryptCredential('FreshActiveCredentials') }
+      ];
+
+      const mockDb = {
+        query: vi.fn(async (sql, params) => {
+          if (/SELECT id, password_encrypted/i.test(sql)) {
+            return { rows: mockDbRecords };
+          }
+          if (/UPDATE marketplace_accounts SET password_encrypted/i.test(sql)) {
+            const [newCipher, id] = params;
+            const rec = mockDbRecords.find(r => r.id === id);
+            if (rec) rec.password_encrypted = newCipher;
+            return { rowCount: 1 };
+          }
+          return { rows: [] };
+        })
+      };
+
+      const result = await reencryptMarketplaceCredentials(mockDb);
+      expect(result.reencrypted).toBe(1);
+      expect(result.total).toBe(2);
+
+      // Verify record 101 is now encrypted under active-key-v2 and decryptable even without previous keys
+      delete process.env.PREVIOUS_ENCRYPTION_KEYS;
+      const migratedPayload = mockDbRecords.find(r => r.id === 101).password_encrypted;
+      const decryptedWithCurrentOnly = decryptCredentialWithKeyInfo(migratedPayload);
+      expect(decryptedWithCurrentOnly.plaintext).toBe('SellerCredentials123');
+      expect(decryptedWithCurrentOnly.isCurrentKey).toBe(true);
     } finally {
       process.env = origEnv;
     }

@@ -53,6 +53,31 @@ export function encryptCredential(plaintext) {
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${ciphertext}`;
 }
 
+/**
+ * Resolves previous encryption keys configured in the environment keyring (e.g. during secret rotation).
+ * Also supports legacy transition fallback when explicitly allowed or during non-production testing.
+ * 
+ * @returns {Buffer[]} Array of 32-byte key buffers
+ */
+export function getPreviousKeys() {
+  const previousRaw = process.env.CREDENTIALS_PREVIOUS_KEYS 
+    || process.env.PREVIOUS_ENCRYPTION_KEYS 
+    || '';
+  
+  const keys = previousRaw
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => crypto.createHash('sha256').update(s).digest());
+
+  // Allow legacy key transition if explicitly enabled or in development/test
+  if (process.env.ALLOW_LEGACY_CRYPTO_FALLBACK === 'true' || process.env.NODE_ENV !== 'production') {
+    keys.push(crypto.createHash('sha256').update(LEGACY_FALLBACK_SECRET).digest());
+  }
+
+  return keys;
+}
+
 const LEGACY_FALLBACK_SECRET = 'reconcentral-credentials-master-aes256-encryption-key-secret';
 
 /**
@@ -75,47 +100,91 @@ function attemptAesGcmDecrypt(key, ivHex, authTagHex, ciphertextHex) {
 }
 
 /**
- * Decrypts a serialized payload formatted as `ivHex:authTagHex:ciphertextHex`.
- * Throws on configuration error in production if master key is missing.
- * Supports legacy key fallback so existing credentials survive environment key configuration.
+ * Decrypts a serialized payload formatted as `ivHex:authTagHex:ciphertextHex` and reports whether
+ * the credential was decrypted using the active primary key or a keyring previous/legacy key.
  * 
  * @param {string} encryptedPayload - Serialized encrypted payload
- * @returns {string|null} Decrypted plaintext string or null if invalid/corrupt
+ * @returns {{ plaintext: string|null, isCurrentKey: boolean }}
  */
-export function decryptCredential(encryptedPayload) {
+export function decryptCredentialWithKeyInfo(encryptedPayload) {
   if (!encryptedPayload || typeof encryptedPayload !== 'string') {
-    return null;
+    return { plaintext: null, isCurrentKey: false };
   }
   
   const parts = encryptedPayload.split(':');
   if (parts.length !== 3) {
-    return null;
+    return { plaintext: null, isCurrentKey: false };
   }
   
   const [ivHex, authTagHex, ciphertextHex] = parts;
   if (!ivHex || !authTagHex || !ciphertextHex) {
-    return null;
+    return { plaintext: null, isCurrentKey: false };
   }
   
   // 1. Resolve master key (throws directly if missing in production, preventing masked configuration errors)
   const primaryKey = getMasterKey();
   
-  // 2. Attempt decryption using primary environment-derived key
+  // 2. Attempt decryption using primary active key
   const decrypted = attemptAesGcmDecrypt(primaryKey, ivHex, authTagHex, ciphertextHex);
   if (decrypted !== null) {
-    return decrypted;
+    return { plaintext: decrypted, isCurrentKey: true };
   }
   
-  // 3. Fallback decryption for legacy credentials encrypted prior to environment key rotation
-  const legacyKey = crypto.createHash('sha256').update(LEGACY_FALLBACK_SECRET).digest();
-  if (!primaryKey.equals(legacyKey)) {
-    const legacyDecrypted = attemptAesGcmDecrypt(legacyKey, ivHex, authTagHex, ciphertextHex);
-    if (legacyDecrypted !== null) {
-      return legacyDecrypted;
+  // 3. Fallback to previous keys in keyring (or legacy fallback during migration)
+  const previousKeys = getPreviousKeys();
+  for (const prevKey of previousKeys) {
+    if (primaryKey.equals(prevKey)) continue;
+    const prevDecrypted = attemptAesGcmDecrypt(prevKey, ivHex, authTagHex, ciphertextHex);
+    if (prevDecrypted !== null) {
+      return { plaintext: prevDecrypted, isCurrentKey: false };
     }
   }
   
-  return null;
+  return { plaintext: null, isCurrentKey: false };
+}
+
+/**
+ * Decrypts a serialized payload formatted as `ivHex:authTagHex:ciphertextHex`.
+ * Supports keyring rotation from previous environment keys as well as legacy transition fallback.
+ * 
+ * @param {string} encryptedPayload - Serialized encrypted payload
+ * @returns {string|null} Decrypted plaintext string or null if invalid/corrupt
+ */
+export function decryptCredential(encryptedPayload) {
+  const { plaintext } = decryptCredentialWithKeyInfo(encryptedPayload);
+  return plaintext;
+}
+
+/**
+ * Re-encrypts all stored marketplace account credentials using the active primary key.
+ * Migrates records previously encrypted under an earlier environment key in the keyring or legacy key.
+ * 
+ * @param {import('pg').Pool|object} db - PostgreSQL pool or client
+ * @returns {Promise<{ reencrypted: number, total: number }>}
+ */
+export async function reencryptMarketplaceCredentials(db) {
+  if (!db || typeof db.query !== 'function') {
+    return { reencrypted: 0, total: 0 };
+  }
+
+  const { rows } = await db.query(
+    `SELECT id, password_encrypted FROM marketplace_accounts WHERE password_encrypted IS NOT NULL`
+  );
+
+  let reencrypted = 0;
+  for (const row of rows) {
+    const { plaintext, isCurrentKey } = decryptCredentialWithKeyInfo(row.password_encrypted);
+    if (plaintext && !isCurrentKey) {
+      const updatedCiphertext = encryptCredential(plaintext);
+      await db.query(
+        `UPDATE marketplace_accounts SET password_encrypted = $1, updated_at = NOW() WHERE id = $2`,
+        [updatedCiphertext, row.id]
+      );
+      reencrypted++;
+    }
+  }
+
+  return { reencrypted, total: rows.length };
 }
 
 /**

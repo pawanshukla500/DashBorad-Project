@@ -6,6 +6,7 @@ import { myntraInvoicesUnifiedSelect } from '../services/myntraSettlementReporti
 import { meeshoSettlementUnifiedSelect } from '../services/meeshoSettlementReportingRollups.js';
 import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { rebuildAjioSorLedger } from '../services/sorMirror.js';
+import { reencryptMarketplaceCredentials } from '../utils/credentialCrypto.js';
 
 // Every item below this version is idempotent but not free: ALTER TABLE takes
 // a table lock even when the column already exists. Record completion so a
@@ -3275,6 +3276,9 @@ export async function ensureMarketplaceCredentialsSchema(db) {
       SET is_active = false
       WHERE marketplace = 'myntra' AND account_id = 'default'
     `);
+
+    // Automatically re-encrypt any legacy or rotated credentials in marketplace_accounts to active primary key
+    await reencryptMarketplaceCredentials(db);
 
     await db.query(
       `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
