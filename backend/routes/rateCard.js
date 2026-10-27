@@ -16,6 +16,13 @@ import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { checkRateRow } from '../utils/rateCardRowChecks.js';
+import { 
+  getRealTimeBrandFsnSamples, 
+  buildBrandRateCardSet, 
+  detectBrandRateChanges, 
+  syncBrandRateCardsToDatabase 
+} from '../services/brandRateCardService.js';
+import { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } from '../services/brandwiseExcelExport.js';
 
 const router = express.Router();
 
@@ -1718,6 +1725,69 @@ router.post('/check-category', async (req, res) => {
     });
   } catch (err) {
     console.error('[check-category] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/brand-fsn-catalog
+ * Real-time discovery of sample FSNs and SKUs grouped by (marketplace, category, brand)
+ */
+router.get('/brand-fsn-catalog', async (req, res) => {
+  try {
+    const pool = getPool();
+    const catalog = await getRealTimeBrandFsnSamples(pool);
+    res.json({
+      success: true,
+      count: catalog.length,
+      catalog
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/sync-brand-rates
+ * Brand-wise rate sync for Flipkart and Shopsy with real-time FSN sampling
+ */
+router.post('/sync-brand-rates', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { forceUpdate = false, effectiveDate, exportExcel = true } = req.body || {};
+
+    const brandRateCards = await buildBrandRateCardSet(pool);
+    const syncResult = await syncBrandRateCardsToDatabase(brandRateCards, {
+      forceUpdate,
+      effectiveDate: effectiveDate || new Date().toISOString().slice(0, 10)
+    }, pool);
+
+    let excelResult = null;
+    if (exportExcel) {
+      excelResult = await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
+    }
+
+    res.json({
+      success: true,
+      brandCount: brandRateCards.length,
+      syncResult,
+      excelExport: excelResult
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/export-brandwise-excel
+ * Generate and download brand-wise Flipkart & Shopsy rate card Excel
+ */
+router.get('/export-brandwise-excel', async (req, res) => {
+  try {
+    const pool = getPool();
+    const excelResult = await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
+    res.download(excelResult.filePath, 'Flipkart_Shopsy_Brandwise_RateCard.xlsx');
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });

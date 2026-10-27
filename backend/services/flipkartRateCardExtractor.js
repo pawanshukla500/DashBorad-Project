@@ -21,7 +21,7 @@ const COOKIES_PATH = path.join(__dirname, '../../.runtime/cookies.json');
 const CAPTURES_DIR = path.join(__dirname, '../../.runtime/ratecard_captures');
 
 // Chrome executable discovery
-function getChromeExecutablePath() {
+export function getChromeExecutablePath() {
   const possiblePaths = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
