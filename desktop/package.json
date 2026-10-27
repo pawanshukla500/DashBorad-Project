@@ -23,6 +23,10 @@
     "flipkart",
     "electron"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pawanshukla500/DashBorad-Project.git"
+  },
   "author": "ReconCentral Team",
   "license": "ISC",
   "dependencies": {
@@ -38,6 +42,7 @@
   "build": {
     "appId": "com.reconcentral.ratecardworker",
     "productName": "ReconCentral RateCard Worker",
+    "publish": null,
     "directories": {
       "output": "dist-release"
     },
