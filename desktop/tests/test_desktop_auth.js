@@ -244,9 +244,16 @@ async function runTests() {
                                     meeshoFiltered.length === 1 && meeshoFiltered[0].marketplace === 'meesho';
     console.log(`  • Production filterRateCardsByChannel fixtures (string/number 10708 & 45833 normalization): Passed = ${isAccountFilteringValid}`);
 
+    // 6. Flipkart/Shopsy combined channel filter: must strictly include flipkart & shopsy, and exclude all other marketplaces
+    const fkShopsyFiltered = filterRateCardsByChannel('flipkart_shopsy', controlledFixtures);
+    const isFkShopsyIsolated = fkShopsyFiltered.length === 2 &&
+      fkShopsyFiltered.every(rc => rc.marketplace === 'flipkart' || rc.marketplace === 'shopsy') &&
+      !fkShopsyFiltered.some(rc => rc.marketplace === 'myntra' || rc.marketplace === 'meesho');
+    console.log(`  • Production flipkart_shopsy combined filter isolation (only flipkart & shopsy, zero leak): Passed = ${isFkShopsyIsolated}`);
+
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid) {
+    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated) {
       console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, and preview filtering verified.');
       passed++;
     } else {
@@ -255,7 +262,8 @@ async function runTests() {
         allPhase2Blocked,
         isPreviewIsolated,
         isMpListValid,
-        isAccountFilteringValid
+        isAccountFilteringValid,
+        isFkShopsyIsolated
       });
       failed++;
     }
@@ -269,8 +277,11 @@ async function runTests() {
     console.log('\n[Test 7] Verifying fail-closed role-claim token verification across session persistence paths...');
     const { 
       validateDesktopTokenRole, 
+      validateTokenRoleMatchesDatabase,
       extractRoleFromToken, 
       isAuthorizedDesktopRole, 
+      saveEncryptedCookies,
+      loadEncryptedCookies,
       FIREBASE_ROLE_CLAIM, 
       AUTHORIZED_ROLES 
     } = await import('../authValidation.js');
@@ -315,7 +326,41 @@ async function runTests() {
     const isLegacyAdminPassed = validateDesktopTokenRole(tokenLegacyAdmin).authorized === true;
     console.log(`  • Token with legacy fallback role='admin': Allowed = ${isLegacyAdminPassed} (Expected true)`);
 
-    // 7. Production session persistence gate simulation across all paths (API login & direct DB fallback)
+    // 7. Token role vs Database role matching invariant (Must reject mismatches even if both roles are authorized)
+    // 7a. dbUser is 'operator', but token carries 'admin' -> MUST FAIL
+    const mismatchValidation = validateTokenRoleMatchesDatabase(tokenAdminRecon, 'operator');
+    const isMismatchRejected = mismatchValidation.valid === false && mismatchValidation.tokenRole === 'admin' && mismatchValidation.expectedRole === 'operator';
+    console.log(`  • Token role ('admin') vs DB role ('operator') mismatch: Blocked = ${isMismatchRejected} (Expected true)`);
+
+    // 7b. dbUser is 'operator', and token carries 'operator' -> MUST PASS
+    const matchOperator = validateTokenRoleMatchesDatabase(tokenOperator, 'operator');
+    const isOperatorMatched = matchOperator.valid === true && matchOperator.tokenRole === 'operator';
+    console.log(`  • Token role ('operator') vs DB role ('operator') match: Allowed = ${isOperatorMatched} (Expected true)`);
+
+    // 7c. dbUser is 'admin', and token carries 'admin' -> MUST PASS
+    const matchAdmin = validateTokenRoleMatchesDatabase(tokenAdminRecon, 'admin');
+    const isAdminMatched = matchAdmin.valid === true && matchAdmin.tokenRole === 'admin';
+    console.log(`  • Token role ('admin') vs DB role ('admin') match: Allowed = ${isAdminMatched} (Expected true)`);
+
+    // 8. Encrypted cookie vault verification (AES-256-GCM encryption & decryption)
+    const os = await import('os');
+    const testCookieFile = path.join(os.tmpdir(), `test_cookie_vault_${Date.now()}.json`);
+    const mockCookies = [
+      { name: 'session_token', value: 'secret_seller_session_token_xyz999', domain: '.flipkart.com' },
+      { name: 'auth_id', value: 'seller_vb_10708', domain: '.myntra.com' }
+    ];
+    saveEncryptedCookies(testCookieFile, mockCookies);
+    const rawSaved = fs.readFileSync(testCookieFile, 'utf8');
+    const isEncryptedFormat = rawSaved.includes(':') && !rawSaved.includes('secret_seller_session_token_xyz999');
+    const decryptedCookies = loadEncryptedCookies(testCookieFile);
+    const isDecryptedAccurate = Array.isArray(decryptedCookies) &&
+      decryptedCookies.length === 2 &&
+      decryptedCookies[0].value === 'secret_seller_session_token_xyz999' &&
+      decryptedCookies[1].value === 'seller_vb_10708';
+    try { fs.unlinkSync(testCookieFile); } catch {}
+    console.log(`  • AES-256-GCM encrypted cookie vault (no plaintext leakage, accurate round-trip): Passed = ${isEncryptedFormat && isDecryptedAccurate}`);
+
+    // 9. Production session persistence gate simulation across all paths (API login & direct DB fallback)
     const simulatePersistenceGate = async ({ idToken, refreshToken, customToken, dbUser, mockRefreshFn, mockExchangeFn }) => {
       let currentIdToken = idToken;
       let currentRefreshToken = refreshToken;
@@ -326,26 +371,29 @@ async function runTests() {
         if (exchanged?.idToken) currentIdToken = exchanged.idToken;
       }
 
-      // Production invariant check
-      let validation = validateDesktopTokenRole(currentIdToken);
+      // Production invariant check: Token must match database role
+      let match = validateTokenRoleMatchesDatabase(currentIdToken, dbUser?.role);
 
       // Refresh fallback
-      if (!validation.authorized && currentRefreshToken && mockRefreshFn) {
+      if (!match.valid && currentRefreshToken && mockRefreshFn) {
         const refreshed = await mockRefreshFn(currentRefreshToken);
         if (refreshed?.idToken) {
           currentIdToken = refreshed.idToken;
-          validation = validateDesktopTokenRole(currentIdToken);
+          match = validateTokenRoleMatchesDatabase(currentIdToken, dbUser?.role);
         }
       }
 
-      if (!validation.authorized) {
-        return { success: false, error: `Authentication failed: The issued session token does not carry the required role claim (${dbUser?.role}).` };
+      if (!match.valid) {
+        return { 
+          success: false, 
+          error: `Authentication failed: The session token role ('${match.tokenRole || 'none'}') does not match verified database role ('${match.expectedRole}').` 
+        };
       }
 
-      return { success: true, sessionSaved: true, role: validation.role };
+      return { success: true, sessionSaved: true, role: match.tokenRole };
     };
 
-    // 7a. Direct DB fallback path where token has no role and refresh fails (MUST fail closed)
+    // 9a. Direct DB fallback path where token has no role and refresh fails (MUST fail closed)
     const dbFallbackFail = await simulatePersistenceGate({
       idToken: tokenNoRole,
       refreshToken: 'bad-refresh',
@@ -356,7 +404,18 @@ async function runTests() {
     const isDbFallbackBlocked = dbFallbackFail.success === false && dbFallbackFail.error?.includes('Authentication failed');
     console.log(`  • Direct DB fallback with un-renewed token: Blocked = ${isDbFallbackBlocked} (Expected true)`);
 
-    // 7b. Candidate API path where custom token yields recon_role (MUST succeed)
+    // 9b. Direct DB fallback where token carries 'admin' but dbUser is 'operator' (MUST fail closed on mismatch)
+    const dbMismatchFail = await simulatePersistenceGate({
+      idToken: tokenAdminRecon,
+      refreshToken: 'bad-refresh',
+      customToken: null,
+      dbUser: { role: 'operator' },
+      mockRefreshFn: async () => null
+    });
+    const isDbMismatchBlocked = dbMismatchFail.success === false && dbMismatchFail.error?.includes('does not match verified database role');
+    console.log(`  • DB fallback with role mismatch (token admin vs db operator): Blocked = ${isDbMismatchBlocked} (Expected true)`);
+
+    // 9c. Candidate API path where custom token yields recon_role (MUST succeed)
     const apiSuccess = await simulatePersistenceGate({
       idToken: tokenNoRole,
       refreshToken: 'valid-refresh',
@@ -375,7 +434,13 @@ async function runTests() {
       isViewerRejected &&
       isNoRoleRejected &&
       isLegacyAdminPassed &&
+      isMismatchRejected &&
+      isOperatorMatched &&
+      isAdminMatched &&
+      isEncryptedFormat &&
+      isDecryptedAccurate &&
       isDbFallbackBlocked &&
+      isDbMismatchBlocked &&
       isApiSuccessPassed
     ) {
       console.log('  ✓ Pass: Production fail-closed token role-claim validation invariant verified across all paths.');
@@ -389,7 +454,13 @@ async function runTests() {
         isViewerRejected,
         isNoRoleRejected,
         isLegacyAdminPassed,
+        isMismatchRejected,
+        isOperatorMatched,
+        isAdminMatched,
+        isEncryptedFormat,
+        isDecryptedAccurate,
         isDbFallbackBlocked,
+        isDbMismatchBlocked,
         isApiSuccessPassed
       });
       failed++;

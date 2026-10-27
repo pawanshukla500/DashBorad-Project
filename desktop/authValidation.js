@@ -8,6 +8,14 @@
 export const FIREBASE_ROLE_CLAIM = 'recon_role';
 export const AUTHORIZED_ROLES = ['admin', 'operator', 'analyst'];
 
+export { 
+  getResolvedUserDataDir, 
+  getResolvedCookiesPath, 
+  getResolvedCapturesDir, 
+  saveEncryptedCookies, 
+  loadEncryptedCookies 
+} from '../backend/utils/cookieVault.js';
+
 /**
  * Decode base64url or standard base64 encoded JWT payload without external libraries.
  */
@@ -15,7 +23,6 @@ export function decodeJwtPayload(token) {
   try {
     const parts = String(token || '').split('.');
     if (parts.length >= 2) {
-      // Normalize base64url to standard base64 if needed
       let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
       while (b64.length % 4) b64 += '=';
       const decoded = Buffer.from(b64, 'base64').toString('utf8');
@@ -64,17 +71,37 @@ export function validateDesktopTokenRole(token) {
 }
 
 /**
+ * Validates that the token not only contains an authorized role, but strictly matches
+ * the directory role from the ReconCentral database.
+ */
+export function validateTokenRoleMatchesDatabase(token, expectedRole) {
+  const tokenValidation = validateDesktopTokenRole(token);
+  const normalizedExpected = String(expectedRole || '').toLowerCase().trim();
+  const matches = Boolean(tokenValidation.authorized && tokenValidation.role === normalizedExpected);
+  return {
+    valid: matches,
+    tokenRole: tokenValidation.role,
+    expectedRole: normalizedExpected,
+    authorized: tokenValidation.authorized
+  };
+}
+
+/**
  * Channel-based rate card filtering ensuring strict multi-channel isolation.
- * Handles Myntra account separation:
- *  - Myntra VB: account_id 'myntra_vb' or seller_id / account '10708'
- *  - Myntra EJ: account_id 'myntra_ej' or seller_id / account '45833'
- * Normalizes all string and numeric comparisons.
+ * Handles Flipkart/Shopsy combined channel isolation (filtering to flipkart & shopsy only),
+ * and Myntra account separation (VB: 10708, EJ: 45833).
  */
 export function filterRateCardsByChannel(channel, rateCards) {
   const cards = Array.isArray(rateCards) ? rateCards : [];
   const target = String(channel || '').toLowerCase().trim();
-  if (!target || target === 'both' || target === 'all' || target === 'flipkart_shopsy') {
+  if (!target || target === 'all') {
     return cards;
+  }
+  if (target === 'flipkart_shopsy' || target === 'both') {
+    return cards.filter(rc => {
+      const mp = String(rc.marketplace || '').toLowerCase();
+      return mp === 'flipkart' || mp === 'shopsy';
+    });
   }
   if (target === 'myntra_vb') {
     return cards.filter(rc => (

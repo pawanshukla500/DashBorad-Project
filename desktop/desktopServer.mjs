@@ -10,12 +10,19 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { exec, spawn } from 'child_process';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+puppeteer.use(StealthPlugin());
+
 import { 
   decodeJwtPayload, 
   extractRoleFromToken, 
   isAuthorizedDesktopRole, 
   validateDesktopTokenRole, 
+  validateTokenRoleMatchesDatabase,
   filterRateCardsByChannel, 
+  saveEncryptedCookies,
+  loadEncryptedCookies,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
@@ -62,8 +69,9 @@ const UI_DIR = path.join(__dirname, 'ui');
 
 function resolveUserDataDir() {
   if (process.env.RECONCENTRAL_USER_DATA) return process.env.RECONCENTRAL_USER_DATA;
+  if (process.env.RECON_USER_DATA_DIR) return process.env.RECON_USER_DATA_DIR;
   if (process.platform === 'win32' && process.env.APPDATA) {
-    return path.join(process.env.APPDATA, 'reconcentral-ratecard-worker');
+    return path.join(process.env.APPDATA, 'ReconCentral RateCard Worker');
   }
   if (process.platform === 'linux' && process.env.XDG_CONFIG_HOME) {
     return path.join(process.env.XDG_CONFIG_HOME, 'reconcentral-ratecard-worker');
@@ -75,10 +83,13 @@ function resolveUserDataDir() {
 }
 
 const USER_DATA_DIR = resolveUserDataDir();
+process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
 fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
 const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
 const SESSION_FILE = path.join(USER_DATA_DIR, 'auth-session.json');
+const COOKIES_PATH = path.join(USER_DATA_DIR, 'cookies.json');
+process.env.RECON_COOKIES_PATH = COOKIES_PATH;
 const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
 fs.mkdirSync(STAGING_DIR, { recursive: true });
 
@@ -696,34 +707,35 @@ const server = http.createServer(async (req, res) => {
         }
 
         const authorizedRoles = ['admin', 'operator', 'analyst'];
-        if (!authorizedRoles.includes(dbUser.role)) {
+        const normalizedDbRole = String(dbUser.role || '').toLowerCase().trim();
+        if (!authorizedRoles.includes(normalizedDbRole)) {
           return sendJson(403, {
             success: false,
             error: `Access denied. Role (${dbUser.role || 'viewer'}) is not authorized to operate rate card scrapers or synchronize database records.`
           });
         }
 
-        // Strict invariant: Ensure the session token carries a verified role claim before persisting
-        let tokenValidation = validateDesktopTokenRole(fbResult.idToken);
+        // Strict invariant: Ensure the session token carries a verified role claim matching the DB user's role
+        let tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
 
-        // If the token lacks the role claim, attempt to refresh via refreshToken
-        if (!tokenValidation.authorized && fbResult.refreshToken) {
+        // If the token lacks the role claim OR doesn't match the DB user's role, attempt refresh
+        if (!tokenMatch.valid && fbResult.refreshToken) {
           try {
             const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
             if (refreshed && refreshed.idToken) {
               fbResult.idToken = refreshed.idToken;
               if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
-              tokenValidation = validateDesktopTokenRole(fbResult.idToken);
+              tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
             }
           } catch (refErr) {
             console.warn('[desktopServer] Final token refresh warning:', refErr.message);
           }
         }
 
-        if (!tokenValidation.authorized) {
+        if (!tokenMatch.valid) {
           return sendJson(403, {
             success: false,
-            error: `Authentication failed: The issued session token does not carry the required role claim (${dbUser.role}). Please sign in through ReconCentral web app or verify user permissions in Admin Center.`
+            error: `Authentication failed: The issued session token role ('${tokenMatch.tokenRole || 'none'}') does not match verified database role ('${normalizedDbRole}'). Please sign in through ReconCentral web app or verify user permissions in Admin Center.`
           });
         }
 
@@ -999,31 +1011,103 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // POST /api/interactive-login
+    // POST /api/interactive-login (Standalone Puppeteer with Encrypted Cookie Vault Capture)
     if (pathname === '/api/interactive-login' && req.method === 'POST') {
       try {
         const body = await parseJsonBody();
         const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
         const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId) || SUPPORTED_MARKETPLACES[0];
         const portalUrl = mpConfig.loginUrl || mpConfig.portalUrl || body.portal_url || 'https://seller.flipkart.com/';
+        const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
         const chromePath = getChromeExecutablePath();
         const channelProfileDir = path.join(USER_DATA_DIR, 'chrome-profiles', targetId);
-        if (!fs.existsSync(channelProfileDir)) {
-          fs.mkdirSync(channelProfileDir, { recursive: true });
-        }
 
         broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
-        const args = [
-          `--user-data-dir=${channelProfileDir}`,
-          '--no-first-run',
-          '--no-default-browser-check',
-          portalUrl
-        ];
-        const child = spawn(chromePath, args, { detached: true, stdio: 'ignore' });
-        child.unref();
 
-        broadcastProgress(`✓ Browser window opened for ${mpConfig.name}. Please complete 2FA or human login in the window.`);
-        return sendJson(200, { success: true, message: `Browser launched successfully for ${mpConfig.name}`, portal_url: portalUrl });
+        // Execute login asynchronously without blocking HTTP response
+        (async () => {
+          let browser = null;
+          try {
+            browser = await puppeteer.launch({
+              headless: false,
+              executablePath: chromePath,
+              userDataDir: channelProfileDir,
+              defaultViewport: null,
+              args: [
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--window-size=1280,800'
+              ]
+            });
+            const pages = await browser.pages();
+            const page = pages.length > 0 ? pages[0] : await browser.newPage();
+            await page.goto(portalUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+            broadcastProgress(`✓ Browser window opened for ${mpConfig.name}. Please complete 2FA or human login in the window...`);
+
+            await page.waitForFunction((id) => {
+              const href = window.location.href.toLowerCase();
+              const body = document.body ? document.body.innerText.toLowerCase() : '';
+              const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
+              if (hasPasswordInput) return false;
+              const hasLoginForm = Boolean(document.querySelector('form[action*="login" i], form[action*="signin" i], form[action*="auth" i]'));
+              if (hasLoginForm && (href.includes('/login') || href.includes('/auth') || href.includes('/signin'))) return false;
+
+              if (id === 'myntra_vb' || id === 'myntra_ej') {
+                return href.includes('partnerportal.myntra.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
+              }
+              if (id === 'meesho') {
+                return href.includes('supplier.meesho.com') && !href.includes('/login') && (href.includes('panel') || href.includes('dashboard') || body.includes('logout'));
+              }
+              if (id === 'amazon') {
+                return href.includes('sellercentral.amazon.in') && !href.includes('/signin') && (href.includes('home') || href.includes('dashboard') || body.includes('sign out') || body.includes('logout'));
+              }
+              if (id === 'ajio') {
+                return href.includes('supplier.ajio.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
+              }
+              if (id === 'cocoblu') {
+                const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
+                const onAuthRoute = href.includes('/dashboard') || href.includes('/orders') || href.includes('/vendor') || href.includes('/portal') || href.includes('/reports');
+                const hasLogoutAction = body.includes('logout') || body.includes('sign out') || Boolean(document.querySelector('a[href*="logout"], button[class*="logout"]'));
+                return href.includes('cocoblu.biz') && notLogin && (onAuthRoute || hasLogoutAction);
+              }
+              if (id === 'shopify') {
+                const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin') && !href.includes('/signup');
+                const onStoreRoute = (href.includes('/store/') || href.includes('/admin/')) && (
+                  href.includes('/home') ||
+                  href.includes('/orders') ||
+                  href.includes('/products') ||
+                  href.includes('/settings') ||
+                  href.includes('/analytics') ||
+                  /\/store\/[a-zA-Z0-9\-_]+(\/?$|\?)/.test(href)
+                );
+                const hasAuthenticatedUi = Boolean(document.querySelector(
+                  '#AppFrameMain, nav[aria-label*="Navigation" i], nav[aria-label*="Main" i], [data-portal-id], a[href*="logout"], button[class*="logout"], [aria-label*="log out" i], [aria-label*="Store menu" i], [aria-label*="Account menu" i]'
+                ));
+                const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
+                return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
+              }
+              return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
+            }, { timeout: 300000 }, mpConfig.id);
+
+            const cookies = await page.cookies();
+            saveEncryptedCookies(cookiesPath, cookies);
+            if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
+              saveEncryptedCookies(COOKIES_PATH, cookies);
+            }
+            broadcastProgress(`✓ Authentication detected! Encrypted and saved ${cookies.length} session cookies into vault.`);
+            await browser.close();
+          } catch (loginErr) {
+            if (browser) await browser.close().catch(() => {});
+            broadcastProgress(`❌ Interactive login error for ${mpConfig.name}: ${loginErr.message}`);
+          }
+        })();
+
+        return sendJson(200, { 
+          success: true, 
+          message: `Interactive login window launched for ${mpConfig.name}. Please complete login in the window. Cookies will be encrypted and saved to the cookie vault.`, 
+          portal_url: portalUrl 
+        });
       } catch (err) {
         broadcastProgress(`❌ Failed to launch browser: ${err.message}`);
         return sendJson(500, { success: false, error: err.message });

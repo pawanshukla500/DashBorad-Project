@@ -6,7 +6,10 @@ import {
   extractRoleFromToken, 
   isAuthorizedDesktopRole, 
   validateDesktopTokenRole, 
+  validateTokenRoleMatchesDatabase,
   filterRateCardsByChannel, 
+  saveEncryptedCookies,
+  loadEncryptedCookies,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
@@ -22,9 +25,11 @@ const { Pool } = require('pg');
 
 let mainWindow = null;
 const USER_DATA_DIR = app.getPath('userData');
+process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
 const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
 const SESSION_FILE = path.join(USER_DATA_DIR, 'auth-session.json');
 const COOKIES_PATH = path.join(USER_DATA_DIR, 'cookies.json');
+process.env.RECON_COOKIES_PATH = COOKIES_PATH;
 const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
 
 const FIREBASE_API_KEY = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
@@ -674,11 +679,11 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     }, { timeout: 300000 }, mpConfig.id);
 
     const cookies = await page.cookies();
-    fs.writeFileSync(cookiesPath, JSON.stringify(cookies, null, 2));
+    saveEncryptedCookies(cookiesPath, cookies);
     if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
-      fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+      saveEncryptedCookies(COOKIES_PATH, cookies);
     }
-    console.log(`[InteractiveLogin] Logged in to ${mpConfig.name} successfully! Saved ${cookies.length} session cookies.`);
+    console.log(`[InteractiveLogin] Logged in to ${mpConfig.name} successfully! Saved and encrypted ${cookies.length} session cookies in vault.`);
 
     await browser.close();
     return { success: true, marketplace: mpConfig.id, cookiesCount: cookies.length };
@@ -1208,34 +1213,35 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
     }
 
     const authorizedRoles = ['admin', 'operator', 'analyst'];
-    if (!authorizedRoles.includes(dbUser.role)) {
+    const normalizedDbRole = String(dbUser.role || '').toLowerCase().trim();
+    if (!authorizedRoles.includes(normalizedDbRole)) {
       return {
         success: false,
         error: `Access denied. Your role (${dbUser.role || 'viewer'}) is not authorized to operate rate card scrapers or synchronize database records. Contact an administrator.`
       };
     }
 
-    // Strict invariant: Ensure the session token carries a verified role claim before persisting
-    let tokenValidation = validateDesktopTokenRole(fbResult.idToken);
+    // Strict invariant: Ensure the session token carries a verified role claim matching the DB user's role
+    let tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
 
-    // If the token lacks the role claim, attempt to refresh via refreshToken
-    if (!tokenValidation.authorized && fbResult.refreshToken) {
+    // If the token lacks the role claim OR doesn't match the DB user's role, attempt refresh
+    if (!tokenMatch.valid && fbResult.refreshToken) {
       try {
         const refreshed = await refreshFirebaseIdToken(fbResult.refreshToken);
         if (refreshed && refreshed.idToken) {
           fbResult.idToken = refreshed.idToken;
           if (refreshed.refreshToken) fbResult.refreshToken = refreshed.refreshToken;
-          tokenValidation = validateDesktopTokenRole(fbResult.idToken);
+          tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
         }
       } catch (refErr) {
         console.warn('[Desktop Auth] Final token refresh warning:', refErr.message);
       }
     }
 
-    if (!tokenValidation.authorized) {
+    if (!tokenMatch.valid) {
       return {
         success: false,
-        error: `Authentication failed: The issued session token does not carry the required role claim (${dbUser.role}). Please sign in through ReconCentral web app or verify user role in Admin Center.`
+        error: `Authentication failed: The issued session token role ('${tokenMatch.tokenRole || 'none'}') does not match verified database role ('${normalizedDbRole}'). Please sign in through ReconCentral web app or verify user role in Admin Center.`
       };
     }
 
