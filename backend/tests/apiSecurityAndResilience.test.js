@@ -93,7 +93,17 @@ describe('API Security and Database Resilience Suite', () => {
         // Ensure no internal DB URL with credentials leaks to external callers
         const bodyStr = JSON.stringify(data);
         expect(bodyStr).not.toContain('postgres://');
+        expect(bodyStr).not.toContain('postgresql://');
         expect(bodyStr).not.toContain('password');
+        if (process.env.DATABASE_URL) {
+          try {
+            const parsed = new URL(process.env.DATABASE_URL);
+            if (parsed.password) {
+              expect(bodyStr).not.toContain(parsed.password);
+            }
+            expect(bodyStr).not.toContain(process.env.DATABASE_URL);
+          } catch { /* ignore URL parse errors */ }
+        }
       } finally {
         server.close();
       }
