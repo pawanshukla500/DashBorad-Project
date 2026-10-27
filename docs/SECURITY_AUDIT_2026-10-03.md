@@ -248,12 +248,13 @@ still applies to every upload path until the SheetJS upgrade.
 | **Public Health Endpoint Information Disclosure** | Information Disclosure | `healthCheckHandler` bifurcates response based on `isLoopbackRequest(req)`. External requests strictly receive `publicDatabaseStatus`, stripping pool counts, TLS configurations, and raw PostgreSQL error traces (`lastError`, `internalError`, `transport`, `pool`). Loopback probes retain internal diagnostics for Docker container monitoring. |
 | **Unauthenticated Route Protection** | Broken Authentication | Validated all reporting, mutation, and export routes (`/api/summary`, `/api/export/*`, `/api/sor/*`, `/api/marketplace-accounts`, `/api/rate-card/*`) reject unauthenticated requests with `401 Unauthorized` before invoking service queries. |
 | **Malformed JSON Parser Stack Leakage** | Denial of Service / Error Leakage | Added test assertions in `backend/tests/apiSecurityAndResilience.test.js` verifying malformed JSON payloads return clean `400 Bad Request` via `publicApiError` without exposing internal V8 or Node.js runtime stack traces. |
-| **Marketplace Accounts At-Rest Encryption** | Cryptographic Failures | Marketplace portal passwords stored in `backend/routes/marketplaceAccounts.js` are encrypted using AES-256-GCM authenticated encryption with an environment-derived key (`ENCRYPTION_KEY`). Passwords are never returned in plaintext to standard users. |
+| **Marketplace Accounts At-Rest Encryption** | Cryptographic Failures | Marketplace portal passwords stored in `backend/routes/marketplaceAccounts.js` are encrypted using AES-256-GCM authenticated encryption. Master key derivation resolves environment secrets (`CREDENTIALS_ENCRYPTION_KEY`, `ENCRYPTION_KEY`, or `JWT_SECRET`). In production (`NODE_ENV=production`), missing environment secrets immediately throw a fatal error to prevent fallback to embedded keys. Passwords are never returned in plaintext to standard users. |
 
 ### Test Suite Coverage:
 - Verified via `backend/tests/apiSecurityAndResilience.test.js` (5 tests passing).
+- Verified via `backend/tests/marketplaceAccounts.test.js` (9 tests passing).
 - Verified via `desktop/tests/test_desktop_auth.js` (6 tests passing).
-- Full backend suite: **84 test files, 504 tests passing 100% green**.
+- Full backend suite: **84 test files, 505 tests passing 100% green**.
 
 ---
 

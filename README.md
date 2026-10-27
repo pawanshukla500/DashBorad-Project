@@ -119,7 +119,7 @@ see [docs/SAAS_OPERATING_BASELINE.md](docs/SAAS_OPERATING_BASELINE.md).
 ## Verification & Testing
 
 - **Backend Test Suite:** From `backend/`, run `npm test` (or `node ./node_modules/vitest/vitest.mjs run`).
-  - **84 test files, 504 tests passing 100% green**.
+  - **84 test files, 505 tests passing 100% green**.
 - **Desktop Auth Suite:** From root, run `node desktop/tests/test_desktop_auth.js` (6 tests passing).
 - **Frontend Production Build:** From `frontend/`, run `npm run build` (Rollup vendor chunks, ~5.0s build).
 
@@ -133,7 +133,7 @@ All development tasks, audits, bug fixes, and feature progress are tracked in re
 ## Security
 
 - Never commit `.env` or service-account JSON (see `.gitignore`).
-- All at-rest marketplace portal passwords use AES-256-GCM encryption with `ENCRYPTION_KEY`.
+- All at-rest marketplace portal passwords use AES-256-GCM encryption with environment keys (`CREDENTIALS_ENCRYPTION_KEY`, `ENCRYPTION_KEY`, or `JWT_SECRET`), strictly prohibiting unkeyed fallbacks in production.
 - Unauthenticated access to report, export, and mutation endpoints is rejected with 401.
 - Public health endpoints use `publicDatabaseStatus` to isolate internal database connection details (`transport`, `pool`, `lastError`).
 - Prefer `VITE_FIREBASE_*` and `ADMIN_SEED_*` env vars over hardcoded seeds.

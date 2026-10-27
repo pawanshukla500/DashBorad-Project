@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { encryptCredential, decryptCredential, maskCredential } from '../utils/credentialCrypto.js';
+import { describe, it, expect } from 'vitest';
+import { encryptCredential, decryptCredential, maskCredential, getMasterKey } from '../utils/credentialCrypto.js';
 import { DEFAULT_MARKETPLACE_METADATA } from '../routes/marketplaceAccounts.js';
 
 describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
@@ -60,6 +60,33 @@ describe('Marketplace Credentials Security & AES-256-GCM Crypto', () => {
     expect(maskCredential('')).toBe('');
     const encrypted = encryptCredential('TestPassword');
     expect(maskCredential(encrypted)).toBe('••••••••');
+  });
+
+  it('resolves master key from environment variables and blocks hardcoded fallback in production', () => {
+    const origEnv = { ...process.env };
+
+    try {
+      // 1. With CREDENTIALS_ENCRYPTION_KEY
+      process.env.CREDENTIALS_ENCRYPTION_KEY = 'custom-credentials-key-12345';
+      delete process.env.ENCRYPTION_KEY;
+      delete process.env.JWT_SECRET;
+      const key1 = getMasterKey();
+      expect(key1).toHaveLength(32);
+
+      // 2. In production without any secret, throws error to prevent embedded key use
+      delete process.env.CREDENTIALS_ENCRYPTION_KEY;
+      delete process.env.ENCRYPTION_KEY;
+      delete process.env.JWT_SECRET;
+      process.env.NODE_ENV = 'production';
+      expect(() => getMasterKey()).toThrow(/Production security violation/);
+
+      // 3. In non-production without secret, uses deterministic fallback
+      process.env.NODE_ENV = 'test';
+      const keyFallback = getMasterKey();
+      expect(keyFallback).toHaveLength(32);
+    } finally {
+      process.env = origEnv;
+    }
   });
 });
 

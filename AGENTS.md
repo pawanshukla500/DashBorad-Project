@@ -231,7 +231,7 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
 ### Mandatory Review Gate: CodeAnt AI Review on All PRs
 - **Branch & PR Workflow**: All feature work, fixes, and audits must be proposed via dedicated PR branches.
 - **No Early Merging**: A PR must NEVER be merged until every commit and diff has been reviewed and verified by **CodeAnt AI**.
-- **Test Integrity**: Full test suite (`npm test`, 84 files, 504 tests) and frontend build (`npm run build`) must pass 100% green before any PR review transition.
+- **Test Integrity**: Full test suite (`npm test`, 84 files, 505 tests) and frontend build (`npm run build`) must pass 100% green before any PR review transition.
 
 
 

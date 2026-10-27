@@ -14,12 +14,19 @@ const AUTH_TAG_LENGTH = 16; // 128 bits authentication tag
 
 /**
  * Derives a deterministic 32-byte (256-bit) buffer key from the environment secret.
+ * In production, strictly requires CREDENTIALS_ENCRYPTION_KEY, ENCRYPTION_KEY, or JWT_SECRET.
  */
-function getMasterKey() {
+export function getMasterKey() {
   const secret = process.env.CREDENTIALS_ENCRYPTION_KEY 
     || process.env.ENCRYPTION_KEY 
-    || process.env.JWT_SECRET 
-    || 'reconcentral-credentials-master-aes256-encryption-key-secret';
+    || process.env.JWT_SECRET;
+  
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Production security violation: CREDENTIALS_ENCRYPTION_KEY, ENCRYPTION_KEY, or JWT_SECRET must be set for credential encryption.');
+    }
+    return crypto.createHash('sha256').update('reconcentral-credentials-master-aes256-encryption-key-secret').digest();
+  }
   
   return crypto.createHash('sha256').update(secret).digest();
 }
