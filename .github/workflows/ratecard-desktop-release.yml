@@ -36,14 +36,14 @@ jobs:
       - name: Build for Windows
         if: runner.os == 'Windows'
         working-directory: desktop
-        run: npx electron-builder --win --x64 -c.publish=never
+        run: npx electron-builder --win --x64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build for Linux
         if: runner.os == 'Linux'
         working-directory: desktop
-        run: npx electron-builder --linux AppImage deb -c.publish=never
+        run: npx electron-builder --linux AppImage deb --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
