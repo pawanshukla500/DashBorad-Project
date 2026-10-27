@@ -100,14 +100,28 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for the Hostinger VPS Docker production
 setup. The final database target is PostgreSQL running in Docker on the VPS and
 reached by the API through `DATABASE_URL`.
 
-## Architecture and development
+## Desktop Application & Scraper Client
+
+For automated rate card scraping and live portal extraction without browser extensions:
+- **Installer:** Windows standalone setup executable located in [`released/ReconCentral Desktop Setup 1.0.0.exe`](released/ReconCentral%20Desktop%20Setup%201.0.0.exe).
+- **Authentication:** Authenticates securely against Firebase Auth and PostgreSQL role claims. Zero administrative secrets or raw database credentials are stored in the client binary.
+- **Marketplace Accounts:** Configurable in Admin Center with AES-256-GCM encrypted portal credentials.
+
+## Architecture and Development
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the route/service/data
-structure, permission boundaries, and rules used to prevent duplicate report
+structure, database connection resilience, permission boundaries, and rules used to prevent duplicate report
 implementations.
 
 For the production data-quality, freshness, security, and maintenance baseline,
 see [docs/SAAS_OPERATING_BASELINE.md](docs/SAAS_OPERATING_BASELINE.md).
+
+## Verification & Testing
+
+- **Backend Test Suite:** From `backend/`, run `npm test` (or `node ./node_modules/vitest/vitest.mjs run`).
+  - **84 test files, 504 tests passing 100% green**.
+- **Desktop Auth Suite:** From root, run `node desktop/tests/test_desktop_auth.js` (6 tests passing).
+- **Frontend Production Build:** From `frontend/`, run `npm run build` (Rollup vendor chunks, ~5.0s build).
 
 ## Task & Work Tracking (TaskFlow Pro)
 
@@ -116,8 +130,10 @@ All development tasks, audits, bug fixes, and feature progress are tracked in re
 - **Integration Guide**: [docs/TASKFLOW_INTEGRATION.md](docs/TASKFLOW_INTEGRATION.md)
 - **Agent Rules**: Configured in [GEMINI.md](GEMINI.md) and [AGENTS.md](AGENTS.md) to automatically synchronize all coding sessions.
 
-
 ## Security
 
 - Never commit `.env` or service-account JSON (see `.gitignore`).
+- All at-rest marketplace portal passwords use AES-256-GCM encryption with `ENCRYPTION_KEY`.
+- Unauthenticated access to report, export, and mutation endpoints is rejected with 401.
+- Public health endpoints use `publicDatabaseStatus` to isolate internal database connection details (`transport`, `pool`, `lastError`).
 - Prefer `VITE_FIREBASE_*` and `ADMIN_SEED_*` env vars over hardcoded seeds.

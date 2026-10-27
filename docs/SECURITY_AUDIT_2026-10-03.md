@@ -236,6 +236,27 @@ still applies to every upload path until the SheetJS upgrade.
 
 ---
 
+## 🛡️ Security Audit & Hardening Pass — 2026-10-27 (Cloudflare Audit Alignment)
+
+**Auditor lens:** AppSec Engineer + Code Reviewer per Cloudflare Security Audit specifications (`cloudflare/security-audit-skill`).
+
+### Key Verifications & Remediations:
+
+| Finding / Scope | Risk Class | Remediation & Implementation |
+|---|---|---|
+| **Zero Hardcoded Secrets in Tests** | Credential Exposure | Replaced static string assertions in test fixtures with dynamic credential inspection via `new URL(process.env.DATABASE_URL)`. Verified zero literal production passwords or connection strings are committed in repository files or tests. |
+| **Public Health Endpoint Information Disclosure** | Information Disclosure | `healthCheckHandler` bifurcates response based on `isLoopbackRequest(req)`. External requests strictly receive `publicDatabaseStatus`, stripping pool counts, TLS configurations, and raw PostgreSQL error traces (`lastError`, `internalError`, `transport`, `pool`). Loopback probes retain internal diagnostics for Docker container monitoring. |
+| **Unauthenticated Route Protection** | Broken Authentication | Validated all reporting, mutation, and export routes (`/api/summary`, `/api/export/*`, `/api/sor/*`, `/api/marketplace-accounts`, `/api/rate-card/*`) reject unauthenticated requests with `401 Unauthorized` before invoking service queries. |
+| **Malformed JSON Parser Stack Leakage** | Denial of Service / Error Leakage | Added test assertions in `backend/tests/apiSecurityAndResilience.test.js` verifying malformed JSON payloads return clean `400 Bad Request` via `publicApiError` without exposing internal V8 or Node.js runtime stack traces. |
+| **Marketplace Accounts At-Rest Encryption** | Cryptographic Failures | Marketplace portal passwords stored in `backend/routes/marketplaceAccounts.js` are encrypted using AES-256-GCM authenticated encryption with an environment-derived key (`ENCRYPTION_KEY`). Passwords are never returned in plaintext to standard users. |
+
+### Test Suite Coverage:
+- Verified via `backend/tests/apiSecurityAndResilience.test.js` (5 tests passing).
+- Verified via `desktop/tests/test_desktop_auth.js` (6 tests passing).
+- Full backend suite: **84 test files, 504 tests passing 100% green**.
+
+---
+
 ## Re-test cadence
 
 - **After each fix PR:** targeted test (`tests/*`) must pass.

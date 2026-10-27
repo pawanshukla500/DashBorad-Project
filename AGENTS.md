@@ -213,11 +213,25 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
    - Configured Rollup `manualChunks` in `frontend/vite.config.js` (`react-vendor`, `firebase-vendor`, `charts-vendor`, `xlsx-vendor`), reducing entry bundle `index.js` by 73% (451 kB → 123 kB) with 4.63s build speed.
 6. **DevOps Automator**:
    - Configured `NODE_OPTIONS: "--max-old-space-size=768"` under the container environment in `docker-compose.production.yml` to trigger V8 garbage collection before approaching the 1G cgroup limit, preventing Linux OOM-killer SIGKILL terminations.
+7. **Database Connection Resilience & Disconnection Elimination**:
+   - Implemented multi-directory cascade `.env` resolution in `backend/db/index.js` and `backend/server.js` (`../.env`, `../../.env`, `process.cwd()/.env`, `process.cwd()/backend/.env`) guaranteeing credentials load across all execution paths.
+   - Expanded `isSafeReadStatement` to recognize Common Table Expressions (`WITH ... SELECT`) as safe read queries, preventing transient socket drops on CTE analytics queries from taking the pool offline.
+   - Hardened `getPool().connect()` with a 2-attempt backoff retry loop to absorb transient WAN network resets before throwing `DatabaseUnavailableError`.
+8. **UI/UX Minimalist Polish & Brand Design System**:
+   - Completed full tonal sweep across all pages (`Sales`, `Returns`, `Statement`, `Profit Analysis`, `Upload`, `Amazon Reconcile`, `Amazon Rate Card`, `Order Detail Drawer`, `Export Button`, `Profit & Loss`, `Rate Audit`, and `Sidebar`), replacing all raw `indigo-*` classes with brand burgundy tokens (`bg-primary`, `bg-primary-container`, `text-primary`, `text-on-primary-container`, `border-primary/20`).
+   - Enforced contrast compliance: `text-on-primary-container` on light pink containers; `text-on-primary` on dark burgundy surfaces.
+9. **Marketplace Accounts Center & Desktop Scraper**:
+   - Added AES-256-GCM encrypted credential storage for marketplace portals in `backend/routes/marketplaceAccounts.js`.
+   - Integrated official SVG brand logos via Brandfetch MCP (Amazon, Cocoblu, Myntra, Flipkart, Reliance Retail / AJIO, Meesho, Shopify).
+   - Built standalone Windows installer in `released/ReconCentral Desktop Setup 1.0.0.exe` with secure session management, role verification, and zero hardcoded database credentials.
+10. **Cloudflare-Aligned API Security & Resilience Suite**:
+   - Added `backend/tests/apiSecurityAndResilience.test.js` verifying 401 barriers on unauthenticated report/mutation access, sanitized health reporting without credential leakage, public vs internal projection isolation via `publicDatabaseStatus`, and graceful malformed JSON handling (400 without stack disclosure).
+   - Enforced zero hardcoded secrets in test fixtures through dynamic `DATABASE_URL` credential inspection.
 
 ### Mandatory Review Gate: CodeAnt AI Review on All PRs
 - **Branch & PR Workflow**: All feature work, fixes, and audits must be proposed via dedicated PR branches.
 - **No Early Merging**: A PR must NEVER be merged until every commit and diff has been reviewed and verified by **CodeAnt AI**.
-- **Test Integrity**: Full test suite (`npm test`, 79 files, 469 tests) and frontend build (`npm run build`) must pass 100% green before any PR review transition.
+- **Test Integrity**: Full test suite (`npm test`, 84 files, 504 tests) and frontend build (`npm run build`) must pass 100% green before any PR review transition.
 
 
 
