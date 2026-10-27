@@ -609,11 +609,15 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     const page = pages[0] || await browser.newPage();
 
     if (fs.existsSync(cookiesPath)) {
-      const raw = fs.readFileSync(cookiesPath, 'utf8');
-      await page.setCookie(...JSON.parse(raw));
+      const existing = loadEncryptedCookies(cookiesPath);
+      if (existing && Array.isArray(existing) && existing.length > 0) {
+        await page.setCookie(...existing);
+      }
     } else if (fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
-      const raw = fs.readFileSync(COOKIES_PATH, 'utf8');
-      await page.setCookie(...JSON.parse(raw));
+      const existing = loadEncryptedCookies(COOKIES_PATH);
+      if (existing && Array.isArray(existing) && existing.length > 0) {
+        await page.setCookie(...existing);
+      }
     }
 
     console.log(`[InteractiveLogin] Opening ${mpConfig.name} at ${mpConfig.loginUrl}...`);
@@ -847,9 +851,11 @@ async function executeScrapeProcess(config, onProgress) {
 
     const activeCookieFile = fs.existsSync(cookiesPath) ? cookiesPath : COOKIES_PATH;
     if (fs.existsSync(activeCookieFile)) {
-      const raw = fs.readFileSync(activeCookieFile, 'utf8');
-      await page.setCookie(...JSON.parse(raw));
-      onProgress('Loaded cached session cookies.');
+      const existing = loadEncryptedCookies(activeCookieFile);
+      if (existing && Array.isArray(existing) && existing.length > 0) {
+        await page.setCookie(...existing);
+        onProgress('Loaded cached session cookies from encrypted vault.');
+      }
     }
 
     onProgress('Verifying Seller Hub login session...');
@@ -899,8 +905,11 @@ async function executeScrapeProcess(config, onProgress) {
       await new Promise(r => setTimeout(r, 4000));
       
       const cookies = await page.cookies();
-      fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
-      onProgress('Login successful. Session cookies saved.');
+      saveEncryptedCookies(COOKIES_PATH, cookies);
+      if (cookiesPath && cookiesPath !== COOKIES_PATH) {
+        saveEncryptedCookies(cookiesPath, cookies);
+      }
+      onProgress('Login successful. Session cookies encrypted to vault.');
     } else {
       onProgress('Authentication verified via active cookies.');
     }

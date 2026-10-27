@@ -402,8 +402,28 @@ const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = urlObj.pathname;
 
-  // CORS headers for local API consumers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Validate Host header to prevent DNS rebinding attacks on local control port
+  const host = req.headers.host || '';
+  const isLoopbackHost = !host || /^localhost(:\d+)?$/i.test(host) || /^127\.0\.0\.1(:\d+)?$/i.test(host);
+  if (!isLoopbackHost) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false, error: 'Forbidden: Invalid Host header for desktop control server.' }));
+    return;
+  }
+
+  // CORS headers for local API consumers and official origins
+  const origin = req.headers.origin || '';
+  const isAllowedOrigin = !origin || origin === 'null' 
+    || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
+    || origin.includes('youthnic.shop')
+    || origin.includes('vbexports.co.in')
+    || origin.includes('srv1845788.hstgr.cloud');
+
+  if (isAllowedOrigin && origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else if (!origin) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -1013,6 +1033,13 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/interactive-login (Standalone Puppeteer with Encrypted Cookie Vault Capture)
     if (pathname === '/api/interactive-login' && req.method === 'POST') {
+      const authHeader = req.headers['authorization'];
+      const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+      const session = loadAuthSession();
+      if ((!session || !session.authenticated) && !bearerToken) {
+        return sendJson(401, { success: false, error: 'Unauthorized: Session authentication required to initiate interactive login.' });
+      }
+
       try {
         const body = await parseJsonBody();
         const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -1041,6 +1068,20 @@ const server = http.createServer(async (req, res) => {
             });
             const pages = await browser.pages();
             const page = pages.length > 0 ? pages[0] : await browser.newPage();
+
+            // Load existing encrypted session cookies if present
+            if (fs.existsSync(cookiesPath)) {
+              const existing = loadEncryptedCookies(cookiesPath);
+              if (existing && Array.isArray(existing) && existing.length > 0) {
+                await page.setCookie(...existing);
+              }
+            } else if (fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+              const existing = loadEncryptedCookies(COOKIES_PATH);
+              if (existing && Array.isArray(existing) && existing.length > 0) {
+                await page.setCookie(...existing);
+              }
+            }
+
             await page.goto(portalUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
             broadcastProgress(`✓ Browser window opened for ${mpConfig.name}. Please complete 2FA or human login in the window...`);
@@ -1183,11 +1224,11 @@ function launchChromeApp() {
 
 const isDirectRun = Boolean(process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename));
 if (isDirectRun) {
-  server.listen(PORT, () => {
+  server.listen(PORT, '127.0.0.1', () => {
     console.log('======================================================================');
     console.log(`⚡ ReconCentral RateCard Desktop Control Server running on port ${PORT}`);
     console.log(`Platform: ${process.platform} (${process.arch}) | Node: ${process.version}`);
-    console.log(`Desktop UI URL: http://localhost:${PORT}`);
+    console.log(`Desktop UI URL: http://127.0.0.1:${PORT}`);
     console.log('======================================================================\n');
     launchChromeApp();
   });

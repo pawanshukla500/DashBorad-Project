@@ -1,10 +1,14 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { encryptCredential, decryptCredential } from './credentialCrypto.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const ALGORITHM = 'aes-256-gcm';
+const IV_LENGTH = 12; // 96 bits recommended for GCM
+const AUTH_TAG_LENGTH = 16; // 128 bits authentication tag
 
 /**
  * Resolves a safe writable user-data directory across Windows, Linux, and macOS.
@@ -28,6 +32,77 @@ export function getResolvedUserDataDir() {
     return path.join(process.env.HOME, '.config', 'reconcentral-ratecard-worker');
   }
   return path.join(__dirname, '../../.runtime');
+}
+
+/**
+ * Gets or provisions a secure per-installation 256-bit encryption key.
+ * 1. Checks CREDENTIALS_ENCRYPTION_KEY / ENCRYPTION_KEY / JWT_SECRET.
+ * 2. If absent, checks or provisions a machine-local, cryptographically random key
+ *    stored in `<USER_DATA_DIR>/.vault_key` with strict permissions (0o600).
+ * This guarantees that every desktop install has a distinct, secret key not found in source code.
+ */
+export function getVaultMasterKey() {
+  const envSecret = process.env.CREDENTIALS_ENCRYPTION_KEY 
+    || process.env.ENCRYPTION_KEY 
+    || process.env.JWT_SECRET;
+  
+  if (envSecret && String(envSecret).trim()) {
+    return crypto.createHash('sha256').update(String(envSecret).trim()).digest();
+  }
+
+  const userDir = getResolvedUserDataDir();
+  if (!fs.existsSync(userDir)) {
+    fs.mkdirSync(userDir, { recursive: true });
+  }
+
+  const keyFilePath = path.join(userDir, '.vault_key');
+  try {
+    if (fs.existsSync(keyFilePath)) {
+      const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
+      if (storedKey && storedKey.length >= 32) {
+        return crypto.createHash('sha256').update(storedKey).digest();
+      }
+    }
+  } catch {}
+
+  // Generate a fresh cryptographically random 256-bit key
+  const randomSecret = crypto.randomBytes(32).toString('hex');
+  try {
+    fs.writeFileSync(keyFilePath, randomSecret, { encoding: 'utf8', mode: 0o600 });
+  } catch {}
+  return crypto.createHash('sha256').update(randomSecret).digest();
+}
+
+/**
+ * Encrypts data using AES-256-GCM with unique IV and authentication tag.
+ */
+export function encryptVaultData(plaintext) {
+  if (!plaintext || typeof plaintext !== 'string') return null;
+  const key = getVaultMasterKey();
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  let ciphertext = cipher.update(plaintext, 'utf8', 'hex');
+  ciphertext += cipher.final('hex');
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${ciphertext}`;
+}
+
+/**
+ * Decrypts AES-256-GCM data.
+ */
+export function decryptVaultData(encryptedPayload) {
+  if (!encryptedPayload || typeof encryptedPayload !== 'string') return null;
+  const parts = encryptedPayload.split(':');
+  if (parts.length !== 3) return null;
+  const [ivHex, authTagHex, ciphertextHex] = parts;
+  const key = getVaultMasterKey();
+  const iv = Buffer.from(ivHex, 'hex');
+  const authTag = Buffer.from(authTagHex, 'hex');
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  decipher.setAuthTag(authTag);
+  let decrypted = decipher.update(ciphertextHex, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
 }
 
 /**
@@ -62,7 +137,7 @@ export function saveEncryptedCookies(filePath, cookies) {
     fs.mkdirSync(dir, { recursive: true });
   }
   const serialized = JSON.stringify(cookies, null, 2);
-  const encrypted = encryptCredential(serialized);
+  const encrypted = encryptVaultData(serialized);
   fs.writeFileSync(filePath, encrypted, 'utf8');
 }
 
@@ -77,7 +152,7 @@ export function loadEncryptedCookies(filePath) {
     // Check if AES-256-GCM serialized format: ivHex:authTagHex:ciphertextHex
     if (raw.includes(':')) {
       try {
-        const decrypted = decryptCredential(raw);
+        const decrypted = decryptVaultData(raw);
         if (decrypted) return JSON.parse(decrypted);
       } catch {}
     }

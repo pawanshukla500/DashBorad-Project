@@ -1,6 +1,7 @@
 /**
  * End-to-End Verification Test for Desktop Auth, Authorization & Database Connectivity
  */
+import http from 'http';
 import { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
@@ -174,7 +175,7 @@ async function runTests() {
     console.log('\n[Test 6] Exercising desktop server HTTP routes for multi-marketplace gating & isolation...');
     const { server } = await import('../desktopServer.mjs');
     const { filterRateCardsByChannel } = await import('../authValidation.js');
-    await new Promise(resolve => server.listen(0, resolve));
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const testPort = server.address().port;
     const testBase = `http://127.0.0.1:${testPort}`;
 
@@ -251,10 +252,36 @@ async function runTests() {
       !fkShopsyFiltered.some(rc => rc.marketplace === 'myntra' || rc.marketplace === 'meesho');
     console.log(`  • Production flipkart_shopsy combined filter isolation (only flipkart & shopsy, zero leak): Passed = ${isFkShopsyIsolated}`);
 
+    // 7. Interactive login auth gate: Unauthenticated request must return HTTP 401
+    const unauthLoginRes = await fetch(`${testBase}/api/interactive-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
+    });
+    const unauthLoginData = await unauthLoginRes.json();
+    const isInteractiveLoginGated = unauthLoginRes.status === 401 && unauthLoginData.error?.includes('Session authentication required');
+    console.log(`  • Interactive login unauthenticated gate (HTTP 401): Passed = ${isInteractiveLoginGated}`);
+
+    // 8. DNS rebinding protection: Invalid Host header must return HTTP 403
+    const rebindingStatusCode = await new Promise((resolve, reject) => {
+      const httpReq = http.request({
+        host: '127.0.0.1',
+        port: testPort,
+        path: '/api/desktop/marketplaces',
+        headers: { 'Host': 'evil-attacker.example.com' }
+      }, (res) => {
+        resolve(res.statusCode);
+      });
+      httpReq.on('error', reject);
+      httpReq.end();
+    });
+    const isRebindingBlocked = rebindingStatusCode === 403;
+    console.log(`  • DNS rebinding prevention (invalid Host header HTTP 403): Passed = ${isRebindingBlocked}`);
+
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated) {
-      console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, and preview filtering verified.');
+    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isRebindingBlocked) {
+      console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, preview filtering, and endpoint security verified.');
       passed++;
     } else {
       console.error('  ✗ Fail: Behavioral route verification failed:', {
@@ -263,7 +290,9 @@ async function runTests() {
         isPreviewIsolated,
         isMpListValid,
         isAccountFilteringValid,
-        isFkShopsyIsolated
+        isFkShopsyIsolated,
+        isInteractiveLoginGated,
+        isRebindingBlocked
       });
       failed++;
     }
