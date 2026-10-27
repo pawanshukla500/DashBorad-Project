@@ -2,6 +2,10 @@
 if (!window.ratecardAPI) {
   const API_BASE = window.location.origin;
   window.ratecardAPI = {
+    authLogin: (credentials) => fetch(`${API_BASE}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) }).then(r => r.json()),
+    authGetSession: () => fetch(`${API_BASE}/api/auth/session`).then(r => r.json()),
+    authLogout: () => fetch(`${API_BASE}/api/auth/logout`, { method: 'POST' }).then(r => r.json()),
+    authVerifyDb: () => fetch(`${API_BASE}/api/auth/verify-db`, { method: 'POST' }).then(r => r.json()),
     getConfig: () => fetch(`${API_BASE}/api/config`).then(r => r.json()),
     saveConfig: (cfg) => fetch(`${API_BASE}/api/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) }).then(r => r.json()),
     testDbConnection: (dbUrl) => fetch(`${API_BASE}/api/test-db`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dbUrl }) }).then(r => r.json()),
@@ -31,13 +35,57 @@ let currentCatalog = [];
 let currentRateCards = [];
 let currentChanges = [];
 let activeDiffFilter = 'all';
+let currentUserSession = null;
+
+async function checkAuthSession() {
+  try {
+    const res = await window.ratecardAPI.authGetSession();
+    if (res && res.authenticated && res.user) {
+      currentUserSession = res;
+      updateUserAuthUI(res);
+      return true;
+    }
+  } catch (err) {
+    console.warn('Could not restore auth session:', err);
+  }
+  showAuthModal();
+  return false;
+}
+
+function showAuthModal() {
+  const modal = document.getElementById('auth-modal');
+  if (modal) modal.style.display = 'flex';
+  const badge = document.getElementById('user-auth-badge');
+  if (badge) badge.style.display = 'none';
+}
+
+function hideAuthModal() {
+  const modal = document.getElementById('auth-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function updateUserAuthUI(session) {
+  hideAuthModal();
+  const badge = document.getElementById('user-auth-badge');
+  const roleEl = document.getElementById('user-badge-role');
+  const nameEl = document.getElementById('user-badge-name');
+  if (badge && session?.user) {
+    badge.style.display = 'flex';
+    if (roleEl) roleEl.innerText = (session.user.role || 'user').toUpperCase();
+    if (nameEl) nameEl.innerText = session.user.username || session.user.email;
+  }
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
-  await loadInitialState();
   setupEventListeners();
   subscribeToEvents();
-  loadCatalogData();
+  
+  const isAuthorized = await checkAuthSession();
+  if (isAuthorized) {
+    await loadInitialState();
+    loadCatalogData();
+  }
 });
 
 // ── Tab Navigation ───────────────────────────────────────────────────────────
@@ -539,6 +587,83 @@ function setupEventListeners() {
       appendTerminalLine('✓ Worker configuration updated.');
     } else {
       alert(`Failed to save settings: ${res.error}`);
+    }
+  });
+
+  // ── Firebase Auth & PC Authorization Handlers ──────────────────────────────
+  const formAuthLogin = document.getElementById('form-auth-login');
+  const authEmailInput = document.getElementById('auth-input-email');
+  const authPassInput = document.getElementById('auth-input-password');
+  const authDbInput = document.getElementById('auth-input-db');
+  const authErrorBanner = document.getElementById('auth-error-banner');
+  const btnAuthSubmit = document.getElementById('btn-auth-submit');
+  const authSpinner = document.getElementById('auth-spinner');
+  const btnAuthTestDb = document.getElementById('btn-auth-test-db');
+  const authDbPingStatus = document.getElementById('auth-db-ping-status');
+  const btnHeaderLogout = document.getElementById('btn-header-logout');
+
+  btnHeaderLogout?.addEventListener('click', async () => {
+    if (confirm('Sign out and deauthorize this PC?')) {
+      await window.ratecardAPI.authLogout();
+      currentUserSession = null;
+      showAuthModal();
+      appendTerminalLine('[Auth] Signed out. PC deauthorized.');
+    }
+  });
+
+  btnAuthTestDb?.addEventListener('click', async () => {
+    const dbUrl = authDbInput?.value;
+    if (authDbPingStatus) {
+      authDbPingStatus.innerText = 'Pinging DB...';
+      authDbPingStatus.style.color = '#94a3b8';
+    }
+    try {
+      const res = await window.ratecardAPI.authVerifyDb(dbUrl);
+      if (res && res.success) {
+        authDbPingStatus.innerText = `✓ Connected (${res.latencyMs}ms, ${res.dbName})`;
+        authDbPingStatus.style.color = '#10b981';
+      } else {
+        authDbPingStatus.innerText = `✗ Failed: ${res?.error || 'Unknown'}`;
+        authDbPingStatus.style.color = '#ef4444';
+      }
+    } catch (err) {
+      authDbPingStatus.innerText = `✗ Error: ${err.message}`;
+      authDbPingStatus.style.color = '#ef4444';
+    }
+  });
+
+  formAuthLogin?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (authErrorBanner) authErrorBanner.style.display = 'none';
+    if (btnAuthSubmit) btnAuthSubmit.disabled = true;
+    if (authSpinner) authSpinner.style.display = 'inline-block';
+
+    const email = authEmailInput?.value?.trim();
+    const password = authPassInput?.value;
+    const dbUrl = authDbInput?.value?.trim();
+
+    try {
+      const res = await window.ratecardAPI.authLogin({ email, password, dbUrl });
+      if (res && res.success && res.session) {
+        currentUserSession = res.session;
+        updateUserAuthUI(res.session);
+        appendTerminalLine(`✓ Authorized as ${res.session.user.username} (${res.session.user.role.toUpperCase()})`);
+        await loadInitialState();
+        loadCatalogData();
+      } else {
+        if (authErrorBanner) {
+          authErrorBanner.innerText = res?.error || 'Authentication or authorization failed.';
+          authErrorBanner.style.display = 'block';
+        }
+      }
+    } catch (err) {
+      if (authErrorBanner) {
+        authErrorBanner.innerText = `Authorization error: ${err.message}`;
+        authErrorBanner.style.display = 'block';
+      }
+    } finally {
+      if (btnAuthSubmit) btnAuthSubmit.disabled = false;
+      if (authSpinner) authSpinner.style.display = 'none';
     }
   });
 }

@@ -49,7 +49,58 @@ import { getPool } from '../backend/db/index.js';
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');
 const CONFIG_FILE = path.join(__dirname, 'worker-config.json');
+const SESSION_FILE = path.join(__dirname, 'auth-session.json');
 const STAGING_DIR = path.join(__dirname, 'staging');
+
+const FIREBASE_API_KEY = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
+
+async function authenticateWithFirebase(email, password) {
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, returnSecureToken: true })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const errorMsg = data?.error?.message || 'Authentication failed';
+    throw new Error(errorMsg);
+  }
+  return data;
+}
+
+function loadAuthSession() {
+  try {
+    if (fs.existsSync(SESSION_FILE)) {
+      const raw = fs.readFileSync(SESSION_FILE, 'utf8');
+      const session = JSON.parse(raw);
+      if (session && session.user && session.authenticated) {
+        return session;
+      }
+    }
+  } catch (err) {}
+  return { authenticated: false, user: null };
+}
+
+function saveAuthSession(sessionData) {
+  try {
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessionData, null, 2));
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function clearAuthSession() {
+  try {
+    if (fs.existsSync(SESSION_FILE)) {
+      fs.unlinkSync(SESSION_FILE);
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
 
 fs.mkdirSync(STAGING_DIR, { recursive: true });
 
@@ -204,6 +255,11 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // GET /api/auth/session
+    if (pathname === '/api/auth/session' && req.method === 'GET') {
+      return sendJson(200, loadAuthSession());
+    }
+
     // GET /api/config
     if (pathname === '/api/config' && req.method === 'GET') {
       return sendJson(200, loadConfig());
@@ -300,6 +356,108 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── 3. POST API Endpoints ────────────────────────────────────────────────
+
+    // POST /api/auth/login
+    if (pathname === '/api/auth/login' && req.method === 'POST') {
+      try {
+        const body = await parseJsonBody();
+        const { email, password, dbUrl } = body;
+        if (!email || !password) {
+          return sendJson(400, { success: false, error: 'Email and password are required.' });
+        }
+
+        let fbResult;
+        try {
+          fbResult = await authenticateWithFirebase(email, password);
+        } catch (fbErr) {
+          const msg = fbErr.message === 'INVALID_LOGIN_CREDENTIALS' || fbErr.message === 'EMAIL_NOT_FOUND' || fbErr.message === 'INVALID_PASSWORD'
+            ? 'Invalid email or password.'
+            : `Firebase Auth error: ${fbErr.message}`;
+          return sendJson(401, { success: false, error: msg });
+        }
+
+        const firebaseUid = fbResult.localId;
+        const userEmail = fbResult.email || email;
+        const pool = getPool();
+
+        let dbUser = null;
+        try {
+          const res = await pool.query(
+            'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
+            [firebaseUid, userEmail]
+          );
+          if (res.rows.length > 0) {
+            dbUser = res.rows[0];
+          }
+        } catch (dbErr) {
+          return sendJson(500, { success: false, error: `Database error: ${dbErr.message}` });
+        }
+
+        if (!dbUser) {
+          return sendJson(403, { success: false, error: 'User authenticated in Firebase, but not found in ReconCentral database users.' });
+        }
+
+        const authorizedRoles = ['admin', 'operator', 'analyst'];
+        if (!authorizedRoles.includes(dbUser.role)) {
+          return sendJson(403, {
+            success: false,
+            error: `Access denied. Role (${dbUser.role || 'viewer'}) is not authorized to operate rate card scrapers or synchronize database records.`
+          });
+        }
+
+        const session = {
+          authenticated: true,
+          user: {
+            id: dbUser.id,
+            username: dbUser.username || userEmail.split('@')[0],
+            email: dbUser.email || userEmail,
+            role: dbUser.role,
+            firebase_uid: firebaseUid
+          },
+          idToken: fbResult.idToken,
+          refreshToken: fbResult.refreshToken,
+          authorizedAt: new Date().toISOString()
+        };
+
+        saveAuthSession(session);
+        return sendJson(200, { success: true, session });
+      } catch (err) {
+        return sendJson(500, { success: false, error: err.message });
+      }
+    }
+
+    // POST /api/auth/logout
+    if (pathname === '/api/auth/logout' && req.method === 'POST') {
+      clearAuthSession();
+      return sendJson(200, { success: true });
+    }
+
+    // POST /api/auth/verify-db
+    if (pathname === '/api/auth/verify-db' && req.method === 'POST') {
+      const start = Date.now();
+      try {
+        const pool = getPool();
+        const res = await pool.query(`
+          SELECT 
+            current_database() as db_name, 
+            current_user as db_user, 
+            version() as db_version, 
+            (SELECT count(*) FROM users) as user_count,
+            (SELECT count(*) FROM rc_commission WHERE end_date IS NULL) as active_rates_count
+        `);
+        const latency = Date.now() - start;
+        return sendJson(200, {
+          success: true,
+          latencyMs: latency,
+          dbName: res.rows[0].db_name,
+          dbUser: res.rows[0].db_user,
+          userCount: parseInt(res.rows[0].user_count, 10),
+          activeRatesCount: parseInt(res.rows[0].active_rates_count, 10)
+        });
+      } catch (err) {
+        return sendJson(500, { success: false, error: err.message, latencyMs: Date.now() - start });
+      }
+    }
 
     // POST /api/config
     if (pathname === '/api/config' && req.method === 'POST') {

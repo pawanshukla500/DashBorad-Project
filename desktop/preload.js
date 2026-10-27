@@ -1,6 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('ratecardAPI', {
+  // Authentication & Authorization (Firebase & DB Role Gate)
+  authLogin: (credentials) => ipcRenderer.invoke('auth-login', credentials),
+  authGetSession: () => ipcRenderer.invoke('auth-get-session'),
+  authLogout: () => ipcRenderer.invoke('auth-logout'),
+  authVerifyDb: (dbUrl) => ipcRenderer.invoke('auth-verify-db', dbUrl),
+
   // Configuration
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),

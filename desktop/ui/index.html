@@ -71,10 +71,15 @@
           <p id="page-desc">Automated Flipkart & Shopsy rate card extraction, change detection, and database synchronization</p>
         </div>
         <div class="header-right">
+          <div class="user-auth-badge" id="user-auth-badge" style="display: none; align-items: center; gap: 8px; background: rgba(144, 42, 74, 0.2); border: 1px solid var(--primary); padding: 5px 12px; border-radius: 20px; font-size: 12px;">
+            <span id="user-badge-role" class="badge" style="background: var(--primary); color: #fff; font-size: 11px; padding: 2px 6px;">Admin</span>
+            <span id="user-badge-name" style="font-weight: 600; color: #fff;">Pawan Shukla</span>
+            <button id="btn-header-logout" title="Sign out / Deauthorize" style="background: transparent; border: none; color: #f87171; cursor: pointer; font-size: 12px; padding: 0 4px; margin-left: 4px;">🚪 Sign Out</button>
+          </div>
           <button class="btn btn-sm btn-secondary" id="btn-quick-excel">📑 Export Excel</button>
           <button class="btn btn-sm btn-secondary" id="btn-quick-open-excel">📂 Open Excel</button>
           <span class="badge badge-portal">Flipkart & Shopsy</span>
-          <span class="badge badge-account">Multi-Brand (EJ / YT / Sangria)</span>
+          <span class="badge badge-account">Multi-Brand</span>
         </div>
       </header>
 
@@ -399,6 +404,52 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <!-- Firebase Login & PC Authorization Modal -->
+  <div id="auth-modal" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.95); z-index: 9999; backdrop-filter: blur(8px); align-items: center; justify-content: center;">
+    <div class="modal-card" style="background: #1e293b; border: 1px solid rgba(144, 42, 74, 0.4); border-radius: 16px; width: 480px; max-width: 90vw; padding: 32px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div style="font-size: 40px; margin-bottom: 8px;">⚡</div>
+        <h2 style="font-size: 20px; font-weight: 700; color: #fff;">ReconCentral Desktop Authorization</h2>
+        <p style="font-size: 13px; color: #94a3b8; margin-top: 6px;">Sign in with your Firebase credentials to authorize this PC for database access & scraper control.</p>
+      </div>
+
+      <div id="auth-error-banner" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; color: #fca5a5;"></div>
+
+      <form id="form-auth-login">
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Firebase Email</label>
+          <input type="email" id="auth-input-email" class="form-input" placeholder="returnorders@vbexports.co.in" required style="width: 100%; box-sizing: border-box;">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Firebase Password</label>
+          <input type="password" id="auth-input-password" class="form-input" placeholder="••••••••••••" required style="width: 100%; box-sizing: border-box;">
+        </div>
+
+        <details style="margin-bottom: 20px; font-size: 12px; color: #94a3b8;">
+          <summary style="cursor: pointer; color: #38bdf8; font-weight: 500;">⚙️ Advanced Database Connection</summary>
+          <div style="margin-top: 10px; padding: 12px; background: rgba(15, 23, 42, 0.6); border-radius: 8px; border: 1px solid #334155;">
+            <label style="display: block; font-size: 11px; margin-bottom: 4px; color: #94a3b8;">PostgreSQL Connection String</label>
+            <input type="text" id="auth-input-db" class="form-input" style="width: 100%; font-size: 11px; box-sizing: border-box;" value="postgresql://pawanshukla:Xchange4SQL%24@200.141.1.119:5433/paymentapp">
+            <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px;">
+              <button type="button" id="btn-auth-test-db" class="btn btn-sm btn-secondary">Test DB Ping</button>
+              <span id="auth-db-ping-status" style="font-size: 11px;"></span>
+            </div>
+          </div>
+        </details>
+
+        <button type="submit" id="btn-auth-submit" class="btn btn-primary" style="width: 100%; padding: 12px; font-size: 14px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px;">
+          <span id="auth-spinner" style="display: none;">⏳</span>
+          <span>Sign In & Authorize PC</span>
+        </button>
+      </form>
+
+      <div style="margin-top: 20px; text-align: center; font-size: 11px; color: #64748b;">
+        ReconCentral Security Policy • Roles: Admin, Operator, Analyst
+      </div>
+    </div>
   </div>
 
   <script src="renderer.js"></script>

@@ -14,8 +14,62 @@ const { Pool } = require('pg');
 let mainWindow = null;
 const USER_DATA_DIR = app.getPath('userData');
 const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
+const SESSION_FILE = path.join(USER_DATA_DIR, 'auth-session.json');
 const COOKIES_PATH = path.join(USER_DATA_DIR, 'cookies.json');
 const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
+
+const FIREBASE_API_KEY = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
+
+async function authenticateWithFirebase(email, password) {
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, returnSecureToken: true })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const errorMsg = data?.error?.message || 'Authentication failed';
+    throw new Error(errorMsg);
+  }
+  return data;
+}
+
+function loadAuthSession() {
+  try {
+    if (fs.existsSync(SESSION_FILE)) {
+      const raw = fs.readFileSync(SESSION_FILE, 'utf8');
+      const session = JSON.parse(raw);
+      if (session && session.user && session.authenticated) {
+        return session;
+      }
+    }
+  } catch (err) {
+    console.error('Failed to read auth session:', err);
+  }
+  return { authenticated: false, user: null };
+}
+
+function saveAuthSession(sessionData) {
+  try {
+    fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessionData, null, 2));
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function clearAuthSession() {
+  try {
+    if (fs.existsSync(SESSION_FILE)) {
+      fs.unlinkSync(SESSION_FILE);
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
 
 // Default Configuration with Flipkart & Shopsy Verticals and Brands
 const DEFAULT_CONFIG = {
@@ -642,6 +696,119 @@ async function executeDbSync(scrapedList, config) {
 // ── IPC Handlers ─────────────────────────────────────────────────────────────
 ipcMain.handle('get-config', () => loadConfig());
 ipcMain.handle('save-config', (e, config) => saveConfig(config));
+
+// ── Authentication & Authorization IPC Handlers ─────────────────────────────
+ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
+  try {
+    if (!email || !password) {
+      return { success: false, error: 'Email and password are required.' };
+    }
+
+    let fbResult;
+    try {
+      fbResult = await authenticateWithFirebase(email, password);
+    } catch (fbErr) {
+      const msg = fbErr.message === 'INVALID_LOGIN_CREDENTIALS' || fbErr.message === 'EMAIL_NOT_FOUND' || fbErr.message === 'INVALID_PASSWORD'
+        ? 'Invalid email or password.'
+        : `Firebase Auth error: ${fbErr.message}`;
+      return { success: false, error: msg };
+    }
+
+    const firebaseUid = fbResult.localId;
+    const userEmail = fbResult.email || email;
+
+    const config = loadConfig();
+    const targetDbUrl = dbUrl || config.databaseUrl;
+    const pool = new Pool({
+      connectionString: targetDbUrl,
+      ssl: { rejectUnauthorized: false }
+    });
+
+    let dbUser = null;
+    try {
+      const res = await pool.query(
+        'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR email = $2 LIMIT 1',
+        [firebaseUid, userEmail]
+      );
+      if (res.rows.length > 0) {
+        dbUser = res.rows[0];
+      }
+    } catch (dbErr) {
+      await pool.end();
+      return { success: false, error: `Database connection error: ${dbErr.message}` };
+    }
+    await pool.end();
+
+    if (!dbUser) {
+      return { success: false, error: 'User authenticated in Firebase, but no corresponding account was found in ReconCentral database.' };
+    }
+
+    const authorizedRoles = ['admin', 'operator', 'analyst'];
+    if (!authorizedRoles.includes(dbUser.role)) {
+      return {
+        success: false,
+        error: `Access denied. Your role (${dbUser.role || 'viewer'}) is not authorized to operate rate card scrapers or synchronize database records. Contact an administrator.`
+      };
+    }
+
+    const session = {
+      authenticated: true,
+      user: {
+        id: dbUser.id,
+        username: dbUser.username || userEmail.split('@')[0],
+        email: dbUser.email || userEmail,
+        role: dbUser.role,
+        firebase_uid: firebaseUid
+      },
+      idToken: fbResult.idToken,
+      refreshToken: fbResult.refreshToken,
+      authorizedAt: new Date().toISOString()
+    };
+
+    saveAuthSession(session);
+
+    if (dbUrl && dbUrl !== config.databaseUrl) {
+      config.databaseUrl = dbUrl;
+      saveConfig(config);
+    }
+
+    return { success: true, session };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('auth-get-session', () => loadAuthSession());
+ipcMain.handle('auth-logout', () => clearAuthSession());
+
+ipcMain.handle('auth-verify-db', async (e, dbUrl) => {
+  const config = loadConfig();
+  const targetDb = dbUrl || config.databaseUrl;
+  const start = Date.now();
+  try {
+    const pool = new Pool({ connectionString: targetDb, ssl: { rejectUnauthorized: false } });
+    const res = await pool.query(`
+      SELECT 
+        current_database() as db_name, 
+        current_user as db_user, 
+        version() as db_version, 
+        (SELECT count(*) FROM users) as user_count,
+        (SELECT count(*) FROM rc_commission WHERE end_date IS NULL) as active_rates_count
+    `);
+    const latency = Date.now() - start;
+    await pool.end();
+    return {
+      success: true,
+      latencyMs: latency,
+      dbName: res.rows[0].db_name,
+      dbUser: res.rows[0].db_user,
+      userCount: parseInt(res.rows[0].user_count, 10),
+      activeRatesCount: parseInt(res.rows[0].active_rates_count, 10)
+    };
+  } catch (err) {
+    return { success: false, error: err.message, latencyMs: Date.now() - start };
+  }
+});
 
 ipcMain.handle('test-db-connection', async (e, dbUrl) => {
   try {

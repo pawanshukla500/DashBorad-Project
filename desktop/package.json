@@ -42,11 +42,11 @@
       "output": "dist-release"
     },
     "win": {
+      "signAndEditExecutable": false,
       "target": [
         "nsis",
         "portable"
-      ],
-      "icon": "ui/icon.png"
+      ]
     },
     "linux": {
       "target": [
