@@ -929,17 +929,17 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
       }
     }
 
-    // 2. Direct PostgreSQL verification if server was offline or direct DB provided
+    // 2. Strict direct PostgreSQL verification only if candidate servers were unreachable
     const targetDbUrl = provisionedDbUrl || config.databaseUrl;
-    if (!dbUser && targetDbUrl) {
+    if (!dbUser && targetDbUrl && firebaseUid) {
       const pool = new Pool({
         connectionString: targetDbUrl,
         ssl: { rejectUnauthorized: false }
       });
       try {
         const res = await pool.query(
-          'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR LOWER(email) = LOWER($2) LIMIT 1',
-          [firebaseUid, userEmail]
+          'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 LIMIT 1',
+          [firebaseUid]
         );
         if (res.rows.length > 0) {
           dbUser = res.rows[0];
@@ -952,7 +952,7 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
     }
 
     if (!dbUser) {
-      return { success: false, error: `User authenticated in Firebase, but no corresponding account was found in ReconCentral database (${userEmail}).` };
+      return { success: false, error: `User authenticated in Firebase, but no corresponding account with verified UID was found in ReconCentral database (${userEmail}). Please sign in through ReconCentral web app first to link your account.` };
     }
 
     const authorizedRoles = ['admin', 'operator', 'analyst'];

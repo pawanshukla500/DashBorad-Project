@@ -580,13 +580,13 @@ const server = http.createServer(async (req, res) => {
           }
         }
 
-        // 2. Direct pool verification fallback if server was offline
-        if (!dbUser) {
+        // 2. Strict direct PostgreSQL verification only if candidate servers were unreachable
+        if (!dbUser && firebaseUid) {
           try {
             const pool = getPool();
             const res = await pool.query(
-              'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 OR LOWER(email) = LOWER($2) LIMIT 1',
-              [firebaseUid, userEmail]
+              'SELECT id, username, email, role, firebase_uid FROM users WHERE firebase_uid = $1 LIMIT 1',
+              [firebaseUid]
             );
             if (res.rows.length > 0) {
               dbUser = res.rows[0];
@@ -597,7 +597,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (!dbUser) {
-          return sendJson(403, { success: false, error: `User authenticated in Firebase, but no corresponding account was found in ReconCentral database (${userEmail}).` });
+          return sendJson(403, { success: false, error: `User authenticated in Firebase, but no corresponding account with verified UID was found in ReconCentral database (${userEmail}). Please sign in through ReconCentral web app first to link your account.` });
         }
 
         const authorizedRoles = ['admin', 'operator', 'analyst'];

@@ -462,10 +462,14 @@ function setupEventListeners() {
   const headerBadgeChannel = document.getElementById('header-badge-channel');
 
   const syncMarketplaceSelection = (val) => {
-    if (headerSelectMp && headerSelectMp.value !== val) headerSelectMp.value = val;
-    if (scraperSelectMp && scraperSelectMp.value !== val) scraperSelectMp.value = val;
+    if (headerSelectMp && headerSelectMp.querySelector(`option[value="${val}"]`)) {
+      headerSelectMp.value = val;
+    }
+    if (scraperSelectMp && scraperSelectMp.querySelector(`option[value="${val}"]`)) {
+      scraperSelectMp.value = val;
+    }
     if (headerBadgeChannel) {
-      const selectedOpt = scraperSelectMp?.querySelector(`option[value="${val}"]`);
+      const selectedOpt = scraperSelectMp?.querySelector(`option[value="${val}"]`) || headerSelectMp?.querySelector(`option[value="${val}"]`);
       headerBadgeChannel.innerText = selectedOpt?.innerText?.split('—')?.[0]?.trim() || val.toUpperCase();
     }
   };
