@@ -71,29 +71,35 @@ export function validateDesktopTokenRole(token) {
 }
 
 /**
- * Cryptographically verifies a Firebase ID token.
- * Validates token signature, issuer, audience, and expiration via Firebase Admin SDK or Google Identity Toolkit.
- * Returns verified decoded token payload or null if forged, unsigned (e.g. alg: none), or invalidly signed.
+ * Cryptographically verifies a Firebase ID token and verifies revocation status.
+ * Validates token signature, issuer, audience, expiration, and checks revocation
+ * via Firebase Admin SDK (checkRevoked: true) or Google Identity Toolkit (validSince check).
+ * Returns verified decoded token payload or null if forged, unsigned, invalidly signed, or revoked.
  */
-export async function verifyFirebaseTokenCryptographically(token) {
+export async function verifyFirebaseTokenCryptographically(token, checkRevoked = true) {
   if (!token || typeof token !== 'string') return null;
 
-  // 1. Local cryptographic signature verification via Firebase Admin SDK if configured
+  // 1. Local cryptographic signature and revocation verification via Firebase Admin SDK if configured
   try {
     const { auth } = await import('../backend/utils/firebaseAdmin.js');
     if (auth && typeof auth.verifyIdToken === 'function') {
-      const decoded = await auth.verifyIdToken(token);
+      const decoded = await auth.verifyIdToken(token, checkRevoked);
       if (decoded && decoded.uid) {
         return decoded;
       }
     }
   } catch (adminErr) {
-    if (adminErr.code?.startsWith('auth/') || adminErr.message?.includes('Firebase ID token')) {
+    if (
+      adminErr.code === 'auth/id-token-revoked' ||
+      adminErr.code?.startsWith('auth/') || 
+      adminErr.message?.includes('Firebase ID token') ||
+      adminErr.message?.includes('revoked')
+    ) {
       return null;
     }
   }
 
-  // 2. Cryptographic verification fallback via Google Identity Toolkit API
+  // 2. Cryptographic verification & revocation fallback via Google Identity Toolkit API
   try {
     const apiKey = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
     const verifyUrl = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`;
@@ -105,7 +111,19 @@ export async function verifyFirebaseTokenCryptographically(token) {
     if (res.ok) {
       const data = await res.json();
       if (data && data.users && data.users.length > 0) {
-        return decodeJwtPayload(token);
+        const userRec = data.users[0];
+        const payload = decodeJwtPayload(token);
+        
+        // Check revocation against validSince timestamp
+        if (checkRevoked && payload && (payload.auth_time || payload.iat)) {
+          const issueTime = payload.auth_time || payload.iat;
+          const validSinceSec = userRec.validSince ? parseInt(userRec.validSince, 10) : 0;
+          if (validSinceSec > 0 && issueTime < validSinceSec) {
+            // Token was issued before revocation timestamp - reject revoked token!
+            return null;
+          }
+        }
+        return payload;
       }
     }
   } catch {}
@@ -114,12 +132,13 @@ export async function verifyFirebaseTokenCryptographically(token) {
 }
 
 /**
- * Verifies both the cryptographic signature and the authorized role claims of a desktop session token.
+ * Verifies both the cryptographic signature and the authorized role claims of a desktop session token,
+ * strictly verifying that the token has not been revoked (checkRevoked = true).
  */
-export async function verifyDesktopTokenAuthorization(token) {
-  const verifiedPayload = await verifyFirebaseTokenCryptographically(token);
+export async function verifyDesktopTokenAuthorization(token, checkRevoked = true) {
+  const verifiedPayload = await verifyFirebaseTokenCryptographically(token, checkRevoked);
   if (!verifiedPayload) {
-    return { authorized: false, role: null, error: 'Cryptographic signature verification failed' };
+    return { authorized: false, role: null, error: 'Cryptographic signature or revocation verification failed' };
   }
   const role = extractRoleFromTokenPayload(verifiedPayload);
   const authorized = isAuthorizedDesktopRole(role);
