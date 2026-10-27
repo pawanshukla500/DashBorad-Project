@@ -289,20 +289,36 @@ async function runTests() {
     const isForgedAdminBlocked = forgedAdminRes.status === 401;
     console.log(`  • Cryptographic signature verification (forged alg:none admin JWT HTTP 401): Passed = ${isForgedAdminBlocked}`);
 
-    // 7d. Revocation check gate: Token failing cryptographic revocation verification must receive HTTP 401
-    const revokedAdminJwt = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64') + '.' +
-                            Buffer.from(JSON.stringify({ recon_role: 'admin', uid: 'user_revoked', email: 'revoked@vbexports.co.in', auth_time: 1000, exp: 9999999999 })).toString('base64') +
-                            '.revoked_mock_signature';
+    // 7d. Revocation check gate at the route boundary:
+    // Exercises revocation directly at the route boundary: a token that has valid signature and authorized role,
+    // but has been revoked, MUST receive HTTP 401 specifically through the revocation path when checkRevoked is enforced.
+    let verifierCalledWithCheckRevoked = false;
+    const { setDesktopTokenVerifier, resetDesktopTokenVerifier } = await import('../desktopServer.mjs');
+    setDesktopTokenVerifier(async (token, checkRevoked) => {
+      verifierCalledWithCheckRevoked = Boolean(checkRevoked);
+      if (token === 'valid-signature-but-revoked-token') {
+        if (checkRevoked) {
+          return { authorized: false, role: null, error: 'Firebase ID token has been revoked' };
+        }
+        return { authorized: true, role: 'admin' };
+      }
+      return verifyDesktopTokenAuthorization(token, checkRevoked);
+    });
+
     const revokedRes = await fetch(`${testBase}/api/interactive-login`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${revokedAdminJwt}`
+        'Authorization': 'Bearer valid-signature-but-revoked-token'
       },
       body: JSON.stringify({ marketplace: 'flipkart_shopsy' })
     });
-    const isRevokedTokenBlocked = revokedRes.status === 401;
-    console.log(`  • Revocation verification gate (JWT with admin role failing verification HTTP 401): Passed = ${isRevokedTokenBlocked}`);
+    const revokedData = await revokedRes.json();
+    const isRevokedTokenBlocked = revokedRes.status === 401 && 
+                                  verifierCalledWithCheckRevoked === true &&
+                                  revokedData.error?.includes('revoked');
+    resetDesktopTokenVerifier();
+    console.log(`  • Revocation verification gate at route boundary (HTTP 401 with revocation error): Passed = ${isRevokedTokenBlocked}`);
 
     // 8. DNS rebinding protection: Invalid Host header must return HTTP 403
     const rebindingStatusCode = await new Promise((resolve, reject) => {
@@ -354,6 +370,7 @@ async function runTests() {
       validateTokenRoleMatchesDatabase,
       verifyFirebaseTokenCryptographically,
       verifyDesktopTokenAuthorization,
+      verifyFallbackTokenRevocation,
       extractRoleFromToken, 
       isAuthorizedDesktopRole, 
       saveEncryptedCookies,
@@ -552,24 +569,55 @@ async function runTests() {
     console.log(`  • Fallback verifier accepts active token (auth_time 2500 >= validSince 2000): Passed = ${isFallbackActiveAccepted}`);
 
     // 11d. Fallback Identity Toolkit test: Missing/malformed validSince or timestamp (Fail-closed) -> returns null
-    const mockFetchMalformed = async () => ({
+    const mockFetchMalformedNull = async () => ({
       ok: true,
       json: async () => ({ users: [{ localId: 'user_1', validSince: null }] })
     });
-    const fallbackMalformedResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchMalformed });
-    const isFallbackMalformedRejected = fallbackMalformedResult === null;
+    const fallbackNullResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchMalformedNull });
+    const isFallbackNullRejected = fallbackNullResult === null;
+
+    // Test non-empty malformed validSince such as "2000junk" and "2000.9" (must NOT be parsed via parseInt prefix!)
+    const mockFetchJunk = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: '2000junk' }] })
+    });
+    const fallbackJunkResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchJunk });
+    const isFallbackJunkRejected = fallbackJunkResult === null;
+
+    const mockFetchDecimal = async () => ({
+      ok: true,
+      json: async () => ({ users: [{ localId: 'user_1', validSince: '2000.9' }] })
+    });
+    const fallbackDecimalResult = await verifyFirebaseTokenCryptographically(mockActiveToken, true, { auth: null, fetchFn: mockFetchDecimal });
+    const isFallbackDecimalRejected = fallbackDecimalResult === null;
+
+    // Direct unit assertions on verifyFallbackTokenRevocation:
+    const isDirectJunkBlocked = verifyFallbackTokenRevocation({ validSince: '2000junk' }, { auth_time: 2001 }) === false;
+    const isDirectDecimalBlocked = verifyFallbackTokenRevocation({ validSince: '2000.9' }, { auth_time: 2001 }) === false;
+    const isDirectValidAccepted = verifyFallbackTokenRevocation({ validSince: '2000' }, { auth_time: 2001 }) === true;
+    const isDirectRevokedBlocked = verifyFallbackTokenRevocation({ validSince: '2000' }, { auth_time: 1999 }) === false;
+    const isDirectFloatTimeBlocked = verifyFallbackTokenRevocation({ validSince: '2000' }, { auth_time: 2001.5 }) === false;
 
     const noTimeTokenPayload = { uid: 'user_1', recon_role: 'admin' };
     const mockNoTimeToken = createMockJwt(noTimeTokenPayload);
     const fallbackNoTimeResult = await verifyFirebaseTokenCryptographically(mockNoTimeToken, true, { auth: null, fetchFn: mockFetchActive });
     const isFallbackNoTimeRejected = fallbackNoTimeResult === null;
-    console.log(`  • Fallback verifier fails closed when revocation metadata is missing/malformed: Passed = ${isFallbackMalformedRejected && isFallbackNoTimeRejected}`);
+
+    const isMalformedRejected = isFallbackNullRejected && 
+                                isFallbackJunkRejected && 
+                                isFallbackDecimalRejected && 
+                                isDirectJunkBlocked && 
+                                isDirectDecimalBlocked && 
+                                isDirectValidAccepted && 
+                                isDirectRevokedBlocked && 
+                                isDirectFloatTimeBlocked && 
+                                isFallbackNoTimeRejected;
+    console.log(`  • Fallback verifier fails closed on malformed validSince ('2000junk', '2000.9') & missing timestamps: Passed = ${isMalformedRejected}`);
 
     const isRevokedCheckPassed = isAdminRevocationVerified && 
                                  isFallbackRevokedRejected && 
                                  isFallbackActiveAccepted && 
-                                 isFallbackMalformedRejected && 
-                                 isFallbackNoTimeRejected;
+                                 isMalformedRejected;
 
     if (
       isClaimConstantValid &&

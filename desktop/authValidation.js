@@ -72,20 +72,46 @@ export function validateDesktopTokenRole(token) {
 
 /**
  * Verifies fallback token revocation status against Identity Toolkit user metadata.
- * Fail-closed: Requires valid positive issue timestamp, valid positive validSince timestamp,
+ * Fail-closed: Requires valid positive integer issue timestamp, valid positive integer validSince timestamp,
  * and strictly enforces that issueTime >= validSinceSec.
+ * Malformed validSince (e.g. non-numeric characters, suffixes like '2000junk', or decimals like '2000.9')
+ * are strictly rejected.
  */
 export function verifyFallbackTokenRevocation(userRec, payload) {
   if (!userRec || !payload) return false;
-  const issueTime = typeof payload.auth_time === 'number' 
-    ? payload.auth_time 
-    : (typeof payload.iat === 'number' ? payload.iat : null);
-  const validSinceSec = userRec.validSince ? parseInt(userRec.validSince, 10) : null;
-  
-  // Fail closed: must have a valid positive issueTime, valid positive validSinceSec, and issueTime >= validSinceSec
-  if (!issueTime || issueTime <= 0 || !validSinceSec || isNaN(validSinceSec) || validSinceSec <= 0) {
+
+  // Issue timestamp must be a finite, positive integer
+  const issueTimeRaw = payload.auth_time !== undefined ? payload.auth_time : payload.iat;
+  if (typeof issueTimeRaw !== 'number' || !Number.isFinite(issueTimeRaw) || !Number.isInteger(issueTimeRaw) || issueTimeRaw <= 0) {
     return false;
   }
+  const issueTime = issueTimeRaw;
+
+  // validSince must strictly match an all-digit positive integer string or positive integer number
+  const validSinceRaw = userRec.validSince;
+  if (validSinceRaw === undefined || validSinceRaw === null) {
+    return false;
+  }
+
+  let validSinceSec;
+  if (typeof validSinceRaw === 'string') {
+    const trimmed = validSinceRaw.trim();
+    // Strictly require all digits, rejecting prefixes/suffixes like "2000junk" or decimals like "2000.9"
+    if (!/^\d+$/.test(trimmed)) {
+      return false;
+    }
+    validSinceSec = Number(trimmed);
+  } else if (typeof validSinceRaw === 'number' && Number.isFinite(validSinceRaw) && Number.isInteger(validSinceRaw)) {
+    validSinceSec = validSinceRaw;
+  } else {
+    return false;
+  }
+
+  if (!Number.isFinite(validSinceSec) || validSinceSec <= 0) {
+    return false;
+  }
+
+  // Token is valid only if issued at or after validSinceSec
   return issueTime >= validSinceSec;
 }
 

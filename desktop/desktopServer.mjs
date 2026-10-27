@@ -30,6 +30,14 @@ import {
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
 
+let activeTokenVerifier = verifyDesktopTokenAuthorization;
+export function setDesktopTokenVerifier(verifier) {
+  activeTokenVerifier = typeof verifier === 'function' ? verifier : verifyDesktopTokenAuthorization;
+}
+export function resetDesktopTokenVerifier() {
+  activeTokenVerifier = verifyDesktopTokenAuthorization;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -1041,19 +1049,28 @@ const server = http.createServer(async (req, res) => {
       const session = loadAuthSession();
 
       let isAuthorized = false;
+      let authError = null;
       if (session && session.authenticated && session.idToken) {
-        const check = await verifyDesktopTokenAuthorization(session.idToken, true);
-        if (check.authorized) isAuthorized = true;
+        const check = await activeTokenVerifier(session.idToken, true);
+        if (check.authorized) {
+          isAuthorized = true;
+        } else if (check.error) {
+          authError = check.error;
+        }
       }
       if (!isAuthorized && bearerToken) {
-        const check = await verifyDesktopTokenAuthorization(bearerToken, true);
-        if (check.authorized) isAuthorized = true;
+        const check = await activeTokenVerifier(bearerToken, true);
+        if (check.authorized) {
+          isAuthorized = true;
+        } else if (check.error) {
+          authError = check.error;
+        }
       }
 
       if (!isAuthorized) {
         return sendJson(401, {
           success: false,
-          error: 'Unauthorized: Valid cryptographically verified ReconCentral session or bearer token with authorized role required.'
+          error: `Unauthorized: ${authError || 'Valid cryptographically verified ReconCentral session or bearer token with authorized role required.'}`
         });
       }
 
