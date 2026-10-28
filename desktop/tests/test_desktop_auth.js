@@ -346,10 +346,38 @@ async function runTests() {
       authorizedAt: new Date().toISOString()
     }, null, 2), 'utf8');
     setDesktopTokenVerifier(async () => ({ authorized: true, role: 'admin', verifiedPayload: { uid: 'test-admin-uid' } }));
+    const authHeaders = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fakeIdToken}` };
+
+    // Caller proof: a seeded session file alone must not authorize an HTTP caller.
+    const savedSessionOnlyRes = await fetch(`${testBase}/api/scrape/status`);
+    const isSavedSessionOnlyBlocked = savedSessionOnlyRes.status === 401;
+    console.log(`  • Saved session without caller proof rejected (HTTP ${savedSessionOnlyRes.status}): Passed = ${isSavedSessionOnlyBlocked}`);
+
+    // Exact-origin policy: official web origins are admitted with a matching bearer, look-alikes are not.
+    const allowedOriginRes = await fetch(`${testBase}/api/scrape/status`, {
+      headers: { 'Origin': 'https://payments.youthnic.shop', 'Authorization': `Bearer ${fakeIdToken}` }
+    });
+    const isAllowedOriginAdmitted = allowedOriginRes.status === 200;
+    console.log(`  • Official web origin with matching bearer admitted (HTTP ${allowedOriginRes.status}): Passed = ${isAllowedOriginAdmitted}`);
+
+    const spoofedOriginRes = await fetch(`${testBase}/api/scrape/status`, {
+      headers: { 'Origin': 'https://evilyouthnic.shop.attacker.example.com', 'Authorization': `Bearer ${fakeIdToken}` }
+    });
+    const isSpoofedOriginBlocked = spoofedOriginRes.status === 403;
+    console.log(`  • Spoofed look-alike origin rejected (HTTP ${spoofedOriginRes.status}): Passed = ${isSpoofedOriginBlocked}`);
+
+    // Sign-in stays local-only: cross-origin credential submission must be refused.
+    const crossOriginLoginRes = await fetch(`${testBase}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Origin': 'https://payments.youthnic.shop' },
+      body: JSON.stringify({ email: 'blocked@example.com', password: 'wrong-password' })
+    });
+    const isCrossOriginLoginBlocked = crossOriginLoginRes.status === 403;
+    console.log(`  • Cross-origin sign-in rejected (HTTP ${crossOriginLoginRes.status}): Passed = ${isCrossOriginLoginBlocked}`);
 
     const authedUnkRes = await fetch(`${testBase}/api/scrape/start`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders,
       body: JSON.stringify({ marketplace: 'invalid_test_channel' })
     });
     const authedUnkData = await authedUnkRes.json();
@@ -359,7 +387,7 @@ async function runTests() {
     const authedPhase2Results = await Promise.all(phase2Channels.map(async (ch) => {
       const res = await fetch(`${testBase}/api/scrape/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ marketplace: ch })
       });
       const data = await res.json();
@@ -368,7 +396,9 @@ async function runTests() {
     const allPhase2Gated = authedPhase2Results.every(Boolean);
     console.log(`  • All 7 Phase 2 channels scraper gate when authorized (HTTP 400): Passed = ${allPhase2Gated}`);
 
-    const authedPreviewRes = await fetch(`${testBase}/api/preview?marketplace=myntra_vb`);
+    const authedPreviewRes = await fetch(`${testBase}/api/preview?marketplace=myntra_vb`, {
+      headers: { 'Authorization': `Bearer ${fakeIdToken}` }
+    });
     const authedPreviewData = await authedPreviewRes.json();
     const authedPreviewCards = Array.isArray(authedPreviewData.rateCards) ? authedPreviewData.rateCards : [];
     const authedCardsMatch = authedPreviewCards.every(rc => (
@@ -379,7 +409,9 @@ async function runTests() {
     const isPreviewIsolated = authedPreviewRes.status === 200 && authedCardsMatch && authedPreviewData.canSync === false;
     console.log(`  • Channel-filtered preview isolation when authorized (HTTP ${authedPreviewRes.status}, count: ${authedPreviewCards.length}, leak-free: ${authedCardsMatch}): Passed = ${isPreviewIsolated}`);
 
-    const authedMpRes = await fetch(`${testBase}/api/desktop/marketplaces`);
+    const authedMpRes = await fetch(`${testBase}/api/desktop/marketplaces`, {
+      headers: { 'Authorization': `Bearer ${fakeIdToken}` }
+    });
     const authedMpData = await authedMpRes.json();
     const authedCatalogPhase2Gated = phase2Channels.every(ch => authedMpData.marketplaces?.find(m => m.id === ch)?.hasScraper === false);
     const authedFlipkartActive = authedMpData.marketplaces?.find(m => m.id === 'flipkart_shopsy')?.hasScraper === true;
@@ -391,8 +423,8 @@ async function runTests() {
 
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid) {
-      console.log('  ✓ Pass: Behavioral HTTP tests for auth gating, channel validation, isolation, preview filtering, and endpoint security verified.');
+    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isSavedSessionOnlyBlocked && isAllowedOriginAdmitted && isSpoofedOriginBlocked && isCrossOriginLoginBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid) {
+      console.log('  ✓ Pass: Behavioral HTTP tests for auth gating, caller proof, origin policy, channel validation, isolation, preview filtering, and endpoint security verified.');
       passed++;
     } else {
       console.error('  ✗ Fail: Behavioral route verification failed:', {
@@ -407,6 +439,10 @@ async function runTests() {
         isForgedAdminBlocked,
         isRevokedTokenBlocked,
         isRebindingBlocked,
+        isSavedSessionOnlyBlocked,
+        isAllowedOriginAdmitted,
+        isSpoofedOriginBlocked,
+        isCrossOriginLoginBlocked,
         isUnkValidated,
         allPhase2Gated,
         isPreviewIsolated,

@@ -17,6 +17,13 @@ if (pg.types?.setTypeParser) {
 
 let activePool = null;
 let activeConnectionString = null;
+let analystDatabaseUrl = null;
+
+// A verified analyst session must never fall back to a writer URL from the
+// environment, a manual argument, or a previous operator's configuration.
+export function setDesktopDatabaseAccess(role, databaseUrl = '') {
+  analystDatabaseUrl = role === 'analyst' ? String(databaseUrl || '').trim() : null;
+}
 
 function loadLocalEnvFiles() {
   for (const envPath of [
@@ -57,6 +64,7 @@ loadLocalEnvFiles();
  * 4. Local `.env` or `backend/.env` (if running in repo workspace)
  */
 export function resolveDatabaseUrl(customUrl = null) {
+  if (analystDatabaseUrl !== null) return analystDatabaseUrl || null;
   loadLocalEnvFiles();
   if (customUrl && typeof customUrl === 'string' && customUrl.trim()) {
     return customUrl.trim();

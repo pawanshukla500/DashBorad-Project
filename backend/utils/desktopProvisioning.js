@@ -5,12 +5,15 @@
  * container-internal service host (e.g. postgres:5432). Such a URL can never be
  * reached from a desktop worker machine, so it must never be handed to clients.
  *
- * Resolution order for the URL provisioned to desktop workers:
+ * Resolution order for operator/admin URLs provisioned to desktop workers:
  *   1. DESKTOP_DATABASE_URL — explicit override, trusted verbatim (set this on
  *      the production server to the publicly routable PostgreSQL URL).
  *   2. DATABASE_URL — only when its host is publicly routable.
  *   3. '' (empty) — the desktop app then reports "Not Configured" and the
  *      operator supplies the URL manually in Settings.
+ *
+ * Analysts use a separate DESKTOP_ANALYST_DATABASE_URL principal. The server
+ * never falls back to either writer URL for that role.
  */
 
 const NON_ROUTABLE_HOST_SUFFIXES = ['.internal', '.local', '.localdomain', '.lan', '.home.arpa', '.home', '.box'];
@@ -78,4 +81,32 @@ export function desktopDatabaseUrl(env = process.env) {
     // Malformed DATABASE_URL is never provisioned.
   }
   return '';
+}
+
+/**
+ * A distinct database principal for analysts. It must be configured with
+ * read-only grants and is never allowed to fall back to operator credentials.
+ */
+export function desktopAnalystDatabaseUrl(env = process.env) {
+  const explicit = String(env.DESKTOP_ANALYST_DATABASE_URL || '').trim();
+  if (!explicit) return '';
+
+  try {
+    const { hostname } = new URL(explicit);
+    if (isPubliclyRoutableDbHost(hostname)) return explicit;
+  } catch {
+    // Malformed or non-routable read-only URLs are never provisioned.
+  }
+  return '';
+}
+
+export function desktopDatabaseProvisioningForRole(role, env = process.env) {
+  const normalized = String(role || '').trim().toLowerCase();
+  if (normalized === 'analyst') {
+    return { databaseUrl: desktopAnalystDatabaseUrl(env), databaseAccess: 'read-only' };
+  }
+  if (normalized === 'admin' || normalized === 'operator') {
+    return { databaseUrl: desktopDatabaseUrl(env), databaseAccess: 'standard' };
+  }
+  return { databaseUrl: '', databaseAccess: 'none' };
 }

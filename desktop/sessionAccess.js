@@ -6,7 +6,7 @@ export function publicSession(session) {
     : { authenticated: false, user: null };
 }
 
-export function createSessionAccess({ load, save, refresh, verify, now = Date.now }) {
+export function createSessionAccess({ load, save, refresh, verify, onAuthorized, now = Date.now }) {
   // A local session file is a token store, not an authorization source.
   return async function authorize(mutation = false) {
     let session = load();
@@ -26,6 +26,7 @@ export function createSessionAccess({ load, save, refresh, verify, now = Date.no
     // Logout while a network verification is in flight must not restore a session.
     if (load()?.idToken !== originalToken) return null;
     if (session.idToken !== originalToken && !save(session).success) return null;
+    if (onAuthorized) await onAuthorized(session);
     return session;
   };
 }

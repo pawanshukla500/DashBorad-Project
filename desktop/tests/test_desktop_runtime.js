@@ -4,6 +4,9 @@
  *   - sessionAccess.js   (verified session gate: refresh, role/uid match, logout race)
  *   - scrapeResults.js   (staged extraction normalization and validation)
  *   - dbUrlGuard.js      (server-provisioned DB URL adoption + saved config sanitization)
+ *   - portalScraper.js   (rate card table parsing: commissions, mixed collection fees, Shopsy policy)
+ *   - httpAccess.js      (HTTP caller proof: exact origin policy, cookie/bearer binding)
+ *   - db.js              (analyst database access fails closed without a provisioned URL)
  * Plus packaging invariants: preload.cjs must exist, stale preload.js must not.
  *
  * This suite is fully offline (no Firebase, no PostgreSQL) so it can run in CI.
@@ -38,8 +41,21 @@ function assert(condition, message) {
 // ── Module loading ────────────────────────────────────────────────────────────
 const { getBrowserRuntime, requireChromeExecutable, withBrowserTask } = await import('../browserRuntime.js');
 const { publicSession, createSessionAccess } = await import('../sessionAccess.js');
-const { normalizeScrapedCards } = await import('../scrapeResults.js');
-const { isDesktopReachableDbUrl, sanitizeSavedDbUrl, dbHostFromUrl } = await import('../dbUrlGuard.js');
+const { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } = await import('../scrapeResults.js');
+const {
+  isDesktopReachableDbUrl,
+  sanitizeSavedDbUrl,
+  selectDesktopDatabaseUrlForSession,
+  dbHostFromUrl
+} = await import('../dbUrlGuard.js');
+const { parseRateCardTables } = await import('../portalScraper.js');
+const {
+  isSameDesktopOrigin,
+  isAllowedDesktopOrigin,
+  bindBrowserSession,
+  authorizeDesktopRequest
+} = await import('../httpAccess.js');
+const { setDesktopDatabaseAccess, resolveDatabaseUrl } = await import('../db.js');
 
 // Minimal unsigned JWT-shaped token whose payload decodeJwtPayload() can read.
 const b64 = (obj) => Buffer.from(JSON.stringify(obj)).toString('base64url');
@@ -265,6 +281,15 @@ async function runTests() {
     assert(result === null, 'a session replaced mid-verification must not be restored');
   });
 
+  await runTest('staged extraction state clears cards and invalidates jobs on auth changes', async () => {
+    const state = createStagedExtractionState();
+    const jobGeneration = state.authGeneration;
+    state.cards = [{ marketplace: 'flipkart' }];
+    state.resetForAuthChange();
+    assert(state.cards.length === 0, 'auth change must clear staged cards');
+    assert(state.authGeneration === jobGeneration + 1, 'auth change must invalidate in-flight jobs');
+  });
+
   // ── scrapeResults ───────────────────────────────────────────────────────────
   await runTest('normalizeScrapedCards rejects unusable extractions', async () => {
     let threw;
@@ -297,6 +322,63 @@ async function runTests() {
       ]);
     } catch (err) { error = err; }
     assert(error && /different commissions for NON_FBF and FBF/.test(error.message), `conflicting modes must be refused (${error?.message})`);
+  });
+
+  await runTest('normalizeScrapedCards refuses fee tables missing from one fulfilment mode', async () => {
+    let error = null;
+    try {
+      normalizeScrapedCards([
+        {
+          marketplace: 'flipkart',
+          vertical: 'Kurta',
+          fulfilment_type: 'FBF',
+          commissions: [{ price_min: 0, price_max: 500, rate: 0.15 }],
+          fixedFees: [{ fulfilment_type: 'PREP', price_min: 0, price_max: 500, rate: 15 }]
+        },
+        {
+          marketplace: 'flipkart',
+          vertical: 'Kurta',
+          fulfilment_type: 'NON_FBF',
+          commissions: [{ price_min: 0, price_max: 500, rate: 0.15 }]
+        }
+      ]);
+    } catch (err) { error = err; }
+    assert(error && /different fixedFees for FBF and NON_FBF/.test(error.message), `missing mode table must be refused (${error?.message})`);
+  });
+
+  await runTest('selectStagedCards accepts only exact, non-duplicated staged subsets', async () => {
+    const flipkart = { marketplace: 'flipkart', category: 'Kurta', commissions: [{ rate: 0.15 }] };
+    const shopsy = { marketplace: 'shopsy', category: 'Kurta', commissions: [{ rate: 0 }] };
+    const staged = [flipkart, shopsy];
+    const selected = selectStagedCards(staged, [shopsy]);
+    assert(selected?.length === 1 && selected[0] === shopsy, 'an exact filtered subset should resolve to its staged card');
+    assert(selectStagedCards(staged, [shopsy, shopsy]) === null, 'duplicate submissions must not exceed staged cards');
+    assert(selectStagedCards(staged, [{ ...shopsy, commissions: [{ rate: 0.01 }] }]) === null, 'modified cards must be rejected');
+    assert(selectStagedCards(staged, []) === null, 'empty submissions must be rejected');
+  });
+
+  await runTest('analyst sessions retain only explicit read-only database URLs', async () => {
+    const writerUrl = 'postgresql://worker:write@db.example.com:5432/paymentapp';
+    const readonlyUrl = 'postgresql://analyst:readonly@db.example.com:5432/paymentapp';
+    assert(selectDesktopDatabaseUrlForSession({
+      role: 'analyst',
+      manualUrl: writerUrl,
+      serverUrl: writerUrl,
+      serverAccess: 'standard'
+    }) === '', 'analysts must not retain manual or standard server credentials');
+    assert(selectDesktopDatabaseUrlForSession({
+      role: 'analyst',
+      manualUrl: writerUrl,
+      serverUrl: readonlyUrl,
+      serverAccess: 'read-only'
+    }) === readonlyUrl, 'analysts should retain the server-issued read-only URL');
+    assert(selectDesktopDatabaseUrlForSession({
+      role: 'operator',
+      manualUrl: 'postgresql://worker:write@localhost:5432/paymentapp',
+      serverUrl: writerUrl,
+      serverAccess: 'standard'
+    }) === 'postgresql://worker:write@localhost:5432/paymentapp', 'operators may retain a manual local database URL');
+    assert(selectDesktopDatabaseUrlForSession({ role: 'viewer', serverUrl: writerUrl }) === '', 'unauthorized roles must not retain a URL');
   });
 
   await runTest('normalizeScrapedCards keeps collection fees as pct decimals', async () => {
@@ -357,6 +439,7 @@ async function runTests() {
     assert(isDesktopReachableDbUrl('postgresql://app:pass@localhost:5432/paymentapp') === false, 'loopback provisioned by a remote server must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@10.0.0.5:5432/paymentapp') === false, 'private IPv4 must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@database.internal:5432/paymentapp') === false, '.internal host must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@registry.lan:5432/paymentapp') === false, 'LAN DNS names must still be refused when server-provisioned');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@100.64.0.1:5432/paymentapp') === false, 'CGNAT range must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@192.0.2.1:5432/paymentapp') === false, 'TEST-NET-1 must be refused');
     assert(isDesktopReachableDbUrl('') === false, 'empty URL must be refused');
@@ -371,7 +454,9 @@ async function runTests() {
 
   await runTest('sanitizeSavedDbUrl drops container-internal saved URLs but keeps deliberate local ones', async () => {
     assert(sanitizeSavedDbUrl('postgresql://app:pass@postgres:5432/paymentapp') === '', 'stale container-internal saved URL must be discarded');
-    assert(sanitizeSavedDbUrl('postgresql://app:pass@registry.local:5432/paymentapp') === '', '.local saved URL must be discarded');
+    assert(sanitizeSavedDbUrl('postgresql://app:pass@registry.local:5432/paymentapp') === 'postgresql://app:pass@registry.local:5432/paymentapp', '.local LAN DNS URL must be preserved');
+    assert(sanitizeSavedDbUrl('postgresql://app:pass@registry.lan:5432/paymentapp') === 'postgresql://app:pass@registry.lan:5432/paymentapp', '.lan URL must be preserved');
+    assert(sanitizeSavedDbUrl('postgresql://app:pass@db.home.arpa:5432/paymentapp') === 'postgresql://app:pass@db.home.arpa:5432/paymentapp', '.home.arpa URL must be preserved');
     assert(sanitizeSavedDbUrl('') === '', 'empty stays empty');
     // Loopback / LAN URLs are valid for developers running the database locally.
     assert(sanitizeSavedDbUrl('postgresql://app:pass@localhost:5432/paymentapp') === 'postgresql://app:pass@localhost:5432/paymentapp', 'loopback must be preserved for local development');
@@ -384,6 +469,171 @@ async function runTests() {
     assert(dbHostFromUrl('postgresql://u:p@db.example.com:5432/paymentapp') === 'db.example.com', 'public host parse failed');
     assert(dbHostFromUrl('garbage') === null, 'malformed URL must yield null');
     assert(dbHostFromUrl(null) === null, 'null input must yield null');
+  });
+
+  // ── portalScraper.parseRateCardTables ───────────────────────────────────────
+  await runTest('parseRateCardTables classifies commission tables as percentage or fixed fee', async () => {
+    const percentage = parseRateCardTables([
+      [
+        ['Order Item Value', 'Fee charged as % of Order item value'],
+        ['₹0 - ₹500', '15%'],
+        ['₹501 - ₹1000', '20.5%']
+      ]
+    ], 'kurta', '2026-10-28', 'flipkart');
+    assert(percentage.commissions.length === 2, 'commission slabs were not parsed');
+    assert(Math.abs(percentage.commissions[0].rate - 0.15) < 1e-12, '15% must be stored as 0.15');
+    assert(Math.abs(percentage.commissions[1].rate - 0.205) < 1e-12, '20.5% must be stored as 0.205');
+    assert(percentage.fixedFees.length === 0, 'a percentage table must not produce fixed fees');
+
+    const fixed = parseRateCardTables([
+      [
+        ['Order Item Value', 'Fee charged'],
+        ['₹0 - ₹500', '₹15'],
+        ['₹501 - ₹1000', '₹25']
+      ]
+    ], 'kurta', '2026-10-28', 'flipkart');
+    assert(fixed.commissions.length === 0, 'a flat-fee table must not produce commission slabs');
+    assert(fixed.fixedFees.length === 8, `4 tiers x 2 slabs of fixed fees expected (got ${fixed.fixedFees.length})`);
+    assert(fixed.fixedFees.every(f => ['Bronze', 'Silver', 'Gold', 'Diamond'].includes(f.fulfilment_type)), 'fixed fee tier labels wrong');
+    assert(fixed.fixedFees[0].rate === 15, 'flat fee amount wrong');
+  });
+
+  await runTest('parseRateCardTables classifies prepaid and postpaid collection fees independently', async () => {
+    // Regression: a flat ₹15 prepaid fee combined with a 0.3% postpaid fee used to
+    // be mis-typed as percentages for BOTH columns.
+    const parsed = parseRateCardTables([
+      [
+        ['Order Item Value', 'Prepaid', 'Postpaid'],
+        ['₹0 - ₹750', '₹15', '0.3%']
+      ]
+    ], 'kurta', '2026-10-28', 'flipkart');
+    assert(parsed.collectionFees.length === 1, 'collection fee row not parsed');
+    const fee = parsed.collectionFees[0];
+    assert(fee.prepaid === 15 && fee.prepaid_type === 'flat', `flat prepaid must stay ₹15 flat (got ${fee.prepaid_type} ${fee.prepaid})`);
+    assert(Math.abs(fee.postpaid - 0.3) < 1e-12 && fee.postpaid_type === 'percentage', `percent postpaid must stay 0.3 percentage (got ${fee.postpaid_type} ${fee.postpaid})`);
+    assert(fee.price_min === 0 && fee.price_max === 750, 'collection price range wrong');
+  });
+
+  await runTest('parseRateCardTables encodes the fixed Shopsy policy (0% commission)', async () => {
+    const parsed = parseRateCardTables([], 'shopsy_kurta', '2026-10-28', 'shopsy');
+    assert(parsed.marketplace === 'shopsy', 'marketplace wrong');
+    assert(parsed.commissions.length === 1 && parsed.commissions[0].rate === 0, 'Shopsy commission must be exactly one 0% slab');
+    assert(parsed.fixedFees.length === 8, `4 tiers x 2 slabs expected (got ${parsed.fixedFees.length})`);
+    const zeroFee = parsed.fixedFees.filter(f => f.price_max === 1500);
+    const tenFee = parsed.fixedFees.filter(f => f.price_min === 1501);
+    assert(zeroFee.length === 4 && zeroFee.every(f => f.rate === 0), '₹0-1500 slab must be free');
+    assert(tenFee.length === 4 && tenFee.every(f => f.rate === 10), '₹1501+ slab must be ₹10');
+    assert(parsed.reverseShipping.length === 6, 'Shopsy reverse shipping must have 6 slabs');
+    const first = parsed.reverseShipping[0];
+    assert(
+      first.weight_slab === '0kg-0.5kg' && first.price_min === 0 && first.price_max === 500 &&
+      first.local_fee === 122 && first.zonal_fee === 142 && first.national_fee === 182,
+      '0kg-0.5kg / ₹0-500 reverse shipping slab wrong'
+    );
+  });
+
+  await runTest('parseRateCardTables parses reverse shipping weight slabs', async () => {
+    const parsed = parseRateCardTables([
+      [
+        ['Weight slab 0kg - 0.5kg', 'Local', 'Zonal', 'National'],
+        ['₹0 - ₹500', '₹30', '₹45', '₹60'],
+        ['₹501 - ₹1000', '₹35', '₹50', '₹65']
+      ]
+    ], 'kurta', '2026-10-28', 'flipkart');
+    assert(parsed.reverseShipping.length === 2, 'reverse shipping rows not parsed');
+    assert(parsed.reverseShipping[0].weight_slab === '0kg-0.5kg', 'weight slab label wrong');
+    assert(parsed.reverseShipping[0].price_min === 0 && parsed.reverseShipping[0].price_max === 500, 'price range wrong');
+    assert(
+      parsed.reverseShipping[0].local_fee === 30 && parsed.reverseShipping[0].zonal_fee === 45 && parsed.reverseShipping[0].national_fee === 60,
+      'local/zonal/national fees wrong'
+    );
+  });
+
+  // ── httpAccess (HTTP caller proof) ──────────────────────────────────────────
+  const makeReq = (headers) => ({ headers });
+
+  await runTest('isSameDesktopOrigin only accepts the exact control-center origin', async () => {
+    assert(isSameDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'http://localhost:3388' })) === true, 'same origin must pass');
+    assert(isSameDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'http://localhost:3389' })) === false, 'port mismatch must fail');
+    assert(isSameDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'http://127.0.0.1:3388' })) === false, 'host swap must fail');
+    assert(isSameDesktopOrigin(makeReq({ host: 'localhost:3388', 'sec-fetch-site': 'same-origin' })) === true, 'no origin with same-origin fetch metadata must pass');
+    assert(isSameDesktopOrigin(makeReq({ host: 'localhost:3388', 'sec-fetch-site': 'cross-site' })) === false, 'cross-site fetch metadata must fail');
+  });
+
+  await runTest('isAllowedDesktopOrigin allows only exact official hosts over https', async () => {
+    assert(isAllowedDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'http://localhost:3388' })) === true, 'same origin allowed');
+    assert(isAllowedDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'https://payments.youthnic.shop' })) === true, 'official host allowed');
+    assert(isAllowedDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'https://task.youthnic.shop' })) === true, 'official subdomain allowed');
+    assert(isAllowedDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'https://evilyouthnic.shop.attacker.example.com' })) === false, 'substring spoof must be rejected');
+    assert(isAllowedDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'https://youthnic.shop.evil.com' })) === false, 'suffix spoof must be rejected');
+    assert(isAllowedDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'http://payments.youthnic.shop' })) === false, 'plain http must be rejected');
+    assert(isAllowedDesktopOrigin(makeReq({ host: 'localhost:3388', origin: 'https://payments.youthnic.shop:8443' })) === false, 'non-default port must be rejected');
+    assert(isAllowedDesktopOrigin(makeReq({ host: 'localhost:3388', 'sec-fetch-site': 'cross-site' })) === false, 'missing origin with cross-site fetch metadata must be rejected');
+  });
+
+  await runTest('authorizeDesktopRequest requires browser cookie or a matching verified bearer', async () => {
+    const baseSession = {
+      authenticated: true,
+      user: { id: 1, username: 'op', email: 'op@vb.co', role: 'operator', firebase_uid: 'uid-1' },
+      idToken: 'stored-id-token', refreshToken: 'r', authorizedAt: '2026-10-28T00:00:00Z'
+    };
+    const bound = bindBrowserSession(baseSession);
+    const store = { session: bound.session };
+    const authorize = async () => store.session;
+    const verifyMatch = async () => ({ authorized: true, role: 'operator', verifiedPayload: { uid: 'uid-1' } });
+    const verifyOtherUser = async () => ({ authorized: true, role: 'operator', verifiedPayload: { uid: 'uid-somebody-else' } });
+
+    const none = await authorizeDesktopRequest(makeReq({ host: 'localhost:3388' }), { authorize, verify: verifyMatch });
+    assert(none.session === null, 'a saved session alone must not authorize an HTTP caller');
+
+    const bearer = await authorizeDesktopRequest(
+      makeReq({ host: 'localhost:3388', authorization: 'Bearer token-a' }),
+      { authorize, verify: verifyMatch }
+    );
+    assert(bearer.session === store.session, 'a matching verified bearer must authorize');
+
+    const otherUser = await authorizeDesktopRequest(
+      makeReq({ host: 'localhost:3388', authorization: 'Bearer token-b' }),
+      { authorize, verify: verifyOtherUser }
+    );
+    assert(otherUser.session === null, 'a bearer verified for a different user must be rejected');
+
+    const cookie = bound.cookie.split(';')[0];
+    const viaCookie = await authorizeDesktopRequest(
+      makeReq({ host: 'localhost:3388', cookie }),
+      { authorize, verify: async () => { throw new Error('verify must not be called when the cookie proves the caller'); } }
+    );
+    assert(viaCookie.session === store.session, 'the bound same-origin cookie must authorize');
+
+    const crossOriginCookie = await authorizeDesktopRequest(
+      makeReq({ host: 'localhost:3388', origin: 'https://payments.youthnic.shop', cookie }),
+      { authorize, verify: verifyMatch }
+    );
+    assert(crossOriginCookie.session === null, 'cookies forwarded from a different origin must not authorize');
+  });
+
+  // ── db.js analyst fail-closed access ────────────────────────────────────────
+  await runTest('analyst database access fails closed (no writer fallback from env or arguments)', async () => {
+    const prevDatabaseUrl = process.env.DATABASE_URL;
+    const prevReconUrl = process.env.RECON_DATABASE_URL;
+    const readonlyUrl = 'postgresql://analyst:read@db.example.com:5432/paymentapp';
+    const writerUrl = 'postgresql://worker:write@db2.example.com:5432/paymentapp';
+    process.env.DATABASE_URL = writerUrl;
+    process.env.RECON_DATABASE_URL = writerUrl;
+    try {
+      setDesktopDatabaseAccess('analyst', readonlyUrl);
+      assert(resolveDatabaseUrl(writerUrl) === readonlyUrl, 'an analyst session must ignore writer URLs entirely');
+      setDesktopDatabaseAccess('analyst', '');
+      assert(resolveDatabaseUrl(writerUrl) === null, 'an analyst without a provisioned URL must fail closed with no env fallback');
+      setDesktopDatabaseAccess('admin', '');
+      assert(resolveDatabaseUrl(readonlyUrl) === readonlyUrl, 'operator/admin sessions keep explicit URL precedence');
+    } finally {
+      setDesktopDatabaseAccess(null);
+      if (prevDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prevDatabaseUrl;
+      if (prevReconUrl === undefined) delete process.env.RECON_DATABASE_URL;
+      else process.env.RECON_DATABASE_URL = prevReconUrl;
+    }
   });
 
   // ── Packaging invariants ───────────────────────────────────────────────────

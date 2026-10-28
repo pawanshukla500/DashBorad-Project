@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { desktopDatabaseUrl, isPubliclyRoutableDbHost } from '../utils/desktopProvisioning.js';
+import {
+  desktopAnalystDatabaseUrl,
+  desktopDatabaseUrl,
+  desktopDatabaseProvisioningForRole,
+  isPubliclyRoutableDbHost
+} from '../utils/desktopProvisioning.js';
 
 describe('isPubliclyRoutableDbHost', () => {
   it.each([
@@ -83,5 +88,47 @@ describe('desktopDatabaseUrl', () => {
 
   it('ignores a blank DESKTOP_DATABASE_URL and falls back to DATABASE_URL rules', () => {
     expect(desktopDatabaseUrl({ DESKTOP_DATABASE_URL: '  ', DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp' })).toBe('');
+  });
+});
+
+describe('desktopAnalystDatabaseUrl', () => {
+  it('uses only the explicitly configured read-only database principal', () => {
+    const analystUrl = 'postgresql://analyst:readonly@db.example.com:5432/paymentapp?sslmode=require';
+    expect(desktopAnalystDatabaseUrl({
+      DESKTOP_ANALYST_DATABASE_URL: analystUrl,
+      DESKTOP_DATABASE_URL: 'postgresql://worker:write@db.example.com:5432/paymentapp',
+      DATABASE_URL: 'postgresql://app:write@db.example.com:5432/paymentapp'
+    })).toBe(analystUrl);
+  });
+
+  it('never falls back to a writer URL and rejects non-routable analyst URLs', () => {
+    expect(desktopAnalystDatabaseUrl({
+      DESKTOP_DATABASE_URL: 'postgresql://worker:write@db.example.com:5432/paymentapp',
+      DATABASE_URL: 'postgresql://app:write@db.example.com:5432/paymentapp'
+    })).toBe('');
+    expect(desktopAnalystDatabaseUrl({
+      DESKTOP_ANALYST_DATABASE_URL: 'postgresql://analyst:readonly@postgres:5432/paymentapp'
+    })).toBe('');
+  });
+});
+
+describe('desktopDatabaseProvisioningForRole', () => {
+  it('uses separate credentials for analysts and privileged desktop roles', () => {
+    const env = {
+      DESKTOP_ANALYST_DATABASE_URL: 'postgresql://analyst:readonly@db.example.com:5432/paymentapp',
+      DESKTOP_DATABASE_URL: 'postgresql://worker:write@db.example.com:5432/paymentapp'
+    };
+    expect(desktopDatabaseProvisioningForRole('analyst', env)).toEqual({
+      databaseUrl: env.DESKTOP_ANALYST_DATABASE_URL,
+      databaseAccess: 'read-only'
+    });
+    expect(desktopDatabaseProvisioningForRole('operator', env)).toEqual({
+      databaseUrl: env.DESKTOP_DATABASE_URL,
+      databaseAccess: 'standard'
+    });
+    expect(desktopDatabaseProvisioningForRole('viewer', env)).toEqual({
+      databaseUrl: '',
+      databaseAccess: 'none'
+    });
   });
 });

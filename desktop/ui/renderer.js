@@ -166,7 +166,6 @@ async function loadInitialState() {
     document.getElementById('cfg-hour').value = config.scheduledHour ?? 6;
     document.getElementById('cfg-minute').value = config.scheduledMinute ?? 0;
     document.getElementById('cfg-alert-email').value = config.notificationEmail || '';
-    document.getElementById('cfg-auto-sync').checked = !!config.autoSyncToDb;
 
     // Test DB connection silently for dashboard status
     const dbStatusEl = document.getElementById('dash-db-status');
@@ -313,6 +312,8 @@ function setTableMessage(tbody, colspan, message, isError = false) {
 async function loadCatalogData() {
   const tbody = document.getElementById('catalog-tbody');
   tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Fetching real-time brand & FSN catalog from database...</td></tr>';
+  // Do not keep stale catalog rows available to filter after an empty or failed refresh.
+  currentCatalog = [];
 
   // The Brands KPI must always reflect the real outcome — never stay on "Checking...".
   const brandsCountEl = document.getElementById('dash-brands-count');
@@ -793,8 +794,7 @@ function setupEventListeners() {
       databaseUrl: document.getElementById('cfg-db-url').value,
       scheduledHour: parseInt(document.getElementById('cfg-hour').value) || 6,
       scheduledMinute: parseInt(document.getElementById('cfg-minute').value) || 0,
-      notificationEmail: document.getElementById('cfg-alert-email').value,
-      autoSyncToDb: document.getElementById('cfg-auto-sync').checked
+      notificationEmail: document.getElementById('cfg-alert-email').value
     };
 
     const res = await window.ratecardAPI.saveConfig(newConfig);
@@ -878,8 +878,14 @@ function setupEventListeners() {
         currentUserSession = res.session;
         updateUserAuthUI(res.session);
         appendTerminalLine(`✓ Authorized as ${res.session.user.username} (${res.session.user.role.toUpperCase()})`);
+        if (res.session.user.role === 'analyst' && authDbInput) {
+          authDbInput.value = '';
+        }
         if (res.databaseConfigured === false) {
-          appendTerminalLine('⚠ No reachable database URL was configured. Paste the PostgreSQL connection URL in Settings (or ask the server operator to set DESKTOP_DATABASE_URL on the API server).');
+          const setupHint = res.session.user.role === 'analyst'
+            ? 'Ask the server operator to configure DESKTOP_ANALYST_DATABASE_URL with a read-only PostgreSQL role.'
+            : 'Set DESKTOP_DATABASE_URL on the API server or configure the URL in Settings.';
+          appendTerminalLine(`⚠ No database URL was configured. ${setupHint}`);
         }
         await loadInitialState();
         loadCatalogData();

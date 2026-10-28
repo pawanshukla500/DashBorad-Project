@@ -2,6 +2,20 @@ const FEE_FIELDS = ['commissions', 'fixedFees', 'collectionFees', 'reverseShippi
 
 const sameSlabs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+/**
+ * Create process-local staging state shared by both desktop entry points.
+ * Each runtime gets its own instance, but auth-generation invalidation stays
+ * consistent between the Electron and standalone-server flows.
+ */
+export function createStagedExtractionState() {
+  const state = { cards: [], authGeneration: 0 };
+  state.resetForAuthChange = () => {
+    state.cards = [];
+    state.authGeneration += 1;
+  };
+  return state;
+}
+
 function dedupe(slabs) {
   const out = [];
   for (const slab of slabs || []) {
@@ -65,9 +79,10 @@ export function normalizeScrapedCards(items) {
     const [marketplace, vertical] = key.split(':');
     const modes = [...byMode.keys()];
     const [first, ...rest] = [...byMode.values()];
+    // A table present in one mode but missing in another is also a disagreement:
+    // syncing the partial set would close the category's existing rates.
     for (const field of FEE_FIELDS) {
-      const conflicting = rest.find(other => other[field].length && first[field].length && !sameSlabs(other[field], first[field]));
-      if (conflicting) {
+      if (rest.some(other => !sameSlabs(other[field], first[field]))) {
         throw new Error(
           `${vertical} (${marketplace}) has different ${field} for ${modes.join(' and ')}. ` +
           'The rate tables store one rate set per category, so nothing was staged.'
@@ -88,4 +103,24 @@ export function normalizeScrapedCards(items) {
     });
   }
   return cards;
+}
+
+/**
+ * The staged cards a sync request may commit: a non-empty selection in which
+ * every submitted card exactly matches a distinct staged card (e.g. the
+ * channel-filtered preview). Returns the staged objects themselves, or null.
+ */
+export function selectStagedCards(stagedCards, submittedCards) {
+  if (!Array.isArray(stagedCards) || !stagedCards.length) return null;
+  if (!Array.isArray(submittedCards) || !submittedCards.length) return null;
+  const remaining = stagedCards.map(card => ({ card, json: JSON.stringify(card) }));
+  const selected = [];
+  for (const submitted of submittedCards) {
+    const json = JSON.stringify(submitted);
+    const index = remaining.findIndex(entry => entry.json === json);
+    if (index === -1) return null;
+    selected.push(remaining[index].card);
+    remaining.splice(index, 1);
+  }
+  return selected;
 }

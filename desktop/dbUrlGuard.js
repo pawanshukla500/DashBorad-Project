@@ -14,6 +14,9 @@
  */
 
 const NON_ROUTABLE_HOST_SUFFIXES = ['.internal', '.local', '.localdomain', '.lan', '.home.arpa', '.home', '.box'];
+const LOCAL_NETWORK_HOST_SUFFIXES = NON_ROUTABLE_HOST_SUFFIXES.filter(
+  (suffix) => suffix !== '.internal' && suffix !== '.localdomain'
+);
 
 // IANA special-purpose ranges that are never reachable as a public database host.
 const NON_PUBLIC_IP_PATTERNS = [
@@ -65,6 +68,14 @@ export function isContainerInternalHost(hostname) {
   return NON_ROUTABLE_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
 }
 
+function isSavedContainerInternalHost(hostname) {
+  const host = normalizeHost(hostname);
+  // Explicitly saved mDNS / LAN DNS names are valid local database endpoints.
+  // They remain forbidden in server-provisioned URLs via isContainerInternalHost.
+  if (LOCAL_NETWORK_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) return false;
+  return isContainerInternalHost(host);
+}
+
 /**
  * True only for hosts a desktop machine outside the server's container network
  * can resolve and reach (public DNS name or public IP).
@@ -88,6 +99,30 @@ export function isDesktopReachableDbUrl(rawUrl) {
 }
 
 /**
+ * Choose a connection URL for a verified desktop session. Analysts may only
+ * retain a server-issued URL explicitly marked read-only; manual URLs and
+ * legacy server responses are not safe to reuse for that role.
+ */
+export function selectDesktopDatabaseUrlForSession({
+  role,
+  manualUrl = '',
+  serverUrl = '',
+  serverAccess = ''
+} = {}) {
+  const normalizedRole = String(role || '').trim().toLowerCase();
+  if (normalizedRole === 'analyst') {
+    return serverAccess === 'read-only' && isDesktopReachableDbUrl(serverUrl)
+      ? String(serverUrl).trim()
+      : '';
+  }
+  if (!['admin', 'operator'].includes(normalizedRole)) return '';
+
+  const manual = String(manualUrl || '').trim();
+  if (manual) return manual;
+  return isDesktopReachableDbUrl(serverUrl) ? String(serverUrl).trim() : '';
+}
+
+/**
  * Sanitize a URL loaded from the local worker config: container-internal hosts
  * (provisioned by old server builds) become '' so the UI can ask the operator
  * to configure a reachable URL. Deliberate local setups (loopback / LAN) pass.
@@ -96,7 +131,7 @@ export function sanitizeSavedDbUrl(rawUrl) {
   const url = String(rawUrl || '').trim();
   if (!url) return '';
   const host = dbHostFromUrl(url);
-  if (!host || isContainerInternalHost(host)) {
+  if (!host || isSavedContainerInternalHost(host)) {
     console.warn(
       `[dbUrlGuard] Discarded an unusable saved database URL (host "${host ?? 'missing'}"). ` +
         'Configure the PostgreSQL URL in Settings, or set DESKTOP_DATABASE_URL on the API server.'

@@ -33,7 +33,7 @@ The ReconCentral RateCard Desktop Worker is a standalone, cross-platform PC appl
 - If the API server is configured for it, sign-in **auto-provisions the PostgreSQL connection URL** over TLS and the Dashboard **Database Connection** card shows **Connected**.
 - If the Dashboard instead shows **DB Offline** or the terminal prints a warning after sign-in, the server did not provision a usable URL. Paste the public PostgreSQL connection string (e.g. `postgresql://user:password@db-host:5432/paymentapp?sslmode=require`) into **Settings → Database Connection URL** and click **Test DB Ping**.
 - The app never adopts unreachable URLs: container-internal addresses (such as `postgres:5432` used inside the server's Docker network) are refused, and stale saved ones are discarded automatically.
-- **Server operators**: to auto-provision the database URL on every sign-in, set `DESKTOP_DATABASE_URL` in the API server's `.env` to the publicly routable PostgreSQL URL. Without it, each desktop user configures the URL once in Settings.
+- **Server operators**: set `DESKTOP_DATABASE_URL` in the API server's `.env` for admin/operator desktop sessions. To enable analyst reads, separately set `DESKTOP_ANALYST_DATABASE_URL` to a publicly routable URL for a PostgreSQL principal with read-only grants. Never reuse the admin/operator URL for analysts. Without the relevant setting, that role will not receive a database URL.
 
 ### Step 3: Daily Operations
 - **Run Extraction**: Click **🚀 Run Extraction** on Dashboard or Live Scraper tab to inspect rate cards.

@@ -112,7 +112,7 @@ export function normalizeRole(rawRole) {
 ### 3.3 Dynamic Credential Provisioning over TLS
 1. The desktop application packages **zero** database connection strings in its binary.
 2. Upon user login (`POST /api/auth/login` or IPC `auth-login`), the client submits Firebase credentials.
-3. The server authenticates against Firebase (`identitytoolkit.googleapis.com`), verifies the user role in PostgreSQL `users`, and returns the authorized database connection string.
+3. The server authenticates against Firebase (`identitytoolkit.googleapis.com`), verifies the user role in PostgreSQL `users`, and returns role-appropriate database credentials. Analysts receive only the separately configured `DESKTOP_ANALYST_DATABASE_URL`, backed by a PostgreSQL principal with read-only grants; admin/operator credentials are never used as a fallback for analysts.
 4. The connection string is cached locally in user profile isolation:
    - **Windows**: `%APPDATA%\ReconCentral RateCard Worker\worker-config.json`
    - **Linux**: `~/.config/reconcentral-ratecard-worker/worker-config.json` or `/etc/reconcentral-ratecard/worker-config.json`

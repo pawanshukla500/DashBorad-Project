@@ -5,7 +5,7 @@ import { auth } from '../utils/firebaseAdmin.js';
 import { identityFromFirebaseToken } from '../utils/firebaseIdentity.js';
 import { AccessNotGrantedError, IdentityConflictError, syncFirebaseUser } from '../services/userSync.js';
 import { setFirebaseRole, FIREBASE_ROLE_CLAIM } from '../services/firebaseRoleClaims.js';
-import { desktopDatabaseUrl } from '../utils/desktopProvisioning.js';
+import { desktopDatabaseProvisioningForRole } from '../utils/desktopProvisioning.js';
 
 const router = express.Router();
 
@@ -78,7 +78,7 @@ router.get('/desktop-config', authMiddleware, (req, res) => {
       username: req.user.username,
       role: role
     },
-    databaseUrl: desktopDatabaseUrl(),
+    ...desktopDatabaseProvisioningForRole(role),
     serverTime: new Date().toISOString()
   });
 });
@@ -124,7 +124,7 @@ router.post('/desktop-login', async (req, res) => {
         role: role
       },
       customToken,
-      databaseUrl: desktopDatabaseUrl(),
+      ...desktopDatabaseProvisioningForRole(role),
       serverTime: new Date().toISOString()
     });
   } catch (err) {
