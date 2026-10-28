@@ -152,6 +152,8 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
       filePath: outputPath,
       brandCount: brandRateCards.length,
       commissionSlabs: summaryRows.length,
+      sheets: ['Brand_Commission', 'Fixed_Fees', 'Reverse_Shipping', 'Catalog_Samples', 'Audit_Metadata'],
+      totalRecords: summaryRows.length + fixedRows.length + revRows.length + catalogRows.length,
       format: 'xlsx'
     };
   }
@@ -172,6 +174,8 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     filePath: jsonPath,
     brandCount: brandRateCards.length,
     commissionSlabs: summaryRows.length,
+    sheets: ['Brand_Commission', 'Fixed_Fees', 'Reverse_Shipping', 'Catalog_Samples', 'Audit_Metadata'],
+    totalRecords: summaryRows.length + fixedRows.length + revRows.length + catalogRows.length,
     format: 'json',
     note: 'Exported as JSON structure (install xlsx for native .xlsx binary).'
   };

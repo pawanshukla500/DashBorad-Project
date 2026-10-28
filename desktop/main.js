@@ -1455,8 +1455,17 @@ ipcMain.handle('download-database-details', async (e, tableName, options = {}) =
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const { downloadTableDetails } = await import('./db.js');
-    const data = await downloadTableDetails(tableName, options);
+    const { downloadTableDetails, ALLOWED_TABLES } = await import('./db.js');
+    const safeTable = typeof tableName === 'string' ? tableName.trim().toLowerCase() : '';
+    if (!ALLOWED_TABLES.has(safeTable)) {
+      throw new Error(`Table "${tableName}" is not allowed for desktop query.`);
+    }
+    const safeOptions = {
+      filters: options?.filters && typeof options.filters === 'object' && !Array.isArray(options.filters) ? options.filters : {},
+      orderBy: typeof options?.orderBy === 'string' ? options.orderBy.trim() : 'id DESC',
+      limit: Math.min(Math.max(1, parseInt(options?.limit, 10) || 500), 5000)
+    };
+    const data = await downloadTableDetails(safeTable, safeOptions);
     return { success: true, ...data };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1468,8 +1477,16 @@ ipcMain.handle('upload-database-details', async (e, tableName, rows = [], keyCol
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const { uploadTableUpdates } = await import('./db.js');
-    const result = await uploadTableUpdates(tableName, rows, keyColumns);
+    const { uploadTableUpdates, ALLOWED_TABLES } = await import('./db.js');
+    const safeTable = typeof tableName === 'string' ? tableName.trim().toLowerCase() : '';
+    if (!ALLOWED_TABLES.has(safeTable)) {
+      throw new Error(`Table "${tableName}" is not allowed for desktop upload.`);
+    }
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { success: true, updated: 0 };
+    }
+    const safeKeyColumns = (Array.isArray(keyColumns) ? keyColumns : ['id']).filter(k => typeof k === 'string');
+    const result = await uploadTableUpdates(safeTable, rows, safeKeyColumns);
     return { success: true, ...result };
   } catch (err) {
     return { success: false, error: err.message };

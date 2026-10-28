@@ -181,8 +181,8 @@ async function runWorker() {
       const targetPath = customExcelPath || DEFAULT_EXCEL_PATH;
       const excelRes = await generateBrandwiseRateCardExcel(targetPath, pool);
       console.log(`✓ Excel Workbook Generated: ${excelRes.filePath}`);
-      console.log(`  Sheets: ${excelRes.sheets.join(', ')}`);
-      console.log(`  Total Records: ${excelRes.totalRecords}`);
+      console.log(`  Sheets: ${excelRes.sheets?.join(', ') || 'All Sheets'}`);
+      console.log(`  Total Records: ${excelRes.totalRecords ?? (excelRes.commissionSlabs || 'N/A')}`);
     }
 
     console.log('\n======================================================================');

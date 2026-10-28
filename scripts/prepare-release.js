@@ -36,7 +36,10 @@ for (const dir of targetDirs) {
   if (fs.existsSync(linuxScriptSource)) {
     const targetLinuxDir = path.join(dir, 'linux');
     fs.mkdirSync(targetLinuxDir, { recursive: true });
-    fs.copyFileSync(linuxScriptSource, path.join(targetLinuxDir, 'install-linux.sh'));
+    const targetLinuxScript = path.join(targetLinuxDir, 'install-linux.sh');
+    if (path.resolve(linuxScriptSource) !== path.resolve(targetLinuxScript)) {
+      fs.copyFileSync(linuxScriptSource, targetLinuxScript);
+    }
   }
 }
 
