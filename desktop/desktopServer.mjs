@@ -400,16 +400,21 @@ function loadConfig() {
       }
       // Drop container-internal database URLs provisioned by old server builds (e.g. postgres:5432)
       if (parsed.databaseUrl) parsed.databaseUrl = sanitizeSavedDbUrl(parsed.databaseUrl);
+      // The environment-derived default is sanitized too: a container-internal
+      // DATABASE_URL (postgres:5432) must never reach the pool logic, even
+      // when the config file is missing or predates the databaseUrl key.
+      const effectiveDatabaseUrl = 'databaseUrl' in parsed ? parsed.databaseUrl : sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl);
       return {
         ...DEFAULT_CONFIG,
         ...parsed,
+        databaseUrl: effectiveDatabaseUrl,
         accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) }
       };
     }
   } catch (err) {
     console.error('Failed to read config:', err);
   }
-  return { ...DEFAULT_CONFIG };
+  return { ...DEFAULT_CONFIG, databaseUrl: sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl) };
 }
 
 function saveConfig(cfg) {
@@ -827,12 +832,15 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
+        // An analyst-provisioned read-only URL must never silently become a
+        // later privileged session's URL: every write would fail on that
+        // read-only principal.
         const sessionDatabaseUrl = selectDesktopDatabaseUrlForSession({
           role: normalizedDbRole,
           manualUrl: dbUrl,
           serverUrl: serverDatabaseUrl,
           serverAccess: serverDatabaseAccess
-        }) || (normalizedDbRole === 'analyst' ? '' : config.databaseUrl);
+        }) || (normalizedDbRole === 'analyst' ? '' : storedDatabaseUrlForRole(normalizedDbRole, config));
 
         // Strict invariant: Ensure the session token carries a verified role claim matching the DB user's role
         let tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
@@ -874,6 +882,11 @@ const server = http.createServer(async (req, res) => {
 
         if (normalizedDbRole === 'analyst' || (sessionDatabaseUrl && sessionDatabaseUrl !== config.databaseUrl)) {
           config.databaseUrl = sessionDatabaseUrl;
+          // Remember which role provisioned this URL so a later session of a
+          // different role cannot silently reuse it (analyst URLs are
+          // read-only); without the marker the next authorizeSession would
+          // refuse the stored URL to the analyst that provisioned it.
+          config.databaseUrlRole = sessionDatabaseUrl ? normalizedDbRole : '';
           const savedConfig = saveConfig(config);
           if (!savedConfig.success) return sendJson(500, savedConfig);
         }
@@ -1075,9 +1088,11 @@ const server = http.createServer(async (req, res) => {
         if (!stagedExtraction.cards.length) {
           return sendJson(409, { success: false, error: 'Run a successful extraction and review its staged results before committing. Generated templates cannot be synced as live rates.' });
         }
-        const cardsToSync = body.rateCards?.length ? selectStagedCards(stagedExtraction.cards, body.rateCards) : stagedExtraction.cards;
+        // Every sync must carry the exact reviewed subset; a payload-less
+        // request must not bypass the review step and commit all staged cards.
+        const cardsToSync = body.rateCards?.length ? selectStagedCards(stagedExtraction.cards, body.rateCards) : null;
         if (!cardsToSync) {
-          return sendJson(409, { success: false, error: 'Payload does not match the reviewed staged extraction. Re-run extraction and review the staged results before committing.' });
+          return sendJson(409, { success: false, error: 'Payload does not match the reviewed staged extraction. Review the staged results and commit the selected cards explicitly.' });
         }
         const pool = getPool();
         broadcastProgress('Initiating database synchronization with date auto-closing...');

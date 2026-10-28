@@ -299,16 +299,21 @@ function loadConfig() {
       }
       // Drop container-internal database URLs provisioned by old server builds (e.g. postgres:5432)
       if (parsed.databaseUrl) parsed.databaseUrl = sanitizeSavedDbUrl(parsed.databaseUrl);
+      // The environment-derived default is sanitized too: a container-internal
+      // DATABASE_URL (postgres:5432) must never reach the pool logic, even
+      // when the config file is missing or predates the databaseUrl key.
+      const effectiveDatabaseUrl = 'databaseUrl' in parsed ? parsed.databaseUrl : sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl);
       return {
         ...DEFAULT_CONFIG,
         ...parsed,
+        databaseUrl: effectiveDatabaseUrl,
         accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) }
       };
     }
   } catch (err) {
     console.error('Failed to read config:', err);
   }
-  return { ...DEFAULT_CONFIG };
+  return { ...DEFAULT_CONFIG, databaseUrl: sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl) };
 }
 
 function saveConfig(config) {
@@ -353,8 +358,9 @@ app.whenReady().then(() => {
   createWindow();
   fs.mkdirSync(STAGING_DIR, { recursive: true });
 
-  // Start background scheduler check
-  setInterval(checkDailySchedule, 60 * 1000);
+  // Start background scheduler check; a rejected run (e.g. token refresh
+  // during a network outage) is logged, never surfaced as an unhandled rejection.
+  setInterval(() => { checkDailySchedule().catch((err) => console.warn(`[Scheduler] Run skipped: ${err.message}`)); }, 60 * 1000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -368,8 +374,17 @@ app.on('window-all-closed', () => {
 // ── Daily Scheduler ─────────────────────────────────────────────────────────
 let lastRunDate = '';
 async function checkDailySchedule() {
-  // Scheduled extraction follows the same login and review gates as manual runs.
-  if (withBrowserTask.busy || !await authorizeSession()) return;
+  // Scheduled extraction follows the same login and review gates as manual
+  // runs. A session verification that REJECTS (token refresh during a network
+  // outage) skips the run instead of surfacing as an unhandled rejection.
+  let authorized = false;
+  try {
+    authorized = await authorizeSession();
+  } catch (err) {
+    console.warn(`[Scheduler] Session verification failed, skipping scheduled run: ${err.message}`);
+    return;
+  }
+  if (withBrowserTask.busy || !authorized) return;
   const config = loadConfig();
   const now = new Date();
   const currentDateStr = now.toISOString().slice(0, 10);
