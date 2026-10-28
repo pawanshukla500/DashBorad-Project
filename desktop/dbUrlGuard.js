@@ -54,7 +54,9 @@ function normalizeHost(hostname) {
  * survive URL parsing unchanged. Normalize them to dotted decimal so the
  * non-public range checks see the real address. A purely numeric-looking host
  * that is not valid IPv4 in any form is never a legitimate database DNS name
- * and is rejected outright.
+ * and is rejected outright. Labels made only of bare hexadecimal letters (face,
+ * cafe, beef) are DNS names, not inet_aton numeric components, so hosts like
+ * face.cafe pass through untouched as ordinary DNS names.
  * Returns the canonical dotted string, 'invalid', or null for non-numeric hosts.
  */
 function normalizeLegacyIpv4(host) {
@@ -66,11 +68,17 @@ function normalizeLegacyIpv4(host) {
     if (!part) return 'invalid';
     if (/^0x[0-9a-f]+$/i.test(part)) {
       nums.push(parseInt(part, 16));
-    } else if (part.length > 1 && part.startsWith('0')) {
-      if (!/^[0-7]+$/.test(part)) return 'invalid'; // 08/09 are not valid octal
-      nums.push(parseInt(part, 8));
     } else if (/^\d+$/.test(part)) {
-      nums.push(parseInt(part, 10));
+      if (part.length > 1 && part.startsWith('0')) {
+        if (!/^[0-7]+$/.test(part)) return 'invalid'; // 08/09 are not valid octal
+        nums.push(parseInt(part, 8));
+      } else {
+        nums.push(parseInt(part, 10));
+      }
+    } else if (/^[0-9a-f]+$/i.test(part)) {
+      // Bare hex-letter labels (face, cafe, beef) are DNS names, not numeric
+      // notation: the whole host is a DNS name, never an IPv4 form.
+      return null;
     } else {
       return 'invalid';
     }
@@ -163,6 +171,23 @@ export function selectDesktopDatabaseUrlForSession({
   const manual = String(manualUrl || '').trim();
   if (manual) return manual;
   return isDesktopReachableDbUrl(serverUrl) ? String(serverUrl).trim() : '';
+}
+
+/**
+ * The stored config URL may be reused only by sessions whose role matches the
+ * role that provisioned it: an analyst's read-only URL must never silently
+ * become a later operator/admin session's URL (every write would fail on the
+ * read-only principal), and an operator's writer URL must never reach an
+ * analyst session. Unmarked stored URLs (manually configured, or saved by
+ * older builds) keep the legacy reuse behavior for privileged roles only.
+ */
+export function storedDatabaseUrlForRole(role, { databaseUrl = '', databaseUrlRole = '' } = {}) {
+  const normalizedRole = String(role || '').trim().toLowerCase();
+  const storedRole = String(databaseUrlRole || '').trim().toLowerCase();
+  if (normalizedRole === 'analyst') {
+    return storedRole === 'analyst' ? String(databaseUrl || '').trim() : '';
+  }
+  return storedRole === 'analyst' ? '' : String(databaseUrl || '').trim();
 }
 
 /**

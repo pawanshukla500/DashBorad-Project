@@ -419,11 +419,44 @@ async function runTests() {
     console.log(`  • Marketplaces catalog when authorized (8 channels, 7 gated Phase 2, 1 active): Passed = ${isMpListValid}`);
 
     resetDesktopTokenVerifier();
+
+    // 13. Staged review without a reachable database: an ANALYST session with
+    // no provisioned read-only URL fails closed at the pool; /api/detect-changes
+    // must keep its staged cards reviewable (success + dbAvailable:false + zero
+    // diffs) instead of failing the request and clearing the reviewed preview.
+    fs.writeFileSync(path.join(tempUserDataDir, 'auth-session.json'), JSON.stringify({
+      authenticated: true,
+      user: { id: 2, username: 'analyst-route-test', email: 'analyst-route-test@vbexports.co.in', role: 'analyst', firebase_uid: 'test-analyst-uid' },
+      idToken: fakeIdToken,
+      refreshToken: 'analyst-route-test-refresh',
+      authorizedAt: new Date().toISOString()
+    }, null, 2), 'utf8');
+    setDesktopTokenVerifier(async () => ({ authorized: true, role: 'analyst', verifiedPayload: { uid: 'test-analyst-uid' } }));
+    const { setDesktopDatabaseAccess } = await import('../db.js');
+    let noDbRes = null;
+    let noDbData = null;
+    try {
+      noDbRes = await fetch(`${testBase}/api/detect-changes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fakeIdToken}` },
+        body: JSON.stringify({ rateCards: [{ marketplace: 'flipkart', category: 'Kurta', brand: 'Youthnic', commissions: [], fixedFees: [], reverseShipping: [], collectionFees: [] }] })
+      });
+      noDbData = await noDbRes.json();
+    } finally {
+      // Undo the analyst fail-closed state the route's onAuthorized applied.
+      setDesktopDatabaseAccess(null);
+      resetDesktopTokenVerifier();
+    }
+    const isNoDbPreviewKept = noDbRes.status === 200 && noDbData.success === true &&
+                              noDbData.dbAvailable === false &&
+                              Array.isArray(noDbData.changes) && noDbData.changes.length === 0;
+    console.log(`  • Staged cards stay reviewable without a reachable database (HTTP ${noDbRes.status}, dbAvailable=${noDbData.dbAvailable}): Passed = ${isNoDbPreviewKept}`);
+
     fs.rmSync(path.join(tempUserDataDir, 'auth-session.json'), { force: true });
 
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isSavedSessionOnlyBlocked && isAllowedOriginAdmitted && isSpoofedOriginBlocked && isCrossOriginLoginBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid) {
+    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isSavedSessionOnlyBlocked && isAllowedOriginAdmitted && isSpoofedOriginBlocked && isCrossOriginLoginBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid && isNoDbPreviewKept) {
       console.log('  ✓ Pass: Behavioral HTTP tests for auth gating, caller proof, origin policy, channel validation, isolation, preview filtering, and endpoint security verified.');
       passed++;
     } else {
@@ -446,7 +479,8 @@ async function runTests() {
         isUnkValidated,
         allPhase2Gated,
         isPreviewIsolated,
-        isMpListValid
+        isMpListValid,
+        isNoDbPreviewKept
       });
       failed++;
     }

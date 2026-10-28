@@ -10,6 +10,8 @@ describe('isPubliclyRoutableDbHost', () => {
   it.each([
     ['db.example.com'],
     ['aws-0-ap-south-1.pooler.supabase.com'],
+    ['face.cafe'],                    // bare hex-letter DNS labels are hostnames, not IPv4 forms
+    ['dead.beef'],
     ['8.8.8.8'],
     ['100.63.255.1'],                // just below the CGNAT range
     ['100.128.0.1'],                 // just above the CGNAT range

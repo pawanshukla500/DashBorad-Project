@@ -54,7 +54,9 @@ function normalizeHost(hostname) {
  * survive URL parsing unchanged. Normalize them to dotted decimal so the
  * non-public range checks see the real address. A purely numeric-looking host
  * that is not valid IPv4 in any form is never a legitimate database DNS name
- * and is rejected outright.
+ * and is rejected outright. Labels made only of bare hexadecimal letters (face,
+ * cafe, beef) are DNS names, not inet_aton numeric components, so hosts like
+ * face.cafe pass through untouched as ordinary DNS names.
  * Returns the canonical dotted string, 'invalid', or null for non-numeric hosts.
  */
 function normalizeLegacyIpv4(host) {
@@ -66,11 +68,17 @@ function normalizeLegacyIpv4(host) {
     if (!part) return 'invalid';
     if (/^0x[0-9a-f]+$/i.test(part)) {
       nums.push(parseInt(part, 16));
-    } else if (part.length > 1 && part.startsWith('0')) {
-      if (!/^[0-7]+$/.test(part)) return 'invalid'; // 08/09 are not valid octal
-      nums.push(parseInt(part, 8));
     } else if (/^\d+$/.test(part)) {
-      nums.push(parseInt(part, 10));
+      if (part.length > 1 && part.startsWith('0')) {
+        if (!/^[0-7]+$/.test(part)) return 'invalid'; // 08/09 are not valid octal
+        nums.push(parseInt(part, 8));
+      } else {
+        nums.push(parseInt(part, 10));
+      }
+    } else if (/^[0-9a-f]+$/i.test(part)) {
+      // Bare hex-letter labels (face, cafe, beef) are DNS names, not numeric
+      // notation: the whole host is a DNS name, never an IPv4 form.
+      return null;
     } else {
       return 'invalid';
     }

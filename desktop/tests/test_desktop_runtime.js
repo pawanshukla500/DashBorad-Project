@@ -46,6 +46,7 @@ const {
   isDesktopReachableDbUrl,
   sanitizeSavedDbUrl,
   selectDesktopDatabaseUrlForSession,
+  storedDatabaseUrlForRole,
   dbHostFromUrl
 } = await import('../dbUrlGuard.js');
 const { parseRateCardTables } = await import('../portalScraper.js');
@@ -456,6 +457,22 @@ async function runTests() {
     assert(isDesktopReachableDbUrl('postgresql://worker:pass@db.example.com:5432/paymentapp?sslmode=require') === true, 'public DNS host must be accepted');
     assert(isDesktopReachableDbUrl('postgresql://worker:pass@aws-0-ap-south-1.pooler.supabase.com:6543/postgres') === true, 'public pooler host must be accepted');
     assert(isDesktopReachableDbUrl('postgresql://worker:pass@8.8.8.8:5432/paymentapp') === true, 'public IPv4 must be accepted');
+    // Bare hex-letter DNS labels (face.cafe, dead.beef) are hostnames, not
+    // legacy IPv4 notation: they must pass through as ordinary DNS names.
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@face.cafe:5432/paymentapp') === true, 'bare-hex DNS name must be accepted');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@dead.beef:5432/paymentapp') === true, 'bare-hex DNS name must be accepted');
+  });
+
+  await runTest('storedDatabaseUrlForRole never crosses provisioning roles', async () => {
+    const analystStored = { databaseUrl: 'postgresql://analyst:ro@db.example.com:5432/paymentapp', databaseUrlRole: 'analyst' };
+    assert(storedDatabaseUrlForRole('operator', analystStored) === '', 'an analyst read-only URL must never be reused by an operator');
+    assert(storedDatabaseUrlForRole('admin', analystStored) === '', 'an analyst read-only URL must never be reused by an admin');
+    assert(storedDatabaseUrlForRole('analyst', analystStored) === analystStored.databaseUrl, 'the analyst URL stays available to analyst sessions');
+    const unmarked = { databaseUrl: 'postgresql://worker:write@db.example.com:5432/paymentapp', databaseUrlRole: '' };
+    assert(storedDatabaseUrlForRole('operator', unmarked) === unmarked.databaseUrl, 'unmarked (manually configured) URLs stay reusable by operators');
+    assert(storedDatabaseUrlForRole('admin', unmarked) === unmarked.databaseUrl, 'unmarked (manually configured) URLs stay reusable by admins');
+    assert(storedDatabaseUrlForRole('analyst', unmarked) === '', 'an unmarked writer URL must never reach an analyst session');
+    assert(storedDatabaseUrlForRole('operator', {}) === '', 'no stored URL means no URL');
   });
 
   await runTest('sanitizeSavedDbUrl drops container-internal saved URLs but keeps deliberate local ones', async () => {
@@ -671,6 +688,44 @@ async function runTests() {
     } };
     const synced = await detectBrandRateChanges([card('Ethnic Junction')], poolSynced);
     assert(synced.length === 0, `in-sync cards must report no changes (got ${synced.length})`);
+
+    // Slab-level matching: one changed collection slab (and one changed
+    // commission slab) must carry its own price bounds so the review table
+    // can attach old/new values to that slab alone, never to its neighbors.
+    const twoSlabCard = {
+      marketplace: 'flipkart', category: 'Sari', brand: 'Ethnic Junction',
+      commissions: [
+        { price_min: 0, price_max: 500, rate: 0.15 },
+        { price_min: 500, price_max: 1000, rate: 0.2 }
+      ],
+      fixedFees: [], reverseShipping: [],
+      collectionFees: [
+        { fulfilment_type: 'All', price_min: 0, price_max: 750, prepaid: 0.003, postpaid: 0.02, prepaid_type: 'pct', postpaid_type: 'pct' },
+        { fulfilment_type: 'All', price_min: 750, price_max: 999990, prepaid: 0.003, postpaid: 0.02, prepaid_type: 'pct', postpaid_type: 'pct' }
+      ]
+    };
+    const poolTwoSlabs = { query: async (sql) => {
+      if (sql.includes('FROM rc_commission')) return { rows: [
+        { price_min: 0, price_max: 500, rate: 0.15 },
+        { price_min: 500, price_max: 1000, rate: 0.25 }
+      ] };
+      if (sql.includes('FROM rc_collection_fee')) return { rows: [
+        { fulfilment_type: 'All', price_min: 0, price_max: 750, prepaid: 0.003, postpaid: 0.01, prepaid_type: 'pct', postpaid_type: 'pct' },
+        { fulfilment_type: 'All', price_min: 750, price_max: 999990, prepaid: 0.003, postpaid: 0.02, prepaid_type: 'pct', postpaid_type: 'pct' }
+      ] };
+      return { rows: [] };
+    } };
+    const twoSlabChanges = await detectBrandRateChanges([twoSlabCard], poolTwoSlabs);
+    const slabMatch = (list, slab) => list.find((ch) =>
+      ch.priceMin != null && Math.abs(ch.priceMin - slab.price_min) < 0.01 && Math.abs(ch.priceMax - slab.price_max) < 1.0) || null;
+    const collSlabChanges = twoSlabChanges.filter((c) => c.type === 'collection_fee');
+    assert(collSlabChanges.length === 1, `expected only the changed collection slab, got ${collSlabChanges.length}`);
+    assert(slabMatch(collSlabChanges, twoSlabCard.collectionFees[0]) !== null, 'changed collection slab must match its own change record');
+    assert(slabMatch(collSlabChanges, twoSlabCard.collectionFees[1]) === null, 'unchanged collection slab must not inherit its neighbor diff');
+    const commSlabChanges = twoSlabChanges.filter((c) => c.type === 'commission');
+    assert(commSlabChanges.length === 1, `expected only the changed commission slab, got ${commSlabChanges.length}`);
+    assert(commSlabChanges[0].priceMin === 500 && commSlabChanges[0].priceMax === 1000, 'commission change record must carry the changed slab bounds');
+    assert(slabMatch(commSlabChanges, twoSlabCard.commissions[0]) === null, 'unchanged commission slab must not inherit its neighbor diff');
   });
 
   // ── Packaging invariants ───────────────────────────────────────────────────

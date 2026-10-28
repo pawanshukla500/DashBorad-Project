@@ -162,7 +162,9 @@ async function loadInitialState() {
     // Populate Settings form
     document.getElementById('cfg-email').value = config.email || '';
     document.getElementById('cfg-password').value = config.password || '';
-    document.getElementById('cfg-db-url').value = config.databaseUrl || '';
+    // An analyst-provisioned read-only URL is not usable by privileged roles:
+    // show the honest empty state instead of a URL their writes would fail on.
+    document.getElementById('cfg-db-url').value = config.databaseUrlRole === 'analyst' ? '' : (config.databaseUrl || '');
     document.getElementById('cfg-hour').value = config.scheduledHour ?? 6;
     document.getElementById('cfg-minute').value = config.scheduledMinute ?? 0;
     document.getElementById('cfg-alert-email').value = config.notificationEmail || '';
@@ -409,10 +411,14 @@ async function loadRateCardPreview() {
       if (!diffRes?.success) throw new Error(diffRes?.error || 'Change detection failed.');
       currentRateCards = res.rateCards;
       currentChanges = diffRes.changes || [];
-      currentCanSync = Boolean(res.canSync);
+      // Without a reachable database the staged review still renders, but
+      // nothing may be committed: diffs are unknowable and sync would fail.
+      currentCanSync = Boolean(res.canSync) && diffRes.dbAvailable !== false;
       if (commitBtn) {
         commitBtn.disabled = !currentCanSync;
-        commitBtn.title = currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.';
+        commitBtn.title = !currentCanSync && diffRes.dbAvailable === false
+          ? 'Database not reachable. Configure the PostgreSQL URL in Settings to detect changes and commit.'
+          : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.');
       }
 
       // Update badge
@@ -425,7 +431,7 @@ async function loadRateCardPreview() {
       }
 
       renderDiffTable();
-      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${currentChanges.length} diffs detected).`);
+      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${diffRes.dbAvailable === false ? 'database not reachable — change detection skipped' : currentChanges.length + ' diffs detected'}).`);
     } else {
       currentRateCards = [];
       currentChanges = [];
@@ -453,8 +459,12 @@ function renderDiffTable() {
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission') {
       for (const c of commissions) {
-        const change = currentChanges.find(ch => 
-          ch.marketplace === marketplace && ch.category === category && ch.brand === brand && ch.type === 'commission'
+        // Match changes per slab (count-level records carry no price bounds and
+        // legitimately apply to every slab of that brand).
+        const change = currentChanges.find(ch =>
+          ch.marketplace === marketplace && ch.category === category && ch.brand === brand && ch.type === 'commission' &&
+          (ch.priceMin == null ||
+            (Math.abs(ch.priceMin - c.price_min) < 0.01 && Math.abs(ch.priceMax - c.price_max) < 1.0))
         );
         rows.push({
           type: 'Commission',
@@ -462,7 +472,7 @@ function renderDiffTable() {
           category,
           brand,
           slab: c.price_max >= 999990 ? `≥ ₹${c.price_min}` : `₹${c.price_min} - ₹${c.price_max}`,
-          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(1)}%` : 'Active / Matched',
+          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(1)}%` : (change ? '—' : 'Active / Matched'),
           newRate: `${(c.rate * 100).toFixed(1)}%`,
           status: change ? (change.reason || 'Modified') : 'Active'
         });
@@ -489,8 +499,12 @@ function renderDiffTable() {
     if (activeDiffFilter === 'all' || activeDiffFilter === 'collection') {
       const fmtColl = (value, type) => (type === 'pct' ? `${(value * 100).toFixed(2)}%` : `₹${value}`);
       for (const cf of collectionFees) {
+        // Match changes per slab so one slab's old/new rates never bleed onto
+        // every other slab of that category.
         const change = currentChanges.find(ch =>
-          ch.marketplace === marketplace && ch.category === category && ch.type === 'collection_fee'
+          ch.marketplace === marketplace && ch.category === category && ch.type === 'collection_fee' &&
+          (ch.priceMin == null ||
+            (Math.abs(ch.priceMin - cf.price_min) < 0.01 && Math.abs(ch.priceMax - cf.price_max) < 1.0))
         );
         rows.push({
           type: 'Collection Fee',
@@ -498,7 +512,7 @@ function renderDiffTable() {
           category,
           brand: 'All',
           slab: cf.price_max >= 999990 ? `≥ ₹${cf.price_min}` : `₹${cf.price_min} - ₹${cf.price_max}`,
-          oldRate: change?.oldRate != null ? change.oldRate : 'Active / Matched',
+          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : 'Active / Matched'),
           newRate: change?.newRate != null ? change.newRate : `Prepaid ${fmtColl(cf.prepaid, cf.prepaid_type)} / Postpaid ${fmtColl(cf.postpaid, cf.postpaid_type)}`,
           status: change ? (change.reason || 'Modified') : 'Active'
         });

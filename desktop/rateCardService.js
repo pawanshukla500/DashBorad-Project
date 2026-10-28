@@ -257,6 +257,8 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             brand,
             sample_fsn: card.sample_fsn,
             slab: `₹${sc.price_min} - ₹${sc.price_max}`,
+            priceMin: sc.price_min,
+            priceMax: sc.price_max,
             oldRate: null,
             newRate: sc.rate,
             reason: 'New commission price slab'
@@ -269,6 +271,8 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             brand,
             sample_fsn: card.sample_fsn,
             slab: `₹${sc.price_min} - ₹${sc.price_max}`,
+            priceMin: sc.price_min,
+            priceMax: sc.price_max,
             oldRate: parseFloat(match.rate),
             newRate: sc.rate,
             reason: 'Commission rate percentage modified'
@@ -423,6 +427,8 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
                 category,
                 brand,
                 slab,
+                priceMin: cf.price_min,
+                priceMax: cf.price_max,
                 newRate: collRateLabel(cf),
                 reason: 'New collection fee slab'
               });
@@ -438,6 +444,8 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
                 category,
                 brand,
                 slab,
+                priceMin: cf.price_min,
+                priceMax: cf.price_max,
                 oldRate: collRateLabel(match),
                 newRate: collRateLabel(cf),
                 reason: 'Collection fee modified'

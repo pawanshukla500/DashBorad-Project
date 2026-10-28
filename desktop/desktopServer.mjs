@@ -11,7 +11,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
-import { getBrowserRuntime } from './browserRuntime.js';
+import { getBrowserRuntime, withBrowserTask } from './browserRuntime.js';
 const puppeteer = getBrowserRuntime();
 
 import { 
@@ -30,7 +30,7 @@ import {
 } from './authValidation.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
 import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } from './scrapeResults.js';
-import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession } from './dbUrlGuard.js';
+import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import {
   authorizeDesktopRequest, bindBrowserSession, expiredBrowserCookie,
   isAllowedDesktopOrigin, isSameDesktopOrigin
@@ -334,7 +334,7 @@ const authorizeSession = createSessionAccess({
   save: saveAuthSession,
   refresh: refreshFirebaseIdToken,
   verify: (token) => activeTokenVerifier(token),
-  onAuthorized: (session) => setDesktopDatabaseAccess(session.user.role, loadConfig().databaseUrl)
+  onAuthorized: (session) => setDesktopDatabaseAccess(session.user.role, storedDatabaseUrlForRole(session.user.role, loadConfig()))
 });
 
 const sseClients = new Set();
@@ -1021,8 +1021,14 @@ const server = http.createServer(async (req, res) => {
       // Merge over the stored config so a partial body cannot wipe marketplace,
       // vertical, brand, or provisioned settings. The dead autoSyncToDb toggle
       // (staging is always manual-review) is never persisted again.
-      const merged = { ...loadConfig(), ...(body || {}) };
+      const stored = loadConfig();
+      const merged = { ...stored, ...(body || {}) };
       delete merged.autoSyncToDb;
+      // A manually saved database URL is operator-entered: drop a stale analyst
+      // read-only marker so the stored URL stays reusable by privileged roles.
+      if (body && 'databaseUrl' in body && String(body.databaseUrl || '') !== String(stored.databaseUrl || '')) {
+        merged.databaseUrlRole = '';
+      }
       const result = saveConfig(merged);
       return sendJson(200, result);
     }
@@ -1042,13 +1048,21 @@ const server = http.createServer(async (req, res) => {
     // POST /api/detect-changes
     if (pathname === '/api/detect-changes' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
+      let body = null;
       try {
-        const body = await parseJsonBody();
+        body = await parseJsonBody();
         const pool = getPool();
         const cardsToTest = body.rateCards?.length ? body.rateCards : await buildBrandRateCardSet(pool);
         const changes = await detectBrandRateChanges(cardsToTest, pool);
-        return sendJson(200, { success: true, changesCount: changes.length, changes });
+        return sendJson(200, { success: true, changesCount: changes.length, changes, dbAvailable: true });
       } catch (err) {
+        // /api/preview can serve staged cards without a database; change
+        // detection cannot. Keep the staged review visible with an explicit
+        // dbAvailable:false (diffs unknowable, commit disabled) instead of
+        // failing the request and clearing the reviewed preview.
+        if (body?.rateCards?.length) {
+          return sendJson(200, { success: true, changesCount: 0, changes: [], dbAvailable: false });
+        }
         return sendJson(500, { success: false, error: err.message });
       }
     }
@@ -1081,6 +1095,11 @@ const server = http.createServer(async (req, res) => {
       if (!(await requireDesktopAuth())) return;
       if (activeScrapeJob.running) {
         return sendJson(409, { success: false, error: 'A scraping job is already running.' });
+      }
+      // Browser tasks (scraping, interactive logins) share the cookie vault:
+      // serialize them through the same gate the Electron IPC paths use.
+      if (withBrowserTask.busy) {
+        return sendJson(409, { success: false, error: 'A browser task is already running. Finish login or extraction before starting another.' });
       }
 
       const body = await parseJsonBody();
@@ -1127,7 +1146,7 @@ const server = http.createServer(async (req, res) => {
       (async () => {
         try {
           broadcastProgress(`🚀 Scraper job initiated (${targetMp.toUpperCase()} | Mode: ${isVisible ? 'Visible Chrome' : 'Stealth'})...`);
-          const result = await scrapeFlipkartRateCards(
+          const result = await withBrowserTask(() => scrapeFlipkartRateCards(
             {
               marketplace: normalizedChannel,
               visible: isVisible,
@@ -1136,7 +1155,7 @@ const server = http.createServer(async (req, res) => {
               password: config.password
             },
             { onProgress: broadcastProgress }
-          );
+          ));
 
           if (result.success && jobAuthGeneration !== stagedExtraction.authGeneration) {
             result.success = false;
@@ -1191,6 +1210,11 @@ const server = http.createServer(async (req, res) => {
     // POST /api/interactive-login (Standalone Puppeteer with Encrypted Cookie Vault Capture)
     if (pathname === '/api/interactive-login' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
+      // Browser tasks (scraping, interactive logins) share the cookie vault:
+      // serialize them through the same gate the Electron IPC paths use.
+      if (withBrowserTask.busy) {
+        return sendJson(409, { success: false, error: 'A browser task is already running. Finish login or extraction before starting another.' });
+      }
 
       try {
         const body = await parseJsonBody();
@@ -1203,8 +1227,11 @@ const server = http.createServer(async (req, res) => {
 
         broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
 
-        // Execute login asynchronously without blocking HTTP response
+        // Execute login asynchronously without blocking HTTP response. Browser
+        // tasks share the cookie vault, so the login is serialized through
+        // withBrowserTask like every other browser launch in the app.
         (async () => {
+          const gate = await withBrowserTask(async () => {
           let browser = null;
           try {
             browser = await puppeteer.launch({
@@ -1298,6 +1325,14 @@ const server = http.createServer(async (req, res) => {
             try {
               fs.rmSync(tempProfileDir, { recursive: true, force: true });
             } catch {}
+          }
+          return { ran: true };
+          });
+          if (!gate || gate.ran !== true) {
+            // The gate lost a race with another browser task: clean the temp
+            // profile and say so instead of silently doing nothing.
+            try { fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
+            broadcastProgress('⏳ Interactive login skipped: another browser task is already running. Finish it and try again.');
           }
         })();
 

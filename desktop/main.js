@@ -18,7 +18,7 @@ import { verifyDesktopTokenAuthorization } from './authValidation.js';
 import { getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
 import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } from './scrapeResults.js';
-import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession } from './dbUrlGuard.js';
+import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 
@@ -269,6 +269,9 @@ const DEFAULT_CONFIG = {
   password: '',
   apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
   databaseUrl: process.env.DATABASE_URL || '',
+  // Role that provisioned databaseUrl. An analyst-provisioned URL is bound to
+  // a read-only principal and must never be reused by privileged sessions.
+  databaseUrlRole: '',
   scheduledHour: 6, // 06:00 AM
   scheduledMinute: 0,
   notificationEmail: 'payments@youthnic.shop',
@@ -541,7 +544,7 @@ async function executeScrapeProcess(config, onProgress) {
 const authorizeSession = createSessionAccess({
   load: loadAuthSession, save: saveAuthSession,
   refresh: refreshFirebaseIdToken, verify: verifyDesktopTokenAuthorization,
-  onAuthorized: (session) => setDesktopDatabaseAccess(session.user.role, loadConfig().databaseUrl)
+  onAuthorized: (session) => setDesktopDatabaseAccess(session.user.role, storedDatabaseUrlForRole(session.user.role, loadConfig()))
 });
 const PUBLIC_CHANNELS = new Set(['auth-login', 'auth-get-session', 'auth-logout']);
 const MUTATION_CHANNELS = new Set(['save-config', 'sync-brand-rate-cards', 'upload-database-details']);
@@ -565,7 +568,16 @@ function registerHandler(channel, handler) {
 
 // ── IPC Handlers ─────────────────────────────────────────────────────────────
 registerHandler('get-config', () => loadConfig());
-registerHandler('save-config', (e, config) => saveConfig({ ...loadConfig(), ...config }));
+registerHandler('save-config', (e, config) => {
+  const stored = loadConfig();
+  const merged = { ...stored, ...config };
+  // A manually saved database URL is operator-entered: drop a stale analyst
+  // read-only marker so the stored URL stays reusable by privileged roles.
+  if (config && 'databaseUrl' in config && String(config.databaseUrl || '') !== String(stored.databaseUrl || '')) {
+    merged.databaseUrlRole = '';
+  }
+  return saveConfig(merged);
+});
 
 // ── Authentication & Authorization IPC Handlers ─────────────────────────────
 registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
@@ -731,12 +743,14 @@ registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
       };
     }
 
+    // An analyst-provisioned read-only URL must never silently become a later
+    // privileged session's URL: every write would fail on that principal.
     const sessionDatabaseUrl = selectDesktopDatabaseUrlForSession({
       role: normalizedDbRole,
       manualUrl: dbUrl,
       serverUrl: serverDatabaseUrl,
       serverAccess: serverDatabaseAccess
-    }) || (normalizedDbRole === 'analyst' ? '' : config.databaseUrl);
+    }) || (normalizedDbRole === 'analyst' ? '' : storedDatabaseUrlForRole(normalizedDbRole, config));
 
     // Strict invariant: Ensure the session token carries a verified role claim matching the DB user's role
     let tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
@@ -778,6 +792,9 @@ registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
 
     if (normalizedDbRole === 'analyst' || (sessionDatabaseUrl && sessionDatabaseUrl !== config.databaseUrl)) {
       config.databaseUrl = sessionDatabaseUrl;
+      // Remember which role provisioned this URL so a later session of a
+      // different role cannot silently reuse it (analyst URLs are read-only).
+      config.databaseUrlRole = sessionDatabaseUrl ? normalizedDbRole : '';
       const savedConfig = saveConfig(config);
       if (!savedConfig.success) return savedConfig;
     }
@@ -854,12 +871,12 @@ registerHandler('auth-logout', async () => {
 
 registerHandler('auth-verify-db', async (e, dbUrl) => {
   const { testDatabaseConnection } = await import('./db.js');
-  return await testDatabaseConnection(dbUrl || loadConfig().databaseUrl);
+  return await testDatabaseConnection(dbUrl || storedDatabaseUrlForRole(loadAuthSession()?.user?.role, loadConfig()));
 });
 
 registerHandler('test-db-connection', async (e, dbUrl) => {
   const { testDatabaseConnection } = await import('./db.js');
-  const result = await testDatabaseConnection(dbUrl || loadConfig().databaseUrl);
+  const result = await testDatabaseConnection(dbUrl || storedDatabaseUrlForRole(loadAuthSession()?.user?.role, loadConfig()));
   return { ...result, db: result.dbName };
 });
 registerHandler('interactive-login', async (e, marketplace) => {
