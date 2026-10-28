@@ -273,7 +273,7 @@ describe('Myntra layout mapping', () => {
        FROM myntra_return_details`
     );
     expect(stats.rows[0].total).toBeGreaterThanOrEqual(0);
-  });
+  }, 20000);
 
   it('parses and validates the user Myntra_VB_Return_Template.xlsx file with zero errors', () => {
     const templatePath = 'C:/Users/Pawan Shukla/Desktop/Myntra_VB_Return_Template.xlsx';

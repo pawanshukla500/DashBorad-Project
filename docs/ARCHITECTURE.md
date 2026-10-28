@@ -132,6 +132,29 @@ The Data Center's allowed marketplace/upload combinations and upload-history rem
 
 The **SOR Level Payment Reco** workspace (invoice-grain reconciliation across Myntra Jabong India Pvt Ltd, Zepto Limited, Reliance Retail Ltd (AJIO), Cocoblu Retails) is documented in [`docs/SOR_LEVEL_PAYMENT_RECO.md`](SOR_LEVEL_PAYMENT_RECO.md). Workspace is `EXPORT_ROLES` (analyst+) only — enforced both in `frontend/src/navigation.js` and per-route in `frontend/src/App.jsx`. Audit integration piggybacks on the existing `upload_log` via the `trg_sor_upload_log_mirror` trigger so Audit History surfaces SOR uploads without a code change.
 
+## Outstanding Payments & Accounts Payable / Receivable Architecture
+
+The **Outstanding Payments** workspace (`/outstanding-payments`) provides an audit-grade, live accounts payable and receivable matrix across all connected marketplaces:
+
+1. **Reconciliation Invariant**:
+   - `Total Orders (Gross Order Value) − Returns (Customer & RTO refunds) − Marketplace Fees (Commissions, shipping, closing, taxes) − Payment Received (Settled bank payouts) = Net Outstanding Receivable`.
+   - Returns and cancellations deduct revenue at source (Net Due = ₹0), preventing artificial overstatement of expected cash flow.
+
+2. **Marketplace Branding & Componentization**:
+   - `frontend/src/components/MarketplaceLogo.jsx`: Centralized official Brandfetch CDN logos (`Flipkart`, `Amazon`, `Myntra`, `Meesho`, `Reliance Retail (AJIO)`, `Cocoblu`, `Shopify`) with resilient inline color badges and offline fallback lettermarks.
+   - Distinct sub-account badging for Myntra EJ (45833) and Myntra VB (10708).
+
+3. **Aging Buckets & Risk Classification**:
+   - **Current (<30 Days)**: Within standard marketplace payment and grace cycles.
+   - **Aging / Due (31–60 Days)**: Past normal cycle, actively monitored.
+   - **Overdue (>60 Days)**: High collection priority; flagged with visual alert badges for portal case escalation.
+
+4. **Multi-Grain Audit Drilldown**:
+   - **Unsettled Delivered Orders**: Active orders delivered to customers awaiting settlement.
+   - **Returns & Cancellations**: Full accounting of refunded and RTO items with return reason and type tracking.
+   - **Pending Invoices**: Invoice-level reconciliation matching billed invoices against actual payments.
+   - Interactive `OrderDetailDrawer` for item-level fee and journey audit.
+
 ## Verification
 
-From `backend/`, run `npm test` (84 files, 511 tests). From root, run `node desktop/tests/test_desktop_auth.js` (6 tests). From `frontend/`, run `npm run build`. Add a regression test whenever a report definition, permission, or upload parser is changed.
+From `backend/`, run `npm test` (84 files, 515 tests). From root, run `node desktop/tests/test_desktop_auth.js` (6 tests). From `frontend/`, run `npm run build`. Add a regression test whenever a report definition, permission, or upload parser is changed.
