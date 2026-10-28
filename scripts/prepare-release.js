@@ -26,10 +26,18 @@ if (!fs.existsSync(setupExeSource)) {
   process.exit(1);
 }
 
+const linuxScriptSource = path.join(projectRoot, 'released', 'linux', 'install-linux.sh');
+
 for (const dir of targetDirs) {
   console.log('[Release] Copying installation executables into:', dir);
   fs.copyFileSync(setupExeSource, path.join(dir, 'ReconCentral-RateCard-Worker-Setup.exe'));
   fs.copyFileSync(portableExeSource, path.join(dir, 'ReconCentral-RateCard-Worker-Portable.exe'));
+
+  if (fs.existsSync(linuxScriptSource)) {
+    const targetLinuxDir = path.join(dir, 'linux');
+    fs.mkdirSync(targetLinuxDir, { recursive: true });
+    fs.copyFileSync(linuxScriptSource, path.join(targetLinuxDir, 'install-linux.sh'));
+  }
 }
 
 // Generate comprehensive INSTALLATION_AND_AUTHORIZATION_GUIDE.md inside released directories

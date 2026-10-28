@@ -33,7 +33,7 @@ cp -r ../desktop/* "$INSTALL_DIR/" || cp -r ./desktop/* "$INSTALL_DIR/" 2>/dev/n
 cd "$INSTALL_DIR"
 if [ ! -d "node_modules" ] || [ ! -f "node_modules/pg/package.json" ]; then
   echo "Installing required production dependencies (pg, dotenv, puppeteer-extra)..."
-  npm install --omit=dev --silent || true
+  npm install --omit=dev
 fi
 
 echo "[3/4] Creating symlink in /usr/local/bin..."
