@@ -30,6 +30,11 @@ fi
 echo "[2/4] Deploying application to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 cp -r ../desktop/* "$INSTALL_DIR/" || cp -r ./desktop/* "$INSTALL_DIR/" 2>/dev/null || true
+cd "$INSTALL_DIR"
+if [ ! -d "node_modules" ] || [ ! -f "node_modules/pg/package.json" ]; then
+  echo "Installing required production dependencies (pg, dotenv, puppeteer-extra)..."
+  npm install --omit=dev --silent || true
+fi
 
 echo "[3/4] Creating symlink in /usr/local/bin..."
 cat << 'EOF' > "$BIN_LINK"

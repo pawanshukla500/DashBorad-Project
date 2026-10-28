@@ -14,7 +14,7 @@ export {
   getResolvedCapturesDir, 
   saveEncryptedCookies, 
   loadEncryptedCookies 
-} from '../backend/utils/cookieVault.js';
+} from './cookieVault.js';
 
 /**
  * Decode base64url or standard base64 encoded JWT payload without external libraries.
@@ -125,7 +125,7 @@ export async function verifyFirebaseTokenWithDetails(token, checkRevoked = true,
 
   // 1. Local cryptographic signature and revocation verification via Firebase Admin SDK if configured
   try {
-    const authModule = options.authModule || (options.auth !== undefined ? { auth: options.auth } : await import('../backend/utils/firebaseAdmin.js'));
+    const authModule = options.authModule || (options.auth !== undefined ? { auth: options.auth } : await import('../backend/utils/firebaseAdmin.js').catch(() => null));
     const auth = authModule?.auth;
     if (auth && typeof auth.verifyIdToken === 'function') {
       const decoded = await auth.verifyIdToken(token, checkRevoked);

@@ -66,6 +66,5 @@ frontend/*.cjs
 desktop/dist-release/
 desktop/node_modules/
 released/*.exe
-relased/*.exe
 reports/
 

@@ -65,15 +65,13 @@ import {
   buildBrandRateCardSet, 
   detectBrandRateChanges, 
   syncBrandRateCardsToDatabase 
-} from '../backend/services/brandRateCardService.js';
+} from './rateCardService.js';
 import { 
   generateBrandwiseRateCardExcel, 
   DEFAULT_EXCEL_PATH 
-} from '../backend/services/brandwiseExcelExport.js';
-import { getChromeExecutablePath, scrapeFlipkartRateCards } from '../backend/services/flipkartRateCardExtractor.js';
-import { getPool } from '../backend/db/index.js';
-import { decryptCredential } from '../backend/utils/credentialCrypto.js';
-import { DEFAULT_MARKETPLACE_METADATA } from '../backend/routes/marketplaceAccounts.js';
+} from './excelExport.js';
+import { getChromeExecutablePath } from './chromeFinder.js';
+import { getDesktopPool, getDesktopPool as getPool } from './db.js';
 
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');

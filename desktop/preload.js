@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
   exportDesktopExcel: (outputPath) => ipcRenderer.invoke('export-desktop-excel', outputPath),
   openExcelFile: (filePath) => ipcRenderer.invoke('open-excel-file', filePath),
   exportFile: (format, data) => ipcRenderer.invoke('export-file', format, data),
+
+  // Database Detail Download & Upload (Future-Ready Extensibility)
+  downloadDatabaseDetails: (table, options) => ipcRenderer.invoke('download-database-details', table, options),
+  uploadDatabaseDetails: (table, rows, keyColumns) => ipcRenderer.invoke('upload-database-details', table, rows, keyColumns),
   
   // Real-time Event Listeners
   onProgress: (callback) => {

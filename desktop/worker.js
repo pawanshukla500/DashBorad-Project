@@ -43,12 +43,12 @@ import {
   buildBrandRateCardSet, 
   detectBrandRateChanges, 
   syncBrandRateCardsToDatabase 
-} from '../backend/services/brandRateCardService.js';
+} from './rateCardService.js';
 import { 
   generateBrandwiseRateCardExcel, 
   DEFAULT_EXCEL_PATH 
-} from '../backend/services/brandwiseExcelExport.js';
-import { getPool } from '../backend/db/index.js';
+} from './excelExport.js';
+import { getDesktopPool, getDesktopPool as getPool } from './db.js';
 
 // Parse CLI arguments
 const args = process.argv.slice(2);
