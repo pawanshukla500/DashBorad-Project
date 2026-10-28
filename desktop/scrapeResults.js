@@ -54,6 +54,11 @@ function normalizeCollectionFee(fee) {
 export function normalizeScrapedCards(items) {
   if (!Array.isArray(items) || items.length === 0) throw new Error('No extracted rate cards to review.');
 
+  // Preserve the day the portal was actually scraped: a review committed
+  // after midnight must record rates under the scrape date, not the commit date.
+  const scrapedOn = String(items.find(item => item.effectiveDate)?.effectiveDate || '');
+  const effectiveDate = /^\d{4}-\d{2}-\d{2}$/.test(scrapedOn) ? scrapedOn : new Date().toISOString().slice(0, 10);
+
   const groups = new Map();
   for (const item of items) {
     if (!['flipkart', 'shopsy'].includes(item.marketplace) || !item.vertical) {
@@ -99,6 +104,7 @@ export function normalizeScrapedCards(items) {
       brand: 'General',
       source: marketplace === 'shopsy' ? 'shopsy_policy' : 'seller_portal',
       fulfilmentModes: modes,
+      effectiveDate,
       ...merged
     });
   }

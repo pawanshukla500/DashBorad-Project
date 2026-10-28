@@ -461,15 +461,30 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
 }
 
 /**
+ * The day a sync takes effect: an explicit option wins, then the staged
+ * extraction's scrape date (a review committed after midnight must not shift
+ * the rates to the wrong day), then today.
+ */
+export function resolveSyncEffectiveDate(options = {}, brandRateCards = []) {
+  const requested = String(options?.effectiveDate || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(requested)) return requested;
+  const staged = String((Array.isArray(brandRateCards) ? brandRateCards.find(card => card?.effectiveDate) : null)?.effectiveDate || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(staged)) return staged;
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
  * 7. Synchronize Brand-Wise Rate Cards to Database with automatic period closure
  */
 export async function syncBrandRateCardsToDatabase(brandRateCards, options = {}, pool = null) {
   const p = pool || getDesktopPool();
   const {
-    effectiveDate = new Date().toISOString().slice(0, 10),
     forceUpdate = false,
     sellerAccount = 'default'
   } = options;
+  // Committed under the day the rates were observed (the staged scrape date),
+  // never silently shifted by a review that runs past midnight.
+  const effectiveDate = resolveSyncEffectiveDate(options, brandRateCards);
 
   const changes = await detectBrandRateChanges(brandRateCards, p, { sellerAccount });
 

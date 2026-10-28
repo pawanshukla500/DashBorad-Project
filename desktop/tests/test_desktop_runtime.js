@@ -433,6 +433,24 @@ async function runTests() {
     assert(sh.commissions.length === 1 && sh.commissions[0].rate === 0, 'shopsy 0% commission slab lost');
   });
 
+  await runTest('staged cards keep the scrape date and sync never shifts it past midnight', async () => {
+    const cards = normalizeScrapedCards([{
+      marketplace: 'flipkart', vertical: 'Women Kurtas', effectiveDate: '2026-10-27', fulfilment_type: 'NON_FBF',
+      commissions: [{ price_min: 0, price_max: 500, rate: 0.15 }],
+      fixedFees: [], reverseShipping: [], collectionFees: []
+    }]);
+    assert(cards[0].effectiveDate === '2026-10-27', `scrape date lost (got ${cards[0].effectiveDate})`);
+    const { resolveSyncEffectiveDate } = await import('../rateCardService.js');
+    // A review committed the next day must still record under the scrape date.
+    assert(resolveSyncEffectiveDate({}, cards) === '2026-10-27', 'sync must honor the staged scrape date');
+    // An explicit caller-provided date still wins.
+    assert(resolveSyncEffectiveDate({ effectiveDate: '2026-11-01' }, cards) === '2026-11-01', 'explicit sync date must win');
+    // Garbage falls back to today, never to a bogus value.
+    const today = new Date().toISOString().slice(0, 10);
+    assert(resolveSyncEffectiveDate({}, [{ effectiveDate: 'garbage' }]) === today, 'invalid staged date must fall back to today');
+    assert(resolveSyncEffectiveDate({}, []) === today, 'no cards means today');
+  });
+
   // ── dbUrlGuard ─────────────────────────────────────────────────────────────
   await runTest('isDesktopReachableDbUrl refuses container-internal and private provisioned URLs', async () => {
     assert(isDesktopReachableDbUrl('postgresql://app:pass@postgres:5432/paymentapp') === false, 'container-internal postgres host must be refused');
