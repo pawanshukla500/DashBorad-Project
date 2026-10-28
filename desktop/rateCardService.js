@@ -199,8 +199,9 @@ export async function buildBrandRateCardSet(pool = null) {
 /**
  * 6. Detect Changes Against Database (Brand-Aware)
  */
-export async function detectBrandRateChanges(brandRateCards, pool = null) {
+export async function detectBrandRateChanges(brandRateCards, pool = null, options = {}) {
   const p = pool || getDesktopPool();
+  const sellerAccount = (typeof options === 'string' ? options : options?.sellerAccount) || 'default';
   const changes = [];
 
   for (const card of brandRateCards) {
@@ -210,10 +211,11 @@ export async function detectBrandRateChanges(brandRateCards, pool = null) {
       SELECT price_min, price_max, rate 
       FROM rc_commission 
       WHERE marketplace = $1 
+        AND (seller_account = $4 OR ($4 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
         AND category = $2 
         AND (brand_name = $3 OR ($3 = 'General' AND (brand_name IS NULL OR brand_name = 'All brands')))
         AND end_date IS NULL
-    `, [marketplace, category, brand]);
+    `, [marketplace, category, brand, sellerAccount]);
 
     if (activeCommissions.rows.length === 0) {
       changes.push({
@@ -273,13 +275,16 @@ export async function detectBrandRateChanges(brandRateCards, pool = null) {
       }
     }
 
-    // Fixed fee differences
+    // Fixed fee differences (compare row count and individual slab values)
     if (card.fixedFees && card.fixedFees.length > 0) {
       const activeFixed = await p.query(`
         SELECT price_min, price_max, rate, fulfilment_type
         FROM rc_fixed_fee
-        WHERE marketplace = $1 AND category = $2 AND end_date IS NULL
-      `, [marketplace, category]);
+        WHERE marketplace = $1 
+          AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+          AND category = $2 
+          AND end_date IS NULL
+      `, [marketplace, category, sellerAccount]);
 
       if (activeFixed.rows.length !== card.fixedFees.length) {
         changes.push({
@@ -289,16 +294,48 @@ export async function detectBrandRateChanges(brandRateCards, pool = null) {
           brand,
           reason: `Fixed fee slab count changed (DB: ${activeFixed.rows.length}, New: ${card.fixedFees.length})`
         });
+      } else {
+        for (const ff of card.fixedFees) {
+          const match = activeFixed.rows.find(af =>
+            af.fulfilment_type === ff.fulfilment_type &&
+            Math.abs(parseFloat(af.price_min) - ff.price_min) < 0.01 &&
+            Math.abs(parseFloat(af.price_max) - ff.price_max) < 1.0
+          );
+          if (!match) {
+            changes.push({
+              type: 'fixed_fee',
+              marketplace,
+              category,
+              brand,
+              slab: `${ff.fulfilment_type}: ₹${ff.price_min} - ₹${ff.price_max}`,
+              reason: 'New fixed fee tier/slab'
+            });
+          } else if (Math.abs(parseFloat(match.rate) - ff.rate) > 0.01) {
+            changes.push({
+              type: 'fixed_fee',
+              marketplace,
+              category,
+              brand,
+              slab: `${ff.fulfilment_type}: ₹${ff.price_min} - ₹${ff.price_max}`,
+              oldRate: parseFloat(match.rate),
+              newRate: ff.rate,
+              reason: 'Fixed fee rate modified'
+            });
+          }
+        }
       }
     }
 
-    // Reverse shipping differences
+    // Reverse shipping differences (compare row count and individual slab values)
     if (card.reverseShipping && card.reverseShipping.length > 0) {
       const activeRev = await p.query(`
         SELECT weight_slab, price_min, price_max, local_fee, zonal_fee, national_fee
         FROM rc_reverse_shipping
-        WHERE marketplace = $1 AND category = $2 AND end_date IS NULL
-      `, [marketplace, category]);
+        WHERE marketplace = $1 
+          AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+          AND category = $2 
+          AND end_date IS NULL
+      `, [marketplace, category, sellerAccount]);
 
       if (activeRev.rows.length !== card.reverseShipping.length) {
         changes.push({
@@ -308,6 +345,37 @@ export async function detectBrandRateChanges(brandRateCards, pool = null) {
           brand,
           reason: `Reverse shipping slab count changed (DB: ${activeRev.rows.length}, New: ${card.reverseShipping.length})`
         });
+      } else {
+        for (const rs of card.reverseShipping) {
+          const match = activeRev.rows.find(ar =>
+            ar.weight_slab === rs.weight_slab &&
+            Math.abs(parseFloat(ar.price_min) - rs.price_min) < 0.01 &&
+            Math.abs(parseFloat(ar.price_max) - rs.price_max) < 1.0
+          );
+          if (!match) {
+            changes.push({
+              type: 'reverse_shipping',
+              marketplace,
+              category,
+              brand,
+              slab: `${rs.weight_slab}: ₹${rs.price_min} - ₹${rs.price_max}`,
+              reason: 'New reverse shipping weight/price slab'
+            });
+          } else if (
+            Math.abs(parseFloat(match.local_fee) - rs.local_fee) > 0.01 ||
+            Math.abs(parseFloat(match.zonal_fee) - rs.zonal_fee) > 0.01 ||
+            Math.abs(parseFloat(match.national_fee) - rs.national_fee) > 0.01
+          ) {
+            changes.push({
+              type: 'reverse_shipping',
+              marketplace,
+              category,
+              brand,
+              slab: `${rs.weight_slab}: ₹${rs.price_min} - ₹${rs.price_max}`,
+              reason: 'Reverse shipping fees modified'
+            });
+          }
+        }
       }
     }
   }
@@ -326,7 +394,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
     sellerAccount = 'default'
   } = options;
 
-  const changes = await detectBrandRateChanges(brandRateCards, p);
+  const changes = await detectBrandRateChanges(brandRateCards, p, { sellerAccount });
 
   if (changes.length === 0 && !forceUpdate) {
     return {
@@ -378,9 +446,9 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           await client.query(`
             INSERT INTO rc_commission (
               marketplace, seller_account, category, brand_name, price_min, price_max, 
-              rate, fee_type, start_date, end_date, created_at, updated_at
+              rate, start_date, end_date, created_at, updated_at
             ) VALUES (
-              $1, $2, $3, $4, $5, $6, $7, 'percentage', $8::date, NULL, NOW(), NOW()
+              $1, $2, $3, $4, $5, $6, $7, $8::date, NULL, NOW(), NOW()
             )
           `, [marketplace, sellerAccount, category, brandVal, comm.price_min, comm.price_max, comm.rate, effectiveDate]);
           insertedCommissions++;

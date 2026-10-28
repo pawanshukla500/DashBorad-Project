@@ -1435,7 +1435,11 @@ ipcMain.handle('export-desktop-excel', async (e, customPath) => {
 ipcMain.handle('open-excel-file', async (e, targetPath) => {
   try {
     const { DEFAULT_EXCEL_PATH } = await import('./excelExport.js');
-    const filePath = targetPath || DEFAULT_EXCEL_PATH;
+    let filePath = targetPath || DEFAULT_EXCEL_PATH;
+    if (!fs.existsSync(filePath)) {
+      const jsonAlt = filePath.replace(/\.xlsx$/, '.json');
+      if (fs.existsSync(jsonAlt)) filePath = jsonAlt;
+    }
     if (fs.existsSync(filePath)) {
       await shell.openPath(filePath);
       return { success: true, filePath };

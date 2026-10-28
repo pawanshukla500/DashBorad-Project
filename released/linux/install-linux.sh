@@ -18,20 +18,36 @@ fi
 echo "[1/4] Checking Node.js and Google Chrome..."
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js not found. Installing Node.js LTS..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y nodejs || yum install -y nodejs || true
+  if command -v apt-get >/dev/null 2>&1; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y nodejs npm
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y nodejs npm
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm nodejs npm
+  fi
 fi
 
-if ! command -v google-chrome >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1; then
+if ! command -v google-chrome >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
   echo "Google Chrome or Chromium not found. Attempting install..."
-  apt-get update && apt-get install -y chromium-browser || apt-get install -y chromium || true
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update && (apt-get install -y chromium-browser || apt-get install -y chromium || true)
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y chromium || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y chromium || true
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm chromium || true
+  fi
 fi
 
 echo "[2/4] Deploying application to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 cp -r ../desktop/* "$INSTALL_DIR/" || cp -r ./desktop/* "$INSTALL_DIR/" 2>/dev/null || true
 cd "$INSTALL_DIR"
-if [ ! -d "node_modules" ] || [ ! -f "node_modules/pg/package.json" ]; then
+if [ ! -d "node_modules" ] || [ ! -d "node_modules/pg" ] || [ ! -d "node_modules/puppeteer-extra" ] || [ ! -d "node_modules/puppeteer-extra-plugin-stealth" ]; then
   echo "Installing required production dependencies (pg, dotenv, puppeteer-extra)..."
   npm install --omit=dev
 fi
@@ -64,8 +80,9 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+systemctl enable --now reconcentral-ratecard.service 2>/dev/null || true
 echo ""
 echo "Installation Successful!"
 echo "To run interactively: reconcentral-ratecard"
-echo "To enable background service: systemctl enable --now reconcentral-ratecard"
+echo "Background service status: systemctl status reconcentral-ratecard"
 echo "Web Control Panel: http://localhost:3388"
