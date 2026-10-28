@@ -6,6 +6,8 @@ describe('isPubliclyRoutableDbHost', () => {
     ['db.example.com'],
     ['aws-0-ap-south-1.pooler.supabase.com'],
     ['8.8.8.8'],
+    ['100.63.255.1'],                // just below the CGNAT range
+    ['100.128.0.1'],                 // just above the CGNAT range
     ['2001:4860:4860::8888']
   ])('accepts public host %s', (host) => {
     expect(isPubliclyRoutableDbHost(host)).toBe(true);
@@ -26,6 +28,17 @@ describe('isPubliclyRoutableDbHost', () => {
     ['169.254.1.1'],                 // link-local
     ['fc00::1'],                     // private IPv6
     ['fe80::1'],                     // link-local IPv6
+    ['100.64.0.1'],                  // carrier-grade NAT
+    ['100.127.255.254'],
+    ['192.0.2.1'],                   // TEST-NET-1
+    ['198.51.100.7'],                // TEST-NET-2
+    ['203.0.113.9'],                 // TEST-NET-3
+    ['198.18.0.1'],                  // benchmarking
+    ['224.0.0.1'],                   // multicast
+    ['255.255.255.255'],             // broadcast / reserved
+    ['2001:db8::1'],                 // documentation IPv6
+    ['ff02::1'],                     // multicast IPv6
+    ['::ffff:10.0.0.1'],             // IPv4-mapped IPv6
     ['registry.internal'],
     ['database.local'],
     ['']

@@ -414,8 +414,10 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
     let insertedCommissions = 0;
     let insertedFixed = 0;
     let insertedRev = 0;
+    let insertedCollection = 0;
     const processedFixedFeeCategories = new Set();
     const processedRevShippingCategories = new Set();
+    const processedCollectionFeeCategories = new Set();
 
     for (const card of brandRateCards) {
       const { marketplace, category, brand, commissions, fixedFees, reverseShipping } = card;
@@ -533,6 +535,47 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           insertedRev++;
         }
       }
+
+      // 4. Collection Fee Sync (category-level, same period-closure rules)
+      const collectionFees = card.collectionFees || [];
+      const collKey = `${marketplace}_${sellerAccount}_${category}`;
+      if (!processedCollectionFeeCategories.has(collKey) && collectionFees.length > 0) {
+        processedCollectionFeeCategories.add(collKey);
+
+        await client.query(`
+          DELETE FROM rc_collection_fee 
+          WHERE marketplace = $1 
+            AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $3 
+            AND start_date >= $4::date 
+            AND end_date IS NULL
+        `, [marketplace, sellerAccount, category, effectiveDate]);
+
+        await client.query(`
+          UPDATE rc_collection_fee 
+          SET end_date = $1::date, updated_at = NOW() 
+          WHERE marketplace = $2 
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $4 
+            AND start_date < $5::date
+            AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
+
+        for (const cf of collectionFees) {
+          await client.query(`
+            INSERT INTO rc_collection_fee (
+              marketplace, seller_account, category, fulfilment_type, price_min, price_max,
+              prepaid, postpaid, prepaid_type, postpaid_type, start_date, end_date, updated_at
+            ) VALUES (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, NULL, NOW()
+            )
+          `, [
+            marketplace, sellerAccount, category, cf.fulfilment_type || 'All', cf.price_min, cf.price_max,
+            cf.prepaid, cf.postpaid, cf.prepaid_type, cf.postpaid_type, effectiveDate
+          ]);
+          insertedCollection++;
+        }
+      }
     }
 
     // Version record in rate_card_versions
@@ -546,7 +589,8 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         brandsCount: brandRateCards.length,
         insertedCommissions,
         insertedFixed,
-        insertedRev
+        insertedRev,
+        insertedCollection
       })]);
     } catch (verErr) {
       console.warn('[syncBrandRateCardsToDatabase] Note: Could not write rate_card_versions snapshot:', verErr.message);
@@ -561,6 +605,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
       insertedCommissions,
       insertedFixed,
       insertedRev,
+      insertedCollection,
       versionName
     };
 

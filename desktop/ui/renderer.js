@@ -291,6 +291,24 @@ function appendTerminalLine(text) {
   terminal.scrollTop = terminal.scrollHeight;
 }
 
+// Table content comes from the database and scraped portal pages, so every
+// interpolated value is escaped and status rows are built with textContent.
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
+function setTableMessage(tbody, colspan, message, isError = false) {
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = colspan;
+  td.className = isError ? 'empty-state error' : 'empty-state';
+  td.textContent = message;
+  tr.appendChild(td);
+  tbody.replaceChildren(tr);
+}
+
 // ── Load Real-Time Brand & FSN Catalog ───────────────────────────────────────
 async function loadCatalogData() {
   const tbody = document.getElementById('catalog-tbody');
@@ -326,11 +344,11 @@ async function loadCatalogData() {
       } else {
         setBrandsKpi('DB Offline', `Catalog unavailable: ${reason}`, '#ef4444');
       }
-      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No catalog items returned: ${reason}</td></tr>`;
+      setTableMessage(tbody, 6, `No catalog items returned: ${reason}`);
     }
   } catch (err) {
     setBrandsKpi('DB Offline', `Catalog unavailable: ${err.message}`, '#ef4444');
-    tbody.innerHTML = `<tr><td colspan="6" class="empty-state error">Failed to load catalog: ${err.message}</td></tr>`;
+    setTableMessage(tbody, 6, `Failed to load catalog: ${err.message}`, true);
   }
 }
 
@@ -354,14 +372,14 @@ function renderCatalogTable(catalog) {
     <tr>
       <td>
         <span class="badge ${item.marketplace.toLowerCase().includes('shopsy') ? 'badge-account' : 'badge-portal'}">
-          ${item.marketplace.toUpperCase()}
+          ${escapeHtml(item.marketplace.toUpperCase())}
         </span>
       </td>
-      <td style="font-weight: 500;">${item.category}</td>
-      <td><strong>${item.brand}</strong></td>
-      <td style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">${item.sample_fsn || '—'}</td>
-      <td style="font-family: 'JetBrains Mono', monospace; color: #94a3b8;">${item.sample_sku || '—'}</td>
-      <td><span style="font-weight: 600; color: #10b981;">${(item.order_count || 0).toLocaleString()}</span></td>
+      <td style="font-weight: 500;">${escapeHtml(item.category)}</td>
+      <td><strong>${escapeHtml(item.brand)}</strong></td>
+      <td style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">${escapeHtml(item.sample_fsn || '—')}</td>
+      <td style="font-family: 'JetBrains Mono', monospace; color: #94a3b8;">${escapeHtml(item.sample_sku || '—')}</td>
+      <td><span style="font-weight: 600; color: #10b981;">${escapeHtml(Number(item.order_count || 0).toLocaleString())}</span></td>
     </tr>
   `).join('');
 }
@@ -405,10 +423,10 @@ async function loadRateCardPreview() {
       currentChanges = [];
       const badge = document.getElementById('changes-badge');
       if (badge) badge.style.display = 'none';
-      tbody.innerHTML = `<tr><td colspan="8" class="empty-state">${res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.'}</td></tr>`;
+      setTableMessage(tbody, 8, res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.');
     }
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-state error">Error loading rates: ${err.message}</td></tr>`;
+    setTableMessage(tbody, 8, `Error loading rates: ${err.message}`, true);
   }
 }
 
@@ -480,16 +498,16 @@ function renderDiffTable() {
   const displayRows = rows.slice(0, 100);
   tbody.innerHTML = displayRows.map(r => `
     <tr>
-      <td><span class="badge ${r.type === 'Commission' ? 'badge-portal' : 'badge-account'}">${r.type}</span></td>
-      <td><strong>${r.marketplace}</strong></td>
-      <td>${r.category}</td>
-      <td>${r.brand}</td>
-      <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${r.slab}</td>
-      <td style="color: #94a3b8;">${r.oldRate}</td>
-      <td style="color: #38bdf8; font-weight: 600;">${r.newRate}</td>
+      <td><span class="badge ${r.type === 'Commission' ? 'badge-portal' : 'badge-account'}">${escapeHtml(r.type)}</span></td>
+      <td><strong>${escapeHtml(r.marketplace)}</strong></td>
+      <td>${escapeHtml(r.category)}</td>
+      <td>${escapeHtml(r.brand)}</td>
+      <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${escapeHtml(r.slab)}</td>
+      <td style="color: #94a3b8;">${escapeHtml(r.oldRate)}</td>
+      <td style="color: #38bdf8; font-weight: 600;">${escapeHtml(r.newRate)}</td>
       <td>
-        <span class="status-badge ${r.status.includes('Active') ? 'badge-active' : 'badge-modified'}">
-          ${r.status}
+        <span class="status-badge ${String(r.status).includes('Active') ? 'badge-active' : 'badge-modified'}">
+          ${escapeHtml(r.status)}
         </span>
       </td>
     </tr>

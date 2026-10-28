@@ -280,6 +280,41 @@ async function runTests() {
     assert(threw, 'extraction with no fee slabs must be rejected');
   });
 
+  await runTest('normalizeScrapedCards merges FBF and NON_FBF only when they agree', async () => {
+    const slabs = { commissions: [{ price_min: 0, price_max: 500, rate: 0.15 }] };
+    const merged = normalizeScrapedCards([
+      { marketplace: 'flipkart', vertical: 'Kurta', fulfilment_type: 'NON_FBF', ...slabs },
+      { marketplace: 'flipkart', vertical: 'Kurta', fulfilment_type: 'FBF', ...slabs }
+    ]);
+    assert(merged.length === 1 && merged[0].commissions.length === 1, 'agreeing modes must merge into one card');
+    assert(merged[0].fulfilmentModes.join(',') === 'NON_FBF,FBF', 'card must record which modes were merged');
+
+    let error = null;
+    try {
+      normalizeScrapedCards([
+        { marketplace: 'flipkart', vertical: 'Kurta', fulfilment_type: 'NON_FBF', commissions: [{ price_min: 0, price_max: 500, rate: 0.15 }] },
+        { marketplace: 'flipkart', vertical: 'Kurta', fulfilment_type: 'FBF', commissions: [{ price_min: 0, price_max: 500, rate: 0.1 }] }
+      ]);
+    } catch (err) { error = err; }
+    assert(error && /different commissions for NON_FBF and FBF/.test(error.message), `conflicting modes must be refused (${error?.message})`);
+  });
+
+  await runTest('normalizeScrapedCards keeps collection fees as pct decimals', async () => {
+    const [card] = normalizeScrapedCards([{
+      marketplace: 'flipkart', vertical: 'Kurta',
+      collectionFees: [
+        { price_min: 0, price_max: 750, prepaid: 0.3, postpaid: 2, prepaid_type: 'percentage', postpaid_type: 'percentage', fulfilment_type: 'All' },
+        { price_min: 750.01, price_max: 999999, prepaid: 15, postpaid: 20, prepaid_type: 'flat', postpaid_type: 'flat', fulfilment_type: 'All' }
+      ]
+    }]);
+    assert(card.collectionFees.length === 2, 'collection-fee-only extraction must be staged with its fees');
+    const pct = card.collectionFees[0];
+    assert(pct.prepaid_type === 'pct' && Math.abs(pct.prepaid - 0.003) < 1e-12, `0.3% must become pct 0.003 (got ${pct.prepaid_type} ${pct.prepaid})`);
+    assert(Math.abs(pct.postpaid - 0.02) < 1e-12, '2% must become 0.02');
+    const flat = card.collectionFees[1];
+    assert(flat.prepaid_type === 'flat' && flat.prepaid === 15, 'flat fees must be unchanged');
+  });
+
   await runTest('normalizeScrapedCards merges duplicate verticals and dedupes slabs', async () => {
     const cards = normalizeScrapedCards([
       {
@@ -322,6 +357,8 @@ async function runTests() {
     assert(isDesktopReachableDbUrl('postgresql://app:pass@localhost:5432/paymentapp') === false, 'loopback provisioned by a remote server must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@10.0.0.5:5432/paymentapp') === false, 'private IPv4 must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@database.internal:5432/paymentapp') === false, '.internal host must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@100.64.0.1:5432/paymentapp') === false, 'CGNAT range must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@192.0.2.1:5432/paymentapp') === false, 'TEST-NET-1 must be refused');
     assert(isDesktopReachableDbUrl('') === false, 'empty URL must be refused');
     assert(isDesktopReachableDbUrl('not a url') === false, 'malformed URL must be refused');
   });
