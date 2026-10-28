@@ -30,6 +30,23 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
   exportDesktopExcel: (outputPath) => ipcRenderer.invoke('export-desktop-excel', outputPath),
   openExcelFile: (filePath) => ipcRenderer.invoke('open-excel-file', filePath),
   exportFile: (format, data) => ipcRenderer.invoke('export-file', format, data),
+
+  // Database Detail Download & Upload (Future-Ready Extensibility)
+  downloadDatabaseDetails: (table, options = {}) => {
+    const safeTable = typeof table === 'string' ? table.trim() : '';
+    const safeOptions = {
+      filters: options?.filters && typeof options.filters === 'object' && !Array.isArray(options.filters) ? options.filters : {},
+      orderBy: typeof options?.orderBy === 'string' ? options.orderBy.trim() : 'id DESC',
+      limit: Number.isInteger(options?.limit) ? Math.min(Math.max(1, options.limit), 5000) : 500
+    };
+    return ipcRenderer.invoke('download-database-details', safeTable, safeOptions);
+  },
+  uploadDatabaseDetails: (table, rows = [], keyColumns = ['id']) => {
+    const safeTable = typeof table === 'string' ? table.trim() : '';
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const safeKeys = Array.isArray(keyColumns) ? keyColumns.filter(k => typeof k === 'string') : ['id'];
+    return ipcRenderer.invoke('upload-database-details', safeTable, safeRows, safeKeys);
+  },
   
   // Real-time Event Listeners
   onProgress: (callback) => {

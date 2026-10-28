@@ -43,12 +43,12 @@ import {
   buildBrandRateCardSet, 
   detectBrandRateChanges, 
   syncBrandRateCardsToDatabase 
-} from '../backend/services/brandRateCardService.js';
+} from './rateCardService.js';
 import { 
   generateBrandwiseRateCardExcel, 
   DEFAULT_EXCEL_PATH 
-} from '../backend/services/brandwiseExcelExport.js';
-import { getPool } from '../backend/db/index.js';
+} from './excelExport.js';
+import { getDesktopPool, getDesktopPool as getPool } from './db.js';
 
 // Parse CLI arguments
 const args = process.argv.slice(2);
@@ -181,8 +181,8 @@ async function runWorker() {
       const targetPath = customExcelPath || DEFAULT_EXCEL_PATH;
       const excelRes = await generateBrandwiseRateCardExcel(targetPath, pool);
       console.log(`✓ Excel Workbook Generated: ${excelRes.filePath}`);
-      console.log(`  Sheets: ${excelRes.sheets.join(', ')}`);
-      console.log(`  Total Records: ${excelRes.totalRecords}`);
+      console.log(`  Sheets: ${excelRes.sheets?.join(', ') || 'All Sheets'}`);
+      console.log(`  Total Records: ${excelRes.totalRecords ?? (excelRes.commissionSlabs || 'N/A')}`);
     }
 
     console.log('\n======================================================================');

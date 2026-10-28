@@ -65,15 +65,13 @@ import {
   buildBrandRateCardSet, 
   detectBrandRateChanges, 
   syncBrandRateCardsToDatabase 
-} from '../backend/services/brandRateCardService.js';
+} from './rateCardService.js';
 import { 
   generateBrandwiseRateCardExcel, 
   DEFAULT_EXCEL_PATH 
-} from '../backend/services/brandwiseExcelExport.js';
-import { getChromeExecutablePath, scrapeFlipkartRateCards } from '../backend/services/flipkartRateCardExtractor.js';
-import { getPool } from '../backend/db/index.js';
-import { decryptCredential } from '../backend/utils/credentialCrypto.js';
-import { DEFAULT_MARKETPLACE_METADATA } from '../backend/routes/marketplaceAccounts.js';
+} from './excelExport.js';
+import { getChromeExecutablePath } from './chromeFinder.js';
+import { getDesktopPool, getDesktopPool as getPool } from './db.js';
 
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');
@@ -385,7 +383,18 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
+    if (process.platform === 'linux') {
+      try {
+        const sysDir = '/etc/reconcentral-ratecard';
+        if (fs.existsSync(sysDir)) {
+          const sysFile = path.join(sysDir, 'worker-config.json');
+          fs.writeFileSync(sysFile, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+          try { fs.chmodSync(sysFile, 0o600); } catch {}
+        }
+      } catch {}
+    }
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -442,6 +451,15 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  // Health probe to verify active ReconCentral desktop server
+  if (pathname === '/api/desktop/health' && req.method === 'GET') {
+    return sendJson(200, {
+      service: 'reconcentral-ratecard-desktop',
+      version: '1.0.0',
+      status: 'healthy'
+    });
   }
 
   // 1. SSE Stream for Live Telemetry
@@ -776,7 +794,7 @@ const server = http.createServer(async (req, res) => {
             id: dbUser.id,
             username: dbUser.username || userEmail.split('@')[0],
             email: dbUser.email || userEmail,
-            role: dbUser.role,
+            role: normalizedDbRole,
             firebase_uid: firebaseUid
           },
           idToken: fbResult.idToken,
@@ -1263,6 +1281,31 @@ function launchChromeApp() {
 
 const isDirectRun = Boolean(process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename));
 if (isDirectRun) {
+  server.on('error', async (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[Desktop Server] Port ${PORT} is already in use.`);
+      // Verify whether the active listener is genuinely ReconCentral RateCard Server
+      try {
+        const probeRes = await fetch(`http://127.0.0.1:${PORT}/api/desktop/health`, {
+          signal: AbortSignal.timeout(1500)
+        });
+        if (probeRes.ok) {
+          const body = await probeRes.json().catch(() => ({}));
+          if (body && body.service === 'reconcentral-ratecard-desktop') {
+            console.log(`[Desktop Server] Verified active ReconCentral RateCard Server at http://127.0.0.1:${PORT}. Connecting UI.`);
+            launchChromeApp();
+            process.exit(0);
+          }
+        }
+      } catch {}
+      console.error(`[Desktop Server] Refusing to launch UI: Port ${PORT} is occupied by an unrecognized listener. Stop the competing process or specify a different PORT.`);
+      process.exit(1);
+    } else {
+      console.error('[Desktop Server] Fatal server error:', err);
+      process.exit(1);
+    }
+  });
+
   server.listen(PORT, '127.0.0.1', () => {
     console.log('======================================================================');
     console.log(`⚡ ReconCentral RateCard Desktop Control Server running on port ${PORT}`);

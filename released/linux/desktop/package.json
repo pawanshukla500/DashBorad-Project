@@ -1,0 +1,87 @@
+{
+  "name": "reconcentral-ratecard-worker",
+  "version": "1.0.0",
+  "description": "Cross-Platform Flipkart & Marketplace Rate Card Scraper Worker and Desktop App",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "app": "node desktopServer.mjs",
+    "server": "node desktopServer.mjs",
+    "worker": "node worker.js",
+    "worker:both": "node worker.js --marketplace=both",
+    "worker:shopsy": "node worker.js --marketplace=shopsy",
+    "worker:myntra:vb": "node worker.js --marketplace=myntra_vb",
+    "worker:myntra:ej": "node worker.js --marketplace=myntra_ej",
+    "worker:meesho": "node worker.js --marketplace=meesho",
+    "worker:sync": "node worker.js --marketplace=both --auto-sync",
+    "build:win": "electron-builder --win --x64",
+    "build:linux": "electron-builder --linux AppImage deb",
+    "build:all": "electron-builder -wl"
+  },
+  "keywords": [
+    "ratecard",
+    "scraper",
+    "reconcentral",
+    "flipkart",
+    "myntra",
+    "meesho",
+    "electron"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pawanshukla500/DashBorad-Project.git"
+  },
+  "author": "ReconCentral Team <returnorders@vbexports.co.in>",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "pg": "^8.20.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.reconcentral.ratecardworker",
+    "productName": "ReconCentral RateCard Worker",
+    "publish": null,
+    "directories": {
+      "output": "dist-release"
+    },
+    "win": {
+      "icon": "ui/icon.png",
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ReconCentral RateCard Worker"
+    },
+    "linux": {
+      "icon": "ui/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office"
+    },
+    "files": [
+      "**/*",
+      "!dist-release/**",
+      "!node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!node_modules/*.d.ts",
+      "!node_modules/.bin"
+    ]
+  }
+}

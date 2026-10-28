@@ -14,7 +14,7 @@ export {
   getResolvedCapturesDir, 
   saveEncryptedCookies, 
   loadEncryptedCookies 
-} from '../backend/utils/cookieVault.js';
+} from './cookieVault.js';
 
 /**
  * Decode base64url or standard base64 encoded JWT payload without external libraries.
@@ -50,10 +50,21 @@ export function extractRoleFromToken(token) {
 }
 
 /**
- * Verify whether a role is authorized for desktop scraping & DB operations.
+ * Verify whether a role is authorized for desktop scraping & read operations.
  */
 export function isAuthorizedDesktopRole(role) {
-  return Boolean(role && AUTHORIZED_ROLES.includes(role));
+  const norm = String(role || '').trim().toLowerCase();
+  return Boolean(norm && AUTHORIZED_ROLES.includes(norm));
+}
+
+export const MUTATION_ROLES = ['admin', 'operator'];
+
+/**
+ * Verify whether a role is authorized for database mutations (rate-card sync, table updates).
+ */
+export function isAuthorizedMutationRole(role) {
+  const norm = String(role || '').trim().toLowerCase();
+  return Boolean(norm && MUTATION_ROLES.includes(norm));
 }
 
 /**
@@ -125,7 +136,7 @@ export async function verifyFirebaseTokenWithDetails(token, checkRevoked = true,
 
   // 1. Local cryptographic signature and revocation verification via Firebase Admin SDK if configured
   try {
-    const authModule = options.authModule || (options.auth !== undefined ? { auth: options.auth } : await import('../backend/utils/firebaseAdmin.js'));
+    const authModule = options.authModule || (options.auth !== undefined ? { auth: options.auth } : await import('../backend/utils/firebaseAdmin.js').catch(() => null));
     const auth = authModule?.auth;
     if (auth && typeof auth.verifyIdToken === 'function') {
       const decoded = await auth.verifyIdToken(token, checkRevoked);

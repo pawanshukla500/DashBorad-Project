@@ -5,6 +5,7 @@ import {
   decodeJwtPayload, 
   extractRoleFromToken, 
   isAuthorizedDesktopRole, 
+  isAuthorizedMutationRole,
   validateDesktopTokenRole, 
   validateTokenRoleMatchesDatabase,
   filterRateCardsByChannel, 
@@ -13,6 +14,7 @@ import {
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
+import { getChromeExecutablePath as findSystemChrome } from './chromeFinder.js';
 
 const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
@@ -293,8 +295,9 @@ function loadConfig() {
 
 function saveConfig(config) {
   try {
-    fs.mkdirSync(USER_DATA_DIR, { recursive: true });
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    fs.mkdirSync(USER_DATA_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -379,36 +382,7 @@ async function checkDailySchedule() {
 }
 
 function getChromeExecutablePath() {
-  const isWin = process.platform === 'win32';
-  const localAppData = process.env.LOCALAPPDATA || '';
-
-  const winPaths = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    path.join(localAppData, 'Google\\Chrome\\Application\\chrome.exe'),
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
-  ];
-
-  const linuxPaths = [
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/snap/bin/chromium'
-  ];
-
-  const possiblePaths = isWin ? winPaths : linuxPaths;
-  const found = possiblePaths.find(p => {
-    try {
-      return fs.existsSync(p);
-    } catch {
-      return false;
-    }
-  });
-
-  if (found) return found;
-  return isWin ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : '/usr/bin/google-chrome';
+  return findSystemChrome();
 }
 
 // ── Table Parsing Logic with Shopsy Fee Rules ────────────────────────────────
@@ -584,9 +558,11 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     StealthPlugin = require('puppeteer-extra-plugin-stealth');
     puppeteer.use(StealthPlugin());
   } catch {
-    puppeteer = require('../backend/node_modules/puppeteer-extra');
-    StealthPlugin = require('../backend/node_modules/puppeteer-extra-plugin-stealth');
-    puppeteer.use(StealthPlugin());
+    try {
+      puppeteer = require('../backend/node_modules/puppeteer-extra');
+      StealthPlugin = require('../backend/node_modules/puppeteer-extra-plugin-stealth');
+      puppeteer.use(StealthPlugin());
+    } catch {}
   }
 
   const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
@@ -705,9 +681,11 @@ async function executeScrapeProcess(config, onProgress) {
     StealthPlugin = require('puppeteer-extra-plugin-stealth');
     puppeteer.use(StealthPlugin());
   } catch {
-    puppeteer = require('../backend/node_modules/puppeteer-extra');
-    StealthPlugin = require('../backend/node_modules/puppeteer-extra-plugin-stealth');
-    puppeteer.use(StealthPlugin());
+    try {
+      puppeteer = require('../backend/node_modules/puppeteer-extra');
+      StealthPlugin = require('../backend/node_modules/puppeteer-extra-plugin-stealth');
+      puppeteer.use(StealthPlugin());
+    } catch {}
   }
 
   const targetChannel = (typeof config.marketplace === 'string' ? config.marketplace : config.marketplace?.id || config.marketplace?.marketplace) || 'flipkart_shopsy';
@@ -814,9 +792,9 @@ async function executeScrapeProcess(config, onProgress) {
       let channelRateCards = [];
       try {
         if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
-        const { getPool } = await import('../backend/db/index.js');
-        const { buildBrandRateCardSet } = await import('../backend/services/brandRateCardService.js');
-        const pool = getPool();
+        const { getDesktopPool } = await import('./db.js');
+        const { buildBrandRateCardSet } = await import('./rateCardService.js');
+        const pool = getDesktopPool(config.databaseUrl);
         const allRateCards = await buildBrandRateCardSet(pool);
         if (mpConfig.id === 'myntra_vb') {
           channelRateCards = allRateCards.filter(r => r.marketplace.toLowerCase() === 'myntra_vb' || (r.marketplace.toLowerCase() === 'myntra' && String(r.seller_id) === '10708'));
@@ -1264,7 +1242,7 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
         id: dbUser.id,
         username: dbUser.username || userEmail.split('@')[0],
         email: dbUser.email || userEmail,
-        role: dbUser.role,
+        role: normalizedDbRole,
         firebase_uid: firebaseUid
       },
       idToken: fbResult.idToken,
@@ -1330,7 +1308,9 @@ ipcMain.handle('auth-verify-db', async (e, dbUrl) => {
   const targetDb = dbUrl || config.databaseUrl;
   const start = Date.now();
   try {
-    const pool = new Pool({ connectionString: targetDb, ssl: { rejectUnauthorized: false } });
+    const { configuredSsl } = await import('./db.js');
+    const ssl = configuredSsl(targetDb);
+    const pool = new Pool({ connectionString: targetDb, ...(ssl ? { ssl } : {}) });
     const res = await pool.query(`
       SELECT 
         current_database() as db_name, 
@@ -1382,9 +1362,9 @@ ipcMain.handle('get-brand-fsn-catalog', async () => {
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const { getRealTimeBrandFsnSamples } = await import('../backend/services/brandRateCardService.js');
-    const { getPool } = await import('../backend/db/index.js');
-    const pool = getPool();
+    const { getRealTimeBrandFsnSamples } = await import('./rateCardService.js');
+    const { getDesktopPool } = await import('./db.js');
+    const pool = getDesktopPool(config.databaseUrl);
     const catalog = await getRealTimeBrandFsnSamples(pool);
     return { success: true, catalog };
   } catch (err) {
@@ -1397,9 +1377,9 @@ ipcMain.handle('get-ratecard-preview', async (e, options = {}) => {
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const { buildBrandRateCardSet } = await import('../backend/services/brandRateCardService.js');
-    const { getPool } = await import('../backend/db/index.js');
-    const pool = getPool();
+    const { buildBrandRateCardSet } = await import('./rateCardService.js');
+    const { getDesktopPool } = await import('./db.js');
+    const pool = getDesktopPool(config.databaseUrl);
     const rateCards = await buildBrandRateCardSet(pool);
     const targetMp = options.marketplace || options.channel || '';
     const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
@@ -1414,9 +1394,9 @@ ipcMain.handle('detect-brand-rate-changes', async (e, brandRateCards) => {
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const { detectBrandRateChanges } = await import('../backend/services/brandRateCardService.js');
-    const { getPool } = await import('../backend/db/index.js');
-    const pool = getPool();
+    const { detectBrandRateChanges } = await import('./rateCardService.js');
+    const { getDesktopPool } = await import('./db.js');
+    const pool = getDesktopPool(config.databaseUrl);
     const changes = await detectBrandRateChanges(brandRateCards, pool);
     return { success: true, changes };
   } catch (err) {
@@ -1426,12 +1406,16 @@ ipcMain.handle('detect-brand-rate-changes', async (e, brandRateCards) => {
 
 // Synchronize to Database
 ipcMain.handle('sync-brand-rate-cards', async (e, brandRateCards, options = {}) => {
+  const session = loadAuthSession();
+  if (!session || !session.authenticated || !isAuthorizedMutationRole(session?.user?.role)) {
+    return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required for database sync.' };
+  }
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const { syncBrandRateCardsToDatabase } = await import('../backend/services/brandRateCardService.js');
-    const { getPool } = await import('../backend/db/index.js');
-    const pool = getPool();
+    const { syncBrandRateCardsToDatabase } = await import('./rateCardService.js');
+    const { getDesktopPool } = await import('./db.js');
+    const pool = getDesktopPool(config.databaseUrl);
     const result = await syncBrandRateCardsToDatabase(brandRateCards, { forceUpdate: true, ...options }, pool);
     return { success: true, result };
   } catch (err) {
@@ -1441,12 +1425,16 @@ ipcMain.handle('sync-brand-rate-cards', async (e, brandRateCards, options = {}) 
 
 // Export 6-Sheet Desktop Excel (.xlsx)
 ipcMain.handle('export-desktop-excel', async (e, customPath) => {
+  const session = loadAuthSession();
+  if (!session || !session.authenticated || !isAuthorizedDesktopRole(session?.user?.role)) {
+    return { success: false, error: 'Unauthorized: Active ReconCentral session required.' };
+  }
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
-    const { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } = await import('../backend/services/brandwiseExcelExport.js');
-    const { getPool } = await import('../backend/db/index.js');
-    const pool = getPool();
+    const { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } = await import('./excelExport.js');
+    const { getDesktopPool } = await import('./db.js');
+    const pool = getDesktopPool(config.databaseUrl);
     const targetPath = customPath || DEFAULT_EXCEL_PATH;
     const result = await generateBrandwiseRateCardExcel(targetPath, pool);
     return { success: true, ...result };
@@ -1458,13 +1446,68 @@ ipcMain.handle('export-desktop-excel', async (e, customPath) => {
 // Open File in Native App (Excel)
 ipcMain.handle('open-excel-file', async (e, targetPath) => {
   try {
-    const { DEFAULT_EXCEL_PATH } = await import('../backend/services/brandwiseExcelExport.js');
-    const filePath = targetPath || DEFAULT_EXCEL_PATH;
+    const { DEFAULT_EXCEL_PATH } = await import('./excelExport.js');
+    let filePath = targetPath || DEFAULT_EXCEL_PATH;
+    if (!fs.existsSync(filePath)) {
+      const jsonAlt = filePath.replace(/\.xlsx$/, '.json');
+      if (fs.existsSync(jsonAlt)) filePath = jsonAlt;
+    }
     if (fs.existsSync(filePath)) {
       await shell.openPath(filePath);
       return { success: true, filePath };
     }
     return { success: false, error: `File not found on disk: ${filePath}` };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Extensible: Download Database Details (Orders, RateCards, Returns)
+ipcMain.handle('download-database-details', async (e, tableName, options = {}) => {
+  const session = loadAuthSession();
+  if (!session || !session.authenticated || !isAuthorizedDesktopRole(session?.user?.role)) {
+    return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required.' };
+  }
+  const config = loadConfig();
+  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+  try {
+    const { downloadTableDetails, ALLOWED_TABLES } = await import('./db.js');
+    const safeTable = typeof tableName === 'string' ? tableName.trim().toLowerCase() : '';
+    if (!ALLOWED_TABLES.has(safeTable)) {
+      throw new Error(`Table "${tableName}" is not allowed for desktop query.`);
+    }
+    const safeOptions = {
+      filters: options?.filters && typeof options.filters === 'object' && !Array.isArray(options.filters) ? options.filters : {},
+      orderBy: typeof options?.orderBy === 'string' ? options.orderBy.trim() : 'id DESC',
+      limit: Math.min(Math.max(1, parseInt(options?.limit, 10) || 500), 5000)
+    };
+    const data = await downloadTableDetails(safeTable, safeOptions);
+    return { success: true, ...data };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Extensible: Upload Database Updates / Upserts
+ipcMain.handle('upload-database-details', async (e, tableName, rows = [], keyColumns = ['id']) => {
+  const session = loadAuthSession();
+  if (!session || !session.authenticated || !isAuthorizedMutationRole(session?.user?.role)) {
+    return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required.' };
+  }
+  const config = loadConfig();
+  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+  try {
+    const { uploadTableUpdates, ALLOWED_TABLES } = await import('./db.js');
+    const safeTable = typeof tableName === 'string' ? tableName.trim().toLowerCase() : '';
+    if (!ALLOWED_TABLES.has(safeTable)) {
+      throw new Error(`Table "${tableName}" is not allowed for desktop upload.`);
+    }
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { success: true, updated: 0 };
+    }
+    const safeKeyColumns = (Array.isArray(keyColumns) ? keyColumns : ['id']).filter(k => typeof k === 'string');
+    const result = await uploadTableUpdates(safeTable, rows, safeKeyColumns);
+    return { success: true, ...result };
   } catch (err) {
     return { success: false, error: err.message };
   }
