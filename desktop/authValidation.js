@@ -53,7 +53,8 @@ export function extractRoleFromToken(token) {
  * Verify whether a role is authorized for desktop scraping & read operations.
  */
 export function isAuthorizedDesktopRole(role) {
-  return Boolean(role && AUTHORIZED_ROLES.includes(role));
+  const norm = String(role || '').trim().toLowerCase();
+  return Boolean(norm && AUTHORIZED_ROLES.includes(norm));
 }
 
 export const MUTATION_ROLES = ['admin', 'operator'];
@@ -62,7 +63,8 @@ export const MUTATION_ROLES = ['admin', 'operator'];
  * Verify whether a role is authorized for database mutations (rate-card sync, table updates).
  */
 export function isAuthorizedMutationRole(role) {
-  return Boolean(role && MUTATION_ROLES.includes(role));
+  const norm = String(role || '').trim().toLowerCase();
+  return Boolean(norm && MUTATION_ROLES.includes(norm));
 }
 
 /**

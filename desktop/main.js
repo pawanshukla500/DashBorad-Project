@@ -295,8 +295,9 @@ function loadConfig() {
 
 function saveConfig(config) {
   try {
-    fs.mkdirSync(USER_DATA_DIR, { recursive: true });
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    fs.mkdirSync(USER_DATA_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1241,7 +1242,7 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
         id: dbUser.id,
         username: dbUser.username || userEmail.split('@')[0],
         email: dbUser.email || userEmail,
-        role: dbUser.role,
+        role: normalizedDbRole,
         firebase_uid: firebaseUid
       },
       idToken: fbResult.idToken,

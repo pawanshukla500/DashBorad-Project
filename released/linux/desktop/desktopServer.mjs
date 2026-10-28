@@ -383,12 +383,15 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
     if (process.platform === 'linux') {
       try {
         const sysDir = '/etc/reconcentral-ratecard';
         if (fs.existsSync(sysDir)) {
-          fs.writeFileSync(path.join(sysDir, 'worker-config.json'), JSON.stringify(cfg, null, 2));
+          const sysFile = path.join(sysDir, 'worker-config.json');
+          fs.writeFileSync(sysFile, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+          try { fs.chmodSync(sysFile, 0o600); } catch {}
         }
       } catch {}
     }
@@ -791,7 +794,7 @@ const server = http.createServer(async (req, res) => {
             id: dbUser.id,
             username: dbUser.username || userEmail.split('@')[0],
             email: dbUser.email || userEmail,
-            role: dbUser.role,
+            role: normalizedDbRole,
             firebase_uid: firebaseUid
           },
           idToken: fbResult.idToken,

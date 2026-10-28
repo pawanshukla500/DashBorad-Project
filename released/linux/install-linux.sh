@@ -53,8 +53,10 @@ fi
 echo "[2/4] Deploying application to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 mkdir -p /etc/reconcentral-ratecard
-chmod 777 /etc/reconcentral-ratecard 2>/dev/null || true
+chmod 700 /etc/reconcentral-ratecard 2>/dev/null || true
+chown -R "$TARGET_USER:" /etc/reconcentral-ratecard 2>/dev/null || true
 mkdir -p "$TARGET_HOME/.config/reconcentral-ratecard-worker"
+chmod 700 "$TARGET_HOME/.config/reconcentral-ratecard-worker" 2>/dev/null || true
 chown -R "$TARGET_USER:" "$TARGET_HOME/.config/reconcentral-ratecard-worker" 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

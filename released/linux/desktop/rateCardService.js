@@ -426,9 +426,9 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         await client.query(`
           DELETE FROM rc_commission 
           WHERE marketplace = $1 
-            AND seller_account = $2
+            AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
             AND category = $3 
-            AND (brand_name = $4 OR ($4 IS NULL AND brand_name IS NULL))
+            AND (brand_name = $4 OR ($4 = 'General' AND (brand_name IS NULL OR brand_name = 'All brands' OR brand_name = 'General')) OR ($4 IS NULL AND (brand_name IS NULL OR brand_name = 'All brands' OR brand_name = 'General')))
             AND start_date >= $5::date 
             AND end_date IS NULL
         `, [marketplace, sellerAccount, category, brandVal, effectiveDate]);
@@ -437,9 +437,9 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           UPDATE rc_commission 
           SET end_date = $1::date, updated_at = NOW() 
           WHERE marketplace = $2 
-            AND seller_account = $3
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
             AND category = $4 
-            AND (brand_name = $5 OR ($5 IS NULL AND brand_name IS NULL))
+            AND (brand_name = $5 OR ($5 = 'General' AND (brand_name IS NULL OR brand_name = 'All brands' OR brand_name = 'General')) OR ($5 IS NULL AND (brand_name IS NULL OR brand_name = 'All brands' OR brand_name = 'General')))
             AND start_date < $6::date
             AND (end_date IS NULL OR end_date >= $6::date)
         `, [previousEndDate, marketplace, sellerAccount, category, brandVal, effectiveDate]);
@@ -465,7 +465,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         await client.query(`
           DELETE FROM rc_fixed_fee 
           WHERE marketplace = $1 
-            AND seller_account = $2
+            AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
             AND category = $3 
             AND start_date >= $4::date 
             AND end_date IS NULL
@@ -475,7 +475,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           UPDATE rc_fixed_fee 
           SET end_date = $1::date, updated_at = NOW() 
           WHERE marketplace = $2 
-            AND seller_account = $3
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
             AND category = $4 
             AND start_date < $5::date
             AND (end_date IS NULL OR end_date >= $5::date)
@@ -502,7 +502,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         await client.query(`
           DELETE FROM rc_reverse_shipping 
           WHERE marketplace = $1 
-            AND seller_account = $2
+            AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
             AND category = $3 
             AND start_date >= $4::date 
             AND end_date IS NULL
@@ -512,7 +512,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           UPDATE rc_reverse_shipping 
           SET end_date = $1::date, updated_at = NOW() 
           WHERE marketplace = $2 
-            AND seller_account = $3
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
             AND category = $4 
             AND start_date < $5::date
             AND (end_date IS NULL OR end_date >= $5::date)

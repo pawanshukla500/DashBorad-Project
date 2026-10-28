@@ -123,19 +123,19 @@ function isLoopbackHost(host) {
  */
 export function configuredSsl(connectionString) {
   if (!connectionString) return false;
-  try {
-    const url = new URL(connectionString);
-    if (isLoopbackHost(url.hostname)) {
-      return false;
-    }
-  } catch {}
 
   const sslSetting = process.env.PG_SSL;
   const rejectUnauthorizedSetting = process.env.PG_SSL_REJECT_UNAUTHORIZED;
   const caSetting = process.env.PG_SSL_CA;
   const explicitSsl = optionalBoolean(sslSetting);
 
-  const enabled = explicitSsl == null ? (urlRequiresSsl(connectionString) || !connectionString.includes('localhost')) : explicitSsl;
+  let isLoopback = false;
+  try {
+    const url = new URL(connectionString);
+    isLoopback = isLoopbackHost(url.hostname);
+  } catch {}
+
+  const enabled = explicitSsl != null ? explicitSsl : (!isLoopback && (urlRequiresSsl(connectionString) || !connectionString.includes('localhost')));
   if (!enabled) return false;
 
   const isDevOrTest = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
