@@ -441,6 +441,10 @@ async function runTests() {
     assert(isDesktopReachableDbUrl('postgresql://app:pass@database.internal:5432/paymentapp') === false, '.internal host must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@registry.lan:5432/paymentapp') === false, 'LAN DNS names must still be refused when server-provisioned');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@100.64.0.1:5432/paymentapp') === false, 'CGNAT range must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@0177.0.0.1:5432/paymentapp') === false, 'octal loopback must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@0x7f.0.0.1:5432/paymentapp') === false, 'hex loopback must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@127.1:5432/paymentapp') === false, 'short-form loopback must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@08.0.0.1:5432/paymentapp') === false, 'malformed numeric host must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@192.0.2.1:5432/paymentapp') === false, 'TEST-NET-1 must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@localhost.:5432/paymentapp') === false, 'trailing-dot loopback must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@db.localhost:5432/paymentapp') === false, '.localhost subdomain must be refused');
@@ -636,6 +640,37 @@ async function runTests() {
       if (prevReconUrl === undefined) delete process.env.RECON_DATABASE_URL;
       else process.env.RECON_DATABASE_URL = prevReconUrl;
     }
+  });
+
+  // ── rateCardService.detectBrandRateChanges ────────────────────────────────
+  await runTest('detectBrandRateChanges surfaces collection fee differences for review', async () => {
+    const { detectBrandRateChanges } = await import('../rateCardService.js');
+    const card = (brand) => ({
+      marketplace: 'flipkart', category: 'Kurta', brand,
+      commissions: [{ price_min: 0, price_max: 500, rate: 0.15 }],
+      fixedFees: [], reverseShipping: [],
+      collectionFees: [{ fulfilment_type: 'All', price_min: 0, price_max: 750, prepaid: 0.003, postpaid: 0.02, prepaid_type: 'pct', postpaid_type: 'pct' }]
+    });
+    const pool = { query: async (sql) => {
+      if (sql.includes('FROM rc_commission')) return { rows: [{ price_min: 0, price_max: 500, rate: 0.15 }] };
+      if (sql.includes('FROM rc_collection_fee')) return { rows: [{ fulfilment_type: 'All', price_min: 0, price_max: 750, prepaid: 0.003, postpaid: 0.01, prepaid_type: 'pct', postpaid_type: 'pct' }] };
+      return { rows: [] };
+    } };
+    // Two brand cards in the same category: the category-level collection fee
+    // difference must be reported exactly once.
+    const changes = await detectBrandRateChanges([card('Ethnic Junction'), card('Youthnic')], pool);
+    const collChanges = changes.filter((c) => c.type === 'collection_fee');
+    assert(collChanges.length === 1, `expected exactly one collection fee change, got ${collChanges.length}`);
+    assert(collChanges[0].reason === 'Collection fee modified', `unexpected reason: ${collChanges[0].reason}`);
+    assert(String(collChanges[0].oldRate).includes('1.00%') && String(collChanges[0].newRate).includes('2.00%'), `old/new rates wrong: ${collChanges[0].oldRate} -> ${collChanges[0].newRate}`);
+
+    const poolSynced = { query: async (sql) => {
+      if (sql.includes('FROM rc_commission')) return { rows: [{ price_min: 0, price_max: 500, rate: 0.15 }] };
+      if (sql.includes('FROM rc_collection_fee')) return { rows: [{ fulfilment_type: 'All', price_min: 0, price_max: 750, prepaid: 0.003, postpaid: 0.02, prepaid_type: 'pct', postpaid_type: 'pct' }] };
+      return { rows: [] };
+    } };
+    const synced = await detectBrandRateChanges([card('Ethnic Junction')], poolSynced);
+    assert(synced.length === 0, `in-sync cards must report no changes (got ${synced.length})`);
   });
 
   // ── Packaging invariants ───────────────────────────────────────────────────

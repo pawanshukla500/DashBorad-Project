@@ -394,13 +394,16 @@ async function loadRateCardPreview() {
     const selectEl = document.getElementById('select-marketplace');
     const headerSelect = document.getElementById('header-select-marketplace');
     const selectedChannel = selectEl?.value || headerSelect?.value || 'flipkart_shopsy';
-    const res = await window.ratecardAPI.getRateCardPreview({ marketplace: selectedChannel });
-    // Commit stays disabled until the preview AND its change detection succeed.
+    // Reset BEFORE any await: while the preview request is in flight, staged cards
+    // from a previous channel must not stay commit-enabled.
     currentCanSync = false;
     currentRateCards = [];
     currentChanges = [];
     const commitBtn = document.getElementById('btn-commit-db');
     if (commitBtn) commitBtn.disabled = true;
+    const changesBadge = document.getElementById('changes-badge');
+    if (changesBadge) changesBadge.style.display = 'none';
+    const res = await window.ratecardAPI.getRateCardPreview({ marketplace: selectedChannel });
     if (res.success && res.rateCards?.length > 0) {
       const diffRes = await window.ratecardAPI.detectBrandRateChanges(res.rateCards);
       if (!diffRes?.success) throw new Error(diffRes?.error || 'Change detection failed.');
@@ -445,7 +448,7 @@ function renderDiffTable() {
   const rows = [];
 
   for (const card of currentRateCards) {
-    const { marketplace, category, brand, commissions, fixedFees, reverseShipping } = card;
+    const { marketplace, category, brand, commissions, fixedFees, reverseShipping, collectionFees = [] } = card;
 
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission') {
@@ -482,7 +485,27 @@ function renderDiffTable() {
       }
     }
 
-    // 3. Reverse Shipping rows
+    // 3. Collection Fee rows (payment charges; staged scrapes commit these)
+    if (activeDiffFilter === 'all' || activeDiffFilter === 'collection') {
+      const fmtColl = (value, type) => (type === 'pct' ? `${(value * 100).toFixed(2)}%` : `₹${value}`);
+      for (const cf of collectionFees) {
+        const change = currentChanges.find(ch =>
+          ch.marketplace === marketplace && ch.category === category && ch.type === 'collection_fee'
+        );
+        rows.push({
+          type: 'Collection Fee',
+          marketplace: marketplace.toUpperCase(),
+          category,
+          brand: 'All',
+          slab: cf.price_max >= 999990 ? `≥ ₹${cf.price_min}` : `₹${cf.price_min} - ₹${cf.price_max}`,
+          oldRate: change?.oldRate != null ? change.oldRate : 'Active / Matched',
+          newRate: change?.newRate != null ? change.newRate : `Prepaid ${fmtColl(cf.prepaid, cf.prepaid_type)} / Postpaid ${fmtColl(cf.postpaid, cf.postpaid_type)}`,
+          status: change ? (change.reason || 'Modified') : 'Active'
+        });
+      }
+    }
+
+    // 4. Reverse Shipping rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'reverse') {
       for (const r of reverseShipping) {
         rows.push({

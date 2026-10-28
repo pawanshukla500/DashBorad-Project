@@ -203,6 +203,9 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
   const p = pool || getDesktopPool();
   const sellerAccount = (typeof options === 'string' ? options : options?.sellerAccount) || 'default';
   const changes = [];
+  // Collection fees are category-level: check them once per marketplace/category,
+  // not once per brand card in that category.
+  const checkedCollectionFeeCategories = new Set();
 
   for (const card of brandRateCards) {
     const { marketplace, category, brand, commissions } = card;
@@ -373,6 +376,73 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
               slab: `${rs.weight_slab}: ₹${rs.price_min} - ₹${rs.price_max}`,
               reason: 'Reverse shipping fees modified'
             });
+          }
+        }
+      }
+    }
+
+    // Collection fee differences (compare row count and individual slab values).
+    // Staged cards carry these fees and commits write them, so the review must
+    // surface any difference instead of silently syncing them.
+    if (card.collectionFees && card.collectionFees.length > 0) {
+      const collKey = [marketplace, sellerAccount, category].join('|');
+      if (!checkedCollectionFeeCategories.has(collKey)) {
+        checkedCollectionFeeCategories.add(collKey);
+        const activeColl = await p.query(`
+          SELECT fulfilment_type, price_min, price_max, prepaid, postpaid, prepaid_type, postpaid_type
+          FROM rc_collection_fee
+          WHERE marketplace = $1
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $2
+            AND end_date IS NULL
+        `, [marketplace, category, sellerAccount]);
+
+        const fmtCollFee = (value, type) => (type === 'pct' ? (parseFloat(value) * 100).toFixed(2) + '%' : '₹' + parseFloat(value));
+        const collRateLabel = (cf) => 'Prepaid ' + fmtCollFee(cf.prepaid, cf.prepaid_type || 'flat') + ' / Postpaid ' + fmtCollFee(cf.postpaid, cf.postpaid_type || 'flat');
+
+        if (activeColl.rows.length !== card.collectionFees.length) {
+          changes.push({
+            type: 'collection_fee',
+            marketplace,
+            category,
+            brand,
+            reason: 'Collection fee slab count changed (DB: ' + activeColl.rows.length + ', New: ' + card.collectionFees.length + ')'
+          });
+        } else {
+          for (const cf of card.collectionFees) {
+            const match = activeColl.rows.find(ac =>
+              (ac.fulfilment_type || 'All') === (cf.fulfilment_type || 'All') &&
+              Math.abs(parseFloat(ac.price_min) - cf.price_min) < 0.01 &&
+              Math.abs(parseFloat(ac.price_max) - cf.price_max) < 1.0
+            );
+            const slab = '₹' + cf.price_min + ' - ₹' + cf.price_max;
+            if (!match) {
+              changes.push({
+                type: 'collection_fee',
+                marketplace,
+                category,
+                brand,
+                slab,
+                newRate: collRateLabel(cf),
+                reason: 'New collection fee slab'
+              });
+            } else if (
+              Math.abs(parseFloat(match.prepaid) - cf.prepaid) > 0.0001 ||
+              Math.abs(parseFloat(match.postpaid) - cf.postpaid) > 0.0001 ||
+              (match.prepaid_type || 'flat') !== (cf.prepaid_type || 'flat') ||
+              (match.postpaid_type || 'flat') !== (cf.postpaid_type || 'flat')
+            ) {
+              changes.push({
+                type: 'collection_fee',
+                marketplace,
+                category,
+                brand,
+                slab,
+                oldRate: collRateLabel(match),
+                newRate: collRateLabel(cf),
+                reason: 'Collection fee modified'
+              });
+            }
           }
         }
       }

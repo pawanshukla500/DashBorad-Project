@@ -27,6 +27,11 @@ describe('isPubliclyRoutableDbHost', () => {
     ['postgres.'],                   // trailing-dot service name
     ['127.0.0.1'],
     ['127.0.1.1'],
+    ['0177.0.0.1'],                // octal loopback
+    ['127.1'],                     // short-form loopback
+    ['0x7f.0.0.1'],                // hex loopback
+    ['08.0.0.1'],                  // malformed octal-looking host
+    ['2130706433'],                // single-number IPv4 (loopback)
     ['::1'],                         // IPv6 loopback
     ['0.0.0.0'],
     ['10.0.0.5'],                    // private IPv4
