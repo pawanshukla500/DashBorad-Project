@@ -321,13 +321,17 @@ export async function uploadTableUpdates(tableName, rows = [], keyColumns = ['id
         ? `INSERT INTO "${safeTable}" (${cols}) VALUES (${placeholders}) ON CONFLICT (${conflictCols}) DO UPDATE SET ${updateCols}`
         : `INSERT INTO "${safeTable}" (${cols}) VALUES (${placeholders}) ON CONFLICT (${conflictCols}) DO NOTHING`;
 
-      await client.query(upsertSql, values);
-      count++;
+      const res = await client.query(upsertSql, values);
+      count += (res.rowCount || 0);
     }
     await client.query('COMMIT');
     return { success: true, updated: count };
   } catch (err) {
-    await client.query('ROLLBACK');
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      console.warn('[Desktop DB] Rollback error ignored to preserve original query failure:', rollbackErr.message);
+    }
     throw err;
   } finally {
     client.release();

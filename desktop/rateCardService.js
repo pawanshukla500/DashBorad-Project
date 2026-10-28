@@ -227,51 +227,50 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
         reason: 'New category & brand commission profile',
         slabsCount: commissions.length
       });
-      continue;
-    }
-
-    if (activeCommissions.rows.length !== commissions.length) {
-      changes.push({
-        type: 'commission',
-        marketplace,
-        category,
-        brand,
-        sample_fsn: card.sample_fsn,
-        reason: `Commission slab count changed (DB: ${activeCommissions.rows.length}, New: ${commissions.length})`,
-        slabsCount: commissions.length
-      });
-    }
-
-    for (const sc of commissions) {
-      const match = activeCommissions.rows.find(ac =>
-        Math.abs(parseFloat(ac.price_min) - sc.price_min) < 0.01 &&
-        Math.abs(parseFloat(ac.price_max) - sc.price_max) < 1.0
-      );
-
-      if (!match) {
+    } else {
+      if (activeCommissions.rows.length !== commissions.length) {
         changes.push({
           type: 'commission',
           marketplace,
           category,
           brand,
           sample_fsn: card.sample_fsn,
-          slab: `₹${sc.price_min} - ₹${sc.price_max}`,
-          oldRate: null,
-          newRate: sc.rate,
-          reason: 'New commission price slab'
+          reason: `Commission slab count changed (DB: ${activeCommissions.rows.length}, New: ${commissions.length})`,
+          slabsCount: commissions.length
         });
-      } else if (Math.abs(parseFloat(match.rate) - sc.rate) > 0.0001) {
-        changes.push({
-          type: 'commission',
-          marketplace,
-          category,
-          brand,
-          sample_fsn: card.sample_fsn,
-          slab: `₹${sc.price_min} - ₹${sc.price_max}`,
-          oldRate: parseFloat(match.rate),
-          newRate: sc.rate,
-          reason: 'Commission rate percentage modified'
-        });
+      }
+
+      for (const sc of commissions) {
+        const match = activeCommissions.rows.find(ac =>
+          Math.abs(parseFloat(ac.price_min) - sc.price_min) < 0.01 &&
+          Math.abs(parseFloat(ac.price_max) - sc.price_max) < 1.0
+        );
+
+        if (!match) {
+          changes.push({
+            type: 'commission',
+            marketplace,
+            category,
+            brand,
+            sample_fsn: card.sample_fsn,
+            slab: `₹${sc.price_min} - ₹${sc.price_max}`,
+            oldRate: null,
+            newRate: sc.rate,
+            reason: 'New commission price slab'
+          });
+        } else if (Math.abs(parseFloat(match.rate) - sc.rate) > 0.0001) {
+          changes.push({
+            type: 'commission',
+            marketplace,
+            category,
+            brand,
+            sample_fsn: card.sample_fsn,
+            slab: `₹${sc.price_min} - ₹${sc.price_max}`,
+            oldRate: parseFloat(match.rate),
+            newRate: sc.rate,
+            reason: 'Commission rate percentage modified'
+          });
+        }
       }
     }
 
