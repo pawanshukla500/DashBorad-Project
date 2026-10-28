@@ -5,6 +5,7 @@ import {
   decodeJwtPayload, 
   extractRoleFromToken, 
   isAuthorizedDesktopRole, 
+  isAuthorizedMutationRole,
   validateDesktopTokenRole, 
   validateTokenRoleMatchesDatabase,
   filterRateCardsByChannel, 
@@ -1404,6 +1405,10 @@ ipcMain.handle('detect-brand-rate-changes', async (e, brandRateCards) => {
 
 // Synchronize to Database
 ipcMain.handle('sync-brand-rate-cards', async (e, brandRateCards, options = {}) => {
+  const session = loadAuthSession();
+  if (!session || !session.authenticated || !isAuthorizedMutationRole(session?.user?.role)) {
+    return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required for database sync.' };
+  }
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
@@ -1419,6 +1424,10 @@ ipcMain.handle('sync-brand-rate-cards', async (e, brandRateCards, options = {}) 
 
 // Export 6-Sheet Desktop Excel (.xlsx)
 ipcMain.handle('export-desktop-excel', async (e, customPath) => {
+  const session = loadAuthSession();
+  if (!session || !session.authenticated || !isAuthorizedDesktopRole(session?.user?.role)) {
+    return { success: false, error: 'Unauthorized: Active ReconCentral session required.' };
+  }
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
@@ -1481,7 +1490,7 @@ ipcMain.handle('download-database-details', async (e, tableName, options = {}) =
 // Extensible: Upload Database Updates / Upserts
 ipcMain.handle('upload-database-details', async (e, tableName, rows = [], keyColumns = ['id']) => {
   const session = loadAuthSession();
-  if (!session || !session.authenticated || !isAuthorizedDesktopRole(session?.user?.role)) {
+  if (!session || !session.authenticated || !isAuthorizedMutationRole(session?.user?.role)) {
     return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required.' };
   }
   const config = loadConfig();

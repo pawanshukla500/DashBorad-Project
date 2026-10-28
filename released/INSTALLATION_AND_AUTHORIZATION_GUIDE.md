@@ -27,7 +27,7 @@ The ReconCentral RateCard Desktop Worker is a standalone, cross-platform PC appl
 4. *(Optional)* Click **Advanced Database Connection** to inspect or test the PostgreSQL connection string. Click **Test DB Ping** to verify network connectivity.
 5. Click **Sign In & Authorize PC**.
 6. The application authenticates via Firebase Auth, verifies your authorization role in the PostgreSQL `users` table, and unlocks full operational capabilities.
-7. Your credentials and authorized session are stored securely in your user data directory, so you do not need to log in again on future launches.
+7. Your authorized session tokens and AES-256-GCM encrypted marketplace session cookies are stored in your local user data directory, so you do not need to log in again on future launches.
 
 ### Step 3: Daily Operations
 - **Run Extraction**: Click **🚀 Run Extraction** on Dashboard or Live Scraper tab to inspect rate cards.

@@ -384,6 +384,14 @@ function loadConfig() {
 function saveConfig(cfg) {
   try {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+    if (process.platform === 'linux') {
+      try {
+        const sysDir = '/etc/reconcentral-ratecard';
+        if (fs.existsSync(sysDir)) {
+          fs.writeFileSync(path.join(sysDir, 'worker-config.json'), JSON.stringify(cfg, null, 2));
+        }
+      } catch {}
+    }
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -440,6 +448,15 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  // Health probe to verify active ReconCentral desktop server
+  if (pathname === '/api/desktop/health' && req.method === 'GET') {
+    return sendJson(200, {
+      service: 'reconcentral-ratecard-desktop',
+      version: '1.0.0',
+      status: 'healthy'
+    });
   }
 
   // 1. SSE Stream for Live Telemetry
@@ -1261,12 +1278,25 @@ function launchChromeApp() {
 
 const isDirectRun = Boolean(process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename));
 if (isDirectRun) {
-  server.on('error', (err) => {
+  server.on('error', async (err) => {
     if (err.code === 'EADDRINUSE') {
-      console.warn(`[Desktop Server] Port ${PORT} is already in use by an active desktop server or background service.`);
-      console.log(`[Desktop Server] Connecting to active instance at: http://127.0.0.1:${PORT}`);
-      launchChromeApp();
-      process.exit(0);
+      console.warn(`[Desktop Server] Port ${PORT} is already in use.`);
+      // Verify whether the active listener is genuinely ReconCentral RateCard Server
+      try {
+        const probeRes = await fetch(`http://127.0.0.1:${PORT}/api/desktop/health`, {
+          signal: AbortSignal.timeout(1500)
+        });
+        if (probeRes.ok) {
+          const body = await probeRes.json().catch(() => ({}));
+          if (body && body.service === 'reconcentral-ratecard-desktop') {
+            console.log(`[Desktop Server] Verified active ReconCentral RateCard Server at http://127.0.0.1:${PORT}. Connecting UI.`);
+            launchChromeApp();
+            process.exit(0);
+          }
+        }
+      } catch {}
+      console.error(`[Desktop Server] Refusing to launch UI: Port ${PORT} is occupied by an unrecognized listener. Stop the competing process or specify a different PORT.`);
+      process.exit(1);
     } else {
       console.error('[Desktop Server] Fatal server error:', err);
       process.exit(1);

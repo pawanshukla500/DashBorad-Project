@@ -50,10 +50,19 @@ export function extractRoleFromToken(token) {
 }
 
 /**
- * Verify whether a role is authorized for desktop scraping & DB operations.
+ * Verify whether a role is authorized for desktop scraping & read operations.
  */
 export function isAuthorizedDesktopRole(role) {
   return Boolean(role && AUTHORIZED_ROLES.includes(role));
+}
+
+export const MUTATION_ROLES = ['admin', 'operator'];
+
+/**
+ * Verify whether a role is authorized for database mutations (rate-card sync, table updates).
+ */
+export function isAuthorizedMutationRole(role) {
+  return Boolean(role && MUTATION_ROLES.includes(role));
 }
 
 /**

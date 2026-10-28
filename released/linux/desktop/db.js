@@ -78,6 +78,19 @@ export function resolveDatabaseUrl(customUrl = null) {
     }
   } catch {}
 
+  // Check system-wide Linux configuration (/etc/reconcentral-ratecard/worker-config.json)
+  if (process.platform === 'linux') {
+    try {
+      const sysConfigPath = '/etc/reconcentral-ratecard/worker-config.json';
+      if (fs.existsSync(sysConfigPath)) {
+        const parsed = JSON.parse(fs.readFileSync(sysConfigPath, 'utf8'));
+        if (parsed && parsed.databaseUrl && String(parsed.databaseUrl).trim()) {
+          return String(parsed.databaseUrl).trim();
+        }
+      }
+    } catch {}
+  }
+
   return null;
 }
 
