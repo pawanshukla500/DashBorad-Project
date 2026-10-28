@@ -1306,7 +1306,9 @@ ipcMain.handle('auth-verify-db', async (e, dbUrl) => {
   const targetDb = dbUrl || config.databaseUrl;
   const start = Date.now();
   try {
-    const pool = new Pool({ connectionString: targetDb, ssl: { rejectUnauthorized: false } });
+    const { configuredSsl } = await import('./db.js');
+    const ssl = configuredSsl(targetDb);
+    const pool = new Pool({ connectionString: targetDb, ...(ssl ? { ssl } : {}) });
     const res = await pool.query(`
       SELECT 
         current_database() as db_name, 
@@ -1452,6 +1454,10 @@ ipcMain.handle('open-excel-file', async (e, targetPath) => {
 
 // Extensible: Download Database Details (Orders, RateCards, Returns)
 ipcMain.handle('download-database-details', async (e, tableName, options = {}) => {
+  const session = loadAuthSession();
+  if (!session || !session.authenticated || !isAuthorizedDesktopRole(session?.user?.role)) {
+    return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required.' };
+  }
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
@@ -1474,6 +1480,10 @@ ipcMain.handle('download-database-details', async (e, tableName, options = {}) =
 
 // Extensible: Upload Database Updates / Upserts
 ipcMain.handle('upload-database-details', async (e, tableName, rows = [], keyColumns = ['id']) => {
+  const session = loadAuthSession();
+  if (!session || !session.authenticated || !isAuthorizedDesktopRole(session?.user?.role)) {
+    return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required.' };
+  }
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {

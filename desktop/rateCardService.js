@@ -405,11 +405,12 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
     };
   }
 
-  const client = await p.connect();
   const previousEndDate = dayBefore(effectiveDate);
+  const client = await p.connect();
 
   try {
     await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`rate_card_sync_${sellerAccount}`]);
 
     let insertedCommissions = 0;
     let insertedFixed = 0;
@@ -446,9 +447,9 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           await client.query(`
             INSERT INTO rc_commission (
               marketplace, seller_account, category, brand_name, price_min, price_max, 
-              rate, start_date, end_date, created_at, updated_at
+              rate, start_date, end_date, updated_at
             ) VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8::date, NULL, NOW(), NOW()
+              $1, $2, $3, $4, $5, $6, $7, $8::date, NULL, NOW()
             )
           `, [marketplace, sellerAccount, category, brandVal, comm.price_min, comm.price_max, comm.rate, effectiveDate]);
           insertedCommissions++;
@@ -480,9 +481,9 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           await client.query(`
             INSERT INTO rc_fixed_fee (
               marketplace, seller_account, category, fulfilment_type, price_min, price_max, 
-              rate, start_date, end_date, created_at, updated_at
+              rate, start_date, end_date, updated_at
             ) VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8::date, NULL, NOW(), NOW()
+              $1, $2, $3, $4, $5, $6, $7, $8::date, NULL, NOW()
             )
           `, [marketplace, sellerAccount, category, fix.fulfilment_type, fix.price_min, fix.price_max, fix.rate, effectiveDate]);
           insertedFixed++;
@@ -514,9 +515,9 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           await client.query(`
             INSERT INTO rc_reverse_shipping (
               marketplace, seller_account, category, weight_slab, price_min, price_max, 
-              local_fee, zonal_fee, national_fee, start_date, end_date, created_at, updated_at
+              local_fee, zonal_fee, national_fee, start_date, end_date, updated_at
             ) VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::date, NULL, NOW(), NOW()
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::date, NULL, NOW()
             )
           `, [
             marketplace, sellerAccount, category, rev.weight_slab, rev.price_min, rev.price_max,

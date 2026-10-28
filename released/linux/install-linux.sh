@@ -19,6 +19,7 @@ echo "[1/4] Checking Node.js and Google Chrome..."
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js not found. Installing Node.js LTS..."
   if command -v apt-get >/dev/null 2>&1; then
+    apt-get update && apt-get install -y curl ca-certificates
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y nodejs
   elif command -v dnf >/dev/null 2>&1; then

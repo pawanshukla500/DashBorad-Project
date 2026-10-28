@@ -39,12 +39,14 @@ The ReconCentral RateCard Desktop Worker is a standalone, cross-platform PC appl
    ```bash
    sudo bash released/linux/install-linux.sh
    ```
-2. Run interactively at any time:
+2. The installer automatically installs Node.js LTS, Chromium, production dependencies, links `/usr/local/bin/reconcentral-ratecard`, and enables and starts the background systemd service (`systemctl enable --now reconcentral-ratecard.service`).
+3. Run interactively or scrape from any terminal:
    ```bash
-   reconcentral-ratecard
+   reconcentral-ratecard --help
+   reconcentral-ratecard --marketplace=both --auto-sync
    ```
-3. Or launch the web control panel: `http://localhost:3388`
-4. Systemd service runs automatically in the background (`systemctl status reconcentral-ratecard`).
+4. Or launch the web control panel: `http://localhost:3388`
+5. Check background service status: `systemctl status reconcentral-ratecard`
 
 ---
 © ReconCentral Enterprise Reconciliation • VB Exports

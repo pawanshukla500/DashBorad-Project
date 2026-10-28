@@ -65,14 +65,22 @@ export function getVaultMasterKey() {
     }
   } catch {}
 
-  // Generate a fresh cryptographically random 256-bit key
+  // Generate a fresh cryptographically random 256-bit key using exclusive atomic creation ('wx')
   const randomSecret = crypto.randomBytes(32).toString('hex');
   try {
-    fs.writeFileSync(keyFilePath, randomSecret, { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(keyFilePath, randomSecret, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    return crypto.createHash('sha256').update(randomSecret).digest();
   } catch (err) {
+    if (err.code === 'EEXIST') {
+      try {
+        const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
+        if (storedKey && storedKey.length >= 32) {
+          return crypto.createHash('sha256').update(storedKey).digest();
+        }
+      } catch {}
+    }
     throw new Error(`Failed to persist encryption key to ${keyFilePath}: ${err.message}`);
   }
-  return crypto.createHash('sha256').update(randomSecret).digest();
 }
 
 /**

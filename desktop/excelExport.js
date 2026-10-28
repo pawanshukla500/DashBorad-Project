@@ -50,7 +50,13 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     }
   }
 
-  // Sheet 2: Fixed_Fees
+  // Sheet 2: Flipkart_Rates
+  const flipkartRows = summaryRows.filter(r => r.Marketplace === 'FLIPKART');
+
+  // Sheet 3: Shopsy_Rates
+  const shopsyRows = summaryRows.filter(r => r.Marketplace === 'SHOPSY');
+
+  // Sheet 4: Fixed_Fees
   const fixedRows = [];
   const seenFixed = new Set();
   for (const card of brandRateCards) {
@@ -70,7 +76,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     }
   }
 
-  // Sheet 3: Reverse_Shipping
+  // Sheet 5: Reverse_Shipping
   const revRows = [];
   const seenRev = new Set();
   for (const card of brandRateCards) {
@@ -92,7 +98,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     }
   }
 
-  // Sheet 4: Catalog_Samples
+  // Sheet 6: Sample_FSN_Catalog
   const catalogRows = brandRateCards.map(c => ({
     'Marketplace': c.marketplace.toUpperCase(),
     'Category / Vertical': c.category,
@@ -105,7 +111,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     'Reverse Shipping Slabs': (c.reverseShipping || []).length
   }));
 
-  // Sheet 5: Audit_Metadata
+  // Sheet 7: Audit_Metadata
   const auditRows = [
     { 'Key': 'Generated At', 'Value': new Date().toISOString() },
     { 'Key': 'Total Brand Profiles', 'Value': brandRateCards.length },
@@ -113,6 +119,16 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     { 'Key': 'Unique Fixed Fee Rules', 'Value': fixedRows.length },
     { 'Key': 'Unique Reverse Shipping Rules', 'Value': revRows.length },
     { 'Key': 'Engine', 'Value': 'ReconCentral Desktop Worker v1.0.0' }
+  ];
+
+  const exportSheets = [
+    'Brand_Commission_Summary',
+    'Flipkart_Rates',
+    'Shopsy_Rates',
+    'Fixed_Fees',
+    'Reverse_Shipping',
+    'Sample_FSN_Catalog',
+    'Audit_Metadata'
   ];
 
   // Attempt XLSX workbook generation
@@ -129,7 +145,13 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     const wb = XLSX.utils.book_new();
 
     const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
-    XLSX.utils.book_append_sheet(wb, wsSummary, 'Brand_Commission');
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Brand_Commission_Summary');
+
+    const wsFlipkart = XLSX.utils.json_to_sheet(flipkartRows);
+    XLSX.utils.book_append_sheet(wb, wsFlipkart, 'Flipkart_Rates');
+
+    const wsShopsy = XLSX.utils.json_to_sheet(shopsyRows);
+    XLSX.utils.book_append_sheet(wb, wsShopsy, 'Shopsy_Rates');
 
     const wsFixed = XLSX.utils.json_to_sheet(fixedRows);
     XLSX.utils.book_append_sheet(wb, wsFixed, 'Fixed_Fees');
@@ -138,7 +160,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     XLSX.utils.book_append_sheet(wb, wsRev, 'Reverse_Shipping');
 
     const wsCatalog = XLSX.utils.json_to_sheet(catalogRows);
-    XLSX.utils.book_append_sheet(wb, wsCatalog, 'Catalog_Samples');
+    XLSX.utils.book_append_sheet(wb, wsCatalog, 'Sample_FSN_Catalog');
 
     const wsAudit = XLSX.utils.json_to_sheet(auditRows);
     XLSX.utils.book_append_sheet(wb, wsAudit, 'Audit_Metadata');
@@ -152,7 +174,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
       filePath: outputPath,
       brandCount: brandRateCards.length,
       commissionSlabs: summaryRows.length,
-      sheets: ['Brand_Commission', 'Fixed_Fees', 'Reverse_Shipping', 'Catalog_Samples', 'Audit_Metadata'],
+      sheets: exportSheets,
       totalRecords: summaryRows.length + fixedRows.length + revRows.length + catalogRows.length,
       format: 'xlsx'
     };
@@ -164,6 +186,8 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
   await fs.writeFile(jsonPath, JSON.stringify({
     metadata: auditRows,
     brandCommissionSummary: summaryRows,
+    flipkartRates: flipkartRows,
+    shopsyRates: shopsyRows,
     fixedFees: fixedRows,
     reverseShipping: revRows,
     catalogSamples: catalogRows
@@ -174,7 +198,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     filePath: jsonPath,
     brandCount: brandRateCards.length,
     commissionSlabs: summaryRows.length,
-    sheets: ['Brand_Commission', 'Fixed_Fees', 'Reverse_Shipping', 'Catalog_Samples', 'Audit_Metadata'],
+    sheets: exportSheets,
     totalRecords: summaryRows.length + fixedRows.length + revRows.length + catalogRows.length,
     format: 'json',
     note: 'Exported as JSON structure (install xlsx for native .xlsx binary).'
