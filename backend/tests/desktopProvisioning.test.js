@@ -1,0 +1,74 @@
+import { describe, expect, it } from 'vitest';
+import { desktopDatabaseUrl, isPubliclyRoutableDbHost } from '../utils/desktopProvisioning.js';
+
+describe('isPubliclyRoutableDbHost', () => {
+  it.each([
+    ['db.example.com'],
+    ['aws-0-ap-south-1.pooler.supabase.com'],
+    ['8.8.8.8'],
+    ['2001:4860:4860::8888']
+  ])('accepts public host %s', (host) => {
+    expect(isPubliclyRoutableDbHost(host)).toBe(true);
+  });
+
+  it.each([
+    ['postgres'],                    // container-internal service name (the production bug)
+    ['db'],                          // single-label service name
+    ['localhost'],
+    ['127.0.0.1'],
+    ['127.0.1.1'],
+    ['::1'],                         // IPv6 loopback
+    ['0.0.0.0'],
+    ['10.0.0.5'],                    // private IPv4
+    ['192.168.1.10'],
+    ['172.16.0.2'],
+    ['172.31.255.254'],
+    ['169.254.1.1'],                 // link-local
+    ['fc00::1'],                     // private IPv6
+    ['fe80::1'],                     // link-local IPv6
+    ['registry.internal'],
+    ['database.local'],
+    ['']
+  ])('rejects non-routable host %s', (host) => {
+    expect(isPubliclyRoutableDbHost(host)).toBe(false);
+  });
+});
+
+describe('desktopDatabaseUrl', () => {
+  it('returns DESKTOP_DATABASE_URL verbatim even when DATABASE_URL is container-internal', () => {
+    expect(
+      desktopDatabaseUrl({
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/paymentapp?sslmode=require',
+        DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp'
+      })
+    ).toBe('postgresql://worker:pass@db.example.com:5432/paymentapp?sslmode=require');
+  });
+
+  it('never provisions a container-internal DATABASE_URL', () => {
+    expect(desktopDatabaseUrl({ DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp' })).toBe('');
+  });
+
+  it('never provisions loopback or private DATABASE_URLs', () => {
+    expect(desktopDatabaseUrl({ DATABASE_URL: 'postgresql://app:pass@localhost:5432/paymentapp' })).toBe('');
+    expect(desktopDatabaseUrl({ DATABASE_URL: 'postgresql://app:pass@10.0.0.5:5432/paymentapp' })).toBe('');
+    expect(desktopDatabaseUrl({ DATABASE_URL: 'postgresql://app:pass@192.168.1.10:5432/paymentapp' })).toBe('');
+  });
+
+  it('provisions a publicly routable DATABASE_URL', () => {
+    const url = 'postgresql://app:pass@db.example.com:5432/paymentapp?sslmode=require';
+    expect(desktopDatabaseUrl({ DATABASE_URL: url })).toBe(url);
+  });
+
+  it('returns an empty string when nothing is configured', () => {
+    expect(desktopDatabaseUrl({})).toBe('');
+    expect(desktopDatabaseUrl({ DATABASE_URL: '   ' })).toBe('');
+  });
+
+  it('returns an empty string for a malformed DATABASE_URL', () => {
+    expect(desktopDatabaseUrl({ DATABASE_URL: 'not a valid url' })).toBe('');
+  });
+
+  it('ignores a blank DESKTOP_DATABASE_URL and falls back to DATABASE_URL rules', () => {
+    expect(desktopDatabaseUrl({ DESKTOP_DATABASE_URL: '  ', DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp' })).toBe('');
+  });
+});

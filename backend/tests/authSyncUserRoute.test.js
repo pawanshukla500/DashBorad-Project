@@ -105,5 +105,34 @@ describe('POST /api/auth/desktop-login', () => {
     const response = await desktopLogin({});
     expect(response.status).toBe(401);
   });
+
+  it('never leaks a container-internal DATABASE_URL to desktop clients', async () => {
+    const prevDatabaseUrl = process.env.DATABASE_URL;
+    const prevDesktopDatabaseUrl = process.env.DESKTOP_DATABASE_URL;
+    process.env.DESKTOP_DATABASE_URL = '';
+    process.env.DATABASE_URL = 'postgresql://app:pass@postgres:5432/paymentapp';
+    try {
+      decodedToken = { uid: 'fb-7', email: 'ops@example.com', email_verified: true };
+      const response = await desktopLogin();
+      expect(response.status).toBe(200);
+      expect((await response.json()).databaseUrl).toBe('');
+    } finally {
+      process.env.DATABASE_URL = prevDatabaseUrl;
+      process.env.DESKTOP_DATABASE_URL = prevDesktopDatabaseUrl;
+    }
+  });
+
+  it('provisions DESKTOP_DATABASE_URL so desktop login auto-configures the database', async () => {
+    const prevDesktopDatabaseUrl = process.env.DESKTOP_DATABASE_URL;
+    process.env.DESKTOP_DATABASE_URL = 'postgresql://worker:pass@db.example.com:5432/paymentapp';
+    try {
+      decodedToken = { uid: 'fb-7', email: 'ops@example.com', email_verified: true };
+      const response = await desktopLogin();
+      expect(response.status).toBe(200);
+      expect((await response.json()).databaseUrl).toBe('postgresql://worker:pass@db.example.com:5432/paymentapp');
+    } finally {
+      process.env.DESKTOP_DATABASE_URL = prevDesktopDatabaseUrl;
+    }
+  });
 });
 

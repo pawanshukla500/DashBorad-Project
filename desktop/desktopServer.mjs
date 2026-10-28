@@ -11,9 +11,8 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { exec, spawn } from 'child_process';
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-puppeteer.use(StealthPlugin());
+import { getBrowserRuntime } from './browserRuntime.js';
+const puppeteer = getBrowserRuntime();
 
 import { 
   decodeJwtPayload, 
@@ -29,6 +28,9 @@ import {
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
+import { createSessionAccess, publicSession } from './sessionAccess.js';
+import { normalizeScrapedCards } from './scrapeResults.js';
+import { isDesktopReachableDbUrl, sanitizeSavedDbUrl } from './dbUrlGuard.js';
 
 let activeTokenVerifier = verifyDesktopTokenAuthorization;
 export function setDesktopTokenVerifier(verifier) {
@@ -311,6 +313,17 @@ function clearAuthSession() {
   }
 }
 
+// A local session file is a token store, not an authorization source. Every request
+// is re-verified (signature + revocation + role) before any privileged work runs.
+const authorizeSession = createSessionAccess({
+  load: loadAuthSession,
+  save: saveAuthSession,
+  refresh: refreshFirebaseIdToken,
+  verify: (token) => activeTokenVerifier(token)
+});
+
+let stagedRateCards = [];
+
 const sseClients = new Set();
 let activeScrapeJob = {
   running: false,
@@ -369,10 +382,12 @@ function loadConfig() {
       if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
         parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
       }
-      return { 
-        ...DEFAULT_CONFIG, 
-        ...parsed, 
-        accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) } 
+      // Drop container-internal database URLs provisioned by old server builds (e.g. postgres:5432)
+      if (parsed.databaseUrl) parsed.databaseUrl = sanitizeSavedDbUrl(parsed.databaseUrl);
+      return {
+        ...DEFAULT_CONFIG,
+        ...parsed,
+        accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) }
       };
     }
   } catch (err) {
@@ -488,11 +503,26 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(data));
   };
 
+  // Auth gate for every non-public API route: verified session or 401.
+  const requireDesktopAuth = async (mutation = false) => {
+    const session = await authorizeSession(mutation);
+    if (!session) {
+      sendJson(401, {
+        success: false,
+        authenticated: false,
+        error: 'Unauthorized: Sign in with an active ReconCentral account and the required role.'
+      });
+      return null;
+    }
+    return session;
+  };
+
   try {
     // ── 2. GET API Endpoints ─────────────────────────────────────────────────
 
     // GET /api/health
     if (pathname === '/api/health' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       const chromePath = getChromeExecutablePath();
       let dbConnected = false;
       try {
@@ -517,19 +547,23 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // GET /api/auth/session
+    // GET /api/auth/session (verified, refreshed, token-free projection)
     if (pathname === '/api/auth/session' && req.method === 'GET') {
-      return sendJson(200, loadAuthSession());
+      const session = await authorizeSession();
+      if (session) saveAuthSession(session);
+      return sendJson(session ? 200 : 401, publicSession(session));
     }
 
     // GET /api/config
     if (pathname === '/api/config' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       return sendJson(200, loadConfig());
     }
 
 
     // GET /api/catalog
     if (pathname === '/api/catalog' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       try {
         const pool = getPool();
         const catalog = await getRealTimeBrandFsnSamples(pool);
@@ -539,14 +573,15 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // GET /api/preview
+    // GET /api/preview (staged extraction first; templates are read-only)
     if (pathname === '/api/preview' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       try {
         const pool = getPool();
-        const rateCards = await buildBrandRateCardSet(pool);
+        const rateCards = stagedRateCards.length ? stagedRateCards : await buildBrandRateCardSet(pool);
         const targetMp = urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || '';
         const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
-        return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards });
+        return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards, canSync: stagedRateCards.length > 0 });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
@@ -554,6 +589,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/active-rates
     if (pathname === '/api/active-rates' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       try {
         const pool = getPool();
         const [commRes, fixedRes, revRes] = await Promise.all([
@@ -582,6 +618,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/diff
     if (pathname === '/api/diff' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       try {
         const pool = getPool();
         const rateCards = await buildBrandRateCardSet(pool);
@@ -599,11 +636,13 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/scrape/status
     if (pathname === '/api/scrape/status' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       return sendJson(200, activeScrapeJob);
     }
 
     // GET /api/excel/status
     if (pathname === '/api/excel/status' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       const exists = fs.existsSync(DEFAULT_EXCEL_PATH);
       let stats = null;
       if (exists) {
@@ -676,7 +715,14 @@ const server = http.createServer(async (req, res) => {
               if (srvData && srvData.success && srvData.user) {
                 dbUser = srvData.user;
                 if (srvData.databaseUrl && !dbUrl) {
-                  provisionedDbUrl = srvData.databaseUrl;
+                  if (isDesktopReachableDbUrl(srvData.databaseUrl)) {
+                    provisionedDbUrl = srvData.databaseUrl;
+                  } else {
+                    // The API runs in Docker and may hand out its container-internal
+                    // DATABASE_URL (e.g. postgres:5432). Adopting it would brick DB
+                    // access with DNS errors, so it is ignored here.
+                    console.warn('[desktopServer] Ignored an unreachable database URL provisioned by the server. Set DESKTOP_DATABASE_URL on the API server, or configure the URL in Settings.');
+                  }
                 }
                 config.apiServerUrl = normalizedBase;
                 saveConfig(config);
@@ -809,7 +855,9 @@ const server = http.createServer(async (req, res) => {
           saveConfig(config);
         }
 
-        return sendJson(200, { success: true, session });
+        // Honest signal for clients: does the worker actually have a database URL?
+        const databaseConfigured = Boolean(provisionedDbUrl || config.databaseUrl);
+        return sendJson(200, { success: true, session: publicSession(session), databaseConfigured });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
@@ -817,12 +865,21 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/desktop/marketplaces
     if (pathname === '/api/desktop/marketplaces' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
       const list = SUPPORTED_MARKETPLACES.map(m => {
         const cookiesPath = getMarketplaceCookiesPath(m.id);
-        const hasCookies = fs.existsSync(cookiesPath);
+        let cookieCount = 0;
+        let lastSavedAt = null;
+        try {
+          const stored = loadEncryptedCookies(cookiesPath);
+          cookieCount = Array.isArray(stored) ? stored.length : 0;
+          if (fs.existsSync(cookiesPath)) lastSavedAt = fs.statSync(cookiesPath).mtime.toISOString();
+        } catch {}
         return {
           ...m,
-          hasCookies,
+          hasCookies: cookieCount > 0,
+          cookieCount,
+          lastSavedAt,
           cookiesPath
         };
       });
@@ -831,11 +888,9 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/desktop/marketplace-accounts
     if (pathname === '/api/desktop/marketplace-accounts' && req.method === 'GET') {
-      const session = loadAuthSession();
+      const session = await requireDesktopAuth();
+      if (!session) return;
       const config = loadConfig();
-      if (!session || !session.idToken) {
-        return sendJson(401, { success: false, error: 'Not authenticated with ReconCentral.' });
-      }
 
       for (const serverBase of CANDIDATE_API_SERVERS) {
         const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
@@ -898,6 +953,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/auth/verify-db
     if (pathname === '/api/auth/verify-db' && req.method === 'POST') {
+      if (!(await requireDesktopAuth())) return;
       const start = Date.now();
       try {
         const pool = getPool();
@@ -925,6 +981,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/config
     if (pathname === '/api/config' && req.method === 'POST') {
+      if (!(await requireDesktopAuth(true))) return;
       const body = await parseJsonBody();
       const result = saveConfig(body);
       return sendJson(200, result);
@@ -932,6 +989,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/test-db
     if (pathname === '/api/test-db' && req.method === 'POST') {
+      if (!(await requireDesktopAuth())) return;
       try {
         const pool = getPool();
         const testRes = await pool.query('SELECT NOW() as now, current_database() as db');
@@ -943,6 +1001,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/detect-changes
     if (pathname === '/api/detect-changes' && req.method === 'POST') {
+      if (!(await requireDesktopAuth())) return;
       try {
         const body = await parseJsonBody();
         const pool = getPool();
@@ -954,14 +1013,20 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // POST /api/sync
+    // POST /api/sync (only reviewed staged extractions may be committed)
     if (pathname === '/api/sync' && req.method === 'POST') {
+      if (!(await requireDesktopAuth(true))) return;
       try {
         const body = await parseJsonBody();
+        if (!stagedRateCards.length) {
+          return sendJson(409, { success: false, error: 'Run a successful extraction and review its staged results before committing. Generated templates cannot be synced as live rates.' });
+        }
+        if (body.rateCards?.length && JSON.stringify(body.rateCards) !== JSON.stringify(stagedRateCards)) {
+          return sendJson(409, { success: false, error: 'Payload does not match the reviewed staged extraction. Re-run extraction and review the staged results before committing.' });
+        }
         const pool = getPool();
         broadcastProgress('Initiating database synchronization with date auto-closing...');
-        const cardsToSync = body.rateCards?.length ? body.rateCards : await buildBrandRateCardSet(pool);
-        const result = await syncBrandRateCardsToDatabase(cardsToSync, { forceUpdate: true, ...body.options }, pool);
+        const result = await syncBrandRateCardsToDatabase(stagedRateCards, { forceUpdate: true, ...body.options }, pool);
         broadcastProgress(`✓ ${result.message}`);
         return sendJson(200, { success: true, result });
       } catch (err) {
@@ -972,9 +1037,11 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/scrape/start
     if (pathname === '/api/scrape/start' && req.method === 'POST') {
+      if (!(await requireDesktopAuth())) return;
       if (activeScrapeJob.running) {
         return sendJson(409, { success: false, error: 'A scraping job is already running.' });
       }
+      stagedRateCards = [];
 
       const body = await parseJsonBody();
       const config = loadConfig();
@@ -1023,6 +1090,15 @@ const server = http.createServer(async (req, res) => {
             onProgress: broadcastProgress
           });
 
+          if (result.success) {
+            try {
+              stagedRateCards = normalizeScrapedCards(result.data);
+              result.rateCards = stagedRateCards;
+            } catch (stageErr) {
+              result.success = false;
+              result.error = `Extraction review staging failed: ${stageErr.message}`;
+            }
+          }
           activeScrapeJob.running = false;
           activeScrapeJob.status = result.success ? 'completed' : 'failed';
           activeScrapeJob.finishedAt = new Date().toISOString();
@@ -1046,6 +1122,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/export-excel
     if (pathname === '/api/export-excel' && req.method === 'POST') {
+      if (!(await requireDesktopAuth())) return;
       try {
         const body = await parseJsonBody();
         const pool = getPool();
@@ -1214,6 +1291,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/open-excel (Cross-Platform)
     if (pathname === '/api/open-excel' && req.method === 'POST') {
+      if (!(await requireDesktopAuth())) return;
       const body = await parseJsonBody();
       const filePath = body.path || DEFAULT_EXCEL_PATH;
       try {

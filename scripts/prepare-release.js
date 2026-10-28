@@ -35,10 +35,15 @@ function copyDesktopPayloadForLinux(targetLinuxDir) {
   const desktopSrc = path.join(projectRoot, 'desktop');
   const items = [
     'package.json',
+    'package-lock.json',
     'main.js',
-    'preload.js',
+    'preload.cjs',
     'desktopServer.mjs',
     'worker.js',
+    'browserRuntime.js',
+    'sessionAccess.js',
+    'scrapeResults.js',
+    'dbUrlGuard.js',
     'cookieVault.js',
     'chromeFinder.js',
     'db.js',
@@ -112,7 +117,7 @@ The ReconCentral RateCard Desktop Worker is a standalone, cross-platform PC appl
 
 ### Step 3: Daily Operations
 - **Run Extraction**: Click **🚀 Run Extraction** on Dashboard or Live Scraper tab to inspect rate cards.
-- **Review & Sync**: Go to **Review & DB Sync** tab to review detected changes against live PostgreSQL records, and click **✓ Commit & Auto-Close in Database** to sync.
+- **Review & Sync**: Go to **Review & DB Sync** tab to review detected changes against live PostgreSQL records, and click **✓ Commit & Auto-Close in Database** to sync. Commit is enabled only after a successful extraction on the selected channel; generated template previews are read-only and cannot be committed.
 - **Excel Report**: Click **📑 Export Excel** or **📂 Open in Microsoft Excel** to inspect the 6-sheet brand-wise workbook.
 
 ## 4. Linux Deployment (Debian / Ubuntu / RHEL / Arch)

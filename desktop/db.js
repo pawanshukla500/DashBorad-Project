@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getResolvedUserDataDir } from './cookieVault.js';
+import { sanitizeSavedDbUrl } from './dbUrlGuard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -72,8 +73,11 @@ export function resolveDatabaseUrl(customUrl = null) {
     const configPath = path.join(getResolvedUserDataDir(), 'worker-config.json');
     if (fs.existsSync(configPath)) {
       const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (parsed && parsed.databaseUrl && String(parsed.databaseUrl).trim()) {
-        return String(parsed.databaseUrl).trim();
+      // Container-internal hosts (e.g. postgres:5432 provisioned by old server
+      // builds) are discarded so callers get a clear "not configured" error.
+      const savedUrl = sanitizeSavedDbUrl(parsed?.databaseUrl);
+      if (savedUrl) {
+        return savedUrl;
       }
     }
   } catch {}
@@ -84,8 +88,9 @@ export function resolveDatabaseUrl(customUrl = null) {
       const sysConfigPath = '/etc/reconcentral-ratecard/worker-config.json';
       if (fs.existsSync(sysConfigPath)) {
         const parsed = JSON.parse(fs.readFileSync(sysConfigPath, 'utf8'));
-        if (parsed && parsed.databaseUrl && String(parsed.databaseUrl).trim()) {
-          return String(parsed.databaseUrl).trim();
+        const savedUrl = sanitizeSavedDbUrl(parsed?.databaseUrl);
+        if (savedUrl) {
+          return savedUrl;
         }
       }
     } catch {}

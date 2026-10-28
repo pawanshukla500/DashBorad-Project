@@ -22,6 +22,10 @@ services:
       PORT: 3001
       NODE_OPTIONS: "--max-old-space-size=768"
       CLIENT_DIST_PATH: /app/frontend/dist
+      # Publicly routable PostgreSQL URL handed to desktop workers at sign-in.
+      # Without this, /api/auth/desktop-login returns an empty databaseUrl and
+      # each desktop user configures the URL manually in the app's Settings.
+      DESKTOP_DATABASE_URL: ${DESKTOP_DATABASE_URL:-}
       PG_SSL: ${PG_SSL:-false}
       PG_POOL_MAX: ${PG_POOL_MAX:-20}
       PG_POOL_MIN: ${PG_POOL_MIN:-2}

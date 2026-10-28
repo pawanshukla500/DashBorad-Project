@@ -14,18 +14,23 @@ import {
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
-import { getChromeExecutablePath as findSystemChrome } from './chromeFinder.js';
+import { verifyDesktopTokenAuthorization } from './authValidation.js';
+import { getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
+import { createSessionAccess, publicSession } from './sessionAccess.js';
+import { normalizeScrapedCards } from './scrapeResults.js';
+import { isDesktopReachableDbUrl, sanitizeSavedDbUrl } from './dbUrlGuard.js';
 
 const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const { app, BrowserWindow, ipcMain, dialog, Notification, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Notification, shell, safeStorage } = require('electron');
 const fs = require('fs');
 const fsp = require('fs').promises;
 const { Pool } = require('pg');
 
 let mainWindow = null;
+let stagedRateCards = [];
 const USER_DATA_DIR = app.getPath('userData');
 process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
 const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
@@ -91,7 +96,8 @@ function loadAuthSession() {
   try {
     if (fs.existsSync(SESSION_FILE)) {
       const raw = fs.readFileSync(SESSION_FILE, 'utf8');
-      const session = JSON.parse(raw);
+      const stored = JSON.parse(raw);
+      const session = stored.encrypted ? JSON.parse(safeStorage.decryptString(Buffer.from(stored.encrypted, 'base64'))) : stored;
       if (session && session.user && session.authenticated) {
         return session;
       }
@@ -105,7 +111,9 @@ function loadAuthSession() {
 function saveAuthSession(sessionData) {
   try {
     fs.mkdirSync(USER_DATA_DIR, { recursive: true });
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessionData, null, 2));
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('OS credential encryption is unavailable. Authorization was not saved.');
+    const encrypted = safeStorage.encryptString(JSON.stringify(sessionData)).toString('base64');
+    fs.writeFileSync(SESSION_FILE, JSON.stringify({ encrypted }), { mode: 0o600 });
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -113,6 +121,7 @@ function saveAuthSession(sessionData) {
 }
 
 function clearAuthSession() {
+  stagedRateCards = [];
   try {
     if (fs.existsSync(SESSION_FILE)) {
       fs.unlinkSync(SESSION_FILE);
@@ -281,10 +290,12 @@ function loadConfig() {
       if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
         parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
       }
-      return { 
-        ...DEFAULT_CONFIG, 
-        ...parsed, 
-        accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) } 
+      // Drop container-internal database URLs provisioned by old server builds (e.g. postgres:5432)
+      if (parsed.databaseUrl) parsed.databaseUrl = sanitizeSavedDbUrl(parsed.databaseUrl);
+      return {
+        ...DEFAULT_CONFIG,
+        ...parsed,
+        accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) }
       };
     }
   } catch (err) {
@@ -308,18 +319,22 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 900,
-    minWidth: 1080,
-    minHeight: 720,
+    minWidth: 900,
+    minHeight: 600,
     backgroundColor: '#0f172a',
     title: 'ReconCentral Multi-Marketplace RateCard Automation & Scraper Worker',
     icon: path.join(__dirname, 'ui/icon.png'),
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      sandbox: true
     }
   });
 
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault());
   mainWindow.loadFile(path.join(__dirname, 'ui/index.html'));
 
   mainWindow.on('closed', () => {
@@ -346,6 +361,8 @@ app.on('window-all-closed', () => {
 // ── Daily Scheduler ─────────────────────────────────────────────────────────
 let lastRunDate = '';
 async function checkDailySchedule() {
+  // Scheduled extraction follows the same login and review gates as manual runs.
+  if (withBrowserTask.busy || !await authorizeSession()) return;
   const config = loadConfig();
   const now = new Date();
   const currentDateStr = now.toISOString().slice(0, 10);
@@ -361,12 +378,13 @@ async function checkDailySchedule() {
     }
 
     try {
-      const result = await executeScrapeProcess(config, (msg) => {
+      const result = await withBrowserTask(() => executeScrapeProcess(config, (msg) => {
         if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
-      });
+      }));
 
-      if (config.autoSyncToDb && result.success && result.data?.length > 0) {
-        await executeDbSync(result.data, config);
+      if (result.success && result.data?.length > 0 && await authorizeSession()) {
+        stagedRateCards = normalizeScrapedCards(result.data);
+        if (mainWindow) mainWindow.webContents.send('scrape-progress', 'Scheduled extraction staged. Review the results before database sync.');
       }
 
       if (Notification.isSupported()) {
@@ -381,9 +399,6 @@ async function checkDailySchedule() {
   }
 }
 
-function getChromeExecutablePath() {
-  return findSystemChrome();
-}
 
 // ── Table Parsing Logic with Shopsy Fee Rules ────────────────────────────────
 function parseRateCardTables(tables, vertical, effectiveDate, marketplace = 'flipkart') {
@@ -552,18 +567,7 @@ function parseRateCardTables(tables, vertical, effectiveDate, marketplace = 'fli
 
 // ── Interactive Human Login Flow (Multi-Marketplace) ─────────────────────────
 async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
-  let puppeteer, StealthPlugin;
-  try {
-    puppeteer = require('puppeteer-extra');
-    StealthPlugin = require('puppeteer-extra-plugin-stealth');
-    puppeteer.use(StealthPlugin());
-  } catch {
-    try {
-      puppeteer = require('../backend/node_modules/puppeteer-extra');
-      StealthPlugin = require('../backend/node_modules/puppeteer-extra-plugin-stealth');
-      puppeteer.use(StealthPlugin());
-    } catch {}
-  }
+  const puppeteer = getBrowserRuntime();
 
   const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
   const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId);
@@ -574,7 +578,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
 
   const browser = await puppeteer.launch({
-    executablePath: getChromeExecutablePath(),
+    executablePath: requireChromeExecutable(),
     headless: false, // Visible window for human login / OTP
     defaultViewport: null,
     args: ['--start-maximized', '--no-sandbox', '--disable-setuid-sandbox']
@@ -675,18 +679,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
 
 // ── Automated Scraper Process (Supports Visible Chrome Mode) ──────────────────
 async function executeScrapeProcess(config, onProgress) {
-  let puppeteer, StealthPlugin;
-  try {
-    puppeteer = require('puppeteer-extra');
-    StealthPlugin = require('puppeteer-extra-plugin-stealth');
-    puppeteer.use(StealthPlugin());
-  } catch {
-    try {
-      puppeteer = require('../backend/node_modules/puppeteer-extra');
-      StealthPlugin = require('../backend/node_modules/puppeteer-extra-plugin-stealth');
-      puppeteer.use(StealthPlugin());
-    } catch {}
-  }
+  const puppeteer = getBrowserRuntime();
 
   const targetChannel = (typeof config.marketplace === 'string' ? config.marketplace : config.marketplace?.id || config.marketplace?.marketplace) || 'flipkart_shopsy';
   const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetChannel || m.marketplace === targetChannel);
@@ -708,7 +701,7 @@ async function executeScrapeProcess(config, onProgress) {
     : `Launching browser with stealth mode for ${mpConfig.name}...`);
 
   const browser = await puppeteer.launch({
-    executablePath: getChromeExecutablePath(),
+    executablePath: requireChromeExecutable(),
     headless: isVisible ? false : 'new',
     defaultViewport: isVisible ? null : { width: 1500, height: 1000 },
     args: isVisible 
@@ -846,11 +839,12 @@ async function executeScrapeProcess(config, onProgress) {
       timeout: 45000
     });
 
-    const isLoggedIn = await page.evaluate(() => {
-      return document.body.innerText.includes('EthnicJunction') || 
-             document.body.innerText.includes('Seller Dashboard') ||
-             document.body.innerText.includes('Logout');
+    const checkPortalSession = () => page.evaluate(() => {
+      const body = document.body?.innerText.toLowerCase() || '';
+      return !document.querySelector('input[type="password"]') &&
+        (body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out'));
     });
+    const isLoggedIn = await checkPortalSession();
 
     if (!isLoggedIn) {
       if (!config.password) {
@@ -886,6 +880,7 @@ async function executeScrapeProcess(config, onProgress) {
       await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 }).catch(() => null);
       await new Promise(r => setTimeout(r, 4000));
       
+      if (!await checkPortalSession()) throw new Error('Seller Hub login is incomplete. Finish Human Login (2FA), then retry extraction.');
       const cookies = await page.cookies();
       saveEncryptedCookies(COOKIES_PATH, cookies);
       if (cookiesPath && cookiesPath !== COOKIES_PATH) {
@@ -936,6 +931,9 @@ async function executeScrapeProcess(config, onProgress) {
           return { tables, rawText: document.body.innerText };
         });
 
+        if (!docData.tables.some(table => table.length > 1)) {
+          throw new Error(`No rate card tables found for ${vert} (${fulfillment}). Check portal login or selector changes. Nothing was staged.`);
+        }
         const parsed = parseRateCardTables(docData.tables, vert, effectiveDate, isShopsyVertical ? 'shopsy' : 'flipkart');
         parsed.fulfilment_type = fulfillment === 'fbf' ? 'FBF' : 'NON_FBF';
         scrapedItems.push(parsed);
@@ -962,109 +960,36 @@ async function executeScrapeProcess(config, onProgress) {
   }
 }
 
-// ── Database Change Detection & Sync (PostgreSQL Constraint-Safe) ─────────────
-async function executeDbSync(scrapedList, config) {
-  const pool = new Pool({
-    connectionString: config.databaseUrl,
-    ssl: { rejectUnauthorized: false }
-  });
+const authorizeSession = createSessionAccess({
+  load: loadAuthSession, save: saveAuthSession,
+  refresh: refreshFirebaseIdToken, verify: verifyDesktopTokenAuthorization
+});
+const PUBLIC_CHANNELS = new Set(['auth-login', 'auth-get-session', 'auth-logout']);
+const MUTATION_CHANNELS = new Set(['save-config', 'sync-brand-rate-cards', 'upload-database-details']);
 
-  const client = await pool.connect();
-  const effectiveDate = new Date().toISOString().slice(0, 10);
-  const prevDate = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-
-  try {
-    await client.query('BEGIN');
-
-    for (const item of scrapedList) {
-      const { marketplace, vertical, commissions, fixedFees, reverseShipping } = item;
-      const mp = marketplace || (vertical.startsWith('shopsy_') ? 'shopsy' : 'flipkart');
-
-      // 1. Commissions (Clean idempotent replace for today, auto-close prior)
-      if (commissions.length > 0) {
-        await client.query(`
-          DELETE FROM rc_commission 
-          WHERE marketplace = $1 AND category = $2 AND start_date = $3::date AND end_date IS NULL
-        `, [mp, vertical, effectiveDate]);
-
-        await client.query(`
-          UPDATE rc_commission SET end_date = $1::date, updated_at = NOW()
-          WHERE marketplace = $2 AND category = $3 AND start_date < $4::date AND (end_date IS NULL OR end_date >= $4::date)
-        `, [prevDate, mp, vertical, effectiveDate]);
-
-        for (const c of commissions) {
-          await client.query(`
-            INSERT INTO rc_commission (category, marketplace, seller_account, price_min, price_max, rate, start_date, end_date, updated_at)
-            VALUES ($1, $2, 'default', $3, $4, $5, $6::date, NULL, NOW())
-          `, [vertical, mp, c.price_min, c.price_max, c.rate, effectiveDate]);
-        }
-      }
-
-      // 2. Fixed Fees (Clean idempotent replace for today, auto-close prior)
-      if (fixedFees.length > 0) {
-        await client.query(`
-          DELETE FROM rc_fixed_fee 
-          WHERE marketplace = $1 AND category = $2 AND start_date = $3::date AND end_date IS NULL
-        `, [mp, vertical, effectiveDate]);
-
-        await client.query(`
-          UPDATE rc_fixed_fee SET end_date = $1::date, updated_at = NOW()
-          WHERE marketplace = $2 AND category = $3 AND start_date < $4::date AND (end_date IS NULL OR end_date >= $4::date)
-        `, [prevDate, mp, vertical, effectiveDate]);
-
-        for (const f of fixedFees) {
-          await client.query(`
-            INSERT INTO rc_fixed_fee (category, marketplace, seller_account, fulfilment_type, price_min, price_max, rate, start_date, end_date, updated_at)
-            VALUES ($1, $2, 'default', $3, $4, $5, $6, $7::date, NULL, NOW())
-          `, [vertical, mp, f.fulfilment_type, f.price_min, f.price_max, f.rate, effectiveDate]);
-        }
-      }
-
-      // 3. Reverse Shipping (Clean idempotent replace for today, auto-close prior)
-      if (reverseShipping.length > 0) {
-        await client.query(`
-          DELETE FROM rc_reverse_shipping 
-          WHERE marketplace = $1 AND category = $2 AND start_date = $3::date AND end_date IS NULL
-        `, [mp, vertical, effectiveDate]);
-
-        await client.query(`
-          UPDATE rc_reverse_shipping SET end_date = $1::date, updated_at = NOW()
-          WHERE marketplace = $2 AND category = $3 AND start_date < $4::date AND (end_date IS NULL OR end_date >= $4::date)
-        `, [prevDate, mp, vertical, effectiveDate]);
-
-        for (const r of reverseShipping) {
-          await client.query(`
-            INSERT INTO rc_reverse_shipping (category, marketplace, seller_account, weight_slab, price_min, price_max, local_fee, zonal_fee, national_fee, start_date, end_date, updated_at)
-            VALUES ($1, $2, 'default', $3, $4, $5, $6, $7, $8, $9::date, NULL, NOW())
-          `, [vertical, mp, r.weight_slab, r.price_min, r.price_max, r.local_fee, r.zonal_fee, r.national_fee, effectiveDate]);
-        }
-      }
+function registerHandler(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents ||
+        event.senderFrame !== mainWindow.webContents.mainFrame) {
+      return { success: false, error: 'Untrusted desktop IPC sender.' };
     }
-
-    const versionName = `desktop-sync-${effectiveDate}-${Date.now().toString().slice(-4)}`;
-    await client.query(`
-      INSERT INTO rate_card_versions (marketplace, seller_account, version_name, status, effective_from, snapshot, created_at, published_at)
-      VALUES ('flipkart_shopsy_desktop', 'default', $1, 'published', $2::date, $3, NOW(), NOW())
-    `, [versionName, effectiveDate, JSON.stringify({ syncedBy: 'Desktop Worker', itemsCount: scrapedList.length })]);
-
-    await client.query('COMMIT');
-    return { success: true, versionName };
-
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-    await pool.end();
-  }
+    try {
+      if (!PUBLIC_CHANNELS.has(channel) && !await authorizeSession(MUTATION_CHANNELS.has(channel))) {
+        return { success: false, error: 'Unauthorized: Sign in with an active ReconCentral account and the required role.' };
+      }
+      return await handler(event, ...args);
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
 }
 
 // ── IPC Handlers ─────────────────────────────────────────────────────────────
-ipcMain.handle('get-config', () => loadConfig());
-ipcMain.handle('save-config', (e, config) => saveConfig(config));
+registerHandler('get-config', () => loadConfig());
+registerHandler('save-config', (e, config) => saveConfig({ ...loadConfig(), ...config }));
 
 // ── Authentication & Authorization IPC Handlers ─────────────────────────────
-ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
+registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
   try {
     if (!email || !password) {
       return { success: false, error: 'Email and password are required.' };
@@ -1118,7 +1043,14 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
           if (srvData && srvData.success && srvData.user) {
             dbUser = srvData.user;
             if (srvData.databaseUrl && !dbUrl) {
-              provisionedDbUrl = srvData.databaseUrl;
+              if (isDesktopReachableDbUrl(srvData.databaseUrl)) {
+                provisionedDbUrl = srvData.databaseUrl;
+              } else {
+                // The API runs in Docker and may hand out its container-internal
+                // DATABASE_URL (e.g. postgres:5432). Adopting it would brick DB
+                // access with DNS errors, so it is ignored here.
+                console.warn('[Desktop Auth] Ignored an unreachable database URL provisioned by the server. Set DESKTOP_DATABASE_URL on the API server, or configure the URL in Settings.');
+              }
             }
             config.apiServerUrl = normalizedBase;
             saveConfig(config);
@@ -1250,33 +1182,44 @@ ipcMain.handle('auth-login', async (e, { email, password, dbUrl }) => {
       authorizedAt: new Date().toISOString()
     };
 
-    saveAuthSession(session);
+    const savedSession = saveAuthSession(session);
+    if (!savedSession.success) return savedSession;
 
     if (provisionedDbUrl && provisionedDbUrl !== config.databaseUrl) {
       config.databaseUrl = provisionedDbUrl;
       saveConfig(config);
     }
 
-    return { success: true, session };
+    // Honest signal for the UI: does the worker actually have a database URL?
+    const databaseConfigured = Boolean(provisionedDbUrl || config.databaseUrl);
+    return { success: true, session: publicSession(session), databaseConfigured };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('get-marketplaces', () => {
+registerHandler('get-marketplaces', () => {
   const list = SUPPORTED_MARKETPLACES.map(m => {
     const cookiesPath = getMarketplaceCookiesPath(m.id);
-    const hasCookies = fs.existsSync(cookiesPath);
+    let cookieCount = 0;
+    let lastSavedAt = null;
+    try {
+      const stored = loadEncryptedCookies(cookiesPath);
+      cookieCount = Array.isArray(stored) ? stored.length : 0;
+      if (fs.existsSync(cookiesPath)) lastSavedAt = fs.statSync(cookiesPath).mtime.toISOString();
+    } catch {}
     return {
       ...m,
-      hasCookies,
+      hasCookies: cookieCount > 0,
+      cookieCount,
+      lastSavedAt,
       cookiesPath
     };
   });
   return { success: true, marketplaces: list };
 });
 
-ipcMain.handle('get-marketplace-accounts', async () => {
+registerHandler('get-marketplace-accounts', async () => {
   const session = loadAuthSession();
   const config = loadConfig();
   if (!session || !session.idToken) {
@@ -1300,65 +1243,49 @@ ipcMain.handle('get-marketplace-accounts', async () => {
   return { success: false, error: 'Could not connect to ReconCentral API to fetch marketplace accounts.' };
 });
 
-ipcMain.handle('auth-get-session', () => loadAuthSession());
-ipcMain.handle('auth-logout', () => clearAuthSession());
+registerHandler('auth-get-session', async () => {
+  const session = await authorizeSession();
+  if (session) saveAuthSession(session);
+  return publicSession(session);
+});
+registerHandler('auth-logout', async () => {
+  clearAuthSession();
+  const { closeDesktopPool } = await import('./db.js');
+  await closeDesktopPool();
+  return { success: true };
+});
 
-ipcMain.handle('auth-verify-db', async (e, dbUrl) => {
+registerHandler('auth-verify-db', async (e, dbUrl) => {
+  const { testDatabaseConnection } = await import('./db.js');
+  return await testDatabaseConnection(dbUrl || loadConfig().databaseUrl);
+});
+
+registerHandler('test-db-connection', async (e, dbUrl) => {
+  const { testDatabaseConnection } = await import('./db.js');
+  const result = await testDatabaseConnection(dbUrl || loadConfig().databaseUrl);
+  return { ...result, db: result.dbName };
+});
+registerHandler('interactive-login', async (e, marketplace) => {
+  return await withBrowserTask(() => executeInteractiveLogin(marketplace));
+});
+
+registerHandler('start-scrape', async (e, options) => {
+  if (withBrowserTask.busy) return { success: false, error: 'A browser task is already running.' };
+  stagedRateCards = [];
   const config = loadConfig();
-  const targetDb = dbUrl || config.databaseUrl;
-  const start = Date.now();
-  try {
-    const { configuredSsl } = await import('./db.js');
-    const ssl = configuredSsl(targetDb);
-    const pool = new Pool({ connectionString: targetDb, ...(ssl ? { ssl } : {}) });
-    const res = await pool.query(`
-      SELECT 
-        current_database() as db_name, 
-        current_user as db_user, 
-        version() as db_version, 
-        (SELECT count(*) FROM users) as user_count,
-        (SELECT count(*) FROM rc_commission WHERE end_date IS NULL) as active_rates_count
-    `);
-    const latency = Date.now() - start;
-    await pool.end();
-    return {
-      success: true,
-      latencyMs: latency,
-      dbName: res.rows[0].db_name,
-      dbUser: res.rows[0].db_user,
-      userCount: parseInt(res.rows[0].user_count, 10),
-      activeRatesCount: parseInt(res.rows[0].active_rates_count, 10)
-    };
-  } catch (err) {
-    return { success: false, error: err.message, latencyMs: Date.now() - start };
-  }
-});
-
-ipcMain.handle('test-db-connection', async (e, dbUrl) => {
-  try {
-    const pool = new Pool({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
-    const res = await pool.query('SELECT NOW() as now, current_database() as db');
-    await pool.end();
-    return { success: true, db: res.rows[0].db, time: res.rows[0].now };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-});
-
-ipcMain.handle('interactive-login', async (e, marketplace) => {
-  return await executeInteractiveLogin(marketplace);
-});
-
-ipcMain.handle('start-scrape', async (e, options) => {
-  const config = loadConfig();
-  const mergedOptions = { ...config, ...options };
-  return await executeScrapeProcess(mergedOptions, (msg) => {
+  const mergedOptions = { ...config, marketplace: options?.marketplace || config.marketplace, visible: options?.visible === true };
+  const result = await withBrowserTask(() => executeScrapeProcess(mergedOptions, (msg) => {
     if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
-  });
+  }));
+  if (result.success && await authorizeSession()) {
+    stagedRateCards = normalizeScrapedCards(result.data);
+    return { ...result, rateCards: stagedRateCards };
+  }
+  return result;
 });
 
 // Brand & FSN Live Catalog Inspection
-ipcMain.handle('get-brand-fsn-catalog', async () => {
+registerHandler('get-brand-fsn-catalog', async () => {
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
@@ -1373,24 +1300,24 @@ ipcMain.handle('get-brand-fsn-catalog', async () => {
 });
 
 // Full Brand-Wise Preview (Flipkart & Shopsy)
-ipcMain.handle('get-ratecard-preview', async (e, options = {}) => {
+registerHandler('get-ratecard-preview', async (e, options = {}) => {
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
     const { buildBrandRateCardSet } = await import('./rateCardService.js');
     const { getDesktopPool } = await import('./db.js');
     const pool = getDesktopPool(config.databaseUrl);
-    const rateCards = await buildBrandRateCardSet(pool);
+    const rateCards = stagedRateCards.length ? stagedRateCards : await buildBrandRateCardSet(pool);
     const targetMp = options.marketplace || options.channel || '';
     const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
-    return { success: true, rateCards: filteredRateCards };
+    return { success: true, rateCards: filteredRateCards, canSync: stagedRateCards.length > 0 };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
 // Change Detection against PostgreSQL
-ipcMain.handle('detect-brand-rate-changes', async (e, brandRateCards) => {
+registerHandler('detect-brand-rate-changes', async (e, brandRateCards) => {
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
@@ -1405,7 +1332,10 @@ ipcMain.handle('detect-brand-rate-changes', async (e, brandRateCards) => {
 });
 
 // Synchronize to Database
-ipcMain.handle('sync-brand-rate-cards', async (e, brandRateCards, options = {}) => {
+registerHandler('sync-brand-rate-cards', async (e, brandRateCards, options = {}) => {
+  if (!stagedRateCards.length || JSON.stringify(brandRateCards) !== JSON.stringify(stagedRateCards)) {
+    return { success: false, error: 'Run a successful extraction and review its staged results before committing. Generated templates cannot be synced as live rates.' };
+  }
   const session = loadAuthSession();
   if (!session || !session.authenticated || !isAuthorizedMutationRole(session?.user?.role)) {
     return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required for database sync.' };
@@ -1424,7 +1354,7 @@ ipcMain.handle('sync-brand-rate-cards', async (e, brandRateCards, options = {}) 
 });
 
 // Export 6-Sheet Desktop Excel (.xlsx)
-ipcMain.handle('export-desktop-excel', async (e, customPath) => {
+registerHandler('export-desktop-excel', async (e, customPath) => {
   const session = loadAuthSession();
   if (!session || !session.authenticated || !isAuthorizedDesktopRole(session?.user?.role)) {
     return { success: false, error: 'Unauthorized: Active ReconCentral session required.' };
@@ -1444,7 +1374,7 @@ ipcMain.handle('export-desktop-excel', async (e, customPath) => {
 });
 
 // Open File in Native App (Excel)
-ipcMain.handle('open-excel-file', async (e, targetPath) => {
+registerHandler('open-excel-file', async (e, targetPath) => {
   try {
     const { DEFAULT_EXCEL_PATH } = await import('./excelExport.js');
     let filePath = targetPath || DEFAULT_EXCEL_PATH;
@@ -1463,7 +1393,7 @@ ipcMain.handle('open-excel-file', async (e, targetPath) => {
 });
 
 // Extensible: Download Database Details (Orders, RateCards, Returns)
-ipcMain.handle('download-database-details', async (e, tableName, options = {}) => {
+registerHandler('download-database-details', async (e, tableName, options = {}) => {
   const session = loadAuthSession();
   if (!session || !session.authenticated || !isAuthorizedDesktopRole(session?.user?.role)) {
     return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required.' };
@@ -1489,7 +1419,7 @@ ipcMain.handle('download-database-details', async (e, tableName, options = {}) =
 });
 
 // Extensible: Upload Database Updates / Upserts
-ipcMain.handle('upload-database-details', async (e, tableName, rows = [], keyColumns = ['id']) => {
+registerHandler('upload-database-details', async (e, tableName, rows = [], keyColumns = ['id']) => {
   const session = loadAuthSession();
   if (!session || !session.authenticated || !isAuthorizedMutationRole(session?.user?.role)) {
     return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required.' };
@@ -1513,7 +1443,7 @@ ipcMain.handle('upload-database-details', async (e, tableName, rows = [], keyCol
   }
 });
 
-ipcMain.handle('export-file', async (e, format, data) => {
+registerHandler('export-file', async (e, format, data) => {
   const { filePath } = await dialog.showSaveDialog(mainWindow, {
     title: 'Export Scraped Rate Cards',
     defaultPath: `ratecards_export_${Date.now()}.${format}`,

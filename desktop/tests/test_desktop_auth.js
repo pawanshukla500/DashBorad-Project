@@ -2,6 +2,7 @@
  * End-to-End Verification Test for Desktop Auth, Authorization & Database Connectivity
  */
 import http from 'http';
+import os from 'os';
 import { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
@@ -173,23 +174,25 @@ async function runTests() {
   // Test 6: Behavioral HTTP Test for Multi-Marketplace Gating, Scraper Protection & Channel Isolation
   try {
     console.log('\n[Test 6] Exercising desktop server HTTP routes for multi-marketplace gating & isolation...');
+    // Isolate the server's session/config/cookie state into a throwaway user-data dir
+    const tempUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'recon-desktop-auth-test-'));
+    process.env.RECON_USER_DATA_DIR = tempUserDataDir;
     const { server } = await import('../desktopServer.mjs');
     const { filterRateCardsByChannel, verifyDesktopTokenAuthorization } = await import('../authValidation.js');
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const testPort = server.address().port;
     const testBase = `http://127.0.0.1:${testPort}`;
 
-    // 1. Unknown marketplace rejection test (Must return HTTP 400)
+    // 1. Auth gate first: an unauthenticated scrape/start with an invalid channel must get HTTP 401 (never channel detail)
     const unkRes = await fetch(`${testBase}/api/scrape/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ marketplace: 'invalid_test_channel' })
     });
-    const unkData = await unkRes.json();
-    const isUnkRejected = unkRes.status === 400 && unkData.error?.includes('Unsupported marketplace');
-    console.log(`  • Unknown channel rejection (HTTP ${unkRes.status}): Passed = ${isUnkRejected}`);
+    const isUnkRejected = unkRes.status === 401;
+    console.log(`  • Unknown channel, unauthenticated (HTTP ${unkRes.status}): auth gate precedes channel validation: Passed = ${isUnkRejected}`);
 
-    // 2. Gated marketplace scraper test: ALL 7 Phase 2 channels must return HTTP 400
+    // 2. Auth gate blocks all 7 Phase 2 channels while unauthenticated
     const phase2Channels = ['myntra_vb', 'myntra_ej', 'meesho', 'amazon', 'ajio', 'cocoblu', 'shopify'];
     const phase2Results = await Promise.all(phase2Channels.map(async (ch) => {
       const res = await fetch(`${testBase}/api/scrape/start`, {
@@ -197,31 +200,20 @@ async function runTests() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ marketplace: ch })
       });
-      const data = await res.json();
-      return res.status === 400 && data.error?.includes('Automated scraping is not yet implemented');
+      return res.status === 401;
     }));
     const allPhase2Blocked = phase2Results.every(Boolean);
-    console.log(`  • All 7 Phase 2 channels scraper gate (HTTP 400 for ${phase2Channels.join(', ')}): Passed = ${allPhase2Blocked}`);
+    console.log(`  • All 7 Phase 2 channels blocked while unauthenticated (HTTP 401): Passed = ${allPhase2Blocked}`);
 
-    // 3. Channel-filtered preview route isolation test
+    // 3. Auth gate protects the preview route (no session → HTTP 401, no database rows leave)
     const previewRes = await fetch(`${testBase}/api/preview?marketplace=myntra_vb`);
-    const previewData = await previewRes.json();
-    const previewCards = Array.isArray(previewData.rateCards) ? previewData.rateCards : [];
-    // Every card in previewData must belong to requested channel (zero cross-channel leakage)
-    const allCardsMatchRequested = previewCards.every(rc => (
-      String(rc.account_id || '').toLowerCase() === 'myntra_vb' ||
-      (String(rc.marketplace || '').toLowerCase() === 'myntra' && String(rc.seller_id || rc.account || '') === '10708')
-    ));
-    const isPreviewIsolated = previewRes.status === 200 && allCardsMatchRequested;
-    console.log(`  • Channel-filtered preview isolation (HTTP ${previewRes.status}, count: ${previewCards.length}, leak-free: ${allCardsMatchRequested}): Passed = ${isPreviewIsolated}`);
+    const isPreviewGated = previewRes.status === 401;
+    console.log(`  • Preview route requires a verified session (HTTP ${previewRes.status}): Passed = ${isPreviewGated}`);
 
-    // 4. Marketplaces catalog test (8 channels, all 7 Phase 2 channels flagged hasScraper: false, flipkart_shopsy hasScraper: true)
+    // 4. Auth gate protects the marketplaces catalog
     const mpRes = await fetch(`${testBase}/api/desktop/marketplaces`);
-    const mpData = await mpRes.json();
-    const allCatalogPhase2Gated = phase2Channels.every(ch => mpData.marketplaces?.find(m => m.id === ch)?.hasScraper === false);
-    const flipkartActive = mpData.marketplaces?.find(m => m.id === 'flipkart_shopsy')?.hasScraper === true;
-    const isMpListValid = mpRes.status === 200 && mpData.marketplaces?.length === 8 && allCatalogPhase2Gated && flipkartActive;
-    console.log(`  • Marketplaces catalog API (8 channels, 7 gated Phase 2, 1 active): Passed = ${isMpListValid}`);
+    const isMpListGated = mpRes.status === 401;
+    console.log(`  • Marketplaces catalog requires a verified session (HTTP ${mpRes.status}): Passed = ${isMpListGated}`);
 
     // 5. Account-specific Myntra VB (10708) and EJ (45833) string & numeric seller ID normalization using production filterRateCardsByChannel
     const controlledFixtures = [
@@ -343,24 +335,82 @@ async function runTests() {
     const isRebindingBlocked = rebindingStatusCode === 403;
     console.log(`  • DNS rebinding prevention (invalid Host header HTTP 403): Passed = ${isRebindingBlocked}`);
 
+    // 12. Authenticated layer: seed a verified desktop session, then re-run the
+    // channel-validation and isolation checks BEHIND the auth gate.
+    const fakeIdToken = `test-header.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, sub: 'test-admin-uid' })).toString('base64url')}.test-signature`;
+    fs.writeFileSync(path.join(tempUserDataDir, 'auth-session.json'), JSON.stringify({
+      authenticated: true,
+      user: { id: 1, username: 'route-test', email: 'route-test@vbexports.co.in', role: 'admin', firebase_uid: 'test-admin-uid' },
+      idToken: fakeIdToken,
+      refreshToken: 'route-test-refresh',
+      authorizedAt: new Date().toISOString()
+    }, null, 2), 'utf8');
+    setDesktopTokenVerifier(async () => ({ authorized: true, role: 'admin', verifiedPayload: { uid: 'test-admin-uid' } }));
+
+    const authedUnkRes = await fetch(`${testBase}/api/scrape/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketplace: 'invalid_test_channel' })
+    });
+    const authedUnkData = await authedUnkRes.json();
+    const isUnkValidated = authedUnkRes.status === 400 && authedUnkData.error?.includes('Unsupported marketplace');
+    console.log(`  • Unknown channel rejected with channel detail when authorized (HTTP ${authedUnkRes.status}): Passed = ${isUnkValidated}`);
+
+    const authedPhase2Results = await Promise.all(phase2Channels.map(async (ch) => {
+      const res = await fetch(`${testBase}/api/scrape/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marketplace: ch })
+      });
+      const data = await res.json();
+      return res.status === 400 && data.error?.includes('Automated scraping is not yet implemented');
+    }));
+    const allPhase2Gated = authedPhase2Results.every(Boolean);
+    console.log(`  • All 7 Phase 2 channels scraper gate when authorized (HTTP 400): Passed = ${allPhase2Gated}`);
+
+    const authedPreviewRes = await fetch(`${testBase}/api/preview?marketplace=myntra_vb`);
+    const authedPreviewData = await authedPreviewRes.json();
+    const authedPreviewCards = Array.isArray(authedPreviewData.rateCards) ? authedPreviewData.rateCards : [];
+    const authedCardsMatch = authedPreviewCards.every(rc => (
+      String(rc.account_id || '').toLowerCase() === 'myntra_vb' ||
+      (String(rc.marketplace || '').toLowerCase() === 'myntra' && String(rc.seller_id || rc.account || '') === '10708')
+    ));
+    // Template previews (no staged extraction yet) must be read-only: canSync false
+    const isPreviewIsolated = authedPreviewRes.status === 200 && authedCardsMatch && authedPreviewData.canSync === false;
+    console.log(`  • Channel-filtered preview isolation when authorized (HTTP ${authedPreviewRes.status}, count: ${authedPreviewCards.length}, leak-free: ${authedCardsMatch}): Passed = ${isPreviewIsolated}`);
+
+    const authedMpRes = await fetch(`${testBase}/api/desktop/marketplaces`);
+    const authedMpData = await authedMpRes.json();
+    const authedCatalogPhase2Gated = phase2Channels.every(ch => authedMpData.marketplaces?.find(m => m.id === ch)?.hasScraper === false);
+    const authedFlipkartActive = authedMpData.marketplaces?.find(m => m.id === 'flipkart_shopsy')?.hasScraper === true;
+    const isMpListValid = authedMpRes.status === 200 && authedMpData.marketplaces?.length === 8 && authedCatalogPhase2Gated && authedFlipkartActive;
+    console.log(`  • Marketplaces catalog when authorized (8 channels, 7 gated Phase 2, 1 active): Passed = ${isMpListValid}`);
+
+    resetDesktopTokenVerifier();
+    fs.rmSync(path.join(tempUserDataDir, 'auth-session.json'), { force: true });
+
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewIsolated && isMpListValid && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked) {
-      console.log('  ✓ Pass: Behavioral HTTP tests for channel gating, isolation, preview filtering, and endpoint security verified.');
+    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid) {
+      console.log('  ✓ Pass: Behavioral HTTP tests for auth gating, channel validation, isolation, preview filtering, and endpoint security verified.');
       passed++;
     } else {
       console.error('  ✗ Fail: Behavioral route verification failed:', {
         isUnkRejected,
         allPhase2Blocked,
-        isPreviewIsolated,
-        isMpListValid,
+        isPreviewGated,
+        isMpListGated,
         isAccountFilteringValid,
         isFkShopsyIsolated,
         isInteractiveLoginGated,
         isFakeBearerBlocked,
         isForgedAdminBlocked,
         isRevokedTokenBlocked,
-        isRebindingBlocked
+        isRebindingBlocked,
+        isUnkValidated,
+        allPhase2Gated,
+        isPreviewIsolated,
+        isMpListValid
       });
       failed++;
     }

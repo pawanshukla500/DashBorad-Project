@@ -5,6 +5,7 @@ import { auth } from '../utils/firebaseAdmin.js';
 import { identityFromFirebaseToken } from '../utils/firebaseIdentity.js';
 import { AccessNotGrantedError, IdentityConflictError, syncFirebaseUser } from '../services/userSync.js';
 import { setFirebaseRole, FIREBASE_ROLE_CLAIM } from '../services/firebaseRoleClaims.js';
+import { desktopDatabaseUrl } from '../utils/desktopProvisioning.js';
 
 const router = express.Router();
 
@@ -62,6 +63,8 @@ router.get('/me', authMiddleware, (req, res) => {
 // ── 4. Desktop Engine Configuration & Authorization (Authorized Roles Only) ─
 // Securely provisions runtime database connection to authenticated desktop workers
 // over TLS, ensuring database credentials are never baked into the installer binary.
+// Only desktop-reachable (publicly routable) URLs are provisioned; the API often
+// runs in Docker where DATABASE_URL is a container-internal host like `postgres`.
 router.get('/desktop-config', authMiddleware, (req, res) => {
   const role = normalizedRole(req.user?.role);
   if (!['admin', 'operator', 'analyst'].includes(role)) {
@@ -75,7 +78,7 @@ router.get('/desktop-config', authMiddleware, (req, res) => {
       username: req.user.username,
       role: role
     },
-    databaseUrl: process.env.DATABASE_URL || '',
+    databaseUrl: desktopDatabaseUrl(),
     serverTime: new Date().toISOString()
   });
 });
@@ -121,7 +124,7 @@ router.post('/desktop-login', async (req, res) => {
         role: role
       },
       customToken,
-      databaseUrl: process.env.DATABASE_URL || '',
+      databaseUrl: desktopDatabaseUrl(),
       serverTime: new Date().toISOString()
     });
   } catch (err) {
