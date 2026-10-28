@@ -395,18 +395,22 @@ async function loadRateCardPreview() {
     const headerSelect = document.getElementById('header-select-marketplace');
     const selectedChannel = selectEl?.value || headerSelect?.value || 'flipkart_shopsy';
     const res = await window.ratecardAPI.getRateCardPreview({ marketplace: selectedChannel });
-    currentCanSync = Boolean(res.success && res.canSync);
+    // Commit stays disabled until the preview AND its change detection succeed.
+    currentCanSync = false;
+    currentRateCards = [];
+    currentChanges = [];
     const commitBtn = document.getElementById('btn-commit-db');
-    if (commitBtn) {
-      commitBtn.disabled = !currentCanSync;
-      commitBtn.title = currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.';
-    }
+    if (commitBtn) commitBtn.disabled = true;
     if (res.success && res.rateCards?.length > 0) {
+      const diffRes = await window.ratecardAPI.detectBrandRateChanges(res.rateCards);
+      if (!diffRes?.success) throw new Error(diffRes?.error || 'Change detection failed.');
       currentRateCards = res.rateCards;
-      
-      // Run change detection against DB
-      const diffRes = await window.ratecardAPI.detectBrandRateChanges(currentRateCards);
       currentChanges = diffRes.changes || [];
+      currentCanSync = Boolean(res.canSync);
+      if (commitBtn) {
+        commitBtn.disabled = !currentCanSync;
+        commitBtn.title = currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.';
+      }
 
       // Update badge
       const badge = document.getElementById('changes-badge');
@@ -427,6 +431,11 @@ async function loadRateCardPreview() {
       setTableMessage(tbody, 8, res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.');
     }
   } catch (err) {
+    currentCanSync = false;
+    currentRateCards = [];
+    currentChanges = [];
+    const commitBtn = document.getElementById('btn-commit-db');
+    if (commitBtn) commitBtn.disabled = true;
     setTableMessage(tbody, 8, `Error loading rates: ${err.message}`, true);
   }
 }

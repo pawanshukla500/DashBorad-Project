@@ -44,7 +44,8 @@ function normalizeHost(hostname) {
   return String(hostname || '')
     .trim()
     .toLowerCase()
-    .replace(/^\[|\]$/g, '');
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.+$/, ''); // "localhost." is the same host as "localhost"
 }
 
 export function dbHostFromUrl(rawUrl) {
@@ -85,7 +86,7 @@ export function isPubliclyRoutableHost(hostname) {
   if (!host) return false;
   if (isContainerInternalHost(host)) return false;
   // Loopback / wildcard / unspecified
-  if (host === 'localhost' || host === '::1' || host === '::' || host === '0.0.0.0') return false;
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '::' || host === '0.0.0.0') return false;
   if (NON_PUBLIC_IP_PATTERNS.some((pattern) => pattern.test(host))) return false;
   return true;
 }

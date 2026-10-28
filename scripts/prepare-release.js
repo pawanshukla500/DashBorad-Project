@@ -44,6 +44,8 @@ function copyDesktopPayloadForLinux(targetLinuxDir) {
     'sessionAccess.js',
     'scrapeResults.js',
     'dbUrlGuard.js',
+    'httpAccess.js',
+    'portalScraper.js',
     'cookieVault.js',
     'chromeFinder.js',
     'db.js',

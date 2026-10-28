@@ -22,6 +22,9 @@ describe('isPubliclyRoutableDbHost', () => {
     ['postgres'],                    // container-internal service name (the production bug)
     ['db'],                          // single-label service name
     ['localhost'],
+    ['localhost.'],                  // fully-qualified loopback
+    ['db.localhost'],                // RFC 6761 loopback subdomain
+    ['postgres.'],                   // trailing-dot service name
     ['127.0.0.1'],
     ['127.0.1.1'],
     ['::1'],                         // IPv6 loopback

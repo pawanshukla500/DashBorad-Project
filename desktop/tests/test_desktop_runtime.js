@@ -442,6 +442,8 @@ async function runTests() {
     assert(isDesktopReachableDbUrl('postgresql://app:pass@registry.lan:5432/paymentapp') === false, 'LAN DNS names must still be refused when server-provisioned');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@100.64.0.1:5432/paymentapp') === false, 'CGNAT range must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@192.0.2.1:5432/paymentapp') === false, 'TEST-NET-1 must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@localhost.:5432/paymentapp') === false, 'trailing-dot loopback must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@db.localhost:5432/paymentapp') === false, '.localhost subdomain must be refused');
     assert(isDesktopReachableDbUrl('') === false, 'empty URL must be refused');
     assert(isDesktopReachableDbUrl('not a url') === false, 'malformed URL must be refused');
   });
@@ -646,7 +648,7 @@ async function runTests() {
   });
 
   await runTest('new runtime modules are present next to main.js', async () => {
-    for (const file of ['browserRuntime.js', 'sessionAccess.js', 'scrapeResults.js', 'dbUrlGuard.js']) {
+    for (const file of ['browserRuntime.js', 'sessionAccess.js', 'scrapeResults.js', 'dbUrlGuard.js', 'httpAccess.js', 'portalScraper.js']) {
       assert(fs.existsSync(path.join(desktopDir, file)), `${file} is missing`);
     }
     const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
@@ -655,6 +657,22 @@ async function runTests() {
     assert(filePatterns.includes('!.env') && filePatterns.includes('!.env.*'), 'package build files must exclude .env');
     assert(filePatterns.includes('!tests/**'), 'package build files must exclude tests/');
     assert(filePatterns.includes('!.runtime/**'), 'package build files must exclude .runtime/');
+  });
+
+  await runTest('Linux release payload ships every local module the entry points import', async () => {
+    const releaseScript = fs.readFileSync(path.resolve(desktopDir, '../scripts/prepare-release.js'), 'utf8');
+    const shipped = new Set([...releaseScript.matchAll(/'([\w.-]+\.(?:m?js|cjs))'/g)].map((m) => m[1]));
+    const visited = new Set();
+    const queue = ['desktopServer.mjs', 'worker.js', 'main.js'];
+    while (queue.length) {
+      const file = queue.shift();
+      if (visited.has(file)) continue;
+      visited.add(file);
+      const source = fs.readFileSync(path.join(desktopDir, file), 'utf8');
+      for (const [, dep] of source.matchAll(/(?:from\s+|import\(\s*)'\.\/([\w.-]+\.m?js)'/g)) queue.push(dep);
+    }
+    const missing = [...visited].filter((file) => !shipped.has(file));
+    assert(missing.length === 0, `prepare-release.js omits: ${missing.join(', ')}`);
   });
 
   console.log('\n=================================================================');
