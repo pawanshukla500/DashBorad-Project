@@ -415,6 +415,8 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
     let insertedCommissions = 0;
     let insertedFixed = 0;
     let insertedRev = 0;
+    const processedFixedFeeCategories = new Set();
+    const processedRevShippingCategories = new Set();
 
     for (const card of brandRateCards) {
       const { marketplace, category, brand, commissions, fixedFees, reverseShipping } = card;
@@ -456,8 +458,11 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         }
       }
 
-      // 2. Fixed Fee Sync
-      if (fixedFees && fixedFees.length > 0) {
+      // 2. Fixed Fee Sync (category-level: sync once per marketplace + category + seller_account)
+      const fixedKey = `${marketplace}_${sellerAccount}_${category}`;
+      if (!processedFixedFeeCategories.has(fixedKey) && fixedFees && fixedFees.length > 0) {
+        processedFixedFeeCategories.add(fixedKey);
+
         await client.query(`
           DELETE FROM rc_fixed_fee 
           WHERE marketplace = $1 
@@ -490,8 +495,11 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         }
       }
 
-      // 3. Reverse Shipping Fee Sync
-      if (reverseShipping && reverseShipping.length > 0) {
+      // 3. Reverse Shipping Fee Sync (category-level: sync once per marketplace + category + seller_account)
+      const revKey = `${marketplace}_${sellerAccount}_${category}`;
+      if (!processedRevShippingCategories.has(revKey) && reverseShipping && reverseShipping.length > 0) {
+        processedRevShippingCategories.add(revKey);
+
         await client.query(`
           DELETE FROM rc_reverse_shipping 
           WHERE marketplace = $1 

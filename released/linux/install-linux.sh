@@ -46,7 +46,17 @@ fi
 
 echo "[2/4] Deploying application to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
-cp -r ../desktop/* "$INSTALL_DIR/" || cp -r ./desktop/* "$INSTALL_DIR/" 2>/dev/null || true
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$SCRIPT_DIR/desktop" ]; then
+  cp -r "$SCRIPT_DIR/desktop"/* "$INSTALL_DIR/"
+elif [ -d "$SCRIPT_DIR/../../desktop" ]; then
+  cp -r "$SCRIPT_DIR/../../desktop"/* "$INSTALL_DIR/"
+elif [ -d "./desktop" ]; then
+  cp -r ./desktop/* "$INSTALL_DIR/"
+else
+  echo "Error: Could not locate desktop application package to deploy." >&2
+  exit 1
+fi
 cd "$INSTALL_DIR"
 if [ ! -d "node_modules" ] || [ ! -d "node_modules/pg" ] || [ ! -d "node_modules/puppeteer-extra" ] || [ ! -d "node_modules/puppeteer-extra-plugin-stealth" ]; then
   echo "Installing required production dependencies (pg, dotenv, puppeteer-extra)..."
@@ -101,8 +111,21 @@ Environment=PORT=3388
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now reconcentral-ratecard.service 2>/dev/null || true
+if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+  systemctl daemon-reload
+  if systemctl enable --now reconcentral-ratecard.service; then
+    echo "✓ Background systemd service enabled and running."
+  else
+    echo "⚠ Warning: Could not enable systemd service automatically. Start manually with: systemctl enable --now reconcentral-ratecard" >&2
+  fi
+elif command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload
+  systemctl enable reconcentral-ratecard.service 2>/dev/null || true
+  echo "✓ Background systemd service registered."
+else
+  echo "Note: systemd not active on this environment (container/WSL). Run interactively: reconcentral-ratecard"
+fi
+
 echo ""
 echo "Installation Successful!"
 echo "To run interactively or scrape: reconcentral-ratecard [options]"

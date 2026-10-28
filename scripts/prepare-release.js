@@ -28,6 +28,40 @@ if (!fs.existsSync(setupExeSource)) {
 
 const linuxScriptSource = path.join(projectRoot, 'released', 'linux', 'install-linux.sh');
 
+function copyDesktopPayloadForLinux(targetLinuxDir) {
+  const destDesktopDir = path.join(targetLinuxDir, 'desktop');
+  fs.mkdirSync(destDesktopDir, { recursive: true });
+
+  const desktopSrc = path.join(projectRoot, 'desktop');
+  const items = [
+    'package.json',
+    'main.js',
+    'preload.js',
+    'desktopServer.mjs',
+    'worker.js',
+    'cookieVault.js',
+    'chromeFinder.js',
+    'db.js',
+    'rateCardService.js',
+    'excelExport.js',
+    'authValidation.js',
+    'ui'
+  ];
+
+  for (const item of items) {
+    const s = path.join(desktopSrc, item);
+    const d = path.join(destDesktopDir, item);
+    if (fs.existsSync(s)) {
+      const stat = fs.statSync(s);
+      if (stat.isDirectory()) {
+        fs.cpSync(s, d, { recursive: true });
+      } else {
+        fs.copyFileSync(s, d);
+      }
+    }
+  }
+}
+
 for (const dir of targetDirs) {
   console.log('[Release] Copying installation executables into:', dir);
   fs.copyFileSync(setupExeSource, path.join(dir, 'ReconCentral-RateCard-Worker-Setup.exe'));
@@ -40,6 +74,7 @@ for (const dir of targetDirs) {
     if (path.resolve(linuxScriptSource) !== path.resolve(targetLinuxScript)) {
       fs.copyFileSync(linuxScriptSource, targetLinuxScript);
     }
+    copyDesktopPayloadForLinux(targetLinuxDir);
   }
 }
 
