@@ -94,11 +94,28 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
 10. **Cloudflare-Aligned API Security & Resilience Suite**:
    - Added `backend/tests/apiSecurityAndResilience.test.js` verifying 401 barriers on unauthenticated report/mutation access, sanitized health reporting without credential leakage, public vs internal projection isolation via `publicDatabaseStatus`, and graceful malformed JSON handling (400 without stack disclosure).
    - Enforced zero hardcoded secrets in test fixtures through dynamic `DATABASE_URL` credential inspection.
+11. **Desktop Worker & RateCard Extension Architecture**:
+   - **Self-Contained ASAR Packaging**: Desktop application files in `desktop/` are packaged into an ASAR archive. Code must never import from `../backend/` via relative paths (causes `ERR_MODULE_NOT_FOUND` in packaged production). Backend dependencies are either isolated in `desktop/` (e.g. `desktop/cookieVault.js`) or dynamically loaded with graceful fallback `.catch(() => null)`.
+   - **Release Directory Integrity**: All built installer binaries, portable executables, and Linux installation packages strictly reside in `released/` (`released/ReconCentral-RateCard-Worker-Setup.exe`, `released/ReconCentral-RateCard-Worker-Portable.exe`, `released/linux/install-linux.sh`). The typo directory `relased/` is permanently prohibited.
+   - **Database Query & Mutation Extension Engine (`desktop/db.js`)**:
+     - Exposes parameterized, SQL-injection-safe data access via `downloadTableDetails` and `uploadTableUpdates`.
+     - Strictly restricted to allowlisted tables: `orders`, `returns`, `settlements`, `rc_commission`, `rc_fixed_fee`, `rc_collection_fee`, `rc_reverse_shipping`, `rate_card_versions`, `sku_master`, `vb_sku_master`.
+     - Identifier validation enforces `/^[a-zA-Z_][a-zA-Z0-9_]*$/` for all tables, columns, and sort keys.
+     - Role-gated: Read/Query operations require `isAuthorizedDesktopRole` (`admin`, `operator`, `analyst`); mutations require `isAuthorizedMutationRole` (`admin`, `operator`).
+     - PostgreSQL parameter limit: All batch upserts are chunked to prevent exceeding the 65,535 parameter limit.
+   - **Rate Card Auto-Closure Invariant**: When syncing scraped rate cards starting on `new_start_date`, prior active records (`end_date IS NULL` or `end_date >= new_start_date`) for the matching category, marketplace, and seller account must be auto-closed with `end_date = dayBefore(new_start_date)` to satisfy the database check constraint `(end_date IS NULL OR end_date >= start_date)`.
+   - **Shopsy Rate Invariant**: Shopsy marketplace commission is strictly 0.00% across all product verticals and order values.
+   - **Cross-Platform Security & Permissions**:
+     - Credentials and session tokens are never hardcoded in installer bundles; dynamically provisioned over TLS upon Firebase Auth role verification.
+     - Session cookies are encrypted at rest with AES-256-GCM using hardware-derived keys.
+     - Linux daemon and directories strictly enforce `0700` directory permissions and `0600` config file permissions (`/etc/reconcentral-ratecard/worker-config.json`).
+     - Systemd service `reconcentral-ratecard.service` runs in `/opt/reconcentral-ratecard/` with automatic respawn and isolation.
 
 ### Mandatory Review Gate: CodeAnt AI Review on All PRs
 - **Branch & PR Workflow**: All feature work, fixes, and audits must be proposed via dedicated PR branches.
 - **No Early Merging**: A PR must NEVER be merged until every commit and diff has been reviewed and verified by **CodeAnt AI**.
 - **Test Integrity**: Full test suite (`npm test`, 84 files, 511 tests) and frontend build (`npm run build`) must pass 100% green before any PR review transition.
+
 
 
 
