@@ -56,6 +56,27 @@ echo "[3/4] Creating symlink in /usr/local/bin..."
 cat << 'EOF' > "$BIN_LINK"
 #!/usr/bin/env bash
 cd /opt/reconcentral-ratecard
+
+# If CLI options were provided, execute the CLI worker directly
+if [ "$#" -gt 0 ]; then
+  exec node worker.js "$@"
+fi
+
+# Check if desktop server is already running in background on port 3388
+if curl -s http://127.0.0.1:3388/api/desktop/marketplaces >/dev/null 2>&1; then
+  echo "ReconCentral RateCard Worker is already active in background (port 3388)."
+  if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+    echo "Opening Desktop Web Control Center in browser..."
+    if command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "http://127.0.0.1:3388/index.html" >/dev/null 2>&1 &
+    fi
+  else
+    echo "Web Control Panel available at: http://localhost:3388"
+  fi
+  exit 0
+fi
+
+# If background service is not running, launch desktopServer
 exec node desktopServer.mjs "$@"
 EOF
 chmod +x "$BIN_LINK"
@@ -83,6 +104,6 @@ systemctl daemon-reload
 systemctl enable --now reconcentral-ratecard.service 2>/dev/null || true
 echo ""
 echo "Installation Successful!"
-echo "To run interactively: reconcentral-ratecard"
+echo "To run interactively or scrape: reconcentral-ratecard [options]"
 echo "Background service status: systemctl status reconcentral-ratecard"
 echo "Web Control Panel: http://localhost:3388"

@@ -1261,6 +1261,18 @@ function launchChromeApp() {
 
 const isDirectRun = Boolean(process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename));
 if (isDirectRun) {
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[Desktop Server] Port ${PORT} is already in use by an active desktop server or background service.`);
+      console.log(`[Desktop Server] Connecting to active instance at: http://127.0.0.1:${PORT}`);
+      launchChromeApp();
+      process.exit(0);
+    } else {
+      console.error('[Desktop Server] Fatal server error:', err);
+      process.exit(1);
+    }
+  });
+
   server.listen(PORT, '127.0.0.1', () => {
     console.log('======================================================================');
     console.log(`⚡ ReconCentral RateCard Desktop Control Server running on port ${PORT}`);
