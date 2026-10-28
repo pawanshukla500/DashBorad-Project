@@ -597,3 +597,30 @@ The desktop rate card worker communicates directly with the local engine (`http:
 2. **Interactive Browser Spawn**: Clicking **"Launch Interactive Login"** triggers `POST /api/interactive-login`, spawning an isolated Puppeteer Chromium window directed to the marketplace seller portal.
 3. **Session Preservation**: Cookies and session state are persisted in `.runtime/cookies.json` and `%APPDATA%\ReconCentral RateCard Worker\`, enabling automated headless rate card verification without repeating 2FA on every scrape cycle.
 
+---
+
+## 11. Desktop Extension Engine & Packaging Architecture
+
+### 11.1 Self-Contained ASAR Packaging Invariant
+All desktop modules inside `desktop/` must remain completely self-contained. In production builds packaged with Electron Builder, `desktop/` is bundled into an ASAR archive. Relative path traversals such as `../backend/` fail with `ERR_MODULE_NOT_FOUND` in production. Any necessary utilities (e.g. `cookieVault.js`) are directly maintained in `desktop/`.
+
+Release packages strictly output to `released/` (`released/ReconCentral-RateCard-Worker-Setup.exe`, `released/ReconCentral-RateCard-Worker-Portable.exe`, `released/linux/install-linux.sh`). The legacy typo directory `relased/` is permanently prohibited.
+
+### 11.2 Database Query & Bulk Update Engine (`desktop/db.js`)
+The desktop worker includes an offline extension engine for querying and synchronizing core tables without raw SQL:
+- **`downloadTableDetails(tableName, options)`**: Parameterized read access for allowlisted tables (`orders`, `returns`, `settlements`, `rc_commission`, `rc_fixed_fee`, `rc_collection_fee`, `rc_reverse_shipping`, `rate_card_versions`, `sku_master`, `vb_sku_master`). Table names and columns are validated against `/^[a-zA-Z_][a-zA-Z0-9_]*$/`. Role-gated by `isAuthorizedDesktopRole`.
+- **`uploadTableUpdates(tableName, rows, keyColumns)`**: Atomic transactional batch upsert using `ON CONFLICT (...) DO UPDATE SET ...`. Role-gated by `isAuthorizedMutationRole` (`admin`, `operator`). Automatically chunks batch queries to respect PostgreSQL's 65,535 parameter limit.
+
+### 11.3 Cross-Platform Linux Daemon & Systemd Service
+For automated execution without a GUI, `released/linux/install-linux.sh` configures:
+- Deploys application bundle to `/opt/reconcentral-ratecard/`.
+- Sets directory permissions to `0700` and config permissions to `0600`.
+- Symlinks `/usr/local/bin/reconcentral-ratecard`.
+- Configures and enables `/etc/systemd/system/reconcentral-ratecard.service` running `desktopServer.mjs` on port `3388`.
+
+### 11.4 Comprehensive Technical References
+For complete, line-by-line architectural contracts, parameter definitions, and agent playbooks, refer to:
+- **[`docs/DESKTOP_WORKER_AND_EXTENSION_SPEC.md`](file:///c:/Users/Pawan%20Shukla/Desktop/DashBorad%20Project/docs/DESKTOP_WORKER_AND_EXTENSION_SPEC.md)**: Full technical specification of the Desktop Worker and Database Extension Engine.
+- **[`docs/AGENT_HANDOFF_DESKTOP_WORKER.md`](file:///c:/Users/Pawan%20Shukla/Desktop/DashBorad%20Project/docs/AGENT_HANDOFF_DESKTOP_WORKER.md)**: Agent handoff playbook with troubleshooting procedures, extension workflows, and test commands.
+
+
