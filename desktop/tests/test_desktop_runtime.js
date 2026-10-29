@@ -974,6 +974,633 @@ async function runTests() {
     assert(/does not match desktop\/package\.json version/.test(workflow), 'the tag/version guard must fail the build with a clear error');
   });
 
+  // ── Embedded browser engine (Electron WebContentsView adapter) ────────────
+  const { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } = await import('../embeddedBrowser.js');
+
+  function makeFakeEmbeddedDeps({ loadHangs = false, loadDelayMs = 0, evalBehavior = null, withDebugger = false } = {}) {
+    const calls = { userAgent: [], cookieSets: [], inputEvents: [], order: [], bounds: [], attached: 0, removed: 0, closed: false, visible: [] };
+    let loadedUrl = '';
+    let behavior = evalBehavior || ((script) => {
+      if (/document\.readyState/.test(script)) return true;
+      if (/document\.querySelector\("input/.test(script) || /offsetParent/.test(script) || /getComputedStyle/.test(script)) return 'present';
+      return 'ok';
+    });
+    const listeners = {};
+    const fakeContents = {
+      scripts: [],
+      async executeJavaScript(script) {
+        fakeContents.scripts.push(script);
+        return behavior(script);
+      },
+      async loadURL(url) {
+        loadedUrl = url;
+        if (loadHangs) return new Promise(() => {});
+        if (loadDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, loadDelayMs));
+        return { url };
+      },
+      getURL: () => 'https://seller.flipkart.com/fake',
+      getTitle: () => 'Fake Seller Hub',
+      focus() { calls.order.push('focus'); },
+      sendInputEvent(event) {
+        calls.inputEvents.push(event);
+        calls.order.push(event.type === 'char' ? `char:${event.keyCode}` : event.type);
+      },
+      capturePage: async () => ({ toPNG: () => Buffer.from('fake-png') }),
+      on(event, handler) {
+        (listeners[event] = listeners[event] || []).push(handler);
+      },
+      once(event, handler) {
+        (listeners[event] = listeners[event] || []).push(handler);
+      },
+      removeListener(event, handler) {
+        listeners[event] = (listeners[event] || []).filter((h) => h !== handler);
+      },
+      close() { calls.closed = true; }
+    };
+    const debuggerHandlers = [];
+    if (withDebugger) {
+      fakeContents.debugger = {
+        attached: null,
+        sent: [],
+        attach(version) { this.attached = version; },
+        on(event, handler) { if (event === 'message') debuggerHandlers.push(handler); },
+        // Mirrors the REAL Electron WebContents.debugger surface: commands go
+        // through sendCommand (async) — the adapter must not rely on a
+        // nonexistent send() or the monitor would silently disable itself in
+        // production while the fake kept it working.
+        sendCommand(command) { this.sent.push(command); return Promise.resolve({}); },
+        detach() { this.attached = null; }
+      };
+    }
+    class FakeView {
+      constructor(options) {
+        this.webPreferences = options.webPreferences;
+        this.webContents = fakeContents;
+        this.visibleState = null;
+        this.boundsSet = null;
+      }
+      setVisible(v) { this.visibleState = v; calls.visible.push(v); }
+      getVisible() { return this.visibleState; }
+      setBounds(b) { this.boundsSet = b; calls.bounds.push(b); }
+    }
+    const partitions = [];
+    const storedCookies = [];
+    const fakeSession = {
+      fromPartition: (partition) => {
+        partitions.push(partition);
+        return {
+          setUserAgent: (ua) => calls.userAgent.push(ua),
+          cookies: {
+            get: async (filter = {}) => storedCookies.filter((c) => !filter.name || c.name === filter.name),
+            set: async (cookie) => {
+              storedCookies.push(cookie);
+              calls.cookieSets.push(cookie);
+            }
+          }
+        };
+      }
+    };
+    let contentSize = [1024, 640]; // real Electron getContentSize() returns [width, height]
+    const winListeners = {};
+    const fakeWindow = {
+      getContentSize: () => [...contentSize],
+      on(event, handler) { (winListeners[event] = winListeners[event] || []).push(handler); },
+      removeListener(event, handler) {
+        winListeners[event] = (winListeners[event] || []).filter((h) => h !== handler);
+      },
+      contentView: {
+        addChildView: () => { calls.attached += 1; },
+        removeChildView: () => { calls.removed += 1; }
+      }
+    };
+    // Fast but REAL timers: an async () => {} stub never yields to the event
+    // loop's timer phase, so scripted CDP/drain events (macrotasks) could
+    // never fire while a poll loop spins on microtasks alone.
+    const instantDelay = async (ms) => { await new Promise((r) => setTimeout(r, Math.min(Number(ms) || 0, 5))); };
+    return {
+      deps: { WebContentsView: FakeView, session: fakeSession, delay: instantDelay },
+      calls,
+      fakeContents,
+      fakeWindow,
+      setBehavior: (next) => { behavior = next; },
+      fire: (event, ...args) => [...(listeners[event] || [])].forEach((h) => h(...args)),
+      emitNetwork: (method) => debuggerHandlers.forEach((h) => h({}, method)),
+      debuggerAttached: () => (fakeContents.debugger ? fakeContents.debugger.attached : 'absent'),
+      debuggerCommands: () => (fakeContents.debugger ? fakeContents.debugger.sent : []),
+      partitionsUsed: () => partitions,
+      resizeWindow: (width, height) => {
+        contentSize = [width, height];
+        [...(winListeners.resize || [])].forEach((h) => h());
+      },
+      loadedUrl: () => loadedUrl
+    };
+  }
+
+  await runTest('embedded page enforces partition, real-browser UA, and hard security flags', async () => {
+    const harness = makeFakeEmbeddedDeps();
+    let rejected = false;
+    try {
+      createEmbeddedPage({ window: harness.fakeWindow, partition: 'flipkart', userAgent: DEFAULT_EDGE_USER_AGENT, deps: harness.deps });
+    } catch { rejected = true; }
+    assert(rejected, 'a non-persistent partition must be refused');
+
+    rejected = false;
+    try {
+      createEmbeddedPage({
+        window: harness.fakeWindow, partition: 'persist:marketplace-flipkart',
+        userAgent: 'Mozilla/5.0 Electron/33.0', deps: harness.deps
+      });
+    } catch { rejected = true; }
+    assert(rejected, 'an Electron-advertising UA must be refused');
+
+    const page = createEmbeddedPage({
+      window: harness.fakeWindow, partition: 'persist:marketplace-flipkart',
+      bounds: { x: 0, y: 56, width: 1200, height: 700 }, deps: harness.deps
+    });
+    assert(harness.calls.attached === 1, 'the view must be attached to the window');
+    assert(harness.calls.bounds.length === 1, 'bounds must be applied on creation');
+    assert(harness.calls.userAgent.length === 1 && !/electron/i.test(harness.calls.userAgent[0]), 'the real-browser UA must be applied to the session');
+    const prefs = page._view.webPreferences;
+    assert(prefs.sandbox === true && prefs.contextIsolation === true && prefs.nodeIntegration === false && prefs.webSecurity === true,
+      'portal pages are untrusted: sandbox + isolation + no Node + web security are mandatory');
+    assert(page.getVisible() === true, 'the view starts visible by default');
+
+    // A WebContentsView starts at 0×0: omitted bounds must never leave a
+    // blank "visible" surface.
+    const unbounded = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
+    assert(unbounded._view.boundsSet && unbounded._view.boundsSet.width === 1024 && unbounded._view.boundsSet.height === 640,
+      'without explicit bounds the view must cover the host window content area, never a blank 0x0 surface');
+    harness.resizeWindow(1440, 900);
+    assert(unbounded._view.boundsSet.width === 1440 && unbounded._view.boundsSet.height === 900,
+      'resizing the host window must re-layout the embedded view (stale bounds clip or blank the surface)');
+    await unbounded.close();
+    const bareWindowPage = createEmbeddedPage({
+      window: { contentView: { addChildView: () => {}, removeChildView: () => {} } },
+      partition: 'persist:marketplace-flipkart',
+      deps: harness.deps
+    });
+    assert(bareWindowPage._view.boundsSet.width === 1280 && bareWindowPage._view.boundsSet.height === 720,
+      'a window without a content size must still receive non-zero default bounds');
+  });
+
+  await runTest('embedded goto waits for real network quiet via the CDP monitor, with honest fallback', async () => {
+    // With a working debugger: in-flight requests hold the wait, completions
+    // release it — the quiet signal is real, not a fixed delay.
+    const live = makeFakeEmbeddedDeps({ withDebugger: true });
+    live.setBehavior((script) => {
+      if (/document\.readyState/.test(script)) {
+        live.emitNetwork('Network.requestWillBeSent');
+        live.emitNetwork('Network.requestWillBeSent');
+        live.emitNetwork('Network.requestWillBeSent');
+        setTimeout(() => {
+          live.emitNetwork('Network.loadingFinished');
+          live.emitNetwork('Network.loadingFinished');
+          live.emitNetwork('Network.loadingFailed');
+        }, 60);
+      }
+      return true;
+    });
+    const livePage = createEmbeddedPage({ window: live.fakeWindow, partition: 'persist:marketplace-flipkart', deps: live.deps });
+    const liveResult = await livePage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 5000 });
+    assert(liveResult.ok === true && liveResult.networkWait === 'network-quiet', `a healthy load must reach network-quiet, got: ${liveResult.networkWait}`);
+    assert(live.debuggerAttached() === '1.3', 'the CDP monitor must attach to the view');
+    assert(live.debuggerCommands().includes('Network.enable'), 'the Network domain must be enabled');
+    await livePage.close();
+
+    // A debugger whose Network.enable fails (disconnects mid-session) must
+    // never leave a monitor that always reads zero pending requests — that
+    // would report busy pages quiet — so it degrades to the fixed settle.
+    const broken = makeFakeEmbeddedDeps({ withDebugger: true });
+    broken.fakeContents.debugger.sendCommand = () => Promise.reject(new Error('debugger disconnected'));
+    const brokenPage = createEmbeddedPage({ window: broken.fakeWindow, partition: 'persist:marketplace-flipkart', deps: broken.deps });
+    const brokenResult = await brokenPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 5000 });
+    assert(brokenResult.ok === true && brokenResult.networkWait === 'settle-fallback',
+      `a failed Network.enable must degrade to the settle fallback, got: ${brokenResult.networkWait}`);
+    await brokenPage.close();
+
+    // Without a debugger the adapter must degrade to the fixed settle, never fail.
+    const plain = makeFakeEmbeddedDeps();
+    const plainPage = createEmbeddedPage({ window: plain.fakeWindow, partition: 'persist:marketplace-flipkart', deps: plain.deps });
+    const plainResult = await plainPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 5000 });
+    assert(plainResult.ok === true && plainResult.networkWait === 'settle-fallback', 'without a debugger goto must fall back to the fixed settle');
+    assert(plain.loadedUrl() === 'https://seller.flipkart.com/', 'the target URL must reach loadURL');
+
+    // When the debugger is unavailable, if remaining timeout is shorter than the settle requirement, it must fail with TimeoutError
+    let plainTimedOut = false;
+    try { await plainPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 500 }); }
+    catch (err) { plainTimedOut = err.name === 'TimeoutError'; }
+    assert(plainTimedOut, 'settle fallback must fail if the requested timeout is shorter than the settle duration');
+    await plainPage.close();
+
+    // A network that NEVER goes quiet must fail the navigation: returning ok
+    // while rate-card XHRs are still pending is the incomplete read the
+    // monitor exists to prevent.
+    const noisy = makeFakeEmbeddedDeps({ withDebugger: true });
+    noisy.setBehavior((script) => {
+      if (/document\.readyState/.test(script)) {
+        noisy.emitNetwork('Network.requestWillBeSent');
+        noisy.emitNetwork('Network.requestWillBeSent');
+        noisy.emitNetwork('Network.requestWillBeSent');
+      }
+      return true;
+    });
+    const noisyPage = createEmbeddedPage({ window: noisy.fakeWindow, partition: 'persist:marketplace-flipkart', deps: noisy.deps });
+    let noisyTimedOut = false;
+    try { await noisyPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 1200 }); }
+    catch (err) { noisyTimedOut = err.name === 'TimeoutError' && /quiet network state/.test(err.message); }
+    assert(noisyTimedOut, 'a network that never quiets must reject goto with a TimeoutError');
+
+    // `timeout` is the budget for the WHOLE navigation: a slow load must eat
+    // into the network-quiet wait, not grant it a fresh copy of the limit.
+    const slowLoad = makeFakeEmbeddedDeps({ loadDelayMs: 500, withDebugger: true });
+    slowLoad.setBehavior((script) => {
+      if (/document\.readyState/.test(script)) {
+        slowLoad.emitNetwork('Network.requestWillBeSent');
+        slowLoad.emitNetwork('Network.requestWillBeSent');
+        slowLoad.emitNetwork('Network.requestWillBeSent');
+      }
+      return true;
+    });
+    const slowLoadPage = createEmbeddedPage({ window: slowLoad.fakeWindow, partition: 'persist:marketplace-flipkart', deps: slowLoad.deps });
+    const slowLoadStartedAt = Date.now();
+    let slowLoadTimedOut = false;
+    try { await slowLoadPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 800 }); }
+    catch (err) { slowLoadTimedOut = err.name === 'TimeoutError'; }
+    const slowLoadElapsed = Date.now() - slowLoadStartedAt;
+    assert(slowLoadTimedOut, 'a navigation whose network never quiets must reject');
+    assert(slowLoadElapsed < 1100, `the timeout must bound the whole navigation (load + quiet), took ${slowLoadElapsed}ms`);
+
+    const hanging = makeFakeEmbeddedDeps({ loadHangs: true });
+    const slowPage = createEmbeddedPage({ window: hanging.fakeWindow, partition: 'persist:marketplace-flipkart', deps: hanging.deps });
+    let timedOut = false;
+    try { await slowPage.goto('https://seller.flipkart.com/', { timeout: 50 }); }
+    catch (err) { timedOut = err.name === 'TimeoutError'; }
+    assert(timedOut, 'a hanging navigation must reject with a TimeoutError');
+  });
+
+  await runTest('embedded evaluate retries across navigation context destruction', async () => {
+    const harness = makeFakeEmbeddedDeps();
+    let attempt = 0;
+    harness.setBehavior(() => {
+      attempt += 1;
+      if (attempt < 3) throw new Error('Script failed to execute during navigation');
+      return 'recovered';
+    });
+    const page = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
+    const value = await page.evaluate(() => document.body.innerText);
+    assert(value === 'recovered', `evaluate must survive transient context destruction, got: ${value}`);
+    assert(attempt === 3, `the retry loop must re-attempt, attempts: ${attempt}`);
+
+    const dying = makeFakeEmbeddedDeps();
+    dying.setBehavior(() => { throw new Error('the page script itself failed'); });
+    const doomed = createEmbeddedPage({ window: dying.fakeWindow, partition: 'persist:marketplace-flipkart', deps: dying.deps });
+    let surfaced = false;
+    try { await doomed.evaluate('boom()'); }
+    catch (err) { surfaced = /page script itself failed/.test(err.message); }
+    assert(surfaced, 'after the retry budget the real page error must surface');
+  });
+
+  await runTest('embedded waitForSelector polls, checks real visibility, and times out with TimeoutError', async () => {
+    const harness = makeFakeEmbeddedDeps();
+    const page = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
+    const found = await page.waitForSelector('input[name="username"]', { visible: true, timeout: 2000 });
+    assert(found.ok === true, 'a present selector must resolve');
+
+    // visibility:hidden / opacity:0 / display:none controls keep an
+    // offsetParent but are invisible to users — a visible wait must reject
+    // them (typing into an invisible control is the classic silent failure).
+    const ghost = makeFakeEmbeddedDeps({ evalBehavior: (script) => (/getComputedStyle/.test(script) ? 'hidden' : 'present') });
+    const ghostPage = createEmbeddedPage({ window: ghost.fakeWindow, partition: 'persist:marketplace-flipkart', deps: ghost.deps });
+    let ghostTimedOut = false;
+    try { await ghostPage.waitForSelector('input[name="username"]', { visible: true, timeout: 150 }); }
+    catch (err) { ghostTimedOut = err.name === 'TimeoutError'; }
+    assert(ghostTimedOut, 'a present-but-invisible control must not satisfy a visible wait');
+
+    const empty = makeFakeEmbeddedDeps({ evalBehavior: () => 'absent' });
+    const blindPage = createEmbeddedPage({ window: empty.fakeWindow, partition: 'persist:marketplace-flipkart', deps: empty.deps });
+    let timedOut = false;
+    try { await blindPage.waitForSelector('#never', { timeout: 150 }); }
+    catch (err) { timedOut = err.name === 'TimeoutError'; }
+    assert(timedOut, 'a never-appearing selector must reject with a TimeoutError');
+
+    // Evaluation retries must share the poll's deadline: a renderer that
+    // rejects every attempt (real retry gaps) must not run a 300ms wait late.
+    const flaky = makeFakeEmbeddedDeps({ evalBehavior: () => { throw new Error('Script failed to execute during navigation'); } });
+    flaky.deps.delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); // real retry gaps
+    const flakyPage = createEmbeddedPage({ window: flaky.fakeWindow, partition: 'persist:marketplace-flipkart', deps: flaky.deps });
+    const flakyStartedAt = Date.now();
+    let flakyTimedOut = false;
+    try { await flakyPage.waitForSelector('#never', { timeout: 300 }); }
+    catch (err) { flakyTimedOut = err.name === 'TimeoutError'; }
+    const flakyElapsed = Date.now() - flakyStartedAt;
+    assert(flakyTimedOut, 'a failing evaluator must surface as a TimeoutError');
+    assert(flakyElapsed < 1500, `selector waits must honor their own timeout despite evaluation retries, took ${flakyElapsed}ms`);
+
+    // A renderer that never settles (stall) must not hold the wait open
+    // past the timeout either — the deadline bounds a single execution.
+    const stalled = makeFakeEmbeddedDeps();
+    stalled.fakeContents.executeJavaScript = () => new Promise(() => {});
+    const stalledPage = createEmbeddedPage({ window: stalled.fakeWindow, partition: 'persist:marketplace-flipkart', deps: stalled.deps });
+    const stalledStartedAt = Date.now();
+    let stalledTimedOut = false;
+    try { await stalledPage.waitForSelector('#never', { timeout: 300 }); }
+    catch (err) { stalledTimedOut = err.name === 'TimeoutError'; }
+    const stalledElapsed = Date.now() - stalledStartedAt;
+    assert(stalledTimedOut && stalledElapsed < 1500, 'a stalled renderer must not extend a selector wait beyond its timeout');
+  });
+
+  await runTest('embedded type clears React-safely, sends real key events, and verifies readback', async () => {
+    const tracker = makeFakeEmbeddedDeps();
+    let value = '';
+    tracker.setBehavior((script) => {
+      if (/HTMLInputElement\.prototype/.test(script)) return 'ok';
+      if (/return el \? el\.value : null/.test(script)) return value;
+      return 'ok';
+    });
+    const trackingPage = createEmbeddedPage({ window: tracker.fakeWindow, partition: 'persist:marketplace-flipkart', deps: tracker.deps });
+    const originalSend = tracker.fakeContents.sendInputEvent;
+    tracker.fakeContents.sendInputEvent = (event) => {
+      if (event.type === 'char') value += event.keyCode;
+      originalSend(event);
+    };
+    const text = 'ops@example.com';
+    const ok = await trackingPage.type('input[name="username"]', text, { delay: 0 });
+    assert(ok === true, 'typing must verify the field accepted the value');
+    assert(value === text, `every character must ride a real keyboard event, got: ${value}`);
+    const focusProbe = tracker.fakeContents.scripts.find((s) => /HTMLInputElement\.prototype/.test(s));
+    assert(focusProbe && focusProbe.includes('dispatchEvent(new Event'), 'clearing must go through the native setter + input event so React stays in sync');
+    assert(tracker.calls.order[0] === 'focus', 'the WebContents itself must be focused before the first keystroke — sendInputEvent only delivers to a focused WebContents');
+    assert(tracker.calls.order[1] === `char:${text[0]}`, 'keystrokes must follow the focus call, not precede it');
+
+    // Readback mismatch must fail loudly without leaking the typed secret.
+    const liar = makeFakeEmbeddedDeps();
+    liar.setBehavior((script) => (/HTMLInputElement\.prototype/.test(script) ? 'ok' : ''));
+    const lyingPage = createEmbeddedPage({ window: liar.fakeWindow, partition: 'persist:marketplace-flipkart', deps: liar.deps });
+    let caught = false;
+    try { await lyingPage.type('input[name="password"]', 'secret-value', { delay: 0 }); }
+    catch (err) { caught = /did not accept the value/.test(err.message) && !err.message.includes('secret-value'); }
+    assert(caught, 'a rejected value must fail with length-only diagnostics');
+  });
+
+  await runTest('embedded cookies interoperate with the puppeteer-shaped vault format', async () => {
+    const harness = makeFakeEmbeddedDeps();
+    const page = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
+    await page.setCookie({ name: 'sid', value: 'x', domain: '.flipkart.com', path: '/', secure: true, httpOnly: true, expires: 1893456000, sameSite: 'no_restriction' });
+    const set = harness.calls.cookieSets[0];
+    assert(set && set.url === 'https://flipkart.com/', `Chromium needs a URL per cookie write, got: ${set && set.url}`);
+    assert(set.sameSite === 'no_restriction', 'puppeteer sameSite values must map to Electron values');
+    assert(set.expirationDate === 1893456000, 'expires must map to expirationDate');
+
+    // Puppeteer marks session cookies with expires: -1; mapping that to a
+    // negative expirationDate would make Chromium treat the cookie as already
+    // expired and silently drop it (the login session would vanish).
+    await page.setCookie({ name: 'session-only', value: 's', domain: '.flipkart.com', path: '/', secure: true, httpOnly: true, expires: -1, sameSite: 'lax' });
+    const sessionCookieWrite = harness.calls.cookieSets[1];
+    assert(sessionCookieWrite && sessionCookieWrite.expirationDate === undefined,
+      'a puppeteer session cookie (expires: -1) must become a browser session cookie, not an already-expired one');
+    assert(sessionCookieWrite.name === 'session-only', 'the second cookie write must be the session cookie');
+
+    // The persistent partition outlives the vault file: a stale vault import
+    // must never downgrade a live cookie's expiry (a previous run's refresh).
+    await page.setCookie({ name: 'refreshed', value: 'new', domain: '.flipkart.com', path: '/', secure: true, expires: 2000000000, sameSite: 'lax' });
+    await page.setCookie({ name: 'refreshed', value: 'stale', domain: '.flipkart.com', path: '/', secure: true, expires: 1000000000, sameSite: 'lax' });
+    const refreshedWrites = harness.calls.cookieSets.filter((c) => c.name === 'refreshed');
+    assert(refreshedWrites.length === 1, `a stale vault import must not overwrite a newer partition cookie, writes: ${refreshedWrites.length}`);
+    await page.setCookie({ name: 'refreshed', value: 'newer', domain: '.flipkart.com', path: '/', secure: true, expires: 2100000000, sameSite: 'lax' });
+    assert(harness.calls.cookieSets.filter((c) => c.name === 'refreshed').length === 2, 'a strictly newer cookie must overwrite the partition value');
+
+    // Same name on a DIFFERENT path is a different cookie: its expiry must
+    // not suppress this path's import.
+    await page.setCookie({ name: 'paths', value: 'a', domain: '.flipkart.com', path: '/', expires: 2000000000, sameSite: 'lax' });
+    await page.setCookie({ name: 'paths', value: 'b', domain: '.flipkart.com', path: '/dashboard', expires: 1000000000, sameSite: 'lax' });
+    assert(harness.calls.cookieSets.filter((c) => c.name === 'paths').length === 2,
+      'a different-path cookie must not be suppressed by another path with a later expiry');
+
+    const list = await page.cookies();
+    assert(list.length === 6, `the session cookie jar must be readable (sid, session-only, refreshed x2, paths x2), got ${list.length}`);
+    assert(list[0].domain === '.flipkart.com' && list[0].expires === 1893456000 && list[0].session === false,
+      'cookies() must return the vault-compatible puppeteer shape');
+  });
+
+  await runTest('embedded waitForNavigation resolves on navigation, honors the click race, and times out honestly', async () => {
+    const harness = makeFakeEmbeddedDeps();
+    const page = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
+    const navPromise = page.waitForNavigation({ timeout: 2000 });
+    harness.fire('did-navigate');
+    const nav = await navPromise;
+    assert(nav.ok === true && nav.via === 'navigation-event', 'a navigation event must resolve the wait');
+
+    // The scraper clicks submit and only then waits; a fast submit can
+    // complete the navigation before the wait's listener registers, so a
+    // navigation recorded after the action and inside the grace window
+    // must count instead of dead-waiting for a second navigation.
+    await page.evaluate(() => 1);
+    harness.fire('did-navigate');
+    const recent = await page.waitForNavigation({ timeout: 2000, graceMs: 800 });
+    assert(recent.ok === true && recent.via === 'recent-navigation', 'a navigation inside the grace window must satisfy waitForNavigation');
+    assert(recent.url === 'https://seller.flipkart.com/fake', 'the resolved navigation must report the current URL');
+
+    // did-navigate-in-page also fires for subframes: an iframe's hash change
+    // must never satisfy a top-level login wait, nor arm the grace window.
+    const frames = makeFakeEmbeddedDeps();
+    const framesPage = createEmbeddedPage({ window: frames.fakeWindow, partition: 'persist:marketplace-flipkart', deps: frames.deps });
+    const subframePromise = framesPage.waitForNavigation({ timeout: 250 });
+    frames.fire('did-navigate-in-page', null, 'https://ads.example.com/frame#x', false);
+    let subframeTimedOut = false;
+    try { await subframePromise; }
+    catch (err) { subframeTimedOut = err.name === 'TimeoutError'; }
+    assert(subframeTimedOut, 'a subframe in-page navigation must NOT satisfy the top-level wait');
+    const mainFramePromise = framesPage.waitForNavigation({ timeout: 2000 });
+    frames.fire('did-navigate-in-page', null, 'https://seller.flipkart.com/#payments', true);
+    const mainFrame = await mainFramePromise;
+    assert(mainFrame.ok === true && mainFrame.via === 'navigation-event',
+      'a main-frame in-page navigation must satisfy the wait (and the subframe nav must not have armed the grace window)');
+
+    // A subframe event arriving FIRST must not consume the in-page listener:
+    // the following main-frame navigation still has to resolve the wait.
+    const interleaved = makeFakeEmbeddedDeps();
+    const interleavedPage = createEmbeddedPage({ window: interleaved.fakeWindow, partition: 'persist:marketplace-flipkart', deps: interleaved.deps });
+    const interleavedPromise = interleavedPage.waitForNavigation({ timeout: 2000 });
+    interleaved.fire('did-navigate-in-page', null, 'https://ads.example.com/frame#sub', false);
+    interleaved.fire('did-navigate-in-page', null, 'https://seller.flipkart.com/#payments', true);
+    const interleavedNav = await interleavedPromise;
+    assert(interleavedNav.ok === true, 'a subframe navigation must not consume the in-page listener before a main-frame navigation');
+
+    // The default waitUntil 'load' must poll for the real load event: a
+    // commit plus a fixed settle resolves before a slow page is usable.
+    const slowDoc = makeFakeEmbeddedDeps();
+    let loadPolls = 0;
+    slowDoc.setBehavior((script) => {
+      if (/document\.readyState/.test(script)) {
+        if (script.includes('=== \'complete\'') && !script.includes('||')) {
+          loadPolls += 1;
+          return loadPolls >= 3;
+        }
+        return true;
+      }
+      return 'ok';
+    });
+    const slowDocPage = createEmbeddedPage({ window: slowDoc.fakeWindow, partition: 'persist:marketplace-flipkart', deps: slowDoc.deps });
+    await slowDocPage.evaluate(() => 1);
+    slowDoc.fire('did-navigate');
+    const slowDocNav = await slowDocPage.waitForNavigation({ timeout: 2000 });
+    assert(slowDocNav.ok === true, 'the load wait must resolve once the document completes');
+    assert(loadPolls >= 3, `the load wait must poll readyState instead of trusting the settle, polls: ${loadPolls}`);
+
+    // A document that never completes must fail the wait, not return early.
+    const neverLoaded = makeFakeEmbeddedDeps();
+    neverLoaded.setBehavior((script) => (/document\.readyState/.test(script) ? false : 'ok'));
+    const neverLoadedPage = createEmbeddedPage({ window: neverLoaded.fakeWindow, partition: 'persist:marketplace-flipkart', deps: neverLoaded.deps });
+    await neverLoadedPage.evaluate(() => 1);
+    neverLoaded.fire('did-navigate');
+    let neverLoadedTimedOut = false;
+    const neverLoadedStartedAt = Date.now();
+    try { await neverLoadedPage.waitForNavigation({ timeout: 300 }); }
+    catch (err) { neverLoadedTimedOut = err.name === 'TimeoutError' && /load state/.test(err.message); }
+    const neverLoadedElapsed = Date.now() - neverLoadedStartedAt;
+    assert(neverLoadedTimedOut && neverLoadedElapsed < 1500, 'a never-completing document must reject the load wait within its budget');
+
+    // A navigation that PRECEDED the action can never be the submit's
+    // navigation: it must be ignored, not accepted through the grace window.
+    // (A real-time gap separates the stale navigation from the action —
+    // timestamps have millisecond resolution, and a navigation recorded in
+    // the same millisecond as the action is legitimately ambiguous.)
+    const stale = makeFakeEmbeddedDeps();
+    const stalePage = createEmbeddedPage({ window: stale.fakeWindow, partition: 'persist:marketplace-flipkart', deps: stale.deps });
+    stale.fire('did-navigate');
+    await new Promise((resolve) => setTimeout(resolve, 6));
+    await stalePage.evaluate(() => 1);
+    let staleTimedOut = false;
+    try { await stalePage.waitForNavigation({ timeout: 250, graceMs: 2000 }); }
+    catch (err) { staleTimedOut = err.name === 'TimeoutError'; }
+    assert(staleTimedOut, 'a navigation recorded before the action must NOT satisfy waitForNavigation');
+
+    // Action first, then the navigation it caused: the grace window accepts it.
+    const armed = makeFakeEmbeddedDeps();
+    const armedPage = createEmbeddedPage({ window: armed.fakeWindow, partition: 'persist:marketplace-flipkart', deps: armed.deps });
+    await armedPage.evaluate(() => 1);
+    armed.fire('did-navigate');
+    const armedNav = await armedPage.waitForNavigation({ timeout: 2000, graceMs: 800 });
+    assert(armedNav.ok === true && armedNav.via === 'recent-navigation', 'a navigation recorded after the action must satisfy the grace window');
+
+    // Until an action arms the watch, a goto's own navigation must never be
+    // reported as the waited-for navigation.
+    const unArmed = makeFakeEmbeddedDeps();
+    const unArmedPage = createEmbeddedPage({ window: unArmed.fakeWindow, partition: 'persist:marketplace-flipkart', deps: unArmed.deps });
+    await unArmedPage.goto('https://seller.flipkart.com/', { timeout: 5000 });
+    let unArmedTimedOut = false;
+    try { await unArmedPage.waitForNavigation({ timeout: 250 }); }
+    catch (err) { unArmedTimedOut = err.name === 'TimeoutError'; }
+    assert(unArmedTimedOut, 'a goto navigation must not satisfy a wait that no action armed');
+
+    // The scraper calls waitForNavigation({ waitUntil: 'networkidle2' }): the
+    // post-navigation network wait must run, succeed on a quiet network, and
+    // fail loudly when XHRs never drain.
+    const quietNet = makeFakeEmbeddedDeps({ withDebugger: true });
+    const quietPage = createEmbeddedPage({ window: quietNet.fakeWindow, partition: 'persist:marketplace-flipkart', deps: quietNet.deps });
+    const quietPromise = quietPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 });
+    quietNet.fire('did-navigate');
+    const quietNav = await quietPromise;
+    assert(quietNav.ok === true && quietNav.networkWait === 'network-quiet', `waitForNavigation must honor waitUntil networkidle2, got: ${quietNav.networkWait}`);
+
+    const neverQuiet = makeFakeEmbeddedDeps({ withDebugger: true });
+    const neverQuietPage = createEmbeddedPage({ window: neverQuiet.fakeWindow, partition: 'persist:marketplace-flipkart', deps: neverQuiet.deps });
+    const neverQuietPromise = neverQuietPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 1200 });
+    neverQuiet.emitNetwork('Network.requestWillBeSent');
+    neverQuiet.emitNetwork('Network.requestWillBeSent');
+    neverQuiet.emitNetwork('Network.requestWillBeSent');
+    neverQuiet.fire('did-navigate');
+    let neverQuietTimedOut = false;
+    try { await neverQuietPromise; }
+    catch (err) { neverQuietTimedOut = err.name === 'TimeoutError' && /quiet state after navigation/.test(err.message); }
+    assert(neverQuietTimedOut, 'a navigation whose network never quiets must reject waitForNavigation');
+
+    const silent = makeFakeEmbeddedDeps();
+    const silentPage = createEmbeddedPage({ window: silent.fakeWindow, partition: 'persist:marketplace-flipkart', deps: silent.deps });
+    let timedOut = false;
+    try { await silentPage.waitForNavigation({ timeout: 100 }); }
+    catch (err) { timedOut = err.name === 'TimeoutError'; }
+    assert(timedOut, 'a navigation that never happens must reject with a TimeoutError');
+
+    // `timeout` bounds the whole wait: the settle pause and the network-quiet
+    // phase share the navigation's budget instead of fresh copies of it.
+    const budgeted = makeFakeEmbeddedDeps({ withDebugger: true });
+    budgeted.deps.delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); // real settle gaps
+    const budgetedPage = createEmbeddedPage({ window: budgeted.fakeWindow, partition: 'persist:marketplace-flipkart', deps: budgeted.deps });
+    const budgetStartedAt = Date.now();
+    const budgetPromise = budgetedPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 800 });
+    budgeted.fire('did-navigate');
+    let budgetTimedOut = false;
+    try { await budgetPromise; }
+    catch (err) { budgetTimedOut = err.name === 'TimeoutError' && /quiet state after navigation/.test(err.message); }
+    const budgetElapsed = Date.now() - budgetStartedAt;
+    assert(budgetTimedOut, 'the post-navigation quiet wait must fail loudly inside the budget');
+    assert(budgetElapsed < 1500, `waitForNavigation must bound settle + quiet by its timeout, took ${budgetElapsed}ms`);
+  });
+
+  await runTest('embedded runtime binds the marketplace context at creation and mirrors the puppeteer launch surface', async () => {
+    // The scraper's launch() call is puppeteer-shaped: { headless,
+    // executablePath, defaultViewport, args }. It cannot carry partition or
+    // window, so the runtime must refuse creation without them — otherwise
+    // launch() would produce a view that can never render.
+    let rejected = false;
+    try { createEmbeddedRuntime(); }
+    catch { rejected = true; }
+    assert(rejected, 'createEmbeddedRuntime without a partition must fail fast');
+
+    rejected = false;
+    try { createEmbeddedRuntime({ partition: 'persist:marketplace-flipkart' }); }
+    catch { rejected = true; }
+    assert(rejected, 'createEmbeddedRuntime without the host window must fail fast');
+
+    rejected = false;
+    try { createEmbeddedRuntime({ partition: 'marketplace-flipkart', window: { contentView: {} } }); }
+    catch { rejected = true; }
+    assert(rejected, 'a non-persistent partition must be refused');
+
+    const harness = makeFakeEmbeddedDeps();
+    const runtime = createEmbeddedRuntime({
+      partition: 'persist:marketplace-flipkart',
+      window: harness.fakeWindow,
+      deps: harness.deps
+    });
+    const browser = await runtime.launch({
+      headless: false,
+      executablePath: 'ignored-external-chrome',
+      defaultViewport: { width: 1500, height: 1000 },
+      args: ['--start-maximized']
+    });
+    const pages = await browser.pages();
+    assert(pages.length === 1, 'launch must provide the embedded page');
+    assert(harness.partitionsUsed()[0] === 'persist:marketplace-flipkart', 'the runtime-bound partition must reach the session');
+    const second = await browser.newPage();
+    assert(second === pages[0], 'one marketplace view per partition: newPage must reuse the single view');
+    assert(pages[0].getVisible() === true, 'headless:false must render the visible monitoring view');
+    assert(harness.calls.attached === 1, 'the view must be attached to the runtime-bound host window');
+    assert(browser.launchOptions.ignoredKeys.includes('executablePath') && browser.launchOptions.ignoredKeys.includes('args'),
+      'puppeteer-shaped options must be accepted (and ignored) so the scraper passes them unchanged');
+
+    const backgroundHarness = makeFakeEmbeddedDeps();
+    const backgroundRuntime = createEmbeddedRuntime({
+      partition: 'persist:marketplace-flipkart',
+      window: backgroundHarness.fakeWindow,
+      deps: backgroundHarness.deps
+    });
+    const backgroundBrowser = await backgroundRuntime.launch({ headless: 'new' });
+    const backgroundPage = (await backgroundBrowser.pages())[0];
+    assert(backgroundPage.getVisible() === false, 'headless must run as a hidden background view');
+
+    await browser.close();
+    assert(harness.calls.removed === 1 && harness.calls.closed === true, 'close must detach and close the view');
+  });
+
+  await runTest('embedded browser module ships in the Linux release payload', async () => {
+    assert(fs.existsSync(path.join(desktopDir, 'embeddedBrowser.js')), 'desktop/embeddedBrowser.js is missing');
+    const releaseScript = fs.readFileSync(path.resolve(desktopDir, '../scripts/prepare-release.js'), 'utf8');
+    const shipped = new Set([...releaseScript.matchAll(/'([\w.-]+\.(?:m?js|cjs))'/g)].map((m) => m[1]));
+    assert(shipped.has('embeddedBrowser.js'), 'prepare-release.js must ship embeddedBrowser.js in the Linux payload');
+  });
+
   console.log('\n=================================================================');
   console.log(` Results: ${passed} passed, ${failed} failed`);
   console.log('=================================================================');

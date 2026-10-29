@@ -45,6 +45,7 @@ function copyDesktopPayloadForLinux(targetLinuxDir) {
     'desktopServer.mjs',
     'worker.js',
     'browserRuntime.js',
+    'embeddedBrowser.js',
     'sessionAccess.js',
     'scrapeResults.js',
     'dbUrlGuard.js',
