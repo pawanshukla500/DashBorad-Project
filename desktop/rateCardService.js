@@ -197,6 +197,83 @@ export async function buildBrandRateCardSet(pool = null) {
 }
 
 /**
+ * Annotates and flags rate changes as anomalies when unexpected or extreme
+ * shifts are detected (e.g. commission jump >= 5%, relative shift >= 50%,
+ * closing fee shift >= ₹20, return fee shift >= ₹25).
+ */
+export function annotateRateAnomaly(change) {
+  let anomaly = false;
+  let anomalyType = null;
+  let anomalySeverity = null;
+  let anomalyNote = '';
+
+  const { type, oldRate, newRate } = change;
+
+  if (type === 'commission') {
+    if (oldRate != null && newRate != null && typeof oldRate === 'number' && typeof newRate === 'number') {
+      const deltaAbs = Math.abs(newRate - oldRate);
+      const relPct = oldRate > 0 ? (deltaAbs / oldRate) : 1;
+      if (deltaAbs >= 0.05 || (oldRate > 0 && relPct >= 0.50)) {
+        anomaly = true;
+        anomalyType = 'commission_shift';
+        anomalySeverity = 'high';
+        anomalyNote = `${newRate >= oldRate ? '+' : ''}${((newRate - oldRate) * 100).toFixed(1)}% shift`;
+      }
+    } else if (oldRate == null && typeof newRate === 'number' && newRate >= 0.25) {
+      anomaly = true;
+      anomalyType = 'high_initial_rate';
+      anomalySeverity = 'medium';
+      anomalyNote = `high initial rate ${(newRate * 100).toFixed(1)}%`;
+    }
+  } else if (type === 'fixed_fee') {
+    if (oldRate != null && newRate != null && typeof oldRate === 'number' && typeof newRate === 'number') {
+      const deltaAbs = Math.abs(newRate - oldRate);
+      const relPct = oldRate > 0 ? (deltaAbs / oldRate) : 1;
+      if (deltaAbs >= 20 || (oldRate > 0 && relPct >= 0.50)) {
+        anomaly = true;
+        anomalyType = 'fixed_fee_shift';
+        anomalySeverity = 'high';
+        anomalyNote = `${newRate >= oldRate ? '+₹' : '-₹'}${deltaAbs.toFixed(0)} shift`;
+      }
+    }
+  } else if (type === 'reverse_shipping') {
+    if (change.oldFees && change.newFees) {
+      const lDelta = Math.abs(change.newFees.local - change.oldFees.local);
+      const zDelta = Math.abs(change.newFees.zonal - change.oldFees.zonal);
+      const nDelta = Math.abs(change.newFees.national - change.oldFees.national);
+      if (lDelta >= 25 || zDelta >= 25 || nDelta >= 25) {
+        anomaly = true;
+        anomalyType = 'reverse_shipping_shift';
+        anomalySeverity = 'high';
+        anomalyNote = 'return fee shift ≥₹25';
+      }
+    }
+  } else if (type === 'collection_fee') {
+    if (change.prepaidDelta >= 0.02 || change.postpaidDelta >= 0.02 || (change.flatDelta && change.flatDelta >= 15)) {
+      anomaly = true;
+      anomalyType = 'collection_fee_shift';
+      anomalySeverity = 'high';
+      anomalyNote = 'collection fee shift';
+    }
+  }
+
+  if (anomaly) {
+    change.anomaly = true;
+    change.anomalyType = anomalyType;
+    change.anomalySeverity = anomalySeverity;
+    if (anomalyNote && !String(change.reason).includes('⚠️ Anomaly')) {
+      change.reason = `${change.reason} (⚠️ Anomaly: ${anomalyNote})`;
+    }
+  } else if (change.anomaly !== true) {
+    change.anomaly = false;
+    change.anomalyType = null;
+    change.anomalySeverity = null;
+  }
+
+  return change;
+}
+
+/**
  * 6. Detect Changes Against Database (Brand-Aware)
  */
 export async function detectBrandRateChanges(brandRateCards, pool = null, options = {}) {
@@ -221,7 +298,7 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
     `, [marketplace, category, brand, sellerAccount]);
 
     if (activeCommissions.rows.length === 0) {
-      changes.push({
+      changes.push(annotateRateAnomaly({
         type: 'commission',
         marketplace,
         category,
@@ -229,10 +306,11 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
         sample_fsn: card.sample_fsn,
         reason: 'New category & brand commission profile',
         slabsCount: commissions.length
-      });
+      }));
     } else {
       if (activeCommissions.rows.length !== commissions.length) {
-        changes.push({
+        const countDiff = Math.abs(activeCommissions.rows.length - commissions.length);
+        const countChange = {
           type: 'commission',
           marketplace,
           category,
@@ -240,7 +318,14 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
           sample_fsn: card.sample_fsn,
           reason: `Commission slab count changed (DB: ${activeCommissions.rows.length}, New: ${commissions.length})`,
           slabsCount: commissions.length
-        });
+        };
+        if (countDiff >= 3) {
+          countChange.anomaly = true;
+          countChange.anomalyType = 'slab_count_jump';
+          countChange.anomalySeverity = 'medium';
+          countChange.reason += ` (⚠️ Anomaly: ${countDiff} slab jump)`;
+        }
+        changes.push(annotateRateAnomaly(countChange));
       }
 
       for (const sc of commissions) {
@@ -250,7 +335,7 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
         );
 
         if (!match) {
-          changes.push({
+          changes.push(annotateRateAnomaly({
             type: 'commission',
             marketplace,
             category,
@@ -262,9 +347,9 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             oldRate: null,
             newRate: sc.rate,
             reason: 'New commission price slab'
-          });
+          }));
         } else if (Math.abs(parseFloat(match.rate) - sc.rate) > 0.0001) {
-          changes.push({
+          changes.push(annotateRateAnomaly({
             type: 'commission',
             marketplace,
             category,
@@ -276,7 +361,7 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             oldRate: parseFloat(match.rate),
             newRate: sc.rate,
             reason: 'Commission rate percentage modified'
-          });
+          }));
         }
       }
     }
@@ -293,13 +378,21 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
       `, [marketplace, category, sellerAccount]);
 
       if (activeFixed.rows.length !== card.fixedFees.length) {
-        changes.push({
+        const countDiff = Math.abs(activeFixed.rows.length - card.fixedFees.length);
+        const countChange = {
           type: 'fixed_fee',
           marketplace,
           category,
           brand,
           reason: `Fixed fee slab count changed (DB: ${activeFixed.rows.length}, New: ${card.fixedFees.length})`
-        });
+        };
+        if (countDiff >= 3) {
+          countChange.anomaly = true;
+          countChange.anomalyType = 'slab_count_jump';
+          countChange.anomalySeverity = 'medium';
+          countChange.reason += ` (⚠️ Anomaly: ${countDiff} slab jump)`;
+        }
+        changes.push(annotateRateAnomaly(countChange));
       } else {
         for (const ff of card.fixedFees) {
           const match = activeFixed.rows.find(af =>
@@ -308,16 +401,18 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             Math.abs(parseFloat(af.price_max) - ff.price_max) < 1.0
           );
           if (!match) {
-            changes.push({
+            changes.push(annotateRateAnomaly({
               type: 'fixed_fee',
               marketplace,
               category,
               brand,
               slab: `${ff.fulfilment_type}: ₹${ff.price_min} - ₹${ff.price_max}`,
+              oldRate: null,
+              newRate: ff.rate,
               reason: 'New fixed fee tier/slab'
-            });
+            }));
           } else if (Math.abs(parseFloat(match.rate) - ff.rate) > 0.01) {
-            changes.push({
+            changes.push(annotateRateAnomaly({
               type: 'fixed_fee',
               marketplace,
               category,
@@ -326,7 +421,7 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
               oldRate: parseFloat(match.rate),
               newRate: ff.rate,
               reason: 'Fixed fee rate modified'
-            });
+            }));
           }
         }
       }
@@ -344,13 +439,21 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
       `, [marketplace, category, sellerAccount]);
 
       if (activeRev.rows.length !== card.reverseShipping.length) {
-        changes.push({
+        const countDiff = Math.abs(activeRev.rows.length - card.reverseShipping.length);
+        const countChange = {
           type: 'reverse_shipping',
           marketplace,
           category,
           brand,
           reason: `Reverse shipping slab count changed (DB: ${activeRev.rows.length}, New: ${card.reverseShipping.length})`
-        });
+        };
+        if (countDiff >= 3) {
+          countChange.anomaly = true;
+          countChange.anomalyType = 'slab_count_jump';
+          countChange.anomalySeverity = 'medium';
+          countChange.reason += ` (⚠️ Anomaly: ${countDiff} slab jump)`;
+        }
+        changes.push(annotateRateAnomaly(countChange));
       } else {
         for (const rs of card.reverseShipping) {
           const match = activeRev.rows.find(ar =>
@@ -359,27 +462,31 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             Math.abs(parseFloat(ar.price_max) - rs.price_max) < 1.0
           );
           if (!match) {
-            changes.push({
+            changes.push(annotateRateAnomaly({
               type: 'reverse_shipping',
               marketplace,
               category,
               brand,
               slab: `${rs.weight_slab}: ₹${rs.price_min} - ₹${rs.price_max}`,
               reason: 'New reverse shipping weight/price slab'
-            });
+            }));
           } else if (
             Math.abs(parseFloat(match.local_fee) - rs.local_fee) > 0.01 ||
             Math.abs(parseFloat(match.zonal_fee) - rs.zonal_fee) > 0.01 ||
             Math.abs(parseFloat(match.national_fee) - rs.national_fee) > 0.01
           ) {
-            changes.push({
+            changes.push(annotateRateAnomaly({
               type: 'reverse_shipping',
               marketplace,
               category,
               brand,
               slab: `${rs.weight_slab}: ₹${rs.price_min} - ₹${rs.price_max}`,
+              oldRate: `L: ₹${match.local_fee}, Z: ₹${match.zonal_fee}, N: ₹${match.national_fee}`,
+              newRate: `L: ₹${rs.local_fee}, Z: ₹${rs.zonal_fee}, N: ₹${rs.national_fee}`,
+              oldFees: { local: parseFloat(match.local_fee), zonal: parseFloat(match.zonal_fee), national: parseFloat(match.national_fee) },
+              newFees: { local: rs.local_fee, zonal: rs.zonal_fee, national: rs.national_fee },
               reason: 'Reverse shipping fees modified'
-            });
+            }));
           }
         }
       }
@@ -405,13 +512,21 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
         const collRateLabel = (cf) => 'Prepaid ' + fmtCollFee(cf.prepaid, cf.prepaid_type || 'flat') + ' / Postpaid ' + fmtCollFee(cf.postpaid, cf.postpaid_type || 'flat');
 
         if (activeColl.rows.length !== card.collectionFees.length) {
-          changes.push({
+          const countDiff = Math.abs(activeColl.rows.length - card.collectionFees.length);
+          const countChange = {
             type: 'collection_fee',
             marketplace,
             category,
             brand,
             reason: 'Collection fee slab count changed (DB: ' + activeColl.rows.length + ', New: ' + card.collectionFees.length + ')'
-          });
+          };
+          if (countDiff >= 3) {
+            countChange.anomaly = true;
+            countChange.anomalyType = 'slab_count_jump';
+            countChange.anomalySeverity = 'medium';
+            countChange.reason += ` (⚠️ Anomaly: ${countDiff} slab jump)`;
+          }
+          changes.push(annotateRateAnomaly(countChange));
         } else {
           for (const cf of card.collectionFees) {
             const match = activeColl.rows.find(ac =>
@@ -421,7 +536,7 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             );
             const slab = '₹' + cf.price_min + ' - ₹' + cf.price_max;
             if (!match) {
-              changes.push({
+              changes.push(annotateRateAnomaly({
                 type: 'collection_fee',
                 marketplace,
                 category,
@@ -431,14 +546,17 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
                 priceMax: cf.price_max,
                 newRate: collRateLabel(cf),
                 reason: 'New collection fee slab'
-              });
+              }));
             } else if (
               Math.abs(parseFloat(match.prepaid) - cf.prepaid) > 0.0001 ||
               Math.abs(parseFloat(match.postpaid) - cf.postpaid) > 0.0001 ||
               (match.prepaid_type || 'flat') !== (cf.prepaid_type || 'flat') ||
               (match.postpaid_type || 'flat') !== (cf.postpaid_type || 'flat')
             ) {
-              changes.push({
+              const prepaidDelta = (cf.prepaid_type === 'pct') ? Math.abs(cf.prepaid - parseFloat(match.prepaid)) : 0;
+              const postpaidDelta = (cf.postpaid_type === 'pct') ? Math.abs(cf.postpaid - parseFloat(match.postpaid)) : 0;
+              const flatDelta = (cf.prepaid_type === 'flat') ? Math.abs(cf.prepaid - parseFloat(match.prepaid)) : 0;
+              changes.push(annotateRateAnomaly({
                 type: 'collection_fee',
                 marketplace,
                 category,
@@ -448,8 +566,11 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
                 priceMax: cf.price_max,
                 oldRate: collRateLabel(match),
                 newRate: collRateLabel(cf),
+                prepaidDelta,
+                postpaidDelta,
+                flatDelta,
                 reason: 'Collection fee modified'
-              });
+              }));
             }
           }
         }
@@ -671,20 +792,66 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
       }
     }
 
-    // Version record in rate_card_versions
+    // Rich audit snapshot for rate_card_versions
     const versionName = `brand-fsn-sync-${effectiveDate}-${Date.now().toString().slice(-4)}`;
-    try {
-      await client.query(`
-        INSERT INTO rate_card_versions (marketplace, seller_account, version_name, status, effective_from, snapshot, created_at, published_at)
-        VALUES ('flipkart_shopsy_brandwise', $1, $2, 'published', $3, $4, NOW(), NOW())
-      `, [sellerAccount, versionName, effectiveDate, JSON.stringify({
+    const actor = options.actor || 'desktop-operator';
+    const runMetadata = options.runMetadata || { source: 'desktop-worker' };
+    const anomaliesCount = changes.filter(c => c.anomaly).length;
+
+    const richSnapshot = {
+      version: '1.5.0',
+      syncTimestamp: new Date().toISOString(),
+      effectiveDate,
+      sellerAccount,
+      actor,
+      runMetadata,
+      stats: {
         changesCount: changes.length,
+        anomaliesCount,
         brandsCount: brandRateCards.length,
         insertedCommissions,
         insertedFixed,
         insertedRev,
         insertedCollection
-      })]);
+      },
+      summary: {
+        commissionChanges: changes.filter(c => c.type === 'commission').length,
+        fixedFeeChanges: changes.filter(c => c.type === 'fixed_fee').length,
+        reverseShippingChanges: changes.filter(c => c.type === 'reverse_shipping').length,
+        collectionFeeChanges: changes.filter(c => c.type === 'collection_fee').length,
+        anomalies: changes.filter(c => c.anomaly).map(c => ({
+          type: c.type,
+          marketplace: c.marketplace,
+          category: c.category,
+          brand: c.brand,
+          slab: c.slab,
+          oldRate: c.oldRate,
+          newRate: c.newRate,
+          anomalyType: c.anomalyType,
+          anomalySeverity: c.anomalySeverity,
+          reason: c.reason
+        }))
+      },
+      changes: changes.map(c => ({
+        type: c.type,
+        marketplace: c.marketplace,
+        category: c.category,
+        brand: c.brand,
+        slab: c.slab,
+        oldRate: c.oldRate,
+        newRate: c.newRate,
+        reason: c.reason,
+        anomaly: Boolean(c.anomaly),
+        anomalyType: c.anomalyType || null,
+        anomalySeverity: c.anomalySeverity || null
+      }))
+    };
+
+    try {
+      await client.query(`
+        INSERT INTO rate_card_versions (marketplace, seller_account, version_name, status, effective_from, snapshot, created_at, published_at)
+        VALUES ('flipkart_shopsy_brandwise', $1, $2, 'published', $3, $4, NOW(), NOW())
+      `, [sellerAccount, versionName, effectiveDate, JSON.stringify(richSnapshot)]);
     } catch (verErr) {
       console.warn('[syncBrandRateCardsToDatabase] Note: Could not write rate_card_versions snapshot:', verErr.message);
     }
@@ -695,11 +862,13 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
       updated: true,
       message: `Successfully synchronized ${brandRateCards.length} brand-wise rate cards across Flipkart and Shopsy.`,
       changesCount: changes.length,
+      anomaliesCount,
       insertedCommissions,
       insertedFixed,
       insertedRev,
       insertedCollection,
-      versionName
+      versionName,
+      snapshot: richSnapshot
     };
 
   } catch (err) {

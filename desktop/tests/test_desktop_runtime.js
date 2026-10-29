@@ -38,6 +38,12 @@ async function runTest(name, fn) {
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
+assert.strictEqual = function(actual, expected, message) {
+  if (actual !== expected) throw new Error(message || `Expected ${expected} but got ${actual}`);
+};
+assert.deepStrictEqual = function(actual, expected, message) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(message || `Expected ${JSON.stringify(expected)} but got ${JSON.stringify(actual)}`);
+};
 
 // ── Module loading ────────────────────────────────────────────────────────────
 const { getBrowserRuntime, requireChromeExecutable, withBrowserTask } = await import('../browserRuntime.js');
@@ -809,7 +815,7 @@ async function runTests() {
     const rendererSource = fs.readFileSync(path.join(desktopDir, 'ui', 'renderer.js'), 'utf8');
     const fnIdx = rendererSource.indexOf('async function loadRateCardPreview');
     assert(fnIdx !== -1, 'loadRateCardPreview not found');
-    const fnWindow = rendererSource.slice(fnIdx, fnIdx + 3400);
+    const fnWindow = rendererSource.slice(fnIdx, fnIdx + 7000);
     assert(fnWindow.includes('requestId = ++previewRequestSeq'), 'each preview must claim a generation');
     const guardCount = (fnWindow.match(/requestId !== previewRequestSeq/g) || []).length;
     assert(guardCount >= 3, `stale responses must be dropped after each await, including the catch path (found ${guardCount} guards)`);
@@ -1735,6 +1741,152 @@ async function runTests() {
     const rendererPath = path.join(desktopDir, 'ui', 'renderer.js');
     const rendererContent = fs.readFileSync(rendererPath, 'utf8');
     assert(rendererContent.includes('onBrowserMonitorPromptLogin'), 'renderer.js must subscribe to onBrowserMonitorPromptLogin');
+  });
+
+  await runTest('detectBrandRateChanges flags commission shifts >=5% and relative shifts >=50% as anomalies (stage 4)', async () => {
+    const { detectBrandRateChanges, annotateRateAnomaly } = await import('../rateCardService.js');
+    assert(typeof annotateRateAnomaly === 'function', 'annotateRateAnomaly must be exported');
+
+    // Commission shift >= 5%
+    const mockPool5Pct = {
+      query: async () => ({
+        rows: [{ price_min: '0.00', price_max: '500.00', rate: '0.1000' }]
+      })
+    };
+    const testCard5Pct = {
+      marketplace: 'flipkart',
+      category: 'top',
+      brand: 'Sangria',
+      commissions: [{ price_min: 0, price_max: 500, rate: 0.16 }] // 10% -> 16% (+6% absolute, >=5%)
+    };
+    const changes5Pct = await detectBrandRateChanges([testCard5Pct], mockPool5Pct);
+    assert.strictEqual(changes5Pct.length, 1);
+    assert.strictEqual(changes5Pct[0].anomaly, true);
+    assert.strictEqual(changes5Pct[0].anomalyType, 'commission_shift');
+    assert.strictEqual(changes5Pct[0].anomalySeverity, 'high');
+    assert(changes5Pct[0].reason.includes('⚠️ Anomaly'), 'reason must include anomaly badge note');
+
+    // Commission shift < 5% and < 50% relative (e.g. 10% -> 11%)
+    const mockPoolSmall = {
+      query: async () => ({
+        rows: [{ price_min: '0.00', price_max: '500.00', rate: '0.1000' }]
+      })
+    };
+    const testCardSmall = {
+      marketplace: 'flipkart',
+      category: 'top',
+      brand: 'Sangria',
+      commissions: [{ price_min: 0, price_max: 500, rate: 0.11 }] // +1%
+    };
+    const changesSmall = await detectBrandRateChanges([testCardSmall], mockPoolSmall);
+    assert.strictEqual(changesSmall.length, 1);
+    assert.strictEqual(changesSmall[0].anomaly, false);
+    assert(!changesSmall[0].reason.includes('⚠️ Anomaly'));
+  });
+
+  await runTest('detectBrandRateChanges flags fixed fee and reverse shipping shifts as anomalies (stage 4)', async () => {
+    const { detectBrandRateChanges } = await import('../rateCardService.js');
+
+    // Fixed fee shift >= 20
+    const mockPoolFixed = {
+      query: async (sql) => {
+        if (sql.includes('rc_commission')) return { rows: [] };
+        if (sql.includes('rc_fixed_fee')) {
+          return {
+            rows: [
+              { price_min: '0.00', price_max: '300.00', rate: '10.00', fulfilment_type: 'Bronze' }
+            ]
+          };
+        }
+        return { rows: [] };
+      }
+    };
+    const testCardFixed = {
+      marketplace: 'flipkart',
+      category: 'top',
+      brand: 'General',
+      commissions: [],
+      fixedFees: [
+        { fulfilment_type: 'Bronze', price_min: 0, price_max: 300, rate: 35.0 } // 10 -> 35 (shift +25 >= 20)
+      ]
+    };
+    const changesFixed = await detectBrandRateChanges([testCardFixed], mockPoolFixed);
+    const ffChange = changesFixed.find(c => c.type === 'fixed_fee' && c.oldRate != null);
+    assert(ffChange, 'fixed_fee change must exist');
+    assert.strictEqual(ffChange.anomaly, true);
+    assert.strictEqual(ffChange.anomalyType, 'fixed_fee_shift');
+    assert(ffChange.reason.includes('⚠️ Anomaly'));
+  });
+
+  await runTest('syncBrandRateCardsToDatabase stores rich audit snapshot in rate_card_versions (stage 4)', async () => {
+    const { syncBrandRateCardsToDatabase } = await import('../rateCardService.js');
+    let insertedSnapshot = null;
+    let insertedVersionName = null;
+
+    const fakeClient = {
+      query: async (sql, params) => {
+        if (sql.includes('INSERT INTO rate_card_versions')) {
+          insertedVersionName = params[1];
+          insertedSnapshot = JSON.parse(params[3]);
+        }
+        return { rows: [] };
+      },
+      release: () => {}
+    };
+
+    const fakePool = {
+      connect: async () => fakeClient,
+      query: async (sql) => {
+        if (sql.includes('rc_commission')) {
+          return { rows: [{ price_min: '0.00', price_max: '500.00', rate: '0.1000' }] };
+        }
+        return { rows: [] };
+      }
+    };
+
+    const testCard = {
+      marketplace: 'flipkart',
+      category: 'top',
+      brand: 'Sangria',
+      commissions: [{ price_min: 0, price_max: 500, rate: 0.18 }], // 10% -> 18% (+8% anomaly)
+      fixedFees: [],
+      reverseShipping: [],
+      collectionFees: []
+    };
+
+    const res = await syncBrandRateCardsToDatabase(
+      [testCard],
+      {
+        forceUpdate: true,
+        actor: 'pawan@vbexports.co.in',
+        runMetadata: { source: 'test-suite', testRun: true }
+      },
+      fakePool
+    );
+
+    assert.strictEqual(res.updated, true);
+    assert.strictEqual(res.anomaliesCount, 1);
+    assert(insertedSnapshot, 'rich audit snapshot must be inserted into rate_card_versions');
+    assert.strictEqual(insertedSnapshot.version, '1.5.0');
+    assert.strictEqual(insertedSnapshot.actor, 'pawan@vbexports.co.in');
+    assert.strictEqual(insertedSnapshot.stats.anomaliesCount, 1);
+    assert.strictEqual(insertedSnapshot.summary.anomalies.length, 1);
+    assert.strictEqual(insertedSnapshot.summary.anomalies[0].anomalyType, 'commission_shift');
+    assert(Array.isArray(insertedSnapshot.changes), 'snapshot must include full changes array');
+  });
+
+  await runTest('index.html and renderer.js wire anomaly badges, alert banner, and anomalies filter (stage 4)', async () => {
+    const indexPath = path.join(desktopDir, 'ui', 'index.html');
+    const indexContent = fs.readFileSync(indexPath, 'utf8');
+    assert(indexContent.includes('id="anomalies-badge"'), 'index.html must include anomalies badge');
+    assert(indexContent.includes('id="diff-anomaly-alert"'), 'index.html must include anomaly alert banner');
+    assert(indexContent.includes('data-filter="anomalies"'), 'index.html must include anomalies filter tab');
+
+    const rendererPath = path.join(desktopDir, 'ui', 'renderer.js');
+    const rendererContent = fs.readFileSync(rendererPath, 'utf8');
+    assert(rendererContent.includes("activeDiffFilter === 'anomalies'"), 'renderer.js must handle anomalies filter');
+    assert(rendererContent.includes("r.anomaly"), 'renderer.js must check r.anomaly');
+    assert(rendererContent.includes("diff-anomaly-alert"), 'renderer.js must toggle diff-anomaly-alert');
   });
 
   console.log('\n=================================================================');

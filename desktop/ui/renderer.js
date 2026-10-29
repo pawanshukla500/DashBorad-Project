@@ -715,22 +715,58 @@ async function loadRateCardPreview() {
           : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.');
       }
 
-      // Update badge
+      // Update badges & anomaly banner
       const badge = document.getElementById('changes-badge');
+      const anomaliesBadge = document.getElementById('anomalies-badge');
+      const anomalyAlert = document.getElementById('diff-anomaly-alert');
+      const anomalyText = document.getElementById('diff-anomaly-text');
+      const tabFilterAnomalies = document.getElementById('tab-filter-anomalies');
+      const filterAnomalyCount = document.getElementById('filter-anomaly-count');
+
+      const anomalies = currentChanges.filter(c => c.anomaly);
+      const anomaliesCount = anomalies.length;
+
       if (currentChanges.length > 0) {
-        badge.innerText = currentChanges.length;
-        badge.style.display = 'inline-block';
+        if (badge) {
+          badge.innerText = currentChanges.length;
+          badge.style.display = 'inline-block';
+        }
       } else {
-        badge.style.display = 'none';
+        if (badge) badge.style.display = 'none';
+      }
+
+      if (anomaliesCount > 0) {
+        if (anomaliesBadge) {
+          anomaliesBadge.innerText = `⚠️ ${anomaliesCount}`;
+          anomaliesBadge.style.display = 'inline-block';
+        }
+        if (anomalyAlert) {
+          anomalyAlert.style.display = 'flex';
+          if (anomalyText) anomalyText.innerText = `${anomaliesCount} rate ${anomaliesCount === 1 ? 'anomaly' : 'anomalies'} detected`;
+        }
+        if (tabFilterAnomalies) {
+          tabFilterAnomalies.style.display = 'inline-block';
+          if (filterAnomalyCount) filterAnomalyCount.innerText = anomaliesCount;
+        }
+      } else {
+        if (anomaliesBadge) anomaliesBadge.style.display = 'none';
+        if (anomalyAlert) anomalyAlert.style.display = 'none';
+        if (tabFilterAnomalies) tabFilterAnomalies.style.display = 'none';
       }
 
       renderDiffTable();
-      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${diffRes.dbAvailable === false ? 'database not reachable — change detection skipped' : currentChanges.length + ' diffs detected'}).`);
+      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${diffRes.dbAvailable === false ? 'database not reachable — change detection skipped' : currentChanges.length + ' diffs detected, ' + anomaliesCount + ' anomalies'}).`);
     } else {
       currentRateCards = [];
       currentChanges = [];
       const badge = document.getElementById('changes-badge');
       if (badge) badge.style.display = 'none';
+      const anomaliesBadge = document.getElementById('anomalies-badge');
+      if (anomaliesBadge) anomaliesBadge.style.display = 'none';
+      const anomalyAlert = document.getElementById('diff-anomaly-alert');
+      if (anomalyAlert) anomalyAlert.style.display = 'none';
+      const tabFilterAnomalies = document.getElementById('tab-filter-anomalies');
+      if (tabFilterAnomalies) tabFilterAnomalies.style.display = 'none';
       setTableMessage(tbody, 8, res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.');
     }
   } catch (err) {
@@ -742,6 +778,12 @@ async function loadRateCardPreview() {
     currentChanges = [];
     const commitBtn = document.getElementById('btn-commit-db');
     if (commitBtn) commitBtn.disabled = true;
+    const anomaliesBadge = document.getElementById('anomalies-badge');
+    if (anomaliesBadge) anomaliesBadge.style.display = 'none';
+    const anomalyAlert = document.getElementById('diff-anomaly-alert');
+    if (anomalyAlert) anomalyAlert.style.display = 'none';
+    const tabFilterAnomalies = document.getElementById('tab-filter-anomalies');
+    if (tabFilterAnomalies) tabFilterAnomalies.style.display = 'none';
     setTableMessage(tbody, 8, `Error loading rates: ${err.message}`, true);
   }
 }
@@ -754,7 +796,7 @@ function renderDiffTable() {
     const { marketplace, category, brand, commissions, fixedFees, reverseShipping, collectionFees = [] } = card;
 
     // 1. Commission rows
-    if (activeDiffFilter === 'all' || activeDiffFilter === 'commission') {
+    if (activeDiffFilter === 'all' || activeDiffFilter === 'commission' || activeDiffFilter === 'anomalies') {
       for (const c of commissions) {
         // Match changes per slab (count-level records carry no price bounds and
         // legitimately apply to every slab of that brand).
@@ -771,29 +813,37 @@ function renderDiffTable() {
           slab: c.price_max >= 999990 ? `≥ ₹${c.price_min}` : `₹${c.price_min} - ₹${c.price_max}`,
           oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(1)}%` : (change ? '—' : 'Active / Matched'),
           newRate: `${(c.rate * 100).toFixed(1)}%`,
-          status: change ? (change.reason || 'Modified') : 'Active'
+          status: change ? (change.reason || 'Modified') : 'Active',
+          anomaly: Boolean(change?.anomaly),
+          anomalySeverity: change?.anomalySeverity
         });
       }
     }
 
     // 2. Fixed Fee rows
-    if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed') {
+    if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed' || activeDiffFilter === 'anomalies') {
       for (const f of fixedFees) {
+        const change = currentChanges.find(ch =>
+          ch.marketplace === marketplace && ch.category === category && ch.type === 'fixed_fee' &&
+          (ch.slab == null || ch.slab === `${f.fulfilment_type}: ₹${f.price_min} - ₹${f.price_max}` || ch.slab.includes(f.fulfilment_type))
+        );
         rows.push({
           type: 'Fixed Fee',
           marketplace: marketplace.toUpperCase(),
           category,
           brand: 'All / Tier',
           slab: `${f.fulfilment_type} (₹${f.price_min} - ₹${f.price_max})`,
-          oldRate: '₹' + f.rate,
-          newRate: '₹' + f.rate,
-          status: 'Active'
+          oldRate: change?.oldRate != null ? `₹${change.oldRate}` : (change ? '—' : `₹${f.rate}`),
+          newRate: `₹${f.rate}`,
+          status: change ? (change.reason || 'Modified') : 'Active',
+          anomaly: Boolean(change?.anomaly),
+          anomalySeverity: change?.anomalySeverity
         });
       }
     }
 
     // 3. Collection Fee rows (payment charges; staged scrapes commit these)
-    if (activeDiffFilter === 'all' || activeDiffFilter === 'collection') {
+    if (activeDiffFilter === 'all' || activeDiffFilter === 'collection' || activeDiffFilter === 'anomalies') {
       const fmtColl = (value, type) => (type === 'pct' ? `${(value * 100).toFixed(2)}%` : `₹${value}`);
       for (const cf of collectionFees) {
         // Match changes per slab so one slab's old/new rates never bleed onto
@@ -811,37 +861,51 @@ function renderDiffTable() {
           slab: cf.price_max >= 999990 ? `≥ ₹${cf.price_min}` : `₹${cf.price_min} - ₹${cf.price_max}`,
           oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : 'Active / Matched'),
           newRate: change?.newRate != null ? change.newRate : `Prepaid ${fmtColl(cf.prepaid, cf.prepaid_type)} / Postpaid ${fmtColl(cf.postpaid, cf.postpaid_type)}`,
-          status: change ? (change.reason || 'Modified') : 'Active'
+          status: change ? (change.reason || 'Modified') : 'Active',
+          anomaly: Boolean(change?.anomaly),
+          anomalySeverity: change?.anomalySeverity
         });
       }
     }
 
     // 4. Reverse Shipping rows
-    if (activeDiffFilter === 'all' || activeDiffFilter === 'reverse') {
+    if (activeDiffFilter === 'all' || activeDiffFilter === 'reverse' || activeDiffFilter === 'anomalies') {
       for (const r of reverseShipping) {
+        const change = currentChanges.find(ch =>
+          ch.marketplace === marketplace && ch.category === category && ch.type === 'reverse_shipping' &&
+          (ch.slab == null || ch.slab.includes(r.weight_slab))
+        );
         rows.push({
           type: 'Reverse Shipping',
           marketplace: marketplace.toUpperCase(),
           category,
           brand: 'Standard',
           slab: `${r.weight_slab} (₹${r.price_min} - ₹${r.price_max})`,
-          oldRate: `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}`,
+          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}`),
           newRate: `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}`,
-          status: 'Active'
+          status: change ? (change.reason || 'Modified') : 'Active',
+          anomaly: Boolean(change?.anomaly),
+          anomalySeverity: change?.anomalySeverity
         });
       }
     }
   }
 
-  if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No fee entries for the selected filter.</td></tr>';
+  // Filter for anomalies only if requested
+  const filteredRows = activeDiffFilter === 'anomalies' ? rows.filter(r => r.anomaly) : rows;
+
+  if (filteredRows.length === 0) {
+    const emptyMsg = activeDiffFilter === 'anomalies'
+      ? '✓ No rate anomalies detected. All rate shifts are within expected thresholds.'
+      : 'No fee entries for the selected filter.';
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">${emptyMsg}</td></tr>`;
     return;
   }
 
   // Deduplicate and render up to 100 rows
-  const displayRows = rows.slice(0, 100);
+  const displayRows = filteredRows.slice(0, 100);
   tbody.innerHTML = displayRows.map(r => `
-    <tr>
+    <tr class="${r.anomaly ? 'row-anomaly' : ''}" style="${r.anomaly ? 'background: rgba(245, 158, 11, 0.08);' : ''}">
       <td><span class="badge ${r.type === 'Commission' ? 'badge-portal' : 'badge-account'}">${escapeHtml(r.type)}</span></td>
       <td><strong>${escapeHtml(r.marketplace)}</strong></td>
       <td>${escapeHtml(r.category)}</td>
@@ -850,9 +914,10 @@ function renderDiffTable() {
       <td style="color: #94a3b8;">${escapeHtml(r.oldRate)}</td>
       <td style="color: #38bdf8; font-weight: 600;">${escapeHtml(r.newRate)}</td>
       <td>
-        <span class="status-badge ${String(r.status).includes('Active') ? 'badge-active' : 'badge-modified'}">
-          ${escapeHtml(r.status)}
-        </span>
+        ${r.anomaly
+          ? `<span class="status-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px;">${escapeHtml(r.status)}</span>`
+          : `<span class="status-badge ${String(r.status).includes('Active') ? 'badge-active' : 'badge-modified'}">${escapeHtml(r.status)}</span>`
+        }
       </td>
     </tr>
   `).join('');
@@ -908,9 +973,15 @@ function setupEventListeners() {
   // Filter Tabs for Diff Review
   document.querySelectorAll('.filter-tab').forEach(tab => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      activeDiffFilter = tab.getAttribute('data-filter');
+      const targetFilter = tab.getAttribute('data-filter');
+      document.querySelectorAll('.filter-tab').forEach(t => {
+        if (t.getAttribute('data-filter') === targetFilter) {
+          t.classList.add('active');
+        } else {
+          t.classList.remove('active');
+        }
+      });
+      activeDiffFilter = targetFilter;
       renderDiffTable();
     });
   });
@@ -1045,7 +1116,13 @@ function setupEventListeners() {
       return;
     }
 
-    if (!confirm(`Commit ${currentRateCards.length} brand-wise rate cards to the database?\n\nThis will auto-close superseded records and record a version snapshot.`)) {
+    const anomalies = currentChanges.filter(c => c.anomaly);
+    let confirmMsg = `Commit ${currentRateCards.length} brand-wise rate cards to the database?\n\nThis will auto-close superseded records and record a version snapshot.`;
+    if (anomalies.length > 0) {
+      confirmMsg = `⚠️ CAUTION: ${anomalies.length} RATE ANOMALIES DETECTED!\n\nReview flagged fee shifts (e.g. commission jump ≥5% or fee change ≥50%). Are you sure you want to commit these changes to PostgreSQL?\n\nClick OK to auto-close superseded rates and record an audit snapshot.`;
+    }
+
+    if (!confirm(confirmMsg)) {
       return;
     }
 
@@ -1054,10 +1131,19 @@ function setupEventListeners() {
     btnCommitDb.innerText = '⏳ Syncing...';
 
     try {
-      const res = await window.ratecardAPI.syncBrandRateCards(currentRateCards, { forceUpdate: true });
+      const session = await window.ratecardAPI.loadSession?.().catch(() => null);
+      const syncOptions = {
+        forceUpdate: true,
+        actor: session?.user?.email || session?.user?.name || 'desktop-operator',
+        runMetadata: { source: 'desktop-worker-ui', uiVersion: '1.5.0' }
+      };
+      const res = await window.ratecardAPI.syncBrandRateCards(currentRateCards, syncOptions);
       if (res.success && res.result?.updated) {
         appendTerminalLine(`✓ ${res.result.message}`);
         appendTerminalLine(`✓ Version snapshot: ${res.result.versionName}`);
+        if (res.result?.anomaliesCount > 0) {
+          appendTerminalLine(`⚠️ Note: ${res.result.anomaliesCount} anomalies recorded in version audit snapshot.`);
+        }
         alert('Database synchronization completed successfully!');
         await loadRateCardPreview();
       } else {

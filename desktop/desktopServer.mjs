@@ -1120,14 +1120,21 @@ const server = http.createServer(async (req, res) => {
         const pool = getPool();
         const cardsToTest = body.rateCards?.length ? body.rateCards : await buildBrandRateCardSet(pool);
         const changes = await detectBrandRateChanges(cardsToTest, pool);
-        return sendJson(200, { success: true, changesCount: changes.length, changes, dbAvailable: true });
+        const anomaliesCount = changes.filter(c => c.anomaly).length;
+        return sendJson(200, {
+          success: true,
+          changesCount: changes.length,
+          anomaliesCount,
+          changes,
+          dbAvailable: true
+        });
       } catch (err) {
         // /api/preview can serve staged cards without a database; change
         // detection cannot. Keep the staged review visible with an explicit
         // dbAvailable:false (diffs unknowable, commit disabled) instead of
         // failing the request and clearing the reviewed preview.
         if (body?.rateCards?.length) {
-          return sendJson(200, { success: true, changesCount: 0, changes: [], dbAvailable: false });
+          return sendJson(200, { success: true, changesCount: 0, anomaliesCount: 0, changes: [], dbAvailable: false });
         }
         return sendJson(500, { success: false, error: err.message });
       }
@@ -1135,7 +1142,8 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/sync (only reviewed staged extractions may be committed)
     if (pathname === '/api/sync' && req.method === 'POST') {
-      if (!(await requireDesktopAuth(true))) return;
+      const authSession = await requireDesktopAuth(true);
+      if (!authSession) return;
       try {
         const body = await parseJsonBody();
         if (!stagedExtraction.cards.length) {
@@ -1149,7 +1157,19 @@ const server = http.createServer(async (req, res) => {
         }
         const pool = getPool();
         broadcastProgress('Initiating database synchronization with date auto-closing...');
-        const result = await syncBrandRateCardsToDatabase(cardsToSync, { forceUpdate: true, ...body.options }, pool);
+        const syncOptions = {
+          forceUpdate: true,
+          ...body.options,
+          actor: authSession?.user?.email || authSession?.user?.name || 'desktop-operator',
+          runMetadata: {
+            source: 'desktop-server',
+            platform: process.platform,
+            arch: process.arch,
+            appVersion: '1.5.0',
+            syncTime: new Date().toISOString()
+          }
+        };
+        const result = await syncBrandRateCardsToDatabase(cardsToSync, syncOptions, pool);
         broadcastProgress(`✓ ${result.message}`);
         return sendJson(200, { success: true, result });
       } catch (err) {
