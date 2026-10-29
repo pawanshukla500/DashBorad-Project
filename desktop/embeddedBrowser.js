@@ -393,7 +393,11 @@ export function createEmbeddedPage({
       const remaining = () => deadline - Date.now();
       const slice = () => Math.max(remaining(), 1);
       let via = 'navigation-event';
-      if (lastNavAt >= armedAt && Date.now() - lastNavAt <= graceMs) {
+      // The grace window exists only for the action-vs-navigation race: until
+      // an action has armed the watch (armedAt > 0), a recent navigation from
+      // something else (e.g. goto) must NOT be reported as the waited-for
+      // navigation — the wait then resolves only on a real navigation event.
+      if (armedAt > 0 && lastNavAt >= armedAt && Date.now() - lastNavAt <= graceMs) {
         via = 'recent-navigation';
       } else {
         const navigated = new Promise((resolve) => {

@@ -1380,6 +1380,7 @@ async function runTests() {
     // complete the navigation before the wait's listener registers, so a
     // navigation recorded after the action and inside the grace window
     // must count instead of dead-waiting for a second navigation.
+    await page.evaluate(() => 1);
     harness.fire('did-navigate');
     const recent = await page.waitForNavigation({ timeout: 2000, graceMs: 800 });
     assert(recent.ok === true && recent.via === 'recent-navigation', 'a navigation inside the grace window must satisfy waitForNavigation');
@@ -1426,6 +1427,7 @@ async function runTests() {
       return 'ok';
     });
     const slowDocPage = createEmbeddedPage({ window: slowDoc.fakeWindow, partition: 'persist:marketplace-flipkart', deps: slowDoc.deps });
+    await slowDocPage.evaluate(() => 1);
     slowDoc.fire('did-navigate');
     const slowDocNav = await slowDocPage.waitForNavigation({ timeout: 2000 });
     assert(slowDocNav.ok === true, 'the load wait must resolve once the document completes');
@@ -1435,6 +1437,7 @@ async function runTests() {
     const neverLoaded = makeFakeEmbeddedDeps();
     neverLoaded.setBehavior((script) => (/document\.readyState/.test(script) ? false : 'ok'));
     const neverLoadedPage = createEmbeddedPage({ window: neverLoaded.fakeWindow, partition: 'persist:marketplace-flipkart', deps: neverLoaded.deps });
+    await neverLoadedPage.evaluate(() => 1);
     neverLoaded.fire('did-navigate');
     let neverLoadedTimedOut = false;
     const neverLoadedStartedAt = Date.now();
@@ -1465,6 +1468,16 @@ async function runTests() {
     armed.fire('did-navigate');
     const armedNav = await armedPage.waitForNavigation({ timeout: 2000, graceMs: 800 });
     assert(armedNav.ok === true && armedNav.via === 'recent-navigation', 'a navigation recorded after the action must satisfy the grace window');
+
+    // Until an action arms the watch, a goto's own navigation must never be
+    // reported as the waited-for navigation.
+    const unArmed = makeFakeEmbeddedDeps();
+    const unArmedPage = createEmbeddedPage({ window: unArmed.fakeWindow, partition: 'persist:marketplace-flipkart', deps: unArmed.deps });
+    await unArmedPage.goto('https://seller.flipkart.com/', { timeout: 5000 });
+    let unArmedTimedOut = false;
+    try { await unArmedPage.waitForNavigation({ timeout: 250 }); }
+    catch (err) { unArmedTimedOut = err.name === 'TimeoutError'; }
+    assert(unArmedTimedOut, 'a goto navigation must not satisfy a wait that no action armed');
 
     // The scraper calls waitForNavigation({ waitUntil: 'networkidle2' }): the
     // post-navigation network wait must run, succeed on a quiet network, and
