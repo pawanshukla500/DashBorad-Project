@@ -28,6 +28,17 @@ vi.mock('../db/index.js', () => ({
   }),
 }));
 
+// The routes verify the analyst principal server-side before provisioning it.
+// Keep the real (pure) provisioning logic; only stub the live-connection check.
+const verifyAnalystPrincipal = vi.fn(async () => true);
+vi.mock('../utils/desktopProvisioning.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    verifyAnalystPrincipalIsReadOnly: (...args) => verifyAnalystPrincipal(...args),
+  };
+});
+
 const { default: authRouter } = await import('../routes/auth.js');
 
 let server;
@@ -171,9 +182,32 @@ describe('POST /api/auth/desktop-login', () => {
       const data = await response.json();
       expect(data.databaseUrl).toBe(readonlyUrl);
       expect(data.databaseAccess).toBe('read-only');
+      expect(verifyAnalystPrincipal).toHaveBeenCalledWith(readonlyUrl);
     } finally {
       process.env.DESKTOP_DATABASE_URL = previousUrl;
       process.env.DESKTOP_ANALYST_DATABASE_URL = previousAnalystUrl;
+      verifyAnalystPrincipal.mockClear();
+    }
+  });
+
+  it('withholds the analyst URL when the principal fails server-side read-only verification (fail-closed)', async () => {
+    const previousUrl = process.env.DESKTOP_DATABASE_URL;
+    const previousAnalystUrl = process.env.DESKTOP_ANALYST_DATABASE_URL;
+    process.env.DESKTOP_DATABASE_URL = 'postgresql://worker:write@db.example.com:5432/paymentapp';
+    process.env.DESKTOP_ANALYST_DATABASE_URL = 'postgresql://analyst:writer@db.example.com:5432/paymentapp';
+    directory = [{ id: 9, email: 'analyst@example.com', username: 'Analyst', role: 'analyst', firebase_uid: null }];
+    decodedToken = { uid: 'fb-analyst-writer', email: 'analyst@example.com', email_verified: true };
+    verifyAnalystPrincipal.mockResolvedValueOnce(false);
+    try {
+      const response = await desktopLogin();
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.databaseUrl).toBe('');
+      expect(data.databaseAccess).toBe('read-only');
+    } finally {
+      process.env.DESKTOP_DATABASE_URL = previousUrl;
+      process.env.DESKTOP_ANALYST_DATABASE_URL = previousAnalystUrl;
+      verifyAnalystPrincipal.mockClear();
     }
   });
 });

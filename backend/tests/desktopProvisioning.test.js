@@ -3,7 +3,9 @@ import {
   desktopAnalystDatabaseUrl,
   desktopDatabaseUrl,
   desktopDatabaseProvisioningForRole,
-  isPubliclyRoutableDbHost
+  isPubliclyRoutableDbHost,
+  verifyAnalystPrincipalIsReadOnly,
+  DESKTOP_MUTATION_TABLES
 } from '../utils/desktopProvisioning.js';
 
 describe('isPubliclyRoutableDbHost', () => {
@@ -71,13 +73,49 @@ describe('isPubliclyRoutableDbHost', () => {
 });
 
 describe('desktopDatabaseUrl', () => {
-  it('returns DESKTOP_DATABASE_URL verbatim even when DATABASE_URL is container-internal', () => {
+  it('provisions the dashboard\'s own routable DATABASE_URL even when DESKTOP_DATABASE_URL is set', () => {
+    // The desktop worker is an extension of the dashboard, never a separate
+    // data system: the dashboard's own database always wins when reachable.
+    const dashboardUrl = 'postgresql://app:pass@db.example.com:5432/paymentapp?sslmode=require';
+    expect(
+      desktopDatabaseUrl({
+        DATABASE_URL: dashboardUrl,
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@other.example.com:5432/legacy_db?sslmode=require'
+      })
+    ).toBe(dashboardUrl);
+  });
+
+  it('falls back to DESKTOP_DATABASE_URL for the same database when DATABASE_URL is container-internal', () => {
     expect(
       desktopDatabaseUrl({
         DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/paymentapp?sslmode=require',
         DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp'
       })
     ).toBe('postgresql://worker:pass@db.example.com:5432/paymentapp?sslmode=require');
+  });
+
+  it('refuses a DESKTOP_DATABASE_URL that names a different database than the dashboard\'s own', () => {
+    expect(
+      desktopDatabaseUrl({
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/worker_only_db?sslmode=require',
+        DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp'
+      })
+    ).toBe('');
+  });
+
+  it('guards against the dashboard\'s discrete PG_DATABASE setting when DATABASE_URL is unset', () => {
+    expect(
+      desktopDatabaseUrl({
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/other_db',
+        PG_DATABASE: 'paymentapp'
+      })
+    ).toBe('');
+    expect(
+      desktopDatabaseUrl({
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/paymentapp',
+        PG_DATABASE: 'paymentapp'
+      })
+    ).toBe('postgresql://worker:pass@db.example.com:5432/paymentapp');
   });
 
   it('never provisions a container-internal DATABASE_URL', () => {
@@ -119,6 +157,13 @@ describe('desktopAnalystDatabaseUrl', () => {
     })).toBe(analystUrl);
   });
 
+  it('refuses a read-only principal that names a different database than the dashboard\'s own', () => {
+    expect(desktopAnalystDatabaseUrl({
+      DESKTOP_ANALYST_DATABASE_URL: 'postgresql://analyst:readonly@db.example.com:5432/analyst_only_db',
+      DATABASE_URL: 'postgresql://app:write@db.example.com:5432/paymentapp'
+    })).toBe('');
+  });
+
   it('never falls back to a writer URL and rejects non-routable analyst URLs', () => {
     expect(desktopAnalystDatabaseUrl({
       DESKTOP_DATABASE_URL: 'postgresql://worker:write@db.example.com:5432/paymentapp',
@@ -148,5 +193,67 @@ describe('desktopDatabaseProvisioningForRole', () => {
       databaseUrl: '',
       databaseAccess: 'none'
     });
+  });
+});
+
+// Stub pg driver so the analyst grant verification is testable offline.
+const makeStubPg = (roleRow, privilegeByTable, connectError) => {
+  const queries = [];
+  class Client {
+    constructor(config) { this.config = config; }
+    async connect() { if (connectError) throw connectError; }
+    async query(sql, params) {
+      queries.push({ sql, params });
+      if (/pg_roles/.test(sql)) return { rows: [roleRow] };
+      if (/has_table_privilege/.test(sql)) {
+        return { rows: [{ allowed: privilegeByTable[params[0]] ?? null }] };
+      }
+      return { rows: [] };
+    }
+    async end() { queries.push({ sql: 'END' }); }
+  }
+  return { Client, queries };
+};
+
+describe('verifyAnalystPrincipalIsReadOnly', () => {
+  const noWriterPrivileges = () => {
+    const privileges = {};
+    for (const table of DESKTOP_MUTATION_TABLES) privileges[table] = false;
+    return privileges;
+  };
+
+  it('accepts a non-superuser principal with no INSERT on any desktop mutation table', async () => {
+    const stub = makeStubPg({ rolsuper: false }, noWriterPrivileges());
+    await expect(
+      verifyAnalystPrincipalIsReadOnly('postgresql://analyst:ro@db.example.com:5432/paymentapp', stub)
+    ).resolves.toBe(true);
+    // The privilege probe must cover every desktop-mutable table.
+    const probedTables = stub.queries.filter((q) => /has_table_privilege/.test(q.sql)).map((q) => q.params[0]);
+    for (const table of DESKTOP_MUTATION_TABLES) {
+      expect(probedTables).toContain(table);
+    }
+  });
+
+  it('refuses a superuser principal', async () => {
+    const stub = makeStubPg({ rolsuper: true }, noWriterPrivileges());
+    await expect(
+      verifyAnalystPrincipalIsReadOnly('postgresql://analyst:ro@db.example.com:5432/paymentapp', stub)
+    ).resolves.toBe(false);
+  });
+
+  it('refuses a principal holding INSERT on any desktop mutation table', async () => {
+    const privileges = noWriterPrivileges();
+    privileges['rc_fixed_fee'] = true;
+    const stub = makeStubPg({ rolsuper: false }, privileges);
+    await expect(
+      verifyAnalystPrincipalIsReadOnly('postgresql://analyst:ro@db.example.com:5432/paymentapp', stub)
+    ).resolves.toBe(false);
+  });
+
+  it('fails closed when the principal cannot be reached', async () => {
+    const stub = makeStubPg({ rolsuper: false }, noWriterPrivileges(), new Error('connection timed out'));
+    await expect(
+      verifyAnalystPrincipalIsReadOnly('postgresql://analyst:ro@db.example.com:5432/paymentapp', stub)
+    ).resolves.toBe(false);
   });
 });

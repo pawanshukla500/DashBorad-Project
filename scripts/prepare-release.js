@@ -9,6 +9,13 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
 const desktopDist = path.join(projectRoot, 'desktop', 'dist-release');
+// electron-builder names the output executables after desktop/package.json's
+// version; read it from there so this script never drifts from a version bump.
+const desktopPackage = JSON.parse(fs.readFileSync(path.join(projectRoot, 'desktop', 'package.json'), 'utf8'));
+const appVersion = desktopPackage.version;
+const setupExeSource = path.join(desktopDist, `ReconCentral RateCard Worker Setup ${appVersion}.exe`);
+const portableExeSource = path.join(desktopDist, `ReconCentral RateCard Worker ${appVersion}.exe`);
+
 const releasedDir = path.join(projectRoot, 'released');
 const userDesktopReleased = path.join(os.homedir(), 'Desktop', 'released');
 
@@ -16,9 +23,6 @@ const targetDirs = [releasedDir, userDesktopReleased];
 for (const dir of targetDirs) {
   fs.mkdirSync(dir, { recursive: true });
 }
-
-const setupExeSource = path.join(desktopDist, 'ReconCentral RateCard Worker Setup 1.0.0.exe');
-const portableExeSource = path.join(desktopDist, 'ReconCentral RateCard Worker 1.0.0.exe');
 
 console.log('[Release] Checking source executables in:', desktopDist);
 if (!fs.existsSync(setupExeSource)) {
@@ -137,14 +141,23 @@ The ReconCentral RateCard Desktop Worker is a standalone, cross-platform PC appl
 5. Check background service status: \`systemctl status reconcentral-ratecard\`
 
 ## 5. API Server Database Provisioning (Required Before First Sync)
-The worker never ships database credentials — they are provisioned over TLS after Firebase role verification. Configure these environment variables on the ReconCentral API server (Docker / Hostinger deployment) and restart the API service:
+The worker never ships database credentials — they are provisioned over TLS after Firebase role verification. **The worker is an extension of the ReconCentral dashboard, so it always connects to the very same PostgreSQL database the dashboard itself uses — never a separate database.** Configure these environment variables on the ReconCentral API server (Docker / Hostinger deployment) and restart the API service:
 
 | Variable | Purpose |
 | :--- | :--- |
-| \`DESKTOP_DATABASE_URL\` | Publicly routable PostgreSQL URL handed to verified admin/operator sessions. Container-internal hosts (e.g. \`postgres:5432\`) and reserved-documentation hosts are refused automatically. |
-| \`DESKTOP_ANALYST_DATABASE_URL\` | Distinct **read-only** database principal for analyst sign-ins. Analysts never receive writer credentials; without this variable they sign in with no database access. |
+| \`DATABASE_URL\` | The dashboard's own database. When its host is publicly routable it is handed to verified admin/operator sessions verbatim, so the worker lands on the exact same database as the dashboard with no extra configuration. |
+| \`DESKTOP_DATABASE_URL\` | Only needed when \`DATABASE_URL\` is container-internal (e.g. \`postgres:5432\`): the publicly routable address form of that SAME database. A URL naming any other database is refused automatically, as are container-internal and reserved-documentation hosts. |
+| \`DESKTOP_ANALYST_DATABASE_URL\` | Distinct **read-only** principal on the same database for analyst sign-ins. Analysts never receive writer credentials, and a principal pointing at any other database is refused; at sign-in the server additionally verifies **under that principal's own credentials** that it holds no writer privileges (fail-closed: an unverifiable or writer-capable principal yields no database access). |
 
-After both variables are configured, sign in once inside the worker to provision. The dashboard and the Settings tab then report an honest connection status, and the API server logs which URL class was issued per role.
+After the variables are configured, sign in once inside the worker to provision. The dashboard and the Settings tab then report an honest connection status, and the API server logs which URL class was issued per role.
+
+## 6. Keeping the App Updated (Automatic — Windows)
+The installed Windows app checks GitHub Releases for a new version shortly after launch and then every 6 hours. When one is found it:
+1. Downloads the new installer silently in the background,
+2. Shows an in-app **Restart to Update** banner and a native Windows notification,
+3. Applies the update automatically on the next app quit even if the prompt is ignored, and installs it immediately when you click **Restart to Update**.
+
+New releases are published by pushing a \`v*.*.*\` tag that **matches \`desktop/package.json\`'s version** (e.g. \`v1.1.0\` for version 1.1.0 — the release workflow refuses mismatched tags, so bump the package version first) — the release then carries the NSIS installer, the portable executable, and the \`latest.yml\` update feed the installed app reads. **Auto-update applies to NSIS installs only**: the portable executable and manual copies do not self-update, so use the NSIS installer (recommended) for always-current installs.
 
 ---
 

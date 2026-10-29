@@ -5,9 +5,28 @@ import { auth } from '../utils/firebaseAdmin.js';
 import { identityFromFirebaseToken } from '../utils/firebaseIdentity.js';
 import { AccessNotGrantedError, IdentityConflictError, syncFirebaseUser } from '../services/userSync.js';
 import { setFirebaseRole, FIREBASE_ROLE_CLAIM } from '../services/firebaseRoleClaims.js';
-import { desktopDatabaseProvisioningForRole } from '../utils/desktopProvisioning.js';
+import { desktopDatabaseProvisioningForRole, verifyAnalystPrincipalIsReadOnly } from '../utils/desktopProvisioning.js';
 
 const router = express.Router();
+
+/**
+ * Role provisioning with server-side verification of the analyst principal:
+ * configuration alone is not trusted — DESKTOP_ANALYST_DATABASE_URL is only
+ * handed out after a short-lived connection under that principal's own
+ * credentials confirms it holds no writer privileges. Fail-closed: an
+ * unverifiable or writer-capable principal means no database URL for the
+ * analyst (the desktop app then reports no database access).
+ */
+async function verifiedDesktopProvisioning(role) {
+  const provisioning = desktopDatabaseProvisioningForRole(role);
+  if (role === 'analyst' && provisioning.databaseUrl) {
+    if (!await verifyAnalystPrincipalIsReadOnly(provisioning.databaseUrl)) {
+      console.warn('[desktop provisioning] DESKTOP_ANALYST_DATABASE_URL is not a verified read-only principal; withholding the URL (fail-closed).');
+      provisioning.databaseUrl = '';
+    }
+  }
+  return provisioning;
+}
 
 // ── 1. Firebase Session Sync ────────────────────────────────────────────────
 router.post('/sync-user', async (req, res) => {
@@ -65,7 +84,7 @@ router.get('/me', authMiddleware, (req, res) => {
 // over TLS, ensuring database credentials are never baked into the installer binary.
 // Only desktop-reachable (publicly routable) URLs are provisioned; the API often
 // runs in Docker where DATABASE_URL is a container-internal host like `postgres`.
-router.get('/desktop-config', authMiddleware, (req, res) => {
+router.get('/desktop-config', authMiddleware, async (req, res) => {
   const role = normalizedRole(req.user?.role);
   if (!['admin', 'operator', 'analyst'].includes(role)) {
     return res.status(403).json({ error: 'Unauthorized role for desktop engine' });
@@ -78,7 +97,7 @@ router.get('/desktop-config', authMiddleware, (req, res) => {
       username: req.user.username,
       role: role
     },
-    ...desktopDatabaseProvisioningForRole(role),
+    ...await verifiedDesktopProvisioning(role),
     serverTime: new Date().toISOString()
   });
 });
@@ -124,7 +143,7 @@ router.post('/desktop-login', async (req, res) => {
         role: role
       },
       customToken,
-      ...desktopDatabaseProvisioningForRole(role),
+      ...await verifiedDesktopProvisioning(role),
       serverTime: new Date().toISOString()
     });
   } catch (err) {

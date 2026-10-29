@@ -58,5 +58,15 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
     const subscription = (event, result) => callback(result);
     ipcRenderer.on('scrape-completed', subscription);
     return () => ipcRenderer.removeListener('scrape-completed', subscription);
+  },
+
+  // Auto-Update (GitHub Releases)
+  getUpdateStatus: () => ipcRenderer.invoke('update-get-status'),
+  checkForUpdates: () => ipcRenderer.invoke('update-check'),
+  installUpdate: () => ipcRenderer.invoke('update-install'),
+  onUpdateStatus: (callback) => {
+    const subscription = (event, status) => callback(status);
+    ipcRenderer.on('update-status', subscription);
+    return () => ipcRenderer.removeListener('update-status', subscription);
   }
 });

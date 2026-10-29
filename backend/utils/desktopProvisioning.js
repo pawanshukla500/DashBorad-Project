@@ -1,20 +1,41 @@
 /**
  * Desktop provisioning resolver.
  *
- * The API server usually runs inside Docker, where DATABASE_URL points at the
- * container-internal service host (e.g. postgres:5432). Such a URL can never be
- * reached from a desktop worker machine, so it must never be handed to clients.
+ * Desktop workers must always land on the SAME PostgreSQL database the
+ * ReconCentral dashboard itself uses — a desktop worker is an extension of
+ * the dashboard, never a separate data system.
  *
  * Resolution order for operator/admin URLs provisioned to desktop workers:
- *   1. DESKTOP_DATABASE_URL — explicit override, trusted verbatim (set this on
- *      the production server to the publicly routable PostgreSQL URL).
- *   2. DATABASE_URL — only when its host is publicly routable.
+ *   1. DATABASE_URL — the dashboard's own database, provisioned verbatim
+ *      whenever its host is publicly routable from a desktop machine.
+ *   2. DESKTOP_DATABASE_URL — containerized-deployment escape hatch for the
+ *      rare case where DATABASE_URL points at a container-internal service
+ *      host (e.g. postgres:5432). It must be the routable address form of
+ *      that SAME database; a URL naming any other database is refused.
  *   3. '' (empty) — the desktop app then reports "Not Configured" and the
  *      operator supplies the URL manually in Settings.
  *
- * Analysts use a separate DESKTOP_ANALYST_DATABASE_URL principal. The server
- * never falls back to either writer URL for that role.
+ * Analysts use a separate DESKTOP_ANALYST_DATABASE_URL principal (read-only
+ * grants on the same database). It is also refused unless it names the
+ * dashboard's own database, and the server never falls back to either
+ * writer URL for that role. Because a misconfigured principal would hand a
+ * writer connection to an analyst, the provisioning ROUTES additionally
+ * verify on the server, with a short-lived connection under that principal's
+ * own credentials, that it really holds no writer privileges
+ * (verifyAnalystPrincipalIsReadOnly, fail-closed).
  */
+
+import pg from 'pg';
+
+// The tables a desktop worker can mutate. An analyst principal holding INSERT
+// on any of them is a writer, not a read-only principal.
+export const DESKTOP_MUTATION_TABLES = [
+  'rc_commission',
+  'rc_fixed_fee',
+  'rc_collection_fee',
+  'rc_reverse_shipping',
+  'rate_card_versions'
+];
 
 const NON_ROUTABLE_HOST_SUFFIXES = ['.internal', '.local', '.localdomain', '.lan', '.home.arpa', '.home', '.box'];
 
@@ -146,23 +167,58 @@ export function isPubliclyRoutableDbHost(hostname) {
 }
 
 /**
+ * Database name component of a PostgreSQL URL ('' when absent or unparsable).
+ * Used to keep desktop provisioning pinned to the dashboard's own database.
+ */
+function databaseNameOf(rawUrl) {
+  try {
+    const { pathname } = new URL(String(rawUrl || '').trim());
+    return decodeURIComponent(pathname.replace(/^\/+/, ''));
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The database name the dashboard itself uses, from either configuration
+ * style: a full DATABASE_URL or discrete PG_DATABASE/PGDATABASE settings
+ * (backend/db resolves the pool from either). '' when unconfigured — in
+ * that state the API server cannot verify roles either, so login never
+ * reaches desktop provisioning at all.
+ */
+function expectedDashboardDatabaseName(env) {
+  return databaseNameOf(String(env.DATABASE_URL || '')) ||
+    String(env.PG_DATABASE || env.PGDATABASE || '').trim();
+}
+
+/**
  * The database URL that may be provisioned to a desktop worker, or '' when the
- * server has no desktop-reachable URL to hand out.
+ * server has no desktop-reachable URL for the dashboard's own database.
  */
 export function desktopDatabaseUrl(env = process.env) {
-  const explicit = String(env.DESKTOP_DATABASE_URL || '').trim();
-  if (explicit) return explicit;
-
+  // The dashboard's own DATABASE_URL is the source of truth: whenever it is
+  // directly routable it is provisioned verbatim, so desktop workers always
+  // work against the very same database the dashboard uses.
   const dbUrl = String(env.DATABASE_URL || '').trim();
-  if (!dbUrl) return '';
-
-  try {
-    const { hostname } = new URL(dbUrl);
-    if (isPubliclyRoutableDbHost(hostname)) return dbUrl;
-  } catch {
-    // Malformed DATABASE_URL is never provisioned.
+  if (dbUrl) {
+    try {
+      const { hostname } = new URL(dbUrl);
+      if (isPubliclyRoutableDbHost(hostname)) return dbUrl;
+    } catch {
+      // Malformed DATABASE_URL is never provisioned.
+    }
   }
-  return '';
+
+  // DESKTOP_DATABASE_URL is the containerized-deployment escape hatch: the
+  // routable address form of the SAME database when DATABASE_URL itself is
+  // container-internal. A URL naming any other database is refused outright.
+  const explicit = String(env.DESKTOP_DATABASE_URL || '').trim();
+  if (!explicit) return '';
+  const dashboardDatabase = expectedDashboardDatabaseName(env);
+  if (dashboardDatabase && databaseNameOf(explicit) !== dashboardDatabase) {
+    return '';
+  }
+  return explicit;
 }
 
 /**
@@ -175,11 +231,18 @@ export function desktopAnalystDatabaseUrl(env = process.env) {
 
   try {
     const { hostname } = new URL(explicit);
-    if (isPubliclyRoutableDbHost(hostname)) return explicit;
+    if (!isPubliclyRoutableDbHost(hostname)) return '';
   } catch {
     // Malformed or non-routable read-only URLs are never provisioned.
+    return '';
   }
-  return '';
+  // The read-only principal must be a principal on the dashboard's own
+  // database; a separate analyst database is never provisioned.
+  const dashboardDatabase = expectedDashboardDatabaseName(env);
+  if (dashboardDatabase && databaseNameOf(explicit) !== dashboardDatabase) {
+    return '';
+  }
+  return explicit;
 }
 
 export function desktopDatabaseProvisioningForRole(role, env = process.env) {
@@ -191,4 +254,44 @@ export function desktopDatabaseProvisioningForRole(role, env = process.env) {
     return { databaseUrl: desktopDatabaseUrl(env), databaseAccess: 'standard' };
   }
   return { databaseUrl: '', databaseAccess: 'none' };
+}
+
+/**
+ * Verifies, over a short-lived connection made with the analyst principal's
+ * OWN credentials, that it really is read-only: not a superuser and holding no
+ * INSERT privilege on any desktop-mutable table. Configuration alone cannot be
+ * trusted here — a writer URL in DESKTOP_ANALYST_DATABASE_URL would otherwise
+ * hand every analyst a writer connection.
+ *
+ * Fail-closed: any error, any writer privilege, or an unreachable principal
+ * means the URL must NOT be provisioned. The pgModule parameter exists so the
+ * check stays testable offline against a stub driver.
+ */
+export async function verifyAnalystPrincipalIsReadOnly(databaseUrl, pgModule = pg) {
+  let client;
+  try {
+    client = new pgModule.Client({ connectionString: databaseUrl, connectionTimeoutMillis: 8000 });
+    await client.connect();
+
+    const roleRes = await client.query(
+      'SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user'
+    );
+    if (roleRes.rows.length && roleRes.rows[0].rolsuper === true) return false;
+
+    for (const table of DESKTOP_MUTATION_TABLES) {
+      const res = await client.query(
+        'SELECT has_table_privilege(current_user, $1, $2) AS allowed',
+        [table, 'INSERT']
+      );
+      // has_table_privilege returns null when the table does not exist; null
+      // is not a writer privilege. true is.
+      if (res.rows.length && res.rows[0].allowed === true) return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[desktopProvisioning] Analyst principal read-only verification failed:', err.message);
+    return false;
+  } finally {
+    if (client) await client.end().catch(() => {});
+  }
 }

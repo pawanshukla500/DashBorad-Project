@@ -354,8 +354,94 @@ function createWindow() {
   });
 }
 
+// ── Auto-Update (GitHub Releases feed) ───────────────────────────────────────
+// Keeps the installed desktop app on the latest published release: it checks
+// shortly after launch and every 6 hours, downloads in the background, then
+// notifies through an in-app banner and a native toast. The download is also
+// applied automatically on the next quit if the user ignores the prompt.
+const UPDATE_STATUS_CHANNEL = 'update-status';
+let autoUpdater = null;         // electron-updater instance (packaged builds only)
+let pendingUpdateVersion = '';   // version of the update currently being downloaded
+let lastUpdateStatus = { status: 'idle' };
+
+function broadcastUpdateStatus(status) {
+  lastUpdateStatus = status;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(UPDATE_STATUS_CHANNEL, status);
+  }
+}
+
+function loadAutoUpdater() {
+  // Updates ship only for packaged installs, and only for platforms a real
+  // update feed is published for: the release workflow publishes the Windows
+  // latest.yml feed (NSIS installer). Linux GUI packages are artifacts only —
+  // there is no latest-linux.yml, so checking there would surface recurring
+  // feed errors instead of updates.
+  if (!app.isPackaged || process.platform !== 'win32') return null;
+  try {
+    return require('electron-updater').autoUpdater;
+  } catch (err) {
+    console.warn(`[AutoUpdate] Unavailable: ${err.message}`);
+    return null;
+  }
+}
+
+function checkForAppUpdate() {
+  if (!autoUpdater) return Promise.resolve(false);
+  // Failures also flow to the 'error' event; the catch keeps an offline
+  // machine from surfacing an unhandled rejection at startup.
+  return autoUpdater.checkForUpdates().then(() => true).catch((err) => {
+    console.warn(`[AutoUpdate] Check failed: ${err.message}`);
+    broadcastUpdateStatus({ status: 'error', message: err.message });
+    return false;
+  });
+}
+
+function setupAutoUpdate() {
+  autoUpdater = loadAutoUpdater();
+  if (!autoUpdater) return;
+
+  autoUpdater.autoDownload = true;          // fetch in the background as soon as an update is found
+  autoUpdater.autoInstallOnAppQuit = true;  // an ignored prompt still applies on the next quit
+
+  autoUpdater.on('checking-for-update', () => broadcastUpdateStatus({ status: 'checking' }));
+  autoUpdater.on('update-available', (info) => {
+    pendingUpdateVersion = info?.version || '';
+    broadcastUpdateStatus({ status: 'available', version: pendingUpdateVersion });
+  });
+  autoUpdater.on('update-not-available', () => broadcastUpdateStatus({ status: 'not-available' }));
+  autoUpdater.on('download-progress', (progress) => broadcastUpdateStatus({
+    status: 'downloading',
+    version: pendingUpdateVersion,
+    percent: Math.round(progress?.percent || 0)
+  }));
+  autoUpdater.on('update-downloaded', (info) => {
+    pendingUpdateVersion = info?.version || pendingUpdateVersion;
+    broadcastUpdateStatus({ status: 'downloaded', version: pendingUpdateVersion });
+    if (Notification.isSupported()) {
+      new Notification({
+        title: 'ReconCentral RateCard Worker — update ready',
+        body: `Version ${pendingUpdateVersion} is downloaded. Restart the app to apply it.`
+      }).show();
+    }
+  });
+  autoUpdater.on('error', (err) => broadcastUpdateStatus({
+    status: 'error',
+    message: String(err?.message || err)
+  }));
+
+  // First check shortly after launch (after sign-in and UI settle), then every 6 hours.
+  setTimeout(() => { checkForAppUpdate(); }, 10 * 1000);
+  setInterval(() => { checkForAppUpdate(); }, 6 * 60 * 60 * 1000);
+}
+
+// Windows groups the app's native toasts (update ready, scheduled scrape
+// done) under this identity; it must match build.appId in package.json.
+app.setAppUserModelId('com.reconcentral.ratecardworker');
+
 app.whenReady().then(() => {
   createWindow();
+  setupAutoUpdate();
   fs.mkdirSync(STAGING_DIR, { recursive: true });
 
   // Start background scheduler check; a rejected run (e.g. token refresh
@@ -561,7 +647,13 @@ const authorizeSession = createSessionAccess({
   refresh: refreshFirebaseIdToken, verify: verifyDesktopTokenAuthorization,
   onAuthorized: (session) => setDesktopDatabaseAccess(session.user.role, storedDatabaseUrlForRole(session.user.role, loadConfig()))
 });
-const PUBLIC_CHANNELS = new Set(['auth-login', 'auth-get-session', 'auth-logout']);
+const PUBLIC_CHANNELS = new Set([
+  'auth-login', 'auth-get-session', 'auth-logout',
+  // Update lifecycle is app-level, not session/data-level: checking for a new
+  // release and applying it must work before sign-in and can never touch
+  // database or session data.
+  'update-get-status', 'update-check', 'update-install'
+]);
 const MUTATION_CHANNELS = new Set(['save-config', 'sync-brand-rate-cards', 'upload-database-details']);
 
 function registerHandler(channel, handler) {
@@ -592,6 +684,29 @@ registerHandler('save-config', (e, config) => {
     merged.databaseUrlRole = '';
   }
   return saveConfig(merged);
+});
+
+// ── Auto-Update IPC Handlers ─────────────────────────────────────────────────
+registerHandler('update-get-status', () => ({ success: true, status: lastUpdateStatus }));
+registerHandler('update-check', async () => {
+  if (!autoUpdater) {
+    return { success: false, error: 'Updates are only available in the installed desktop app.' };
+  }
+  // Progress and results arrive through update-status events; this only
+  // reports whether a check actually ran.
+  const started = await checkForAppUpdate();
+  return started ? { success: true } : { success: false, error: 'Update check failed. It will be retried automatically.' };
+});
+registerHandler('update-install', () => {
+  if (!autoUpdater) {
+    return { success: false, error: 'Updates are only available in the installed desktop app.' };
+  }
+  if (lastUpdateStatus?.status !== 'downloaded') {
+    return { success: false, error: 'No downloaded update is ready to install yet.' };
+  }
+  // Silent install that relaunches the app with the new version.
+  autoUpdater.quitAndInstall(true, true);
+  return { success: true };
 });
 
 // ── Authentication & Authorization IPC Handlers ─────────────────────────────

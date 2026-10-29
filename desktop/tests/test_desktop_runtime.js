@@ -861,6 +861,119 @@ async function runTests() {
     assert(missing.length === 0, `prepare-release.js omits: ${missing.join(', ')}`);
   });
 
+  // ── GitHub Releases + auto-update invariants ──────────────────────────────
+  await runTest('package.json publishes to GitHub Releases and ships electron-updater', async () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
+    assert(/^\d+\.\d+\.\d+$/.test(pkg.version || ''), `version must be a release tag basis, got: ${pkg.version}`);
+    assert(pkg.dependencies?.['electron-updater'], 'electron-updater must be a declared dependency (packaged into the ASAR for the updater)');
+    const publishers = pkg.build?.publish || [];
+    const github = publishers.find((p) => p?.provider === 'github');
+    assert(github, 'build.publish must use the GitHub provider so releases double as the update feed');
+    assert(github.owner === 'pawanshukla500' && github.repo === 'DashBorad-Project', 'GitHub publisher must point at the ReconCentral repository');
+    assert(github.releaseType === 'release', 'tagged builds must publish live releases — draft releases are invisible to the public update feed');
+    const winTargets = pkg.build?.win?.target || [];
+    assert(winTargets.includes('nsis'), 'NSIS installer target is required (the only Windows target that auto-updates)');
+    assert(winTargets.includes('portable'), 'portable Windows target is required');
+  });
+
+  await runTest('main.js wires auto-update safely (static invariant)', async () => {
+    const mainSource = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+    assert(mainSource.includes("app.setAppUserModelId('com.reconcentral.ratecardworker')"), 'Windows toasts need the app user model id to match build.appId');
+    const loadIdx = mainSource.indexOf('function loadAutoUpdater()');
+    assert(loadIdx !== -1, 'loadAutoUpdater not found');
+    const loadWindow = mainSource.slice(loadIdx, loadIdx + 500);
+    assert(loadWindow.includes('if (!app.isPackaged || process.platform !== \'win32\') return null;'), 'dev runs must never attempt auto-updates, and packaged Linux GUI builds must not check a feed the release workflow never publishes');
+    assert(loadWindow.includes("require('electron-updater')"), 'packaged updater must load electron-updater');
+    const setupIdx = mainSource.indexOf('function setupAutoUpdate()');
+    assert(setupIdx !== -1, 'setupAutoUpdate not found');
+    const setupWindow = mainSource.slice(setupIdx, setupIdx + 2200);
+    assert(setupWindow.includes('autoUpdater.autoDownload = true'), 'updates must download automatically once found');
+    assert(setupWindow.includes('autoUpdater.autoInstallOnAppQuit = true'), 'an ignored prompt must still apply the update on the next quit');
+    for (const event of ['checking-for-update', 'update-available', 'update-not-available', 'download-progress', 'update-downloaded', 'error']) {
+      assert(setupWindow.includes(`'${event}'`), `updater must forward '${event}' to the renderer`);
+    }
+    assert(setupWindow.includes('mainWindow.webContents.send(UPDATE_STATUS_CHANNEL') || mainSource.includes('mainWindow.webContents.send(UPDATE_STATUS_CHANNEL'), 'renderer update notifications must ride the update-status channel');
+    assert(/setTimeout\(\(\) => \{ checkForAppUpdate\(\); \}/.test(setupWindow), 'an update check must run shortly after launch');
+    assert(/setInterval\(\(\) => \{ checkForAppUpdate\(\); \}/.test(setupWindow), 'update checks must be periodic');
+    const ipcWindow = mainSource.slice(mainSource.indexOf("registerHandler('update-get-status'"), mainSource.indexOf("registerHandler('update-get-status'") + 1600);
+    for (const channel of ['update-get-status', 'update-check', 'update-install']) {
+      assert(mainSource.includes(`registerHandler('${channel}'`), `missing IPC handler ${channel}`);
+    }
+    assert(mainSource.includes("'update-get-status', 'update-check', 'update-install'"), 'update IPC channels must be public: an update must be applicable before sign-in and must never touch session or database data');
+    assert(ipcWindow.includes('quitAndInstall(true, true)'), 'install prompt must silently install and relaunch');
+    assert(ipcWindow.includes("lastUpdateStatus?.status !== 'downloaded'"), 'install must be refused until an update has actually downloaded');
+  });
+
+  await runTest('preload bridge exposes the update lifecycle (static invariant)', async () => {
+    const preloadSource = fs.readFileSync(path.join(desktopDir, 'preload.cjs'), 'utf8');
+    for (const [api, channel] of [
+      ['getUpdateStatus', 'update-get-status'],
+      ['checkForUpdates', 'update-check'],
+      ['installUpdate', 'update-install']
+    ]) {
+      assert(preloadSource.includes(`${api}: () => ipcRenderer.invoke('${channel}')`), `preload must expose ${api} over ${channel}`);
+    }
+    assert(preloadSource.includes("ipcRenderer.on('update-status', subscription)"), 'preload must subscribe to update-status events');
+    const subIdx = preloadSource.indexOf('onUpdateStatus: (callback) =>');
+    assert(subIdx !== -1, 'preload onUpdateStatus not found');
+    const subWindow = preloadSource.slice(subIdx, subIdx + 400);
+    assert(subWindow.includes("ipcRenderer.removeListener('update-status', subscription)"), 'event subscription must return an unsubscribe handle');
+  });
+
+  await runTest('renderer shows an update banner with a restart prompt (static invariant)', async () => {
+    const htmlSource = fs.readFileSync(path.join(desktopDir, 'ui', 'index.html'), 'utf8');
+    for (const id of ['update-banner', 'update-banner-text', 'btn-update-restart']) {
+      assert(htmlSource.includes(`id="${id}"`), `index.html is missing #${id}`);
+    }
+    const bannerStart = htmlSource.indexOf('id="update-banner"');
+    const bannerTag = htmlSource.slice(bannerStart, htmlSource.indexOf('>', bannerStart));
+    assert(/display:\s*none/.test(bannerTag), 'the update banner must start hidden');
+
+    const rendererSource = fs.readFileSync(path.join(desktopDir, 'ui', 'renderer.js'), 'utf8');
+    // Standalone Chrome mode must degrade honestly, never claim update support.
+    const shimIdx = rendererSource.indexOf('if (!window.ratecardAPI)');
+    assert(shimIdx !== -1, 'standalone shim not found');
+    const firstFunctionIdx = rendererSource.indexOf('async function checkAuthSession');
+    const shimNoopInstall = rendererSource.indexOf('installUpdate: () => Promise.resolve({ success: false');
+    const shimNoopSubscribe = rendererSource.indexOf('onUpdateStatus: () => () => {}');
+    assert(shimNoopInstall !== -1 && shimNoopInstall > shimIdx && shimNoopInstall < firstFunctionIdx, 'standalone shim must refuse installs');
+    assert(shimNoopSubscribe !== -1 && shimNoopSubscribe > shimIdx && shimNoopSubscribe < firstFunctionIdx, 'standalone shim must provide a no-op update subscription');
+    const initIdx = rendererSource.indexOf('async function initUpdateBanner()');
+    assert(initIdx !== -1, 'initUpdateBanner not found');
+    const domIdx = rendererSource.indexOf("document.addEventListener('DOMContentLoaded'");
+    assert(domIdx !== -1, 'DOMContentLoaded bootstrap not found');
+    const domWindow = rendererSource.slice(domIdx, domIdx + 700);
+    assert(domWindow.includes('initUpdateBanner();'), 'the banner must be initialized at startup');
+    const applyIdx = rendererSource.indexOf('function applyUpdateBanner(status)');
+    assert(applyIdx !== -1, 'applyUpdateBanner not found');
+    const applyWindow = rendererSource.slice(applyIdx, applyIdx + 2600);
+    assert(applyWindow.includes("kind === 'downloaded'"), 'a downloaded update must surface the banner');
+    assert(applyWindow.includes("kind === 'error'"), 'update errors must be reported without blocking the UI');
+    assert(applyWindow.includes('pendingUpdateDownloaded'), 'a downloaded update must keep the restart prompt sticky');
+    assert(/if \(pendingUpdateDownloaded\) \{\s*show\(/.test(applyWindow), 'the downloaded restart prompt must survive the later periodic checking/not-available events');
+    assert(applyWindow.includes('restartBtn.style.display'), 'the restart button must be hidden unless an update is ready');
+    const clickIdx = rendererSource.indexOf("restartBtn?.addEventListener('click'");
+    assert(clickIdx !== -1, 'restart button click wiring not found');
+    const clickWindow = rendererSource.slice(clickIdx, clickIdx + 900);
+    assert(clickWindow.includes('installUpdate'), 'restart button must trigger installUpdate');
+    assert(clickWindow.includes('res?.success'), 'restart button must check the install result before claiming success');
+  });
+
+  await runTest('release workflow publishes real releases on version tags (static invariant)', async () => {
+    const workflowPath = path.join(path.resolve(desktopDir, '..'), '.github', 'workflows', 'ratecard-desktop-release.yml');
+    const workflow = fs.readFileSync(workflowPath, 'utf8');
+    assert(workflow.includes("- 'v*.*.*'"), 'the workflow must trigger on version tags');
+    assert(workflow.includes("startsWith(github.ref, 'refs/tags/') && 'always' || 'never'"), 'publishing must happen on tags only');
+    assert(workflow.includes('--publish "$env:PUBLISH_MODE"'), 'Windows builds must let electron-builder publish (it uploads latest.yml, the update feed)');
+    assert(workflow.includes('GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'), 'electron-builder needs GH_TOKEN to publish the release');
+    assert(workflow.includes('latest.yml'), 'the Windows artifact set must include latest.yml');
+    assert(workflow.includes('needs.build-windows.result == \'success\''), 'Linux assets must only attach after the release exists — attaching to a missing release would create an update feed with no installer');
+    assert(workflow.includes('softprops/action-gh-release@v2'), 'Linux packages attach via softprops/action-gh-release');
+    assert(workflow.includes('npm ci'), 'CI builds must be reproducible (npm ci against the lockfile)');
+    assert(workflow.includes('${GITHUB_REF_NAME#v}'), 'tag builds must refuse a tag that does not match desktop/package.json\'s version');
+    assert(/does not match desktop\/package\.json version/.test(workflow), 'the tag/version guard must fail the build with a clear error');
+  });
+
   console.log('\n=================================================================');
   console.log(` Results: ${passed} passed, ${failed} failed`);
   console.log('=================================================================');
