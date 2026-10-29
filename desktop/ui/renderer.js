@@ -41,6 +41,7 @@ let currentRateCards = [];
 let currentChanges = [];
 let activeDiffFilter = 'all';
 let currentUserSession = null;
+let currentCanSync = false;
 
 async function checkAuthSession() {
   try {
@@ -161,16 +162,17 @@ async function loadInitialState() {
     // Populate Settings form
     document.getElementById('cfg-email').value = config.email || '';
     document.getElementById('cfg-password').value = config.password || '';
-    document.getElementById('cfg-db-url').value = config.databaseUrl || '';
+    // An analyst-provisioned read-only URL is not usable by privileged roles:
+    // show the honest empty state instead of a URL their writes would fail on.
+    document.getElementById('cfg-db-url').value = config.databaseUrlRole === 'analyst' ? '' : (config.databaseUrl || '');
     document.getElementById('cfg-hour').value = config.scheduledHour ?? 6;
     document.getElementById('cfg-minute').value = config.scheduledMinute ?? 0;
     document.getElementById('cfg-alert-email').value = config.notificationEmail || '';
-    document.getElementById('cfg-auto-sync').checked = !!config.autoSyncToDb;
 
     // Test DB connection silently for dashboard status
+    const dbStatusEl = document.getElementById('dash-db-status');
     if (config.databaseUrl) {
       const dbCheck = await window.ratecardAPI.testDbConnection(config.databaseUrl);
-      const dbStatusEl = document.getElementById('dash-db-status');
       if (dbCheck.success) {
         dbStatusEl.innerText = 'Connected';
         dbStatusEl.style.color = '#10b981';
@@ -178,13 +180,77 @@ async function loadInitialState() {
         dbStatusEl.innerText = 'Offline';
         dbStatusEl.style.color = '#ef4444';
       }
+    } else {
+      dbStatusEl.innerText = 'Not Configured';
+      dbStatusEl.style.color = '#94a3b8';
     }
 
-    document.getElementById('dash-session-status').innerText = 'Ready';
-    document.getElementById('dash-session-status').style.color = '#10b981';
+    // Reflect the real marketplace session vault instead of a static "Ready" label.
+    await loadSessionStatusUI();
 
   } catch (err) {
     console.error('Failed to load initial state:', err);
+  }
+}
+
+// ── Marketplace Session Vault Status (real cookie checks, not static labels) ─
+const CHANNEL_CARD_IDS = {
+  flipkart_shopsy: 'status-ch-flipkart',
+  myntra_vb: 'status-ch-myntra-vb',
+  myntra_ej: 'status-ch-myntra-ej',
+  meesho: 'status-ch-meesho'
+};
+
+async function loadSessionStatusUI() {
+  const statusEl = document.getElementById('dash-session-status');
+  const subEl = document.getElementById('dash-session-sub');
+  try {
+    const res = await window.ratecardAPI.getMarketplaces();
+    const marketplaces = res?.marketplaces || [];
+
+    // Per-channel session cards on the Dashboard
+    for (const [channelId, elementId] of Object.entries(CHANNEL_CARD_IDS)) {
+      const el = document.getElementById(elementId);
+      const mp = marketplaces.find(m => m.id === channelId);
+      if (!el || !mp) continue;
+      if (mp.hasCookies) {
+        el.innerText = `Session Saved (${mp.cookieCount ?? '?'} cookies)`;
+        el.style.color = '#10b981';
+      } else {
+        el.innerText = 'No Session — 2FA Login';
+        el.style.color = '#f59e0b';
+      }
+    }
+
+    // KPI card reflects the vault for the selected scraper channel
+    const selectEl = document.getElementById('select-marketplace');
+    const channel = selectEl?.value || 'flipkart_shopsy';
+    const current = marketplaces.find(m => m.id === channel) || marketplaces.find(m => m.id === 'flipkart_shopsy');
+    if (statusEl && subEl) {
+      if (current?.hasCookies) {
+        statusEl.innerText = 'Session Saved';
+        statusEl.style.color = '#10b981';
+        const savedAt = current.lastSavedAt ? new Date(current.lastSavedAt).toLocaleString() : '';
+        subEl.innerText = `${current.cookieCount ?? 0} cookies for ${current.name || channel}${savedAt ? ' · saved ' + savedAt : ''}`;
+      } else {
+        statusEl.innerText = 'No Session';
+        statusEl.style.color = '#f59e0b';
+        subEl.innerText = 'Run 2FA Login to store marketplace cookies for ' + (current?.name || channel);
+      }
+    }
+  } catch (err) {
+    for (const elementId of Object.values(CHANNEL_CARD_IDS)) {
+      const el = document.getElementById(elementId);
+      if (el) {
+        el.innerText = 'Status Unknown';
+        el.style.color = '#94a3b8';
+      }
+    }
+    if (statusEl) {
+      statusEl.innerText = 'Status Unknown';
+      statusEl.style.color = '#94a3b8';
+    }
+    if (subEl) subEl.innerText = 'Could not read the local session vault';
   }
 }
 
@@ -192,6 +258,15 @@ async function loadInitialState() {
 function subscribeToEvents() {
   window.ratecardAPI.onProgress((msg) => {
     appendTerminalLine(msg);
+    if (typeof msg !== 'string') return;
+    // Cookie/session-related progress events may have changed the vault state
+    if (/cookie|session|login/i.test(msg)) {
+      loadSessionStatusUI();
+    }
+    // The standalone server completes scrapes asynchronously; refresh the staged preview
+    if (/scraping job completed/i.test(msg)) {
+      loadRateCardPreview();
+    }
   });
 }
 
@@ -217,22 +292,66 @@ function appendTerminalLine(text) {
   terminal.scrollTop = terminal.scrollHeight;
 }
 
+// Table content comes from the database and scraped portal pages, so every
+// interpolated value is escaped and status rows are built with textContent.
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
+function setTableMessage(tbody, colspan, message, isError = false) {
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = colspan;
+  td.className = isError ? 'empty-state error' : 'empty-state';
+  td.textContent = message;
+  tr.appendChild(td);
+  tbody.replaceChildren(tr);
+}
+
 // ── Load Real-Time Brand & FSN Catalog ───────────────────────────────────────
 async function loadCatalogData() {
   const tbody = document.getElementById('catalog-tbody');
   tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Fetching real-time brand & FSN catalog from database...</td></tr>';
+  // Do not keep stale catalog rows available to filter after an empty or failed refresh.
+  currentCatalog = [];
+
+  // The Brands KPI must always reflect the real outcome — never stay on "Checking...".
+  const brandsCountEl = document.getElementById('dash-brands-count');
+  const brandsSubEl = document.getElementById('dash-brands-sub');
+  const setBrandsKpi = (value, sub, color) => {
+    if (brandsCountEl) {
+      brandsCountEl.innerText = value;
+      brandsCountEl.style.color = color;
+    }
+    if (brandsSubEl) brandsSubEl.innerText = sub;
+  };
 
   try {
     const res = await window.ratecardAPI.getBrandFsnCatalog();
     if (res.success && res.catalog?.length > 0) {
       currentCatalog = res.catalog;
       renderCatalogTable(currentCatalog);
+      const brands = [...new Set(currentCatalog.map(item => item.brand).filter(Boolean))];
+      if (brands.length > 0) {
+        setBrandsKpi(`${brands.length} Brand${brands.length === 1 ? '' : 's'}`, brands.join(', '), '#10b981');
+      } else {
+        setBrandsKpi('None Found', 'No brands in order history', '#94a3b8');
+      }
       appendTerminalLine(`✓ Loaded ${currentCatalog.length} brand-specific catalog items from live order history.`);
     } else {
-      tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No catalog items returned: ${res.error || 'Empty'}</td></tr>`;
+      const reason = res.error || 'Empty catalog returned';
+      if (/not configured/i.test(reason)) {
+        setBrandsKpi('Not Configured', 'Set the database URL in Settings to load brands', '#94a3b8');
+      } else {
+        setBrandsKpi('DB Offline', `Catalog unavailable: ${reason}`, '#ef4444');
+      }
+      setTableMessage(tbody, 6, `No catalog items returned: ${reason}`);
     }
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="6" class="empty-state error">Failed to load catalog: ${err.message}</td></tr>`;
+    setBrandsKpi('DB Offline', `Catalog unavailable: ${err.message}`, '#ef4444');
+    setTableMessage(tbody, 6, `Failed to load catalog: ${err.message}`, true);
   }
 }
 
@@ -256,20 +375,27 @@ function renderCatalogTable(catalog) {
     <tr>
       <td>
         <span class="badge ${item.marketplace.toLowerCase().includes('shopsy') ? 'badge-account' : 'badge-portal'}">
-          ${item.marketplace.toUpperCase()}
+          ${escapeHtml(item.marketplace.toUpperCase())}
         </span>
       </td>
-      <td style="font-weight: 500;">${item.category}</td>
-      <td><strong>${item.brand}</strong></td>
-      <td style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">${item.sample_fsn || '—'}</td>
-      <td style="font-family: 'JetBrains Mono', monospace; color: #94a3b8;">${item.sample_sku || '—'}</td>
-      <td><span style="font-weight: 600; color: #10b981;">${(item.order_count || 0).toLocaleString()}</span></td>
+      <td style="font-weight: 500;">${escapeHtml(item.category)}</td>
+      <td><strong>${escapeHtml(item.brand)}</strong></td>
+      <td style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">${escapeHtml(item.sample_fsn || '—')}</td>
+      <td style="font-family: 'JetBrains Mono', monospace; color: #94a3b8;">${escapeHtml(item.sample_sku || '—')}</td>
+      <td><span style="font-weight: 600; color: #10b981;">${escapeHtml(Number(item.order_count || 0).toLocaleString())}</span></td>
     </tr>
   `).join('');
 }
 
 // ── Load Full Rate Card Preview & Diff ───────────────────────────────────────
+// Overlapping previews share module state (channel switched while a slower
+// request is still in flight). Only the newest request may write that state:
+// a stale response is dropped, so it can never re-enable commit or render
+// rate cards for a selection the user has already navigated away from.
+let previewRequestSeq = 0;
+
 async function loadRateCardPreview() {
+  const requestId = ++previewRequestSeq;
   const tbody = document.getElementById('diff-tbody');
   tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Generating brand-wise rate cards and comparing with PostgreSQL database...</td></tr>';
 
@@ -277,13 +403,32 @@ async function loadRateCardPreview() {
     const selectEl = document.getElementById('select-marketplace');
     const headerSelect = document.getElementById('header-select-marketplace');
     const selectedChannel = selectEl?.value || headerSelect?.value || 'flipkart_shopsy';
+    // Reset BEFORE any await: while the preview request is in flight, staged cards
+    // from a previous channel must not stay commit-enabled.
+    currentCanSync = false;
+    currentRateCards = [];
+    currentChanges = [];
+    const commitBtn = document.getElementById('btn-commit-db');
+    if (commitBtn) commitBtn.disabled = true;
+    const changesBadge = document.getElementById('changes-badge');
+    if (changesBadge) changesBadge.style.display = 'none';
     const res = await window.ratecardAPI.getRateCardPreview({ marketplace: selectedChannel });
+    if (requestId !== previewRequestSeq) return; // superseded by a newer selection
     if (res.success && res.rateCards?.length > 0) {
+      const diffRes = await window.ratecardAPI.detectBrandRateChanges(res.rateCards);
+      if (requestId !== previewRequestSeq) return; // superseded by a newer selection
+      if (!diffRes?.success) throw new Error(diffRes?.error || 'Change detection failed.');
       currentRateCards = res.rateCards;
-      
-      // Run change detection against DB
-      const diffRes = await window.ratecardAPI.detectBrandRateChanges(currentRateCards);
       currentChanges = diffRes.changes || [];
+      // Without a reachable database the staged review still renders, but
+      // nothing may be committed: diffs are unknowable and sync would fail.
+      currentCanSync = Boolean(res.canSync) && diffRes.dbAvailable !== false;
+      if (commitBtn) {
+        commitBtn.disabled = !currentCanSync;
+        commitBtn.title = !currentCanSync && diffRes.dbAvailable === false
+          ? 'Database not reachable. Configure the PostgreSQL URL in Settings to detect changes and commit.'
+          : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.');
+      }
 
       // Update badge
       const badge = document.getElementById('changes-badge');
@@ -295,16 +440,24 @@ async function loadRateCardPreview() {
       }
 
       renderDiffTable();
-      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${currentChanges.length} diffs detected).`);
+      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${diffRes.dbAvailable === false ? 'database not reachable — change detection skipped' : currentChanges.length + ' diffs detected'}).`);
     } else {
       currentRateCards = [];
       currentChanges = [];
       const badge = document.getElementById('changes-badge');
       if (badge) badge.style.display = 'none';
-      tbody.innerHTML = `<tr><td colspan="8" class="empty-state">${res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.'}</td></tr>`;
+      setTableMessage(tbody, 8, res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.');
     }
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-state error">Error loading rates: ${err.message}</td></tr>`;
+    // A stale request's failure belongs to a selection nobody is looking at
+    // anymore: do not clobber the newer preview's state or table.
+    if (requestId !== previewRequestSeq) return;
+    currentCanSync = false;
+    currentRateCards = [];
+    currentChanges = [];
+    const commitBtn = document.getElementById('btn-commit-db');
+    if (commitBtn) commitBtn.disabled = true;
+    setTableMessage(tbody, 8, `Error loading rates: ${err.message}`, true);
   }
 }
 
@@ -313,13 +466,17 @@ function renderDiffTable() {
   const rows = [];
 
   for (const card of currentRateCards) {
-    const { marketplace, category, brand, commissions, fixedFees, reverseShipping } = card;
+    const { marketplace, category, brand, commissions, fixedFees, reverseShipping, collectionFees = [] } = card;
 
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission') {
       for (const c of commissions) {
-        const change = currentChanges.find(ch => 
-          ch.marketplace === marketplace && ch.category === category && ch.brand === brand && ch.type === 'commission'
+        // Match changes per slab (count-level records carry no price bounds and
+        // legitimately apply to every slab of that brand).
+        const change = currentChanges.find(ch =>
+          ch.marketplace === marketplace && ch.category === category && ch.brand === brand && ch.type === 'commission' &&
+          (ch.priceMin == null ||
+            (Math.abs(ch.priceMin - c.price_min) < 0.01 && Math.abs(ch.priceMax - c.price_max) < 1.0))
         );
         rows.push({
           type: 'Commission',
@@ -327,7 +484,7 @@ function renderDiffTable() {
           category,
           brand,
           slab: c.price_max >= 999990 ? `≥ ₹${c.price_min}` : `₹${c.price_min} - ₹${c.price_max}`,
-          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(1)}%` : 'Active / Matched',
+          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(1)}%` : (change ? '—' : 'Active / Matched'),
           newRate: `${(c.rate * 100).toFixed(1)}%`,
           status: change ? (change.reason || 'Modified') : 'Active'
         });
@@ -350,7 +507,31 @@ function renderDiffTable() {
       }
     }
 
-    // 3. Reverse Shipping rows
+    // 3. Collection Fee rows (payment charges; staged scrapes commit these)
+    if (activeDiffFilter === 'all' || activeDiffFilter === 'collection') {
+      const fmtColl = (value, type) => (type === 'pct' ? `${(value * 100).toFixed(2)}%` : `₹${value}`);
+      for (const cf of collectionFees) {
+        // Match changes per slab so one slab's old/new rates never bleed onto
+        // every other slab of that category.
+        const change = currentChanges.find(ch =>
+          ch.marketplace === marketplace && ch.category === category && ch.type === 'collection_fee' &&
+          (ch.priceMin == null ||
+            (Math.abs(ch.priceMin - cf.price_min) < 0.01 && Math.abs(ch.priceMax - cf.price_max) < 1.0))
+        );
+        rows.push({
+          type: 'Collection Fee',
+          marketplace: marketplace.toUpperCase(),
+          category,
+          brand: 'All',
+          slab: cf.price_max >= 999990 ? `≥ ₹${cf.price_min}` : `₹${cf.price_min} - ₹${cf.price_max}`,
+          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : 'Active / Matched'),
+          newRate: change?.newRate != null ? change.newRate : `Prepaid ${fmtColl(cf.prepaid, cf.prepaid_type)} / Postpaid ${fmtColl(cf.postpaid, cf.postpaid_type)}`,
+          status: change ? (change.reason || 'Modified') : 'Active'
+        });
+      }
+    }
+
+    // 4. Reverse Shipping rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'reverse') {
       for (const r of reverseShipping) {
         rows.push({
@@ -376,16 +557,16 @@ function renderDiffTable() {
   const displayRows = rows.slice(0, 100);
   tbody.innerHTML = displayRows.map(r => `
     <tr>
-      <td><span class="badge ${r.type === 'Commission' ? 'badge-portal' : 'badge-account'}">${r.type}</span></td>
-      <td><strong>${r.marketplace}</strong></td>
-      <td>${r.category}</td>
-      <td>${r.brand}</td>
-      <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${r.slab}</td>
-      <td style="color: #94a3b8;">${r.oldRate}</td>
-      <td style="color: #38bdf8; font-weight: 600;">${r.newRate}</td>
+      <td><span class="badge ${r.type === 'Commission' ? 'badge-portal' : 'badge-account'}">${escapeHtml(r.type)}</span></td>
+      <td><strong>${escapeHtml(r.marketplace)}</strong></td>
+      <td>${escapeHtml(r.category)}</td>
+      <td>${escapeHtml(r.brand)}</td>
+      <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${escapeHtml(r.slab)}</td>
+      <td style="color: #94a3b8;">${escapeHtml(r.oldRate)}</td>
+      <td style="color: #38bdf8; font-weight: 600;">${escapeHtml(r.newRate)}</td>
       <td>
-        <span class="status-badge ${r.status.includes('Active') ? 'badge-active' : 'badge-modified'}">
-          ${r.status}
+        <span class="status-badge ${String(r.status).includes('Active') ? 'badge-active' : 'badge-modified'}">
+          ${escapeHtml(r.status)}
         </span>
       </td>
     </tr>
@@ -452,18 +633,18 @@ function setupEventListeners() {
   btnLoadPreview?.addEventListener('click', loadRateCardPreview);
 
   btnExportDiff?.addEventListener('click', () => {
-    if (!currentDiff || currentDiff.length === 0) {
+    if (!currentChanges || currentChanges.length === 0) {
       alert('No rate changes currently displayed to export.');
       return;
     }
-    const blob = new Blob([JSON.stringify(currentDiff, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(currentChanges, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `RateCard_Diff_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    appendTerminalLine(`✓ Exported ${currentDiff.length} rate changes to JSON.`);
+    appendTerminalLine(`✓ Exported ${currentChanges.length} rate changes to JSON.`);
   });
 
   // Marketplace Channel Synchronization
@@ -544,6 +725,8 @@ function setupEventListeners() {
     appendTerminalLine(`Starting Rate Card Worker (${marketplace.toUpperCase()} | Mode: ${mode} | Brand: ${brand})...`);
     btnStartScrape.disabled = true;
     btnStartScrape.innerText = '⏳ Scraping in Progress...';
+    const engineStatusEl = document.getElementById('engine-status');
+    if (engineStatusEl) engineStatusEl.innerText = 'Running';
 
     try {
       const result = await window.ratecardAPI.startScrape({
@@ -564,13 +747,16 @@ function setupEventListeners() {
     } finally {
       btnStartScrape.disabled = false;
       btnStartScrape.innerText = '⚡ Run Scraper Worker';
+      const engineStatusEl = document.getElementById('engine-status');
+      if (engineStatusEl) engineStatusEl.innerText = 'Idle';
+      loadSessionStatusUI();
     }
   });
 
   // Commit to Database
   btnCommitDb?.addEventListener('click', async () => {
-    if (currentRateCards.length === 0) {
-      alert('Please load active rates or run the scraper worker first.');
+    if (currentRateCards.length === 0 || !currentCanSync) {
+      alert('Run a successful extraction first. Generated template rates cannot be committed as live rates.');
       return;
     }
 
@@ -610,6 +796,10 @@ function setupEventListeners() {
       if (res.success) {
         appendTerminalLine(`✓ Excel workbook created successfully (${res.sheetsCount} sheets, ${res.totalRecords} records).`);
         appendTerminalLine(`Saved to: ${res.filePath}`);
+        const excelPathEl = document.getElementById('excel-path-display');
+        const excelBadgeEl = document.getElementById('excel-size-badge');
+        if (excelPathEl) excelPathEl.innerText = res.filePath || 'Workbook generated';
+        if (excelBadgeEl) excelBadgeEl.innerText = 'Generated';
         alert(`Excel file successfully created on Desktop!\n\nLocation: ${res.filePath}`);
       } else {
         appendTerminalLine(`Excel export failed: ${res.error}`);
@@ -624,6 +814,8 @@ function setupEventListeners() {
     const res = await window.ratecardAPI.openExcelFile();
     if (res.success) {
       appendTerminalLine(`✓ Opened: ${res.filePath}`);
+      const excelPathEl = document.getElementById('excel-path-display');
+      if (excelPathEl && res.filePath) excelPathEl.innerText = res.filePath;
     } else {
       appendTerminalLine(`Could not open Excel file: ${res.error}`);
       alert(`Could not open Excel file: ${res.error}`);
@@ -660,8 +852,7 @@ function setupEventListeners() {
       databaseUrl: document.getElementById('cfg-db-url').value,
       scheduledHour: parseInt(document.getElementById('cfg-hour').value) || 6,
       scheduledMinute: parseInt(document.getElementById('cfg-minute').value) || 0,
-      notificationEmail: document.getElementById('cfg-alert-email').value,
-      autoSyncToDb: document.getElementById('cfg-auto-sync').checked
+      notificationEmail: document.getElementById('cfg-alert-email').value
     };
 
     const res = await window.ratecardAPI.saveConfig(newConfig);
@@ -687,10 +878,31 @@ function setupEventListeners() {
 
   btnHeaderLogout?.addEventListener('click', async () => {
     if (confirm('Sign out and deauthorize this PC?')) {
-      await window.ratecardAPI.authLogout();
+      const res = await window.ratecardAPI.authLogout();
+      // A failed session-file removal leaves working tokens on disk: the UI
+      // must not claim a clean deauthorization it did not get.
+      if (!res?.success) {
+        alert(res?.error || 'Sign-out failed: the saved session could not be removed.');
+        appendTerminalLine(`[Auth] ${res?.error || 'Sign-out failed.'}`);
+        return;
+      }
       currentUserSession = null;
       showAuthModal();
       appendTerminalLine('[Auth] Signed out. PC deauthorized.');
+      const sessionStatusEl = document.getElementById('dash-session-status');
+      const sessionSubEl = document.getElementById('dash-session-sub');
+      const dbStatusEl = document.getElementById('dash-db-status');
+      const engineStatusEl = document.getElementById('engine-status');
+      if (sessionStatusEl) {
+        sessionStatusEl.innerText = 'Signed Out';
+        sessionStatusEl.style.color = '#94a3b8';
+      }
+      if (sessionSubEl) sessionSubEl.innerText = 'Sign in again to check marketplace sessions';
+      if (dbStatusEl) {
+        dbStatusEl.innerText = 'Signed Out';
+        dbStatusEl.style.color = '#94a3b8';
+      }
+      if (engineStatusEl) engineStatusEl.innerText = 'Idle';
     }
   });
 
@@ -731,6 +943,15 @@ function setupEventListeners() {
         currentUserSession = res.session;
         updateUserAuthUI(res.session);
         appendTerminalLine(`✓ Authorized as ${res.session.user.username} (${res.session.user.role.toUpperCase()})`);
+        if (res.session.user.role === 'analyst' && authDbInput) {
+          authDbInput.value = '';
+        }
+        if (res.databaseConfigured === false) {
+          const setupHint = res.session.user.role === 'analyst'
+            ? 'Ask the server operator to configure DESKTOP_ANALYST_DATABASE_URL with a read-only PostgreSQL role.'
+            : 'Set DESKTOP_DATABASE_URL on the API server or configure the URL in Settings.';
+          appendTerminalLine(`⚠ No database URL was configured. ${setupHint}`);
+        }
         await loadInitialState();
         loadCatalogData();
       } else {
@@ -813,26 +1034,9 @@ async function loadMarketplaceAccountsUI() {
         });
       }
 
-      // Update Channel Status indicators on Dashboard
-      accounts.forEach(acc => {
-        const mp = (acc.marketplace || '').toLowerCase();
-        const accId = (acc.account_id || '').toLowerCase();
-        const hasPw = Boolean(acc.has_password || acc.has_credentials);
-
-        if (mp.includes('flipkart') || mp.includes('shopsy')) {
-          const el = document.getElementById('status-ch-flipkart');
-          if (el) el.innerText = hasPw ? 'Ready (Linked)' : 'Ready';
-        } else if (accId === 'myntra_vb' || (mp.includes('myntra') && String(acc.seller_id) === '10708')) {
-          const el = document.getElementById('status-ch-myntra-vb');
-          if (el) el.innerText = hasPw ? 'Vault Linked (10708)' : 'Ready';
-        } else if (accId === 'myntra_ej' || (mp.includes('myntra') && String(acc.seller_id) === '45833')) {
-          const el = document.getElementById('status-ch-myntra-ej');
-          if (el) el.innerText = hasPw ? 'Vault Linked (45833)' : 'Ready';
-        } else if (mp.includes('meesho')) {
-          const el = document.getElementById('status-ch-meesho');
-          if (el) el.innerText = hasPw ? 'Supplier Linked' : 'Ready';
-        }
-      });
+      // Dashboard channel cards are owned exclusively by loadSessionStatusUI()
+      // (real cookie vault state). Backend vault linkage is shown in the table
+      // badges above, so it must not overwrite the per-channel session status.
     }
   } catch (err) {
     console.warn('Could not load marketplace accounts:', err);

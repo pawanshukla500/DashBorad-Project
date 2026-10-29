@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getResolvedUserDataDir } from './cookieVault.js';
+import { sanitizeSavedDbUrl } from './dbUrlGuard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +17,13 @@ if (pg.types?.setTypeParser) {
 
 let activePool = null;
 let activeConnectionString = null;
+let analystDatabaseUrl = null;
+
+// A verified analyst session must never fall back to a writer URL from the
+// environment, a manual argument, or a previous operator's configuration.
+export function setDesktopDatabaseAccess(role, databaseUrl = '') {
+  analystDatabaseUrl = role === 'analyst' ? String(databaseUrl || '').trim() : null;
+}
 
 function loadLocalEnvFiles() {
   for (const envPath of [
@@ -56,24 +64,27 @@ loadLocalEnvFiles();
  * 4. Local `.env` or `backend/.env` (if running in repo workspace)
  */
 export function resolveDatabaseUrl(customUrl = null) {
+  if (analystDatabaseUrl !== null) return analystDatabaseUrl || null;
   loadLocalEnvFiles();
   if (customUrl && typeof customUrl === 'string' && customUrl.trim()) {
     return customUrl.trim();
   }
-  if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) {
-    return process.env.DATABASE_URL.trim();
-  }
-  if (process.env.RECON_DATABASE_URL && process.env.RECON_DATABASE_URL.trim()) {
-    return process.env.RECON_DATABASE_URL.trim();
-  }
+  // Environment URLs get the same container-internal sanitization as saved
+  // ones: a DATABASE_URL inherited from a container deployment (postgres:5432)
+  // must fail closed as "not configured", never reach the pool as a DNS error.
+  const envUrl = sanitizeSavedDbUrl(process.env.DATABASE_URL) || sanitizeSavedDbUrl(process.env.RECON_DATABASE_URL);
+  if (envUrl) return envUrl;
 
   // Check saved worker-config.json in user-data dir
   try {
     const configPath = path.join(getResolvedUserDataDir(), 'worker-config.json');
     if (fs.existsSync(configPath)) {
       const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (parsed && parsed.databaseUrl && String(parsed.databaseUrl).trim()) {
-        return String(parsed.databaseUrl).trim();
+      // Container-internal hosts (e.g. postgres:5432 provisioned by old server
+      // builds) are discarded so callers get a clear "not configured" error.
+      const savedUrl = sanitizeSavedDbUrl(parsed?.databaseUrl);
+      if (savedUrl) {
+        return savedUrl;
       }
     }
   } catch {}
@@ -84,8 +95,9 @@ export function resolveDatabaseUrl(customUrl = null) {
       const sysConfigPath = '/etc/reconcentral-ratecard/worker-config.json';
       if (fs.existsSync(sysConfigPath)) {
         const parsed = JSON.parse(fs.readFileSync(sysConfigPath, 'utf8'));
-        if (parsed && parsed.databaseUrl && String(parsed.databaseUrl).trim()) {
-          return String(parsed.databaseUrl).trim();
+        const savedUrl = sanitizeSavedDbUrl(parsed?.databaseUrl);
+        if (savedUrl) {
+          return savedUrl;
         }
       }
     } catch {}

@@ -540,7 +540,8 @@ The production installer executable (`released/ReconCentral-RateCard-Worker-Setu
    - The user launches the installed application on their PC.
    - The user logs in with their ReconCentral Firebase credentials (e.g. `returnorders@vbexports.co.in`).
    - The desktop engine sends the Firebase `idToken` to the ReconCentral backend endpoint `GET /api/auth/desktop-config`.
-   - The backend validates the ID token via `firebase-admin`, checks that `users.role` is in `['admin', 'operator', 'analyst']`, and securely provisions the database connection string over TLS directly into the desktop client's active memory.
+   - The backend validates the ID token via `firebase-admin` and checks that `users.role` is in `['admin', 'operator', 'analyst']`. Admin/operator sessions receive the standard desktop database URL; analyst sessions receive only the separately configured `DESKTOP_ANALYST_DATABASE_URL`, which must use a PostgreSQL principal with read-only grants. It never falls back to the admin/operator URL.
+   - The desktop worker clears any previously saved standard database URL when an analyst signs in, and accepts an analyst URL only when the server marks it `read-only`.
 3. **OS Profile Isolation**:
    - The provisioned session is stored locally in the current user's roaming application directory (`%APPDATA%\ReconCentral RateCard Worker\worker-config.json` and `auth-session.json`).
    - This ensures credentials and active session state are protected by Windows OS user-level ACL permissions and never shared across PC user accounts.

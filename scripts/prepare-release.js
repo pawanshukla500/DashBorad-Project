@@ -35,10 +35,17 @@ function copyDesktopPayloadForLinux(targetLinuxDir) {
   const desktopSrc = path.join(projectRoot, 'desktop');
   const items = [
     'package.json',
+    'package-lock.json',
     'main.js',
-    'preload.js',
+    'preload.cjs',
     'desktopServer.mjs',
     'worker.js',
+    'browserRuntime.js',
+    'sessionAccess.js',
+    'scrapeResults.js',
+    'dbUrlGuard.js',
+    'httpAccess.js',
+    'portalScraper.js',
     'cookieVault.js',
     'chromeFinder.js',
     'db.js',
@@ -112,7 +119,7 @@ The ReconCentral RateCard Desktop Worker is a standalone, cross-platform PC appl
 
 ### Step 3: Daily Operations
 - **Run Extraction**: Click **🚀 Run Extraction** on Dashboard or Live Scraper tab to inspect rate cards.
-- **Review & Sync**: Go to **Review & DB Sync** tab to review detected changes against live PostgreSQL records, and click **✓ Commit & Auto-Close in Database** to sync.
+- **Review & Sync**: Go to **Review & DB Sync** tab to review detected changes against live PostgreSQL records, and click **✓ Commit & Auto-Close in Database** to sync. Commit is enabled only after a successful extraction on the selected channel; generated template previews are read-only and cannot be committed.
 - **Excel Report**: Click **📑 Export Excel** or **📂 Open in Microsoft Excel** to inspect the 6-sheet brand-wise workbook.
 
 ## 4. Linux Deployment (Debian / Ubuntu / RHEL / Arch)
@@ -129,7 +136,18 @@ The ReconCentral RateCard Desktop Worker is a standalone, cross-platform PC appl
 4. Or launch the web control panel: \`http://localhost:3388\`
 5. Check background service status: \`systemctl status reconcentral-ratecard\`
 
+## 5. API Server Database Provisioning (Required Before First Sync)
+The worker never ships database credentials — they are provisioned over TLS after Firebase role verification. Configure these environment variables on the ReconCentral API server (Docker / Hostinger deployment) and restart the API service:
+
+| Variable | Purpose |
+| :--- | :--- |
+| \`DESKTOP_DATABASE_URL\` | Publicly routable PostgreSQL URL handed to verified admin/operator sessions. Container-internal hosts (e.g. \`postgres:5432\`) and reserved-documentation hosts are refused automatically. |
+| \`DESKTOP_ANALYST_DATABASE_URL\` | Distinct **read-only** database principal for analyst sign-ins. Analysts never receive writer credentials; without this variable they sign in with no database access. |
+
+After both variables are configured, sign in once inside the worker to provision. The dashboard and the Settings tab then report an honest connection status, and the API server logs which URL class was issued per role.
+
 ---
+
 © ReconCentral Enterprise Reconciliation • VB Exports
 `;
 

@@ -71,9 +71,23 @@ else
   exit 1
 fi
 cd "$INSTALL_DIR"
-if [ ! -d "node_modules" ] || [ ! -d "node_modules/pg" ] || [ ! -d "node_modules/puppeteer-extra" ] || [ ! -d "node_modules/puppeteer-extra-plugin-stealth" ]; then
-  echo "Installing required production dependencies (pg, dotenv, puppeteer-extra)..."
+# Dependency integrity check: old node_modules directories alone are not
+# enough — an upgraded install over a pre-existing tree can predate
+# puppeteer-core, and browserRuntime.js hard-fails at startup without it.
+# Verify every runtime-critical module actually RESOLVES before skipping
+# npm install, and re-verify afterwards so a partial install cannot leave
+# the background service broken.
+RUNTIME_MODULES="pg dotenv puppeteer-core puppeteer-extra puppeteer-extra-plugin-stealth xlsx"
+deps_resolve() {
+  node -e "process.argv.slice(1).forEach((m)=>{require.resolve(m)})" $RUNTIME_MODULES >/dev/null 2>&1
+}
+if ! deps_resolve; then
+  echo "Installing required production dependencies ($RUNTIME_MODULES)..."
   npm install --omit=dev
+  if ! deps_resolve; then
+    echo "Error: dependency installation incomplete — a runtime module (e.g. puppeteer-core) still does not resolve." >&2
+    exit 1
+  fi
 fi
 chown -R "$TARGET_USER:" "$INSTALL_DIR" 2>/dev/null || true
 

@@ -48,6 +48,8 @@ coverage/
 
 # Scratch & temporary migration scripts
 *.cjs
+# Exception: desktop preload bridge is required production code, not scratch output
+!desktop/preload.cjs
 backend/*.cjs
 backend/*.html
 backend/*.png
@@ -66,5 +68,6 @@ frontend/*.cjs
 desktop/dist-release/
 desktop/node_modules/
 released/*.exe
+released/linux/desktop/
 reports/
 

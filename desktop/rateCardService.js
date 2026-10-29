@@ -203,6 +203,9 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
   const p = pool || getDesktopPool();
   const sellerAccount = (typeof options === 'string' ? options : options?.sellerAccount) || 'default';
   const changes = [];
+  // Collection fees are category-level: check them once per marketplace/category,
+  // not once per brand card in that category.
+  const checkedCollectionFeeCategories = new Set();
 
   for (const card of brandRateCards) {
     const { marketplace, category, brand, commissions } = card;
@@ -254,6 +257,8 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             brand,
             sample_fsn: card.sample_fsn,
             slab: `₹${sc.price_min} - ₹${sc.price_max}`,
+            priceMin: sc.price_min,
+            priceMax: sc.price_max,
             oldRate: null,
             newRate: sc.rate,
             reason: 'New commission price slab'
@@ -266,6 +271,8 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             brand,
             sample_fsn: card.sample_fsn,
             slab: `₹${sc.price_min} - ₹${sc.price_max}`,
+            priceMin: sc.price_min,
+            priceMax: sc.price_max,
             oldRate: parseFloat(match.rate),
             newRate: sc.rate,
             reason: 'Commission rate percentage modified'
@@ -377,9 +384,93 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
         }
       }
     }
+
+    // Collection fee differences (compare row count and individual slab values).
+    // Staged cards carry these fees and commits write them, so the review must
+    // surface any difference instead of silently syncing them.
+    if (card.collectionFees && card.collectionFees.length > 0) {
+      const collKey = [marketplace, sellerAccount, category].join('|');
+      if (!checkedCollectionFeeCategories.has(collKey)) {
+        checkedCollectionFeeCategories.add(collKey);
+        const activeColl = await p.query(`
+          SELECT fulfilment_type, price_min, price_max, prepaid, postpaid, prepaid_type, postpaid_type
+          FROM rc_collection_fee
+          WHERE marketplace = $1
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $2
+            AND end_date IS NULL
+        `, [marketplace, category, sellerAccount]);
+
+        const fmtCollFee = (value, type) => (type === 'pct' ? (parseFloat(value) * 100).toFixed(2) + '%' : '₹' + parseFloat(value));
+        const collRateLabel = (cf) => 'Prepaid ' + fmtCollFee(cf.prepaid, cf.prepaid_type || 'flat') + ' / Postpaid ' + fmtCollFee(cf.postpaid, cf.postpaid_type || 'flat');
+
+        if (activeColl.rows.length !== card.collectionFees.length) {
+          changes.push({
+            type: 'collection_fee',
+            marketplace,
+            category,
+            brand,
+            reason: 'Collection fee slab count changed (DB: ' + activeColl.rows.length + ', New: ' + card.collectionFees.length + ')'
+          });
+        } else {
+          for (const cf of card.collectionFees) {
+            const match = activeColl.rows.find(ac =>
+              (ac.fulfilment_type || 'All') === (cf.fulfilment_type || 'All') &&
+              Math.abs(parseFloat(ac.price_min) - cf.price_min) < 0.01 &&
+              Math.abs(parseFloat(ac.price_max) - cf.price_max) < 1.0
+            );
+            const slab = '₹' + cf.price_min + ' - ₹' + cf.price_max;
+            if (!match) {
+              changes.push({
+                type: 'collection_fee',
+                marketplace,
+                category,
+                brand,
+                slab,
+                priceMin: cf.price_min,
+                priceMax: cf.price_max,
+                newRate: collRateLabel(cf),
+                reason: 'New collection fee slab'
+              });
+            } else if (
+              Math.abs(parseFloat(match.prepaid) - cf.prepaid) > 0.0001 ||
+              Math.abs(parseFloat(match.postpaid) - cf.postpaid) > 0.0001 ||
+              (match.prepaid_type || 'flat') !== (cf.prepaid_type || 'flat') ||
+              (match.postpaid_type || 'flat') !== (cf.postpaid_type || 'flat')
+            ) {
+              changes.push({
+                type: 'collection_fee',
+                marketplace,
+                category,
+                brand,
+                slab,
+                priceMin: cf.price_min,
+                priceMax: cf.price_max,
+                oldRate: collRateLabel(match),
+                newRate: collRateLabel(cf),
+                reason: 'Collection fee modified'
+              });
+            }
+          }
+        }
+      }
+    }
   }
 
   return changes;
+}
+
+/**
+ * The day a sync takes effect: an explicit option wins, then the staged
+ * extraction's scrape date (a review committed after midnight must not shift
+ * the rates to the wrong day), then today.
+ */
+export function resolveSyncEffectiveDate(options = {}, brandRateCards = []) {
+  const requested = String(options?.effectiveDate || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(requested)) return requested;
+  const staged = String((Array.isArray(brandRateCards) ? brandRateCards.find(card => card?.effectiveDate) : null)?.effectiveDate || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(staged)) return staged;
+  return new Date().toISOString().slice(0, 10);
 }
 
 /**
@@ -388,10 +479,12 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
 export async function syncBrandRateCardsToDatabase(brandRateCards, options = {}, pool = null) {
   const p = pool || getDesktopPool();
   const {
-    effectiveDate = new Date().toISOString().slice(0, 10),
     forceUpdate = false,
     sellerAccount = 'default'
   } = options;
+  // Committed under the day the rates were observed (the staged scrape date),
+  // never silently shifted by a review that runs past midnight.
+  const effectiveDate = resolveSyncEffectiveDate(options, brandRateCards);
 
   const changes = await detectBrandRateChanges(brandRateCards, p, { sellerAccount });
 
@@ -414,8 +507,10 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
     let insertedCommissions = 0;
     let insertedFixed = 0;
     let insertedRev = 0;
+    let insertedCollection = 0;
     const processedFixedFeeCategories = new Set();
     const processedRevShippingCategories = new Set();
+    const processedCollectionFeeCategories = new Set();
 
     for (const card of brandRateCards) {
       const { marketplace, category, brand, commissions, fixedFees, reverseShipping } = card;
@@ -533,6 +628,47 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           insertedRev++;
         }
       }
+
+      // 4. Collection Fee Sync (category-level, same period-closure rules)
+      const collectionFees = card.collectionFees || [];
+      const collKey = `${marketplace}_${sellerAccount}_${category}`;
+      if (!processedCollectionFeeCategories.has(collKey) && collectionFees.length > 0) {
+        processedCollectionFeeCategories.add(collKey);
+
+        await client.query(`
+          DELETE FROM rc_collection_fee 
+          WHERE marketplace = $1 
+            AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $3 
+            AND start_date >= $4::date 
+            AND end_date IS NULL
+        `, [marketplace, sellerAccount, category, effectiveDate]);
+
+        await client.query(`
+          UPDATE rc_collection_fee 
+          SET end_date = $1::date, updated_at = NOW() 
+          WHERE marketplace = $2 
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $4 
+            AND start_date < $5::date
+            AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
+
+        for (const cf of collectionFees) {
+          await client.query(`
+            INSERT INTO rc_collection_fee (
+              marketplace, seller_account, category, fulfilment_type, price_min, price_max,
+              prepaid, postpaid, prepaid_type, postpaid_type, start_date, end_date, updated_at
+            ) VALUES (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, NULL, NOW()
+            )
+          `, [
+            marketplace, sellerAccount, category, cf.fulfilment_type || 'All', cf.price_min, cf.price_max,
+            cf.prepaid, cf.postpaid, cf.prepaid_type, cf.postpaid_type, effectiveDate
+          ]);
+          insertedCollection++;
+        }
+      }
     }
 
     // Version record in rate_card_versions
@@ -546,7 +682,8 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         brandsCount: brandRateCards.length,
         insertedCommissions,
         insertedFixed,
-        insertedRev
+        insertedRev,
+        insertedCollection
       })]);
     } catch (verErr) {
       console.warn('[syncBrandRateCardsToDatabase] Note: Could not write rate_card_versions snapshot:', verErr.message);
@@ -561,6 +698,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
       insertedCommissions,
       insertedFixed,
       insertedRev,
+      insertedCollection,
       versionName
     };
 
