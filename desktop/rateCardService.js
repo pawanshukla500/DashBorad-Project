@@ -307,6 +307,24 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
         reason: 'New category & brand commission profile',
         slabsCount: commissions.length
       }));
+
+      for (const sc of commissions) {
+        if (sc.rate >= 0.25) {
+          changes.push(annotateRateAnomaly({
+            type: 'commission',
+            marketplace,
+            category,
+            brand,
+            sample_fsn: card.sample_fsn,
+            slab: `₹${sc.price_min} - ₹${sc.price_max}`,
+            priceMin: sc.price_min,
+            priceMax: sc.price_max,
+            oldRate: null,
+            newRate: sc.rate,
+            reason: 'New commission price slab'
+          }));
+        }
+      }
     } else {
       if (activeCommissions.rows.length !== commissions.length) {
         const countDiff = Math.abs(activeCommissions.rows.length - commissions.length);
@@ -407,6 +425,9 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
               category,
               brand,
               slab: `${ff.fulfilment_type}: ₹${ff.price_min} - ₹${ff.price_max}`,
+              priceMin: ff.price_min,
+              priceMax: ff.price_max,
+              fulfilmentType: ff.fulfilment_type,
               oldRate: null,
               newRate: ff.rate,
               reason: 'New fixed fee tier/slab'
@@ -418,6 +439,9 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
               category,
               brand,
               slab: `${ff.fulfilment_type}: ₹${ff.price_min} - ₹${ff.price_max}`,
+              priceMin: ff.price_min,
+              priceMax: ff.price_max,
+              fulfilmentType: ff.fulfilment_type,
               oldRate: parseFloat(match.rate),
               newRate: ff.rate,
               reason: 'Fixed fee rate modified'
@@ -468,6 +492,9 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
               category,
               brand,
               slab: `${rs.weight_slab}: ₹${rs.price_min} - ₹${rs.price_max}`,
+              priceMin: rs.price_min,
+              priceMax: rs.price_max,
+              weightSlab: rs.weight_slab,
               reason: 'New reverse shipping weight/price slab'
             }));
           } else if (
@@ -481,6 +508,9 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
               category,
               brand,
               slab: `${rs.weight_slab}: ₹${rs.price_min} - ₹${rs.price_max}`,
+              priceMin: rs.price_min,
+              priceMax: rs.price_max,
+              weightSlab: rs.weight_slab,
               oldRate: `L: ₹${match.local_fee}, Z: ₹${match.zonal_fee}, N: ₹${match.national_fee}`,
               newRate: `L: ₹${rs.local_fee}, Z: ₹${rs.zonal_fee}, N: ₹${rs.national_fee}`,
               oldFees: { local: parseFloat(match.local_fee), zonal: parseFloat(match.zonal_fee), national: parseFloat(match.national_fee) },
@@ -555,7 +585,9 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             ) {
               const prepaidDelta = (cf.prepaid_type === 'pct') ? Math.abs(cf.prepaid - parseFloat(match.prepaid)) : 0;
               const postpaidDelta = (cf.postpaid_type === 'pct') ? Math.abs(cf.postpaid - parseFloat(match.postpaid)) : 0;
-              const flatDelta = (cf.prepaid_type === 'flat') ? Math.abs(cf.prepaid - parseFloat(match.prepaid)) : 0;
+              const prepaidFlatDelta = (cf.prepaid_type === 'flat') ? Math.abs(cf.prepaid - parseFloat(match.prepaid)) : 0;
+              const postpaidFlatDelta = (cf.postpaid_type === 'flat') ? Math.abs(cf.postpaid - parseFloat(match.postpaid)) : 0;
+              const flatDelta = Math.max(prepaidFlatDelta, postpaidFlatDelta);
               changes.push(annotateRateAnomaly({
                 type: 'collection_fee',
                 marketplace,
@@ -847,14 +879,10 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
       }))
     };
 
-    try {
-      await client.query(`
-        INSERT INTO rate_card_versions (marketplace, seller_account, version_name, status, effective_from, snapshot, created_at, published_at)
-        VALUES ('flipkart_shopsy_brandwise', $1, $2, 'published', $3, $4, NOW(), NOW())
-      `, [sellerAccount, versionName, effectiveDate, JSON.stringify(richSnapshot)]);
-    } catch (verErr) {
-      console.warn('[syncBrandRateCardsToDatabase] Note: Could not write rate_card_versions snapshot:', verErr.message);
-    }
+    await client.query(`
+      INSERT INTO rate_card_versions (marketplace, seller_account, version_name, status, effective_from, snapshot, created_at, published_at)
+      VALUES ('flipkart_shopsy_brandwise', $1, $2, 'published', $3, $4, NOW(), NOW())
+    `, [sellerAccount, versionName, effectiveDate, JSON.stringify(richSnapshot)]);
 
     await client.query('COMMIT');
 

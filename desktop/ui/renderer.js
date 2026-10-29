@@ -735,6 +735,19 @@ async function loadRateCardPreview() {
         if (badge) badge.style.display = 'none';
       }
 
+      const resetAnomaliesFilterIfActive = () => {
+        if (activeDiffFilter === 'anomalies') {
+          activeDiffFilter = 'all';
+          document.querySelectorAll('.filter-tab').forEach(t => {
+            if (t.getAttribute('data-filter') === 'all') {
+              t.classList.add('active');
+            } else {
+              t.classList.remove('active');
+            }
+          });
+        }
+      };
+
       if (anomaliesCount > 0) {
         if (anomaliesBadge) {
           anomaliesBadge.innerText = `⚠️ ${anomaliesCount}`;
@@ -752,6 +765,7 @@ async function loadRateCardPreview() {
         if (anomaliesBadge) anomaliesBadge.style.display = 'none';
         if (anomalyAlert) anomalyAlert.style.display = 'none';
         if (tabFilterAnomalies) tabFilterAnomalies.style.display = 'none';
+        resetAnomaliesFilterIfActive();
       }
 
       renderDiffTable();
@@ -767,6 +781,16 @@ async function loadRateCardPreview() {
       if (anomalyAlert) anomalyAlert.style.display = 'none';
       const tabFilterAnomalies = document.getElementById('tab-filter-anomalies');
       if (tabFilterAnomalies) tabFilterAnomalies.style.display = 'none';
+      if (activeDiffFilter === 'anomalies') {
+        activeDiffFilter = 'all';
+        document.querySelectorAll('.filter-tab').forEach(t => {
+          if (t.getAttribute('data-filter') === 'all') {
+            t.classList.add('active');
+          } else {
+            t.classList.remove('active');
+          }
+        });
+      }
       setTableMessage(tbody, 8, res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.');
     }
   } catch (err) {
@@ -784,6 +808,16 @@ async function loadRateCardPreview() {
     if (anomalyAlert) anomalyAlert.style.display = 'none';
     const tabFilterAnomalies = document.getElementById('tab-filter-anomalies');
     if (tabFilterAnomalies) tabFilterAnomalies.style.display = 'none';
+    if (activeDiffFilter === 'anomalies') {
+      activeDiffFilter = 'all';
+      document.querySelectorAll('.filter-tab').forEach(t => {
+        if (t.getAttribute('data-filter') === 'all') {
+          t.classList.add('active');
+        } else {
+          t.classList.remove('active');
+        }
+      });
+    }
     setTableMessage(tbody, 8, `Error loading rates: ${err.message}`, true);
   }
 }
@@ -825,7 +859,11 @@ function renderDiffTable() {
       for (const f of fixedFees) {
         const change = currentChanges.find(ch =>
           ch.marketplace === marketplace && ch.category === category && ch.type === 'fixed_fee' &&
-          (ch.slab == null || ch.slab === `${f.fulfilment_type}: ₹${f.price_min} - ₹${f.price_max}` || ch.slab.includes(f.fulfilment_type))
+          (ch.priceMin != null
+            ? (ch.fulfilmentType === f.fulfilment_type &&
+               Math.abs(ch.priceMin - f.price_min) < 0.01 &&
+               Math.abs(ch.priceMax - f.price_max) < 1.0)
+            : (ch.slab == null || (ch.fulfilmentType ? ch.fulfilmentType === f.fulfilment_type : ch.slab.includes(f.fulfilment_type))))
         );
         rows.push({
           type: 'Fixed Fee',
@@ -873,7 +911,11 @@ function renderDiffTable() {
       for (const r of reverseShipping) {
         const change = currentChanges.find(ch =>
           ch.marketplace === marketplace && ch.category === category && ch.type === 'reverse_shipping' &&
-          (ch.slab == null || ch.slab.includes(r.weight_slab))
+          (ch.priceMin != null
+            ? (ch.weightSlab === r.weight_slab &&
+               Math.abs(ch.priceMin - r.price_min) < 0.01 &&
+               Math.abs(ch.priceMax - r.price_max) < 1.0)
+            : (ch.slab == null || (ch.weightSlab ? ch.weightSlab === r.weight_slab : ch.slab.includes(r.weight_slab))))
         );
         rows.push({
           type: 'Reverse Shipping',
