@@ -95,6 +95,25 @@ function normalizeLegacyIpv4(host) {
 }
 
 /**
+ * IPv4-embedded IPv6 forms carry the same address as their embedded IPv4:
+ * ::ffff:10.0.0.5 (mapped), the deprecated IPv4-compatible dotted ::10.0.0.5,
+ * and the hex-tail form ::a00:5 (which encodes 10.0.0.5). Returns the embedded
+ * dotted IPv4, or null for ordinary hosts.
+ */
+function extractEmbeddedIpv4(host) {
+  if (!host.includes(':')) return null;
+  const h = host.toLowerCase();
+  if (/^::(?:ffff:)?\d{1,3}(?:\.\d{1,3}){3}$/.test(h)) return h.replace(/^::(?:ffff:)?/, '');
+  const hexTail = h.match(/^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hexTail) {
+    const hi = parseInt(hexTail[1], 16);
+    const lo = parseInt(hexTail[2], 16);
+    return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+  }
+  return null;
+}
+
+/**
  * True only when the host can be resolved and reached from a desktop machine
  * outside the server's container network (public DNS name or public IP).
  */
@@ -108,6 +127,11 @@ export function isPubliclyRoutableDbHost(hostname) {
   // Loopback / wildcard / unspecified
   if (effective === 'localhost' || host.endsWith('.localhost') || effective === '::1' || effective === '::' || effective === '0.0.0.0') return false;
   if (NON_PUBLIC_IP_PATTERNS.some((pattern) => pattern.test(effective))) return false;
+  // IPv4-embedded IPv6 literals (::ffff:10.0.0.5, deprecated ::a00:5 and
+  // ::10.0.0.5) carry the same address as their embedded IPv4: the
+  // non-public range checks must see that address too.
+  const embedded = extractEmbeddedIpv4(host);
+  if (embedded && NON_PUBLIC_IP_PATTERNS.some((pattern) => pattern.test(embedded))) return false;
   // Container-internal single-label service names (postgres, db, ...)
   if (!host.includes('.') && !host.includes(':')) return false;
   if (NON_ROUTABLE_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) return false;

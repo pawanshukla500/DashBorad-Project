@@ -878,9 +878,18 @@ registerHandler('auth-get-session', async () => {
   return publicSession(session);
 });
 registerHandler('auth-logout', async () => {
-  clearAuthSession();
+  const cleared = clearAuthSession();
   await closeDesktopPool();
   setDesktopDatabaseAccess(null);
+  // An undeleted session file keeps working tokens on disk that session
+  // restoration would sign straight back in with: never claim a clean
+  // deauthorization when the removal failed.
+  if (!cleared.success) {
+    return {
+      success: false,
+      error: `Sign-out incomplete: the saved session could not be removed (${cleared.error}). Retry sign-out, or lock this PC until the session file can be deleted.`
+    };
+  }
   return { success: true };
 });
 

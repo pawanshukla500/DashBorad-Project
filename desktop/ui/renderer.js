@@ -866,7 +866,14 @@ function setupEventListeners() {
 
   btnHeaderLogout?.addEventListener('click', async () => {
     if (confirm('Sign out and deauthorize this PC?')) {
-      await window.ratecardAPI.authLogout();
+      const res = await window.ratecardAPI.authLogout();
+      // A failed session-file removal leaves working tokens on disk: the UI
+      // must not claim a clean deauthorization it did not get.
+      if (!res?.success) {
+        alert(res?.error || 'Sign-out failed: the saved session could not be removed.');
+        appendTerminalLine(`[Auth] ${res?.error || 'Sign-out failed.'}`);
+        return;
+      }
       currentUserSession = null;
       showAuthModal();
       appendTerminalLine('[Auth] Signed out. PC deauthorized.');

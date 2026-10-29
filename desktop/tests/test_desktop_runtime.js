@@ -468,6 +468,9 @@ async function runTests() {
     assert(isDesktopReachableDbUrl('postgresql://app:pass@db.example:5432/paymentapp') === false, 'reserved .example TLD must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@db.invalid:5432/paymentapp') === false, 'reserved .invalid TLD must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@payment.test:5432/paymentapp') === false, 'reserved .test TLD must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@[::a00:5]:5432/paymentapp') === false, 'IPv4-compatible IPv6 literal encoding a private address must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@[::10.0.0.5]:5432/paymentapp') === false, 'deprecated dotted IPv4-compatible IPv6 literal must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@[::ffff:10.0.0.5]:5432/paymentapp') === false, 'IPv4-mapped IPv6 literal must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@192.0.2.1:5432/paymentapp') === false, 'TEST-NET-1 must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@localhost.:5432/paymentapp') === false, 'trailing-dot loopback must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@db.localhost:5432/paymentapp') === false, '.localhost subdomain must be refused');
@@ -779,6 +782,26 @@ async function runTests() {
   });
 
   // ── Packaging invariants ───────────────────────────────────────────────────
+  await runTest('logout surfaces a failed session-file removal (static invariant)', async () => {
+    const mainSource = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+    const serverSource = fs.readFileSync(path.join(desktopDir, 'desktopServer.mjs'), 'utf8');
+    const rendererSource = fs.readFileSync(path.join(desktopDir, 'ui', 'renderer.js'), 'utf8');
+    const checks = [
+      ['main.js', mainSource.indexOf("registerHandler('auth-logout'")],
+      ['desktopServer.mjs', serverSource.indexOf("'/api/auth/logout'")]
+    ];
+    for (const [label, idx] of checks) {
+      assert(idx !== -1, `${label} logout path not found`);
+      const window = (label === 'main.js' ? mainSource : serverSource).slice(idx, idx + 800);
+      assert(window.includes('clearAuthSession();'), `${label} logout must clear the session`);
+      assert(window.includes('cleared.success') && window.includes('cleared.error'), `${label} logout must report a failed session-file removal honestly`);
+    }
+    const rendererIdx = rendererSource.indexOf('btnHeaderLogout?.addEventListener');
+    assert(rendererIdx !== -1, 'renderer logout handler not found');
+    const rendererWindow = rendererSource.slice(rendererIdx, rendererIdx + 700);
+    assert(rendererWindow.includes('res?.success'), 'renderer logout must check the response before claiming deauthorization');
+  });
+
   await runTest('Linux installer verifies runtime modules resolve before skipping npm install', async () => {
     const installer = fs.readFileSync(path.join(path.resolve(desktopDir, '..'), 'released', 'linux', 'install-linux.sh'), 'utf8');
     // Old node_modules directories predate puppeteer-core; the installer must

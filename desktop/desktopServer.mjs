@@ -1002,10 +1002,19 @@ const server = http.createServer(async (req, res) => {
     // POST /api/auth/logout
     if (pathname === '/api/auth/logout' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
-      clearAuthSession();
+      const cleared = clearAuthSession();
       res.setHeader('Set-Cookie', expiredBrowserCookie);
       await closeDesktopPool();
       setDesktopDatabaseAccess(null);
+      // An undeleted session file keeps working tokens on disk that session
+      // restoration would sign straight back in with: never claim a clean
+      // deauthorization when the removal failed.
+      if (!cleared.success) {
+        return sendJson(500, {
+          success: false,
+          error: `Sign-out incomplete: the saved session could not be removed (${cleared.error}). Retry sign-out, or lock this PC until the session file can be deleted.`
+        });
+      }
       return sendJson(200, { success: true });
     }
 

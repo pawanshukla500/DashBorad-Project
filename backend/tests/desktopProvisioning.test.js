@@ -57,6 +57,8 @@ describe('isPubliclyRoutableDbHost', () => {
     ['2001:db8::1'],                 // documentation IPv6
     ['ff02::1'],                     // multicast IPv6
     ['::ffff:10.0.0.1'],             // IPv4-mapped IPv6
+    ['::a00:5'],                     // IPv4-compatible IPv6 hex tail encoding 10.0.0.5
+    ['::10.0.0.5'],                  // deprecated IPv4-compatible dotted form
     ['registry.internal'],
     ['database.local'],
     ['']
