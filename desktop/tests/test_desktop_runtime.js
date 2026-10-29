@@ -1185,6 +1185,13 @@ async function runTests() {
     assert(plainResult.ok === true && plainResult.networkWait === 'settle-fallback', 'without a debugger goto must fall back to the fixed settle');
     assert(plain.loadedUrl() === 'https://seller.flipkart.com/', 'the target URL must reach loadURL');
 
+    // When the debugger is unavailable, if remaining timeout is shorter than the settle requirement, it must fail with TimeoutError
+    let plainTimedOut = false;
+    try { await plainPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 500 }); }
+    catch (err) { plainTimedOut = err.name === 'TimeoutError'; }
+    assert(plainTimedOut, 'settle fallback must fail if the requested timeout is shorter than the settle duration');
+    await plainPage.close();
+
     // A network that NEVER goes quiet must fail the navigation: returning ok
     // while rate-card XHRs are still pending is the incomplete read the
     // monitor exists to prevent.

@@ -231,11 +231,17 @@ export function createEmbeddedPage({
   })();
 
   const waitForNetworkQuiet = async (timeoutMs) => {
+    const budget = Number.isFinite(timeoutMs) ? timeoutMs : 10000;
     if (!netMonitor || netMonitor.broken) {
+      if (budget <= 0) return 'quiet-timeout';
+      if (budget < GOTO_SETTLE_MS) {
+        await delay(budget);
+        return 'quiet-timeout';
+      }
       await delay(GOTO_SETTLE_MS);
       return 'settle-fallback';
     }
-    const deadline = Date.now() + (Number.isFinite(timeoutMs) ? timeoutMs : 10000);
+    const deadline = Date.now() + budget;
     let stableSince = null;
     for (;;) {
       if (netMonitor.pending <= 2) {
@@ -245,7 +251,7 @@ export function createEmbeddedPage({
         stableSince = null;
       }
       if (Date.now() >= deadline) return 'quiet-timeout';
-      await delay(150);
+      await delay(Math.min(150, Math.max(0, deadline - Date.now())));
     }
   };
 
@@ -413,15 +419,13 @@ export function createEmbeddedPage({
             contents.removeListener?.('did-navigate', onNav);
             contents.removeListener?.('did-navigate-in-page', onInPage);
           };
-          // `on` + manual removal, NOT `once`: once would unregister the
-          // listener on the first subframe event too, so a later main-frame
-          // navigation could never resolve the wait.
-          if (contents.on) {
-            contents.on('did-navigate', onNav);
-            contents.on('did-navigate-in-page', onInPage);
-          } else if (contents.once) {
-            contents.once('did-navigate', onNav);
-            contents.once('did-navigate-in-page', onInPage);
+          // `on` / `addListener` + manual removal, NOT `once`: once would
+          // unregister the listener on the first subframe event too, so a later
+          // main-frame navigation could never resolve the wait.
+          const add = contents.on ? contents.on.bind(contents) : (contents.addListener ? contents.addListener.bind(contents) : null);
+          if (add) {
+            add('did-navigate', onNav);
+            add('did-navigate-in-page', onInPage);
           }
         });
         await withTimeout(navigated, slice(), `Navigation timed out after ${timeout}ms`);
