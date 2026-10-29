@@ -143,11 +143,15 @@ export function createEmbeddedPage({
   };
   // A WebContentsView starts at 0×0: without bounds it renders as a blank
   // surface even while marked visible. When no explicit bounds are given,
-  // cover the host window's content area (or a sane default).
+  // cover the host window's content area (or a sane default). Electron's
+  // getContentSize() returns [width, height]; the object shape is accepted
+  // for injectable doubles.
   const defaultBounds = () => {
     const size = window?.getContentSize?.();
-    if (size && size.width > 0 && size.height > 0) {
-      return { x: 0, y: 0, width: size.width, height: size.height };
+    const width = Array.isArray(size) ? size[0] : size?.width;
+    const height = Array.isArray(size) ? size[1] : size?.height;
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      return { x: 0, y: 0, width, height };
     }
     return DEFAULT_VIEW_BOUNDS;
   };
@@ -207,7 +211,7 @@ export function createEmbeddedPage({
     } catch {
       return null;
     }
-    const state = { pending: 0 };
+    const state = { pending: 0, broken: false };
     contents.debugger.on('message', (_event, method) => {
       if (method === 'Network.requestWillBeSent') state.pending += 1;
       else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
@@ -215,7 +219,11 @@ export function createEmbeddedPage({
       }
     });
     try {
-      Promise.resolve(contents.debugger.sendCommand('Network.enable')).catch(() => {});
+      // A rejected Network.enable (debugger disconnected, etc.) must not
+      // leave an active monitor that always reads zero pending requests —
+      // that would falsely report busy pages quiet. Marking it broken makes
+      // the quiet wait degrade to the honest fixed settle.
+      Promise.resolve(contents.debugger.sendCommand('Network.enable')).catch(() => { state.broken = true; });
     } catch {
       return null;
     }
@@ -223,7 +231,7 @@ export function createEmbeddedPage({
   })();
 
   const waitForNetworkQuiet = async (timeoutMs) => {
-    if (!netMonitor) {
+    if (!netMonitor || netMonitor.broken) {
       await delay(GOTO_SETTLE_MS);
       return 'settle-fallback';
     }

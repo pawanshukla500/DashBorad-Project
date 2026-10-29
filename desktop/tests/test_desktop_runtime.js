@@ -1056,10 +1056,10 @@ async function runTests() {
         };
       }
     };
-    let contentSize = { width: 1024, height: 640 };
+    let contentSize = [1024, 640]; // real Electron getContentSize() returns [width, height]
     const winListeners = {};
     const fakeWindow = {
-      getContentSize: () => ({ ...contentSize }),
+      getContentSize: () => [...contentSize],
       on(event, handler) { (winListeners[event] = winListeners[event] || []).push(handler); },
       removeListener(event, handler) {
         winListeners[event] = (winListeners[event] || []).filter((h) => h !== handler);
@@ -1085,7 +1085,7 @@ async function runTests() {
       debuggerCommands: () => (fakeContents.debugger ? fakeContents.debugger.sent : []),
       partitionsUsed: () => partitions,
       resizeWindow: (width, height) => {
-        contentSize = { width, height };
+        contentSize = [width, height];
         [...(winListeners.resize || [])].forEach((h) => h());
       },
       loadedUrl: () => loadedUrl
@@ -1162,6 +1162,17 @@ async function runTests() {
     assert(live.debuggerAttached() === '1.3', 'the CDP monitor must attach to the view');
     assert(live.debuggerCommands().includes('Network.enable'), 'the Network domain must be enabled');
     await livePage.close();
+
+    // A debugger whose Network.enable fails (disconnects mid-session) must
+    // never leave a monitor that always reads zero pending requests — that
+    // would report busy pages quiet — so it degrades to the fixed settle.
+    const broken = makeFakeEmbeddedDeps({ withDebugger: true });
+    broken.fakeContents.debugger.sendCommand = () => Promise.reject(new Error('debugger disconnected'));
+    const brokenPage = createEmbeddedPage({ window: broken.fakeWindow, partition: 'persist:marketplace-flipkart', deps: broken.deps });
+    const brokenResult = await brokenPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 5000 });
+    assert(brokenResult.ok === true && brokenResult.networkWait === 'settle-fallback',
+      `a failed Network.enable must degrade to the settle fallback, got: ${brokenResult.networkWait}`);
+    await brokenPage.close();
 
     // Without a debugger the adapter must degrade to the fixed settle, never fail.
     const plain = makeFakeEmbeddedDeps();
