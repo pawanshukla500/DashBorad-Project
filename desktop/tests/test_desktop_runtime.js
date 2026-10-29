@@ -1362,8 +1362,15 @@ async function runTests() {
     await page.setCookie({ name: 'refreshed', value: 'newer', domain: '.flipkart.com', path: '/', secure: true, expires: 2100000000, sameSite: 'lax' });
     assert(harness.calls.cookieSets.filter((c) => c.name === 'refreshed').length === 2, 'a strictly newer cookie must overwrite the partition value');
 
+    // Same name on a DIFFERENT path is a different cookie: its expiry must
+    // not suppress this path's import.
+    await page.setCookie({ name: 'paths', value: 'a', domain: '.flipkart.com', path: '/', expires: 2000000000, sameSite: 'lax' });
+    await page.setCookie({ name: 'paths', value: 'b', domain: '.flipkart.com', path: '/dashboard', expires: 1000000000, sameSite: 'lax' });
+    assert(harness.calls.cookieSets.filter((c) => c.name === 'paths').length === 2,
+      'a different-path cookie must not be suppressed by another path with a later expiry');
+
     const list = await page.cookies();
-    assert(list.length === 4, `the session cookie jar must be readable (sid, session-only, refreshed x2), got ${list.length}`);
+    assert(list.length === 6, `the session cookie jar must be readable (sid, session-only, refreshed x2, paths x2), got ${list.length}`);
     assert(list[0].domain === '.flipkart.com' && list[0].expires === 1893456000 && list[0].session === false,
       'cookies() must return the vault-compatible puppeteer shape');
   });

@@ -539,16 +539,19 @@ export function createEmbeddedPage({
       if (!flat.length) return;
       for (const cookie of flat) {
         const url = toCookieUrl(cookie);
+        const path = cookie.path || '/';
         const incomingExpiry = (Number.isFinite(cookie.expires) && cookie.expires > 0) ? cookie.expires : undefined;
         const existing = await embedSession.cookies.get({ url, name: String(cookie.name || '') });
-        const liveExpiry = existing.find((c) => c.domain === cookie.domain)?.expirationDate ?? existing[0]?.expirationDate;
+        // Same name AND same domain AND same path only: a different path's
+        // later expiry must never suppress the import for this path.
+        const liveExpiry = existing.find((c) => c.domain === cookie.domain && c.path === path)?.expirationDate ?? null;
         if (liveExpiry && (!incomingExpiry || incomingExpiry < liveExpiry)) continue;
         await embedSession.cookies.set({
           url,
           name: String(cookie.name || ''),
           value: String(cookie.value ?? ''),
           domain: cookie.domain,
-          path: cookie.path || '/',
+          path,
           secure: cookie.secure !== false,
           httpOnly: Boolean(cookie.httpOnly),
           expirationDate: incomingExpiry,
