@@ -1477,7 +1477,12 @@ registerHandler('detect-brand-rate-changes', async (e, brandRateCards) => {
     const { getDesktopPool } = await import('./db.js');
     const pool = getDesktopPool(config.databaseUrl);
     const changes = await detectBrandRateChanges(brandRateCards, pool);
-    return { success: true, changes };
+    return {
+      success: true,
+      changes,
+      changesCount: changes.length,
+      anomaliesCount: changes.filter(c => c.anomaly).length
+    };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1500,7 +1505,19 @@ registerHandler('sync-brand-rate-cards', async (e, brandRateCards, options = {})
     const { syncBrandRateCardsToDatabase } = await import('./rateCardService.js');
     const { getDesktopPool } = await import('./db.js');
     const pool = getDesktopPool(config.databaseUrl);
-    const result = await syncBrandRateCardsToDatabase(cardsToSync, { forceUpdate: true, ...options }, pool);
+    const syncOptions = {
+      forceUpdate: true,
+      ...options,
+      actor: session?.user?.email || session?.user?.name || 'desktop-operator',
+      runMetadata: {
+        source: 'desktop-worker',
+        platform: process.platform,
+        arch: process.arch,
+        appVersion: '1.5.0',
+        syncTime: new Date().toISOString()
+      }
+    };
+    const result = await syncBrandRateCardsToDatabase(cardsToSync, syncOptions, pool);
     return { success: true, result };
   } catch (err) {
     return { success: false, error: err.message };
