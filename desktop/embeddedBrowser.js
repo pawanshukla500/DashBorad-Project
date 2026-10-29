@@ -154,13 +154,21 @@ export function createEmbeddedPage({
   // calls waitForNavigation, so a fast navigation can complete before the
   // wait's own listener registers. A persistent listener records every
   // navigation's timestamp, and waitForNavigation accepts a navigation that
-  // happened within a small grace window before the call.
+  // happened within a small grace window before the call — but only one that
+  // fired AFTER the action armed the watch (see armedAt below), so an
+  // unrelated earlier navigation can never satisfy the wait.
   let lastNavAt = 0;
   const onAnyNav = () => { lastNavAt = Date.now(); };
   if (contents.on) {
     contents.on('did-navigate', onAnyNav);
     contents.on('did-navigate-in-page', onAnyNav);
   }
+  // Actions that can trigger a navigation (evaluate / click / type) arm the
+  // navigation watch BEFORE their script runs, so the grace window can only
+  // ever accept a navigation caused by that action — never one that preceded
+  // it. waitForSelector polls deliberately do NOT re-arm: a poll landing
+  // after a fast navigation must not erase it.
+  let armedAt = 0;
 
   // networkidle2 needs a real network-quiet signal, not a fixed delay: a
   // fixed settle can resolve while slow rate-card XHRs are still in flight.
@@ -243,12 +251,15 @@ export function createEmbeddedPage({
 
     /**
      * puppeteer's page.evaluate(fn) / evaluate(string). Functions serialize
-     * to an immediately-invoked form so the scraper's arrow functions work as-is.
+     * to an immediately-invoked form so the scraper's arrow functions work
+     * as-is. The scraper submits login forms through evaluate(() => el.click()),
+     * so every evaluation arms the navigation watch.
      */
     async evaluate(fnOrScript, options = {}) {
       const script = typeof fnOrScript === 'function'
         ? `(${fnOrScript.toString()})()`
         : String(fnOrScript);
+      armedAt = Date.now();
       return evaluateRaw(script, options);
     },
 
@@ -257,7 +268,9 @@ export function createEmbeddedPage({
      * adapter's CDP Network monitor supplies the real quiet condition
      * (≤2 pending requests held for 500ms); without the debugger it falls
      * back to a fixed settle, which the scraper's own post-goto delay
-     * already tolerates.
+     * already tolerates. A quiet timeout FAILS the navigation: returning
+     * ok while rate-card XHRs are still pending is exactly the incomplete
+     * read this monitor exists to prevent.
      */
     async goto(targetUrl, { waitUntil = 'load', timeout = 45000 } = {}) {
       const load = contents.loadURL(targetUrl);
@@ -266,9 +279,14 @@ export function createEmbeddedPage({
         const ready = evaluateRaw(`document.readyState === 'complete' || document.readyState === 'interactive'`, { retries: 20, gapMs: 500 });
         await withTimeout(ready, timeout, 'Page never reached an interactive state.');
       }
-      let networkWait = null;
-      if (waitUntil === 'networkidle2') networkWait = await waitForNetworkQuiet(timeout);
-      return { ok: true, url: page.url(), networkWait };
+      if (waitUntil === 'networkidle2') {
+        const networkWait = await waitForNetworkQuiet(timeout);
+        if (networkWait === 'quiet-timeout') {
+          throw timeoutError(`Navigation to ${targetUrl} never reached a quiet network state within ${timeout}ms`);
+        }
+        return { ok: true, url: page.url(), networkWait };
+      }
+      return { ok: true, url: page.url(), networkWait: null };
     },
 
     /** Polls for a selector; rejects with TimeoutError when it never appears. */
@@ -291,36 +309,48 @@ export function createEmbeddedPage({
     },
 
     /**
-     * Resolves on the next top-frame navigation. The scraper clicks and only
-     * then waits, so a navigation that already fired within the grace window
-     * (recorded by the persistent navigation listener) counts too — otherwise
-     * a fast submit would dead-wait for a second navigation. Both full
-     * navigations and SPA hash changes count.
+     * Resolves on the next top-frame navigation, honoring waitUntil the way
+     * puppeteer does: 'networkidle2' additionally waits for the CDP network
+     * monitor to go quiet after the navigation, so a slow login XHR is never
+     * mistaken for a complete session. The scraper clicks a submit button
+     * (through evaluate) and only then calls this, so a navigation that fired
+     * after the action armed the watch, within a small grace window before
+     * this call, counts too — a navigation that PRECEDED the action is
+     * ignored, because it cannot be the submit's navigation.
      */
-    async waitForNavigation({ timeout = 45000, graceMs = 800 } = {}) {
-      if (Date.now() - lastNavAt <= graceMs) {
-        await delay(NAV_POLL_SETTLE_MS / 2);
-        return { ok: true, url: page.url(), via: 'recent-navigation' };
+    async waitForNavigation({ timeout = 45000, graceMs = 800, waitUntil = 'load' } = {}) {
+      let via = 'navigation-event';
+      if (lastNavAt >= armedAt && Date.now() - lastNavAt <= graceMs) {
+        via = 'recent-navigation';
+      } else {
+        const navigated = new Promise((resolve) => {
+          const onNav = () => { cleanup(); resolve(page.url()); };
+          const onInPage = () => { cleanup(); resolve(page.url()); };
+          const cleanup = () => {
+            contents.removeListener?.('did-navigate', onNav);
+            contents.removeListener?.('did-navigate-in-page', onInPage);
+          };
+          if (contents.once) {
+            contents.once('did-navigate', onNav);
+            contents.once('did-navigate-in-page', onInPage);
+          }
+        });
+        await withTimeout(navigated, timeout, `Navigation timed out after ${timeout}ms`);
       }
-      const navigated = new Promise((resolve) => {
-        const onNav = () => { cleanup(); resolve(page.url()); };
-        const onInPage = () => { cleanup(); resolve(page.url()); };
-        const cleanup = () => {
-          contents.removeListener?.('did-navigate', onNav);
-          contents.removeListener?.('did-navigate-in-page', onInPage);
-        };
-        if (contents.once) {
-          contents.once('did-navigate', onNav);
-          contents.once('did-navigate-in-page', onInPage);
-        }
-      });
-      await withTimeout(navigated, timeout, `Navigation timed out after ${timeout}ms`);
       await delay(NAV_POLL_SETTLE_MS / 2);
-      return { ok: true, url: page.url(), via: 'navigation-event' };
+      if (waitUntil === 'networkidle2') {
+        const networkWait = await waitForNetworkQuiet(timeout);
+        if (networkWait === 'quiet-timeout') {
+          throw timeoutError(`Network never reached a quiet state after navigation within ${timeout}ms`);
+        }
+        return { ok: true, url: page.url(), via, networkWait };
+      }
+      return { ok: true, url: page.url(), via };
     },
 
     /** Clicks via the page's own event loop (portalScraper's pattern). */
     async click(selectorOrHandler) {
+      armedAt = Date.now();
       if (typeof selectorOrHandler === 'function') {
         return evaluateRaw(`(${selectorOrHandler.toString()})()`);
       }
@@ -336,10 +366,15 @@ export function createEmbeddedPage({
      * Real keyboard typing. Focuses and clicks the field first (focus alone
      * does not activate some React fields), clears through the native value
      * setter + input event so React's controlled-input tracker stays in sync,
-     * then sends one char event per keystroke, exactly as a human types.
+     * focuses the WebContents itself — sendInputEvent only delivers input to
+     * a focused WebContents, which a hidden background view never is by
+     * itself — then sends one char event per keystroke, exactly as a human
+     * types. If the input does not land (e.g. focus is unavailable), the
+     * readback verification below fails loudly instead of silently mistyping.
      */
     async type(selector, text, { delay: perKeyMs = 45, verify = true } = {}) {
       const sel = JSON.stringify(String(selector));
+      armedAt = Date.now();
       const focusState = await evaluateRaw(`(() => {
         const el = document.querySelector(${sel});
         if (!el) return 'missing';
@@ -354,6 +389,7 @@ export function createEmbeddedPage({
       if (focusState !== 'ok') {
         throw new Error(`Cannot type into ${selector}: the field is ${focusState}.`);
       }
+      contents.focus?.();
       await delay(200);
       for (const ch of String(text)) {
         contents.sendInputEvent({ type: 'char', keyCode: ch });

@@ -978,7 +978,7 @@ async function runTests() {
   const { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } = await import('../embeddedBrowser.js');
 
   function makeFakeEmbeddedDeps({ loadHangs = false, evalBehavior = null, withDebugger = false } = {}) {
-    const calls = { userAgent: [], cookieSets: [], inputEvents: [], bounds: [], attached: 0, removed: 0, closed: false, visible: [] };
+    const calls = { userAgent: [], cookieSets: [], inputEvents: [], order: [], bounds: [], attached: 0, removed: 0, closed: false, visible: [] };
     let loadedUrl = '';
     let behavior = evalBehavior || ((script) => {
       if (/document\.readyState/.test(script)) return true;
@@ -999,7 +999,11 @@ async function runTests() {
       },
       getURL: () => 'https://seller.flipkart.com/fake',
       getTitle: () => 'Fake Seller Hub',
-      sendInputEvent: (event) => calls.inputEvents.push(event),
+      focus() { calls.order.push('focus'); },
+      sendInputEvent(event) {
+        calls.inputEvents.push(event);
+        calls.order.push(event.type === 'char' ? `char:${event.keyCode}` : event.type);
+      },
       capturePage: async () => ({ toPNG: () => Buffer.from('fake-png') }),
       on(event, handler) {
         (listeners[event] = listeners[event] || []).push(handler);
@@ -1133,6 +1137,24 @@ async function runTests() {
     assert(plainResult.ok === true && plainResult.networkWait === 'settle-fallback', 'without a debugger goto must fall back to the fixed settle');
     assert(plain.loadedUrl() === 'https://seller.flipkart.com/', 'the target URL must reach loadURL');
 
+    // A network that NEVER goes quiet must fail the navigation: returning ok
+    // while rate-card XHRs are still pending is the incomplete read the
+    // monitor exists to prevent.
+    const noisy = makeFakeEmbeddedDeps({ withDebugger: true });
+    noisy.setBehavior((script) => {
+      if (/document\.readyState/.test(script)) {
+        noisy.emitNetwork('Network.requestWillBeSent');
+        noisy.emitNetwork('Network.requestWillBeSent');
+        noisy.emitNetwork('Network.requestWillBeSent');
+      }
+      return true;
+    });
+    const noisyPage = createEmbeddedPage({ window: noisy.fakeWindow, partition: 'persist:marketplace-flipkart', deps: noisy.deps });
+    let noisyTimedOut = false;
+    try { await noisyPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 1200 }); }
+    catch (err) { noisyTimedOut = err.name === 'TimeoutError' && /quiet network state/.test(err.message); }
+    assert(noisyTimedOut, 'a network that never quiets must reject goto with a TimeoutError');
+
     const hanging = makeFakeEmbeddedDeps({ loadHangs: true });
     const slowPage = createEmbeddedPage({ window: hanging.fakeWindow, partition: 'persist:marketplace-flipkart', deps: hanging.deps });
     let timedOut = false;
@@ -1197,6 +1219,8 @@ async function runTests() {
     assert(value === text, `every character must ride a real keyboard event, got: ${value}`);
     const focusProbe = tracker.fakeContents.scripts.find((s) => /HTMLInputElement\.prototype/.test(s));
     assert(focusProbe && focusProbe.includes('dispatchEvent(new Event'), 'clearing must go through the native setter + input event so React stays in sync');
+    assert(tracker.calls.order[0] === 'focus', 'the WebContents itself must be focused before the first keystroke — sendInputEvent only delivers to a focused WebContents');
+    assert(tracker.calls.order[1] === `char:${text[0]}`, 'keystrokes must follow the focus call, not precede it');
 
     // Readback mismatch must fail loudly without leaking the typed secret.
     const liar = makeFakeEmbeddedDeps();
@@ -1242,12 +1266,57 @@ async function runTests() {
 
     // The scraper clicks submit and only then waits; a fast submit can
     // complete the navigation before the wait's listener registers, so a
-    // recently-recorded navigation must count instead of dead-waiting for a
-    // second navigation that will never come.
+    // navigation recorded after the action and inside the grace window
+    // must count instead of dead-waiting for a second navigation.
     harness.fire('did-navigate');
     const recent = await page.waitForNavigation({ timeout: 2000, graceMs: 800 });
     assert(recent.ok === true && recent.via === 'recent-navigation', 'a navigation inside the grace window must satisfy waitForNavigation');
     assert(recent.url === 'https://seller.flipkart.com/fake', 'the resolved navigation must report the current URL');
+
+    // A navigation that PRECEDED the action can never be the submit's
+    // navigation: it must be ignored, not accepted through the grace window.
+    // (A real-time gap separates the stale navigation from the action —
+    // timestamps have millisecond resolution, and a navigation recorded in
+    // the same millisecond as the action is legitimately ambiguous.)
+    const stale = makeFakeEmbeddedDeps();
+    const stalePage = createEmbeddedPage({ window: stale.fakeWindow, partition: 'persist:marketplace-flipkart', deps: stale.deps });
+    stale.fire('did-navigate');
+    await new Promise((resolve) => setTimeout(resolve, 6));
+    await stalePage.evaluate(() => 1);
+    let staleTimedOut = false;
+    try { await stalePage.waitForNavigation({ timeout: 250, graceMs: 2000 }); }
+    catch (err) { staleTimedOut = err.name === 'TimeoutError'; }
+    assert(staleTimedOut, 'a navigation recorded before the action must NOT satisfy waitForNavigation');
+
+    // Action first, then the navigation it caused: the grace window accepts it.
+    const armed = makeFakeEmbeddedDeps();
+    const armedPage = createEmbeddedPage({ window: armed.fakeWindow, partition: 'persist:marketplace-flipkart', deps: armed.deps });
+    await armedPage.evaluate(() => 1);
+    armed.fire('did-navigate');
+    const armedNav = await armedPage.waitForNavigation({ timeout: 2000, graceMs: 800 });
+    assert(armedNav.ok === true && armedNav.via === 'recent-navigation', 'a navigation recorded after the action must satisfy the grace window');
+
+    // The scraper calls waitForNavigation({ waitUntil: 'networkidle2' }): the
+    // post-navigation network wait must run, succeed on a quiet network, and
+    // fail loudly when XHRs never drain.
+    const quietNet = makeFakeEmbeddedDeps({ withDebugger: true });
+    const quietPage = createEmbeddedPage({ window: quietNet.fakeWindow, partition: 'persist:marketplace-flipkart', deps: quietNet.deps });
+    const quietPromise = quietPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 });
+    quietNet.fire('did-navigate');
+    const quietNav = await quietPromise;
+    assert(quietNav.ok === true && quietNav.networkWait === 'network-quiet', `waitForNavigation must honor waitUntil networkidle2, got: ${quietNav.networkWait}`);
+
+    const neverQuiet = makeFakeEmbeddedDeps({ withDebugger: true });
+    const neverQuietPage = createEmbeddedPage({ window: neverQuiet.fakeWindow, partition: 'persist:marketplace-flipkart', deps: neverQuiet.deps });
+    const neverQuietPromise = neverQuietPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 1200 });
+    neverQuiet.emitNetwork('Network.requestWillBeSent');
+    neverQuiet.emitNetwork('Network.requestWillBeSent');
+    neverQuiet.emitNetwork('Network.requestWillBeSent');
+    neverQuiet.fire('did-navigate');
+    let neverQuietTimedOut = false;
+    try { await neverQuietPromise; }
+    catch (err) { neverQuietTimedOut = err.name === 'TimeoutError' && /quiet state after navigation/.test(err.message); }
+    assert(neverQuietTimedOut, 'a navigation whose network never quiets must reject waitForNavigation');
 
     const silent = makeFakeEmbeddedDeps();
     const silentPage = createEmbeddedPage({ window: silent.fakeWindow, partition: 'persist:marketplace-flipkart', deps: silent.deps });
