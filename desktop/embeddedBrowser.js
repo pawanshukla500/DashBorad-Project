@@ -298,17 +298,21 @@ export function createEmbeddedPage({
     },
 
     /**
-     * puppeteer's page.evaluate(fn) / evaluate(string). Functions serialize
-     * to an immediately-invoked form so the scraper's arrow functions work
-     * as-is. The scraper submits login forms through evaluate(() => el.click()),
-     * so every evaluation arms the navigation watch.
+     * puppeteer's page.evaluate(fn, ...args) / evaluate(string). Functions serialize
+     * to an immediately-invoked form with serialized arguments so the scraper's
+     * parameterized evaluation callbacks work as-is. The scraper submits login forms
+     * through evaluate(() => el.click()), so every evaluation arms the navigation watch.
      */
-    async evaluate(fnOrScript, options = {}) {
-      const script = typeof fnOrScript === 'function'
-        ? `(${fnOrScript.toString()})()`
-        : String(fnOrScript);
+    async evaluate(fnOrScript, ...args) {
+      let script;
+      if (typeof fnOrScript === 'function') {
+        const serializedArgs = args.map((a) => JSON.stringify(a)).join(', ');
+        script = `(${fnOrScript.toString()})(${serializedArgs})`;
+      } else {
+        script = String(fnOrScript);
+      }
       armedAt = Date.now();
-      return evaluateRaw(script, options);
+      return evaluateRaw(script);
     },
 
     /**

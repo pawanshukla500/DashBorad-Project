@@ -669,6 +669,33 @@ const server = http.createServer(async (req, res) => {
       return sendJson(200, activeScrapeJob);
     }
 
+    // GET /api/browser/state (Standalone Monitor Adapter)
+    if (pathname === '/api/browser/state' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
+      const isScraping = Boolean(activeScrapeJob?.running);
+      return sendJson(200, {
+        success: true,
+        state: {
+          active: isScraping,
+          status: isScraping ? 'extracting' : 'idle',
+          engine: 'external',
+          marketplace: 'flipkart_shopsy',
+          url: isScraping ? 'https://seller.flipkart.com' : 'about:blank',
+          title: isScraping ? 'External Chrome Automation' : 'Standalone Scraper Idle',
+          progressMessage: activeScrapeJob?.progress || ''
+        }
+      });
+    }
+
+    // GET /api/browser/screenshot (Standalone Monitor Adapter)
+    if (pathname === '/api/browser/screenshot' && req.method === 'GET') {
+      if (!(await requireDesktopAuth())) return;
+      return sendJson(200, {
+        success: false,
+        error: 'Screenshot capture is only supported in the installed desktop app.'
+      });
+    }
+
     // GET /api/excel/status
     if (pathname === '/api/excel/status' && req.method === 'GET') {
       if (!(await requireDesktopAuth())) return;

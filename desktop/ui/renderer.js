@@ -38,7 +38,24 @@ if (!window.ratecardAPI) {
     getUpdateStatus: () => Promise.resolve({ success: true, status: { status: 'unsupported' } }),
     checkForUpdates: () => Promise.resolve({ success: false, error: 'Updates are only available in the installed desktop app.' }),
     installUpdate: () => Promise.resolve({ success: false, error: 'Updates are only available in the installed desktop app.' }),
-    onUpdateStatus: () => () => {}
+    onUpdateStatus: () => () => {},
+    // Browser Monitor methods in standalone Chrome mode
+    getBrowserMonitorState: () => fetch(`${API_BASE}/api/browser/state`, {
+      headers: currentUserSession?.idToken ? { 'Authorization': `Bearer ${currentUserSession.idToken}` } : {}
+    }).then(r => r.json()).catch(() => ({
+      success: true,
+      state: { active: false, status: 'unsupported', engine: 'external', title: 'Standalone Browser' }
+    })),
+    captureBrowserScreenshot: () => fetch(`${API_BASE}/api/browser/screenshot`, {
+      headers: currentUserSession?.idToken ? { 'Authorization': `Bearer ${currentUserSession.idToken}` } : {}
+    }).then(r => r.json()).catch(() => ({
+      success: false,
+      error: 'Screenshot capture is only supported in the installed desktop app.'
+    })),
+    setBrowserVisibility: () => Promise.resolve({ success: true }),
+    setBrowserEngine: () => Promise.resolve({ success: true }),
+    setMonitorDockBounds: () => Promise.resolve({ success: true }),
+    onBrowserMonitorUpdate: () => () => {}
   };
 }
 
@@ -174,6 +191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   subscribeToEvents();
   initUpdateBanner();
+  initBrowserMonitorListeners();
 
   const isAuthorized = await checkAuthSession();
   if (isAuthorized) {
@@ -207,6 +225,10 @@ function setupNavigation() {
       title: 'Rate Card Review & Database Sync', 
       desc: 'Inspect fee adjustments, verify Shopsy 0% commissions, and commit to PostgreSQL' 
     },
+    monitor: {
+      title: 'Live Browser & Automation Viewport',
+      desc: 'Embedded Chromium rendering engine, interactive 2FA prompt handler, and real-time page inspection'
+    },
     excel: { 
       title: 'Desktop Multi-Sheet Excel Center', 
       desc: 'Review 6-sheet workbook, update rates, and launch directly in Microsoft Excel' 
@@ -232,6 +254,14 @@ function setupNavigation() {
         pageDesc.innerText = titles[tabId].desc;
       }
 
+      if (tabId === 'monitor') {
+        window.ratecardAPI.setBrowserVisibility(true);
+        syncMonitorDockBounds();
+        refreshBrowserMonitorState();
+      } else {
+        window.ratecardAPI.setBrowserVisibility(false);
+      }
+
       if (tabId === 'catalog' && currentCatalog.length === 0) {
         loadCatalogData();
       }
@@ -239,6 +269,167 @@ function setupNavigation() {
         loadRateCardPreview();
       }
     });
+  });
+}
+
+// ── Live Browser Monitor UI ──────────────────────────────────────────────────
+function syncMonitorDockBounds() {
+  const dock = document.getElementById('browser-view-dock');
+  if (dock && window.ratecardAPI && typeof window.ratecardAPI.setMonitorDockBounds === 'function') {
+    const rect = dock.getBoundingClientRect();
+    window.ratecardAPI.setMonitorDockBounds({
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    });
+  }
+}
+
+async function refreshBrowserMonitorState() {
+  try {
+    const res = await window.ratecardAPI.getBrowserMonitorState();
+    if (res?.success && res.state) {
+      updateBrowserMonitorUI(res.state);
+    }
+  } catch (err) {
+    console.warn('Could not refresh browser monitor state:', err);
+  }
+}
+
+function updateBrowserMonitorUI(state) {
+  if (!state) return;
+  const liveBadge = document.getElementById('browser-live-badge');
+  const engineText = document.getElementById('monitor-engine-text');
+  const statePill = document.getElementById('monitor-state-pill');
+  const channelTag = document.getElementById('monitor-channel-tag');
+  const currentUrl = document.getElementById('monitor-current-url');
+  const viewTitle = document.getElementById('monitor-view-title');
+  const syncTime = document.getElementById('monitor-sync-timestamp');
+  const authAlert = document.getElementById('monitor-auth-alert');
+  const screenshotImg = document.getElementById('browser-screenshot-img');
+  const placeholder = document.getElementById('browser-view-placeholder');
+  const statusDot = document.getElementById('monitor-status-dot');
+
+  if (liveBadge) liveBadge.style.display = state.active ? 'inline-block' : 'none';
+  if (engineText) engineText.textContent = state.engine === 'embedded' ? 'Embedded Chromium' : 'External Chrome';
+  if (statePill) {
+    statePill.textContent = (state.status || 'idle').toUpperCase();
+    if (state.status === 'extracting' || state.status === 'navigating') {
+      statePill.style.background = 'rgba(16, 185, 129, 0.2)';
+      statePill.style.borderColor = 'var(--success)';
+      statePill.style.color = '#34d399';
+    } else if (state.status === 'login_prompt') {
+      statePill.style.background = 'rgba(245, 158, 11, 0.2)';
+      statePill.style.borderColor = 'var(--warning)';
+      statePill.style.color = '#fbbf24';
+    } else if (state.status === 'unsupported') {
+      statePill.style.background = 'rgba(239, 68, 68, 0.2)';
+      statePill.style.borderColor = 'var(--danger)';
+      statePill.style.color = '#f87171';
+    } else {
+      statePill.style.background = 'rgba(144, 42, 74, 0.25)';
+      statePill.style.borderColor = 'var(--primary)';
+      statePill.style.color = '#fff';
+    }
+  }
+  if (statusDot) {
+    statusDot.className = state.active ? 'status-dot active' : 'status-dot';
+  }
+  if (channelTag) channelTag.textContent = state.marketplace || 'Flipkart & Shopsy';
+  if (currentUrl) currentUrl.textContent = state.url || 'about:blank';
+  if (viewTitle) viewTitle.textContent = state.title ? `Live View: ${state.title}` : 'Live Browser Viewport';
+  if (syncTime) syncTime.textContent = `Updated: ${new Date().toLocaleTimeString()}`;
+  if (authAlert) {
+    const wasVisible = authAlert.style.display === 'flex';
+    const nowVisible = state.status === 'login_prompt';
+    authAlert.style.display = nowVisible ? 'flex' : 'none';
+    if (wasVisible !== nowVisible) {
+      requestAnimationFrame(syncMonitorDockBounds);
+    }
+  }
+
+  if (state.lastScreenshot) {
+    if (screenshotImg) {
+      screenshotImg.src = state.lastScreenshot;
+      screenshotImg.style.display = 'block';
+    }
+    if (placeholder) placeholder.style.display = 'none';
+  } else if (!state.active) {
+    if (screenshotImg) screenshotImg.style.display = 'none';
+    if (placeholder) placeholder.style.display = 'block';
+  }
+}
+
+function initBrowserMonitorListeners() {
+  window.addEventListener('resize', syncMonitorDockBounds);
+
+  const engineSelect = document.getElementById('select-monitor-engine');
+  engineSelect?.addEventListener('change', async (e) => {
+    const engine = e.target.value;
+    await window.ratecardAPI.setBrowserEngine(engine);
+    refreshBrowserMonitorState();
+  });
+
+  const btnVisibility = document.getElementById('btn-monitor-visibility');
+  let viewVisible = true;
+  btnVisibility?.addEventListener('click', async () => {
+    viewVisible = !viewVisible;
+    await window.ratecardAPI.setBrowserVisibility(viewVisible);
+    btnVisibility.textContent = viewVisible ? '👁️ Hide View' : '👁️ Show View';
+  });
+
+  const btnScreenshot = document.getElementById('btn-monitor-screenshot');
+  btnScreenshot?.addEventListener('click', async () => {
+    btnScreenshot.disabled = true;
+    btnScreenshot.textContent = '📸 Capturing…';
+    try {
+      const res = await window.ratecardAPI.captureBrowserScreenshot();
+      if (res?.success && res.screenshot) {
+        updateBrowserMonitorUI({ lastScreenshot: res.screenshot, active: true });
+      } else if (res?.error) {
+        alert(res.error);
+      }
+    } catch (err) {
+      console.warn('Screenshot capture failed:', err);
+      alert('Screenshot capture failed: ' + (err.message || String(err)));
+    } finally {
+      btnScreenshot.disabled = false;
+      btnScreenshot.textContent = '📸 Capture Frame';
+    }
+  });
+
+  function triggerInteractiveLogin(marketplaceId = 'flipkart_shopsy') {
+    const selectMp = document.getElementById('select-marketplace');
+    if (selectMp && marketplaceId) {
+      selectMp.value = marketplaceId;
+      const headerMp = document.getElementById('header-select-marketplace');
+      if (headerMp) headerMp.value = marketplaceId;
+    }
+    const btn = document.getElementById('btn-interactive-login');
+    btn?.click();
+  }
+
+  const btnLogin = document.getElementById('btn-monitor-login');
+  btnLogin?.addEventListener('click', () => {
+    const select = document.getElementById('select-marketplace');
+    const mp = select ? select.value : 'flipkart_shopsy';
+    triggerInteractiveLogin(mp);
+  });
+
+  const btnTestOpen = document.getElementById('btn-monitor-test-open');
+  btnTestOpen?.addEventListener('click', () => {
+    triggerInteractiveLogin('flipkart_shopsy');
+  });
+
+  const btnStartRun = document.getElementById('btn-monitor-start-run');
+  btnStartRun?.addEventListener('click', () => {
+    const runBtn = document.getElementById('btn-start-scrape');
+    runBtn?.click();
+  });
+
+  window.ratecardAPI.onBrowserMonitorUpdate((state) => {
+    updateBrowserMonitorUI(state);
   });
 }
 

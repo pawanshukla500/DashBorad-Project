@@ -113,7 +113,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
   let browser;
   try {
     browser = await runtime.launch({
-      executablePath: executablePath || requireChromeExecutable(),
+      executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
       headless: config.visible ? false : 'new',
       defaultViewport: config.visible ? null : { width: 1500, height: 1000 },
       args: [

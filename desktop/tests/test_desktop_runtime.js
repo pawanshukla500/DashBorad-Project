@@ -1601,6 +1601,79 @@ async function runTests() {
     assert(shipped.has('embeddedBrowser.js'), 'prepare-release.js must ship embeddedBrowser.js in the Linux payload');
   });
 
+  await runTest('preload bridge exposes browser monitor API methods (stage 2)', async () => {
+    const preloadPath = path.join(desktopDir, 'preload.cjs');
+    assert(fs.existsSync(preloadPath), 'preload.cjs must exist');
+    const preloadContent = fs.readFileSync(preloadPath, 'utf8');
+    const requiredMethods = [
+      'getBrowserMonitorState',
+      'captureBrowserScreenshot',
+      'setBrowserVisibility',
+      'setBrowserEngine',
+      'onBrowserMonitorUpdate'
+    ];
+    for (const method of requiredMethods) {
+      assert(preloadContent.includes(`${method}:`), `preload.cjs must expose ${method}`);
+    }
+  });
+
+  await runTest('index.html provides live browser monitor section and DOM structure (stage 2)', async () => {
+    const htmlPath = path.join(desktopDir, 'ui', 'index.html');
+    assert(fs.existsSync(htmlPath), 'index.html must exist');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+    const requiredSelectors = [
+      'id="view-monitor"',
+      'id="browser-live-badge"',
+      'id="browser-dock-card"',
+      'id="browser-view-dock"',
+      'id="select-monitor-engine"',
+      'id="btn-monitor-visibility"',
+      'id="btn-monitor-screenshot"',
+      'id="btn-monitor-login"',
+      'id="monitor-auth-alert"',
+      'id="browser-screenshot-img"'
+    ];
+    for (const sel of requiredSelectors) {
+      assert(html.includes(sel), `index.html must contain element with ${sel}`);
+    }
+  });
+
+  await runTest('main.js registers browser monitor IPC handlers and gates sensitive actions (stage 2)', async () => {
+    const mainPath = path.join(desktopDir, 'main.js');
+    const mainContent = fs.readFileSync(mainPath, 'utf8');
+
+    const monitorHandlers = [
+      'browser-monitor-get-state',
+      'browser-monitor-screenshot',
+      'browser-monitor-set-visibility',
+      'browser-monitor-set-engine'
+    ];
+    for (const handler of monitorHandlers) {
+      assert(mainContent.includes(`registerHandler('${handler}'`), `main.js must register IPC handler '${handler}'`);
+    }
+
+    // Static security invariant: Browser monitor, interactive login, and scrape operations
+    // MUST NOT be public channels (they must require an authorized ReconCentral session).
+    const publicChannelsMatch = mainContent.match(/const PUBLIC_CHANNELS = new Set\(\[([\s\S]*?)\]\);/);
+    assert(publicChannelsMatch, 'main.js must define PUBLIC_CHANNELS');
+    const publicList = publicChannelsMatch[1];
+    for (const handler of monitorHandlers) {
+      assert(!publicList.includes(`'${handler}'`), `'${handler}' must NOT be in PUBLIC_CHANNELS`);
+    }
+    assert(!publicList.includes("'interactive-login'"), "'interactive-login' must NOT be in PUBLIC_CHANNELS");
+    assert(!publicList.includes("'start-scrape'"), "'start-scrape' must NOT be in PUBLIC_CHANNELS");
+  });
+
+  await runTest('renderer.js wires browser monitor UI events and state subscribers (stage 2)', async () => {
+    const rendererPath = path.join(desktopDir, 'ui', 'renderer.js');
+    const rendererContent = fs.readFileSync(rendererPath, 'utf8');
+    assert(rendererContent.includes('initBrowserMonitorListeners()'), 'renderer.js must initialize monitor listeners');
+    assert(rendererContent.includes('updateBrowserMonitorUI('), 'renderer.js must have updateBrowserMonitorUI');
+    assert(rendererContent.includes('refreshBrowserMonitorState()'), 'renderer.js must have refreshBrowserMonitorState');
+    assert(rendererContent.includes("window.ratecardAPI.setBrowserVisibility(true)"), 'renderer.js must show browser on monitor tab switch');
+    assert(rendererContent.includes("window.ratecardAPI.setBrowserVisibility(false)"), 'renderer.js must hide browser on leaving monitor tab');
+  });
+
   console.log('\n=================================================================');
   console.log(` Results: ${passed} passed, ${failed} failed`);
   console.log('=================================================================');
