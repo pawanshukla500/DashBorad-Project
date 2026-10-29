@@ -40,10 +40,21 @@ if (!window.ratecardAPI) {
     installUpdate: () => Promise.resolve({ success: false, error: 'Updates are only available in the installed desktop app.' }),
     onUpdateStatus: () => () => {},
     // Browser Monitor methods in standalone Chrome mode
-    getBrowserMonitorState: () => fetch(`${API_BASE}/api/browser/state`).then(r => r.json()).catch(() => ({ success: true, state: {} })),
-    captureBrowserScreenshot: () => fetch(`${API_BASE}/api/browser/screenshot`).then(r => r.json()).catch(() => ({ success: false })),
+    getBrowserMonitorState: () => fetch(`${API_BASE}/api/browser/state`, {
+      headers: currentUserSession?.idToken ? { 'Authorization': `Bearer ${currentUserSession.idToken}` } : {}
+    }).then(r => r.json()).catch(() => ({
+      success: true,
+      state: { active: false, status: 'unsupported', engine: 'external', title: 'Standalone Browser' }
+    })),
+    captureBrowserScreenshot: () => fetch(`${API_BASE}/api/browser/screenshot`, {
+      headers: currentUserSession?.idToken ? { 'Authorization': `Bearer ${currentUserSession.idToken}` } : {}
+    }).then(r => r.json()).catch(() => ({
+      success: false,
+      error: 'Screenshot capture is only supported in the installed desktop app.'
+    })),
     setBrowserVisibility: () => Promise.resolve({ success: true }),
     setBrowserEngine: () => Promise.resolve({ success: true }),
+    setMonitorDockBounds: () => Promise.resolve({ success: true }),
     onBrowserMonitorUpdate: () => () => {}
   };
 }
@@ -245,6 +256,7 @@ function setupNavigation() {
 
       if (tabId === 'monitor') {
         window.ratecardAPI.setBrowserVisibility(true);
+        syncMonitorDockBounds();
         refreshBrowserMonitorState();
       } else {
         window.ratecardAPI.setBrowserVisibility(false);
@@ -261,6 +273,19 @@ function setupNavigation() {
 }
 
 // ── Live Browser Monitor UI ──────────────────────────────────────────────────
+function syncMonitorDockBounds() {
+  const dock = document.getElementById('browser-view-dock');
+  if (dock && window.ratecardAPI && typeof window.ratecardAPI.setMonitorDockBounds === 'function') {
+    const rect = dock.getBoundingClientRect();
+    window.ratecardAPI.setMonitorDockBounds({
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    });
+  }
+}
+
 async function refreshBrowserMonitorState() {
   try {
     const res = await window.ratecardAPI.getBrowserMonitorState();
@@ -298,6 +323,10 @@ function updateBrowserMonitorUI(state) {
       statePill.style.background = 'rgba(245, 158, 11, 0.2)';
       statePill.style.borderColor = 'var(--warning)';
       statePill.style.color = '#fbbf24';
+    } else if (state.status === 'unsupported') {
+      statePill.style.background = 'rgba(239, 68, 68, 0.2)';
+      statePill.style.borderColor = 'var(--danger)';
+      statePill.style.color = '#f87171';
     } else {
       statePill.style.background = 'rgba(144, 42, 74, 0.25)';
       statePill.style.borderColor = 'var(--primary)';
@@ -311,7 +340,14 @@ function updateBrowserMonitorUI(state) {
   if (currentUrl) currentUrl.textContent = state.url || 'about:blank';
   if (viewTitle) viewTitle.textContent = state.title ? `Live View: ${state.title}` : 'Live Browser Viewport';
   if (syncTime) syncTime.textContent = `Updated: ${new Date().toLocaleTimeString()}`;
-  if (authAlert) authAlert.style.display = state.status === 'login_prompt' ? 'flex' : 'none';
+  if (authAlert) {
+    const wasVisible = authAlert.style.display === 'flex';
+    const nowVisible = state.status === 'login_prompt';
+    authAlert.style.display = nowVisible ? 'flex' : 'none';
+    if (wasVisible !== nowVisible) {
+      requestAnimationFrame(syncMonitorDockBounds);
+    }
+  }
 
   if (state.lastScreenshot) {
     if (screenshotImg) {
@@ -326,6 +362,8 @@ function updateBrowserMonitorUI(state) {
 }
 
 function initBrowserMonitorListeners() {
+  window.addEventListener('resize', syncMonitorDockBounds);
+
   const engineSelect = document.getElementById('select-monitor-engine');
   engineSelect?.addEventListener('change', async (e) => {
     const engine = e.target.value;
@@ -349,9 +387,12 @@ function initBrowserMonitorListeners() {
       const res = await window.ratecardAPI.captureBrowserScreenshot();
       if (res?.success && res.screenshot) {
         updateBrowserMonitorUI({ lastScreenshot: res.screenshot, active: true });
+      } else if (res?.error) {
+        alert(res.error);
       }
     } catch (err) {
       console.warn('Screenshot capture failed:', err);
+      alert('Screenshot capture failed: ' + (err.message || String(err)));
     } finally {
       btnScreenshot.disabled = false;
       btnScreenshot.textContent = '📸 Capture Frame';
