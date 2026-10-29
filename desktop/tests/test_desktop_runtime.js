@@ -977,7 +977,7 @@ async function runTests() {
   // ── Embedded browser engine (Electron WebContentsView adapter) ────────────
   const { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } = await import('../embeddedBrowser.js');
 
-  function makeFakeEmbeddedDeps({ loadHangs = false, evalBehavior = null } = {}) {
+  function makeFakeEmbeddedDeps({ loadHangs = false, evalBehavior = null, withDebugger = false } = {}) {
     const calls = { userAgent: [], cookieSets: [], inputEvents: [], bounds: [], attached: 0, removed: 0, closed: false, visible: [] };
     let loadedUrl = '';
     let behavior = evalBehavior || ((script) => {
@@ -1001,6 +1001,9 @@ async function runTests() {
       getTitle: () => 'Fake Seller Hub',
       sendInputEvent: (event) => calls.inputEvents.push(event),
       capturePage: async () => ({ toPNG: () => Buffer.from('fake-png') }),
+      on(event, handler) {
+        (listeners[event] = listeners[event] || []).push(handler);
+      },
       once(event, handler) {
         (listeners[event] = listeners[event] || []).push(handler);
       },
@@ -1009,6 +1012,17 @@ async function runTests() {
       },
       close() { calls.closed = true; }
     };
+    const debuggerHandlers = [];
+    if (withDebugger) {
+      fakeContents.debugger = {
+        attached: null,
+        sent: [],
+        attach(version) { this.attached = version; },
+        on(event, handler) { if (event === 'message') debuggerHandlers.push(handler); },
+        send(command) { this.sent.push(command); },
+        detach() { this.attached = null; }
+      };
+    }
     class FakeView {
       constructor(options) {
         this.webPreferences = options.webPreferences;
@@ -1039,14 +1053,21 @@ async function runTests() {
         removeChildView: () => { calls.removed += 1; }
       }
     };
-    const instantDelay = async () => {};
+    // Fast but REAL timers: an async () => {} stub never yields to the event
+    // loop's timer phase, so scripted CDP/drain events (macrotasks) could
+    // never fire while a poll loop spins on microtasks alone.
+    const instantDelay = async (ms) => { await new Promise((r) => setTimeout(r, Math.min(Number(ms) || 0, 5))); };
     return {
       deps: { WebContentsView: FakeView, session: fakeSession, delay: instantDelay },
       calls,
       fakeContents,
       fakeWindow,
       setBehavior: (next) => { behavior = next; },
-      fire: (event) => (listeners[event] || []).shift()?.(),
+      fire: (event) => [...(listeners[event] || [])].forEach((h) => h()),
+      emitNetwork: (method) => debuggerHandlers.forEach((h) => h({}, method)),
+      debuggerAttached: () => (fakeContents.debugger ? fakeContents.debugger.attached : 'absent'),
+      debuggerCommands: () => (fakeContents.debugger ? fakeContents.debugger.sent : []),
+      partitionsUsed: () => partitions,
       loadedUrl: () => loadedUrl
     };
   }
@@ -1081,12 +1102,36 @@ async function runTests() {
     assert(page.getVisible() === true, 'the view starts visible by default');
   });
 
-  await runTest('embedded goto approximates networkidle2 and honors timeouts', async () => {
-    const harness = makeFakeEmbeddedDeps();
-    const page = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
-    const result = await page.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 5000 });
-    assert(result.ok === true, 'goto must resolve on a healthy load');
-    assert(harness.loadedUrl() === 'https://seller.flipkart.com/', 'the target URL must reach loadURL');
+  await runTest('embedded goto waits for real network quiet via the CDP monitor, with honest fallback', async () => {
+    // With a working debugger: in-flight requests hold the wait, completions
+    // release it — the quiet signal is real, not a fixed delay.
+    const live = makeFakeEmbeddedDeps({ withDebugger: true });
+    live.setBehavior((script) => {
+      if (/document\.readyState/.test(script)) {
+        live.emitNetwork('Network.requestWillBeSent');
+        live.emitNetwork('Network.requestWillBeSent');
+        live.emitNetwork('Network.requestWillBeSent');
+        setTimeout(() => {
+          live.emitNetwork('Network.loadingFinished');
+          live.emitNetwork('Network.loadingFinished');
+          live.emitNetwork('Network.loadingFailed');
+        }, 60);
+      }
+      return true;
+    });
+    const livePage = createEmbeddedPage({ window: live.fakeWindow, partition: 'persist:marketplace-flipkart', deps: live.deps });
+    const liveResult = await livePage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 5000 });
+    assert(liveResult.ok === true && liveResult.networkWait === 'network-quiet', `a healthy load must reach network-quiet, got: ${liveResult.networkWait}`);
+    assert(live.debuggerAttached() === '1.3', 'the CDP monitor must attach to the view');
+    assert(live.debuggerCommands().includes('Network.enable'), 'the Network domain must be enabled');
+    await livePage.close();
+
+    // Without a debugger the adapter must degrade to the fixed settle, never fail.
+    const plain = makeFakeEmbeddedDeps();
+    const plainPage = createEmbeddedPage({ window: plain.fakeWindow, partition: 'persist:marketplace-flipkart', deps: plain.deps });
+    const plainResult = await plainPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 5000 });
+    assert(plainResult.ok === true && plainResult.networkWait === 'settle-fallback', 'without a debugger goto must fall back to the fixed settle');
+    assert(plain.loadedUrl() === 'https://seller.flipkart.com/', 'the target URL must reach loadURL');
 
     const hanging = makeFakeEmbeddedDeps({ loadHangs: true });
     const slowPage = createEmbeddedPage({ window: hanging.fakeWindow, partition: 'persist:marketplace-flipkart', deps: hanging.deps });
@@ -1172,19 +1217,37 @@ async function runTests() {
     assert(set.sameSite === 'no_restriction', 'puppeteer sameSite values must map to Electron values');
     assert(set.expirationDate === 1893456000, 'expires must map to expirationDate');
 
+    // Puppeteer marks session cookies with expires: -1; mapping that to a
+    // negative expirationDate would make Chromium treat the cookie as already
+    // expired and silently drop it (the login session would vanish).
+    await page.setCookie({ name: 'session-only', value: 's', domain: '.flipkart.com', path: '/', secure: true, httpOnly: true, expires: -1, sameSite: 'lax' });
+    const sessionCookieWrite = harness.calls.cookieSets[1];
+    assert(sessionCookieWrite && sessionCookieWrite.expirationDate === undefined,
+      'a puppeteer session cookie (expires: -1) must become a browser session cookie, not an already-expired one');
+    assert(sessionCookieWrite.name === 'session-only', 'the second cookie write must be the session cookie');
+
     const list = await page.cookies();
     assert(list.length === 1, 'the session cookie jar must be readable');
     assert(list[0].domain === '.flipkart.com' && list[0].expires === 1893456000 && list[0].session === false,
       'cookies() must return the vault-compatible puppeteer shape');
   });
 
-  await runTest('embedded waitForNavigation resolves on navigation and times out honestly', async () => {
+  await runTest('embedded waitForNavigation resolves on navigation, honors the click race, and times out honestly', async () => {
     const harness = makeFakeEmbeddedDeps();
     const page = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
     const navPromise = page.waitForNavigation({ timeout: 2000 });
     harness.fire('did-navigate');
     const nav = await navPromise;
-    assert(nav.ok === true, 'a navigation event must resolve the wait');
+    assert(nav.ok === true && nav.via === 'navigation-event', 'a navigation event must resolve the wait');
+
+    // The scraper clicks submit and only then waits; a fast submit can
+    // complete the navigation before the wait's listener registers, so a
+    // recently-recorded navigation must count instead of dead-waiting for a
+    // second navigation that will never come.
+    harness.fire('did-navigate');
+    const recent = await page.waitForNavigation({ timeout: 2000, graceMs: 800 });
+    assert(recent.ok === true && recent.via === 'recent-navigation', 'a navigation inside the grace window must satisfy waitForNavigation');
+    assert(recent.url === 'https://seller.flipkart.com/fake', 'the resolved navigation must report the current URL');
 
     const silent = makeFakeEmbeddedDeps();
     const silentPage = createEmbeddedPage({ window: silent.fakeWindow, partition: 'persist:marketplace-flipkart', deps: silent.deps });
@@ -1194,37 +1257,55 @@ async function runTests() {
     assert(timedOut, 'a navigation that never happens must reject with a TimeoutError');
   });
 
-  await runTest('embedded runtime mirrors the puppeteer launch/pages/close surface for portalScraper', async () => {
-    const runtime = createEmbeddedRuntime();
+  await runTest('embedded runtime binds the marketplace context at creation and mirrors the puppeteer launch surface', async () => {
+    // The scraper's launch() call is puppeteer-shaped: { headless,
+    // executablePath, defaultViewport, args }. It cannot carry partition or
+    // window, so the runtime must refuse creation without them — otherwise
+    // launch() would produce a view that can never render.
+    let rejected = false;
+    try { createEmbeddedRuntime(); }
+    catch { rejected = true; }
+    assert(rejected, 'createEmbeddedRuntime without a partition must fail fast');
+
+    rejected = false;
+    try { createEmbeddedRuntime({ partition: 'persist:marketplace-flipkart' }); }
+    catch { rejected = true; }
+    assert(rejected, 'createEmbeddedRuntime without the host window must fail fast');
+
+    rejected = false;
+    try { createEmbeddedRuntime({ partition: 'marketplace-flipkart', window: { contentView: {} } }); }
+    catch { rejected = true; }
+    assert(rejected, 'a non-persistent partition must be refused');
+
     const harness = makeFakeEmbeddedDeps();
-    const browser = await runtime.launch({
-      headless: false,
+    const runtime = createEmbeddedRuntime({
       partition: 'persist:marketplace-flipkart',
       window: harness.fakeWindow,
-      WebContentsView: harness.deps.WebContentsView,
-      session: harness.deps.session,
-      delay: harness.deps.delay,
+      deps: harness.deps
+    });
+    const browser = await runtime.launch({
+      headless: false,
       executablePath: 'ignored-external-chrome',
       defaultViewport: { width: 1500, height: 1000 },
       args: ['--start-maximized']
     });
     const pages = await browser.pages();
     assert(pages.length === 1, 'launch must provide the embedded page');
+    assert(harness.partitionsUsed()[0] === 'persist:marketplace-flipkart', 'the runtime-bound partition must reach the session');
     const second = await browser.newPage();
     assert(second === pages[0], 'one marketplace view per partition: newPage must reuse the single view');
     assert(pages[0].getVisible() === true, 'headless:false must render the visible monitoring view');
+    assert(harness.calls.attached === 1, 'the view must be attached to the runtime-bound host window');
     assert(browser.launchOptions.ignoredKeys.includes('executablePath') && browser.launchOptions.ignoredKeys.includes('args'),
       'puppeteer-shaped options must be accepted (and ignored) so the scraper passes them unchanged');
 
     const backgroundHarness = makeFakeEmbeddedDeps();
-    const backgroundBrowser = await createEmbeddedRuntime().launch({
-      headless: 'new',
+    const backgroundRuntime = createEmbeddedRuntime({
       partition: 'persist:marketplace-flipkart',
       window: backgroundHarness.fakeWindow,
-      WebContentsView: backgroundHarness.deps.WebContentsView,
-      session: backgroundHarness.deps.session,
-      delay: backgroundHarness.deps.delay
+      deps: backgroundHarness.deps
     });
+    const backgroundBrowser = await backgroundRuntime.launch({ headless: 'new' });
     const backgroundPage = (await backgroundBrowser.pages())[0];
     assert(backgroundPage.getVisible() === false, 'headless must run as a hidden background view');
 

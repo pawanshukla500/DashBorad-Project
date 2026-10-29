@@ -150,6 +150,66 @@ export function createEmbeddedPage({
 
   const contents = view.webContents;
 
+  // Navigation tracking: the scraper clicks a submit button and only then
+  // calls waitForNavigation, so a fast navigation can complete before the
+  // wait's own listener registers. A persistent listener records every
+  // navigation's timestamp, and waitForNavigation accepts a navigation that
+  // happened within a small grace window before the call.
+  let lastNavAt = 0;
+  const onAnyNav = () => { lastNavAt = Date.now(); };
+  if (contents.on) {
+    contents.on('did-navigate', onAnyNav);
+    contents.on('did-navigate-in-page', onAnyNav);
+  }
+
+  // networkidle2 needs a real network-quiet signal, not a fixed delay: a
+  // fixed settle can resolve while slow rate-card XHRs are still in flight.
+  // The view's own CDP debugger provides one (Network domain pending-request
+  // count). Merely attaching does not set navigator.webdriver or any
+  // automation flag — that only happens for pages launched with
+  // --enable-automation. When the debugger is unavailable the adapter falls
+  // back to the fixed settle instead of failing the load.
+  const netMonitor = (() => {
+    if (!contents.debugger?.attach || !contents.debugger?.on) return null;
+    try {
+      contents.debugger.attach('1.3');
+    } catch {
+      return null;
+    }
+    const state = { pending: 0 };
+    contents.debugger.on('message', (_event, method) => {
+      if (method === 'Network.requestWillBeSent') state.pending += 1;
+      else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+        state.pending = Math.max(0, state.pending - 1);
+      }
+    });
+    try {
+      contents.debugger.send('Network.enable');
+    } catch {
+      return null;
+    }
+    return state;
+  })();
+
+  const waitForNetworkQuiet = async (timeoutMs) => {
+    if (!netMonitor) {
+      await delay(GOTO_SETTLE_MS);
+      return 'settle-fallback';
+    }
+    const deadline = Date.now() + (Number.isFinite(timeoutMs) ? timeoutMs : 10000);
+    let stableSince = null;
+    for (;;) {
+      if (netMonitor.pending <= 2) {
+        if (stableSince === null) stableSince = Date.now();
+        if (Date.now() - stableSince >= 500) return 'network-quiet';
+      } else {
+        stableSince = null;
+      }
+      if (Date.now() >= deadline) return 'quiet-timeout';
+      await delay(150);
+    }
+  };
+
   /**
    * executeJavaScript rejects when a navigation destroys the renderer context
    * mid-evaluation. Retrying absorbs that, exactly like puppeteer's waits do.
@@ -193,10 +253,11 @@ export function createEmbeddedPage({
     },
 
     /**
-     * Navigation. Electron has no networkidle2 signal without a debugger
-     * session, so 'networkidle2' is approximated honestly: resolve the load,
-     * wait for readyState 'complete', then hold a short settle window that
-     * matches the SPA render pause portalScraper already tolerates.
+     * Navigation. Electron has no networkidle2 signal on its own, so the
+     * adapter's CDP Network monitor supplies the real quiet condition
+     * (≤2 pending requests held for 500ms); without the debugger it falls
+     * back to a fixed settle, which the scraper's own post-goto delay
+     * already tolerates.
      */
     async goto(targetUrl, { waitUntil = 'load', timeout = 45000 } = {}) {
       const load = contents.loadURL(targetUrl);
@@ -205,8 +266,9 @@ export function createEmbeddedPage({
         const ready = evaluateRaw(`document.readyState === 'complete' || document.readyState === 'interactive'`, { retries: 20, gapMs: 500 });
         await withTimeout(ready, timeout, 'Page never reached an interactive state.');
       }
-      if (waitUntil === 'networkidle2') await delay(GOTO_SETTLE_MS);
-      return { ok: true, url: page.url() };
+      let networkWait = null;
+      if (waitUntil === 'networkidle2') networkWait = await waitForNetworkQuiet(timeout);
+      return { ok: true, url: page.url(), networkWait };
     },
 
     /** Polls for a selector; rejects with TimeoutError when it never appears. */
@@ -229,11 +291,17 @@ export function createEmbeddedPage({
     },
 
     /**
-     * Resolves on the next top-frame navigation. portalScraper uses this after
-     * clicking submit buttons, so both full navigations and SPA hash changes
-     * count. A settle window follows so the new document is interactive.
+     * Resolves on the next top-frame navigation. The scraper clicks and only
+     * then waits, so a navigation that already fired within the grace window
+     * (recorded by the persistent navigation listener) counts too — otherwise
+     * a fast submit would dead-wait for a second navigation. Both full
+     * navigations and SPA hash changes count.
      */
-    async waitForNavigation({ timeout = 45000 } = {}) {
+    async waitForNavigation({ timeout = 45000, graceMs = 800 } = {}) {
+      if (Date.now() - lastNavAt <= graceMs) {
+        await delay(NAV_POLL_SETTLE_MS / 2);
+        return { ok: true, url: page.url(), via: 'recent-navigation' };
+      }
       const navigated = new Promise((resolve) => {
         const onNav = () => { cleanup(); resolve(page.url()); };
         const onInPage = () => { cleanup(); resolve(page.url()); };
@@ -248,7 +316,7 @@ export function createEmbeddedPage({
       });
       await withTimeout(navigated, timeout, `Navigation timed out after ${timeout}ms`);
       await delay(NAV_POLL_SETTLE_MS / 2);
-      return { ok: true, url: page.url() };
+      return { ok: true, url: page.url(), via: 'navigation-event' };
     },
 
     /** Clicks via the page's own event loop (portalScraper's pattern). */
@@ -334,7 +402,7 @@ export function createEmbeddedPage({
           path: cookie.path || '/',
           secure: cookie.secure !== false,
           httpOnly: Boolean(cookie.httpOnly),
-          expirationDate: Number.isFinite(cookie.expires) ? cookie.expires : undefined,
+          expirationDate: (Number.isFinite(cookie.expires) && cookie.expires > 0) ? cookie.expires : undefined,
           sameSite: sameSiteToElectron(cookie.sameSite)
         });
       }
@@ -355,6 +423,15 @@ export function createEmbeddedPage({
     layout,
 
     async close() {
+      if (contents.removeListener && onAnyNav) {
+        contents.removeListener('did-navigate', onAnyNav);
+        contents.removeListener('did-navigate-in-page', onAnyNav);
+      }
+      try {
+        contents.debugger?.detach?.();
+      } catch {
+        /* not attached */
+      }
       if (window?.contentView?.removeChildView) window.contentView.removeChildView(view);
       try {
         view.webContents?.close?.();
@@ -370,25 +447,32 @@ export function createEmbeddedPage({
 
 /**
  * Puppeteer-compatible runtime wrapper for desktop/portalScraper.js. The
- * scraper calls runtime.launch({...headless, ...}) then browser.pages(),
- * browser.newPage() and browser.close(); this maps those onto a single
- * embedded view, so headless=false renders the visible monitoring view and
- * headless=true keeps it hidden while the scrape still runs.
+ * scraper calls runtime.launch({ headless, executablePath, defaultViewport,
+ * args }) — a puppeteer-shaped call that cannot carry the marketplace context —
+ * so the context (persistent per-marketplace session partition, the host
+ * window the visible view renders into, UA policy, bounds) is bound when the
+ * runtime is CREATED, and launch() only flips visibility with headless.
  */
-export function createEmbeddedRuntime(deps = {}) {
+export function createEmbeddedRuntime({ partition, window, userAgent, bounds, deps = {} } = {}) {
+  if (!partition || typeof partition !== 'string' || !partition.startsWith('persist:')) {
+    throw new Error('createEmbeddedRuntime requires a persistent per-marketplace session partition (persist:<marketplace-id>).');
+  }
+  if (!window) {
+    throw new Error('createEmbeddedRuntime requires the host BrowserWindow: the visible monitoring view must be attachable, and a detached view cannot render.');
+  }
   return {
+    partition,
+    window,
     /**
-     * launch({ headless, partition, userAgent, window, bounds, visibleOverride }).
-     * The puppeteer-shaped options (executablePath, defaultViewport, args) are
+     * launch({ headless }) — headless:false renders the visible monitoring
+     * view; headless:'new'/true runs it hidden in the background. The other
+     * puppeteer-shaped options (executablePath, defaultViewport, args) are
      * accepted and ignored — the embedded engine needs no external browser.
      */
     async launch(options = {}) {
       const {
         headless = false,
-        partition,
-        userAgent,
-        window,
-        bounds,
+        userAgent: userAgentOverride,
         WebContentsView,
         session,
         delay,
@@ -398,8 +482,8 @@ export function createEmbeddedRuntime(deps = {}) {
       const page = createEmbeddedPage({
         window,
         partition,
-        userAgent,
-        visible: headless === false || headless === undefined ? true : false,
+        userAgent: userAgentOverride || userAgent,
+        visible: !headless,
         bounds,
         deps: injectable
       });
