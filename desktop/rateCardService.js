@@ -6,7 +6,24 @@
  * 
  * Runs seamlessly on both Windows and Linux without repository dependencies.
  */
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { getDesktopPool } from './db.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+let cachedAppVersion = null;
+export function getDesktopAppVersion() {
+  if (cachedAppVersion) return cachedAppVersion;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    cachedAppVersion = pkg.version || '1.6.0';
+  } catch {
+    cachedAppVersion = '1.6.0';
+  }
+  return cachedAppVersion;
+}
 
 /**
  * Returns date of day before ISO date string (YYYY-MM-DD).
@@ -831,7 +848,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
     const anomaliesCount = changes.filter(c => c.anomaly).length;
 
     const richSnapshot = {
-      version: '1.5.0',
+      version: getDesktopAppVersion(),
       syncTimestamp: new Date().toISOString(),
       effectiveDate,
       sellerAccount,
