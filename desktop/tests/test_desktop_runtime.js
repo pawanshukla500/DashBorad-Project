@@ -982,7 +982,7 @@ async function runTests() {
     let loadedUrl = '';
     let behavior = evalBehavior || ((script) => {
       if (/document\.readyState/.test(script)) return true;
-      if (/document\.querySelector\("input/.test(script) || /offsetParent/.test(script)) return 'present';
+      if (/document\.querySelector\("input/.test(script) || /offsetParent/.test(script) || /getComputedStyle/.test(script)) return 'present';
       return 'ok';
     });
     const listeners = {};
@@ -1053,6 +1053,7 @@ async function runTests() {
       }
     };
     const fakeWindow = {
+      getContentSize: () => ({ width: 1024, height: 640 }),
       contentView: {
         addChildView: () => { calls.attached += 1; },
         removeChildView: () => { calls.removed += 1; }
@@ -1068,7 +1069,7 @@ async function runTests() {
       fakeContents,
       fakeWindow,
       setBehavior: (next) => { behavior = next; },
-      fire: (event) => [...(listeners[event] || [])].forEach((h) => h()),
+      fire: (event, ...args) => [...(listeners[event] || [])].forEach((h) => h(...args)),
       emitNetwork: (method) => debuggerHandlers.forEach((h) => h({}, method)),
       debuggerAttached: () => (fakeContents.debugger ? fakeContents.debugger.attached : 'absent'),
       debuggerCommands: () => (fakeContents.debugger ? fakeContents.debugger.sent : []),
@@ -1105,6 +1106,19 @@ async function runTests() {
     assert(prefs.sandbox === true && prefs.contextIsolation === true && prefs.nodeIntegration === false && prefs.webSecurity === true,
       'portal pages are untrusted: sandbox + isolation + no Node + web security are mandatory');
     assert(page.getVisible() === true, 'the view starts visible by default');
+
+    // A WebContentsView starts at 0×0: omitted bounds must never leave a
+    // blank "visible" surface.
+    const unbounded = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
+    assert(unbounded._view.boundsSet && unbounded._view.boundsSet.width === 1024 && unbounded._view.boundsSet.height === 640,
+      'without explicit bounds the view must cover the host window content area, never a blank 0x0 surface');
+    const bareWindowPage = createEmbeddedPage({
+      window: { contentView: { addChildView: () => {}, removeChildView: () => {} } },
+      partition: 'persist:marketplace-flipkart',
+      deps: harness.deps
+    });
+    assert(bareWindowPage._view.boundsSet.width === 1280 && bareWindowPage._view.boundsSet.height === 720,
+      'a window without a content size must still receive non-zero default bounds');
   });
 
   await runTest('embedded goto waits for real network quiet via the CDP monitor, with honest fallback', async () => {
@@ -1206,11 +1220,21 @@ async function runTests() {
     assert(surfaced, 'after the retry budget the real page error must surface');
   });
 
-  await runTest('embedded waitForSelector polls and times out with TimeoutError', async () => {
+  await runTest('embedded waitForSelector polls, checks real visibility, and times out with TimeoutError', async () => {
     const harness = makeFakeEmbeddedDeps();
     const page = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
     const found = await page.waitForSelector('input[name="username"]', { visible: true, timeout: 2000 });
     assert(found.ok === true, 'a present selector must resolve');
+
+    // visibility:hidden / opacity:0 / display:none controls keep an
+    // offsetParent but are invisible to users — a visible wait must reject
+    // them (typing into an invisible control is the classic silent failure).
+    const ghost = makeFakeEmbeddedDeps({ evalBehavior: (script) => (/getComputedStyle/.test(script) ? 'hidden' : 'present') });
+    const ghostPage = createEmbeddedPage({ window: ghost.fakeWindow, partition: 'persist:marketplace-flipkart', deps: ghost.deps });
+    let ghostTimedOut = false;
+    try { await ghostPage.waitForSelector('input[name="username"]', { visible: true, timeout: 150 }); }
+    catch (err) { ghostTimedOut = err.name === 'TimeoutError'; }
+    assert(ghostTimedOut, 'a present-but-invisible control must not satisfy a visible wait');
 
     const empty = makeFakeEmbeddedDeps({ evalBehavior: () => 'absent' });
     const blindPage = createEmbeddedPage({ window: empty.fakeWindow, partition: 'persist:marketplace-flipkart', deps: empty.deps });
@@ -1306,6 +1330,22 @@ async function runTests() {
     const recent = await page.waitForNavigation({ timeout: 2000, graceMs: 800 });
     assert(recent.ok === true && recent.via === 'recent-navigation', 'a navigation inside the grace window must satisfy waitForNavigation');
     assert(recent.url === 'https://seller.flipkart.com/fake', 'the resolved navigation must report the current URL');
+
+    // did-navigate-in-page also fires for subframes: an iframe's hash change
+    // must never satisfy a top-level login wait, nor arm the grace window.
+    const frames = makeFakeEmbeddedDeps();
+    const framesPage = createEmbeddedPage({ window: frames.fakeWindow, partition: 'persist:marketplace-flipkart', deps: frames.deps });
+    const subframePromise = framesPage.waitForNavigation({ timeout: 250 });
+    frames.fire('did-navigate-in-page', null, 'https://ads.example.com/frame#x', false);
+    let subframeTimedOut = false;
+    try { await subframePromise; }
+    catch (err) { subframeTimedOut = err.name === 'TimeoutError'; }
+    assert(subframeTimedOut, 'a subframe in-page navigation must NOT satisfy the top-level wait');
+    const mainFramePromise = framesPage.waitForNavigation({ timeout: 2000 });
+    frames.fire('did-navigate-in-page', null, 'https://seller.flipkart.com/#payments', true);
+    const mainFrame = await mainFramePromise;
+    assert(mainFrame.ok === true && mainFrame.via === 'navigation-event',
+      'a main-frame in-page navigation must satisfy the wait (and the subframe nav must not have armed the grace window)');
 
     // A navigation that PRECEDED the action can never be the submit's
     // navigation: it must be ignored, not accepted through the grace window.

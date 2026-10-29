@@ -34,6 +34,7 @@ const POLL_RETRIES = 40;
 const POLL_GAP_MS = 700;
 const GOTO_SETTLE_MS = 2000;
 const NAV_POLL_SETTLE_MS = 4000;
+const DEFAULT_VIEW_BOUNDS = { x: 0, y: 0, width: 1280, height: 720 };
 
 const require = createRequire(import.meta.url);
 
@@ -140,8 +141,18 @@ export function createEmbeddedPage({
   const attach = () => {
     if (window?.contentView?.addChildView) window.contentView.addChildView(view);
   };
+  // A WebContentsView starts at 0×0: without bounds it renders as a blank
+  // surface even while marked visible. When no explicit bounds are given,
+  // cover the host window's content area (or a sane default).
+  const defaultBounds = () => {
+    const size = window?.getContentSize?.();
+    if (size && size.width > 0 && size.height > 0) {
+      return { x: 0, y: 0, width: size.width, height: size.height };
+    }
+    return DEFAULT_VIEW_BOUNDS;
+  };
   const layout = () => {
-    const next = typeof bounds === 'function' ? bounds() : bounds;
+    const next = typeof bounds === 'function' ? bounds() : (bounds || defaultBounds());
     if (next && view.setBounds) view.setBounds(next);
   };
   attach();
@@ -153,15 +164,20 @@ export function createEmbeddedPage({
   // Navigation tracking: the scraper clicks a submit button and only then
   // calls waitForNavigation, so a fast navigation can complete before the
   // wait's own listener registers. A persistent listener records every
-  // navigation's timestamp, and waitForNavigation accepts a navigation that
-  // happened within a small grace window before the call — but only one that
-  // fired AFTER the action armed the watch (see armedAt below), so an
-  // unrelated earlier navigation can never satisfy the wait.
+  // MAIN-FRAME navigation's timestamp (did-navigate-in-page also fires for
+  // subframes; an iframe's hash change is not the submit's navigation), and
+  // waitForNavigation accepts a navigation that happened within a small grace
+  // window before the call — but only one that fired AFTER the action armed
+  // the watch (see armedAt below), so an unrelated earlier navigation can
+  // never satisfy the wait.
   let lastNavAt = 0;
   const onAnyNav = () => { lastNavAt = Date.now(); };
+  const onAnyInPage = (_event, _url, isMainFrame) => {
+    if (isMainFrame !== false) lastNavAt = Date.now();
+  };
   if (contents.on) {
     contents.on('did-navigate', onAnyNav);
-    contents.on('did-navigate-in-page', onAnyNav);
+    contents.on('did-navigate-in-page', onAnyInPage);
   }
   // Actions that can trigger a navigation (evaluate / click / type) arm the
   // navigation watch BEFORE their script runs, so the grace window can only
@@ -302,14 +318,21 @@ export function createEmbeddedPage({
 
     /**
      * Polls for a selector; rejects with TimeoutError when it never appears.
-     * The evaluation retries share the poll's own deadline, so a flaky
-     * renderer can never make the wait return seconds past its timeout.
+     * visible waits check real computed visibility (display, client rects,
+     * visibility, opacity) — offsetParent alone misses visibility:hidden and
+     * opacity:0 controls. The evaluation retries share the poll's own
+     * deadline, so a flaky renderer can never make the wait return seconds
+     * past its timeout.
      */
     async waitForSelector(selector, { visible = false, timeout = 15000 } = {}) {
       const script = `(() => {
         const el = document.querySelector(${JSON.stringify(selector)});
         if (!el) return 'absent';
-        if (${visible ? '!el.offsetParent' : 'false'}) return 'hidden';
+        ${visible ? `
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || el.getClientRects().length === 0) return 'hidden';
+        if (style.visibility === 'hidden' || style.visibility === 'collapse') return 'hidden';
+        if (Number(style.opacity) === 0) return 'hidden';` : ''}
         return 'present';
       })()`;
       const deadline = Date.now() + (Number.isFinite(timeout) && timeout > 0 ? timeout : 15000);
@@ -354,7 +377,13 @@ export function createEmbeddedPage({
       } else {
         const navigated = new Promise((resolve) => {
           const onNav = () => { cleanup(); resolve(page.url()); };
-          const onInPage = () => { cleanup(); resolve(page.url()); };
+          const onInPage = (_event, _url, isMainFrame) => {
+            // did-navigate-in-page also fires for subframes; an iframe's
+            // hash change must not satisfy a top-level login wait.
+            if (isMainFrame === false) return;
+            cleanup();
+            resolve(page.url());
+          };
           const cleanup = () => {
             contents.removeListener?.('did-navigate', onNav);
             contents.removeListener?.('did-navigate-in-page', onInPage);
@@ -491,7 +520,7 @@ export function createEmbeddedPage({
     async close() {
       if (contents.removeListener && onAnyNav) {
         contents.removeListener('did-navigate', onAnyNav);
-        contents.removeListener('did-navigate-in-page', onAnyNav);
+        contents.removeListener('did-navigate-in-page', onAnyInPage);
       }
       try {
         contents.debugger?.detach?.();
