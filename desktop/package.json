@@ -21,7 +21,8 @@
     "test:runtime": "node tests/test_desktop_runtime.js",
     "test:auth": "node tests/test_desktop_auth.js",
     "test:e2e": "node tests/test_desktop_e2e.js",
-    "test": "node tests/test_desktop_runtime.js && node tests/test_desktop_auth.js && node tests/test_desktop_e2e.js"
+    "test": "node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js",
+    "test:all": "node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js && node tests/test_desktop_auth.js"
   },
   "keywords": [
     "ratecard",

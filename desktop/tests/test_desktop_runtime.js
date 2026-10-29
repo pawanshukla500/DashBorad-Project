@@ -1895,6 +1895,8 @@ async function runTests() {
     assert.strictEqual(pkg.version, '1.6.0', 'version must be 1.6.0');
     assert(pkg.scripts['test:e2e'], 'package.json must define test:e2e');
     assert(pkg.scripts['test'].includes('test_desktop_e2e.js'), 'test script must include test_desktop_e2e.js');
+    assert(!pkg.scripts['test'].includes('test_desktop_auth.js'), 'default test script must remain offline/CI-safe without live auth');
+    assert(pkg.scripts['test:auth'], 'package.json must retain dedicated test:auth script');
 
     const e2ePath = path.join(desktopDir, 'tests', 'test_desktop_e2e.js');
     assert(fs.existsSync(e2ePath), 'test_desktop_e2e.js must exist');
