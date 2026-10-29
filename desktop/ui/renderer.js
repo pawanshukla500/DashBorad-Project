@@ -358,6 +358,17 @@ function initBrowserMonitorListeners() {
     }
   });
 
+  function triggerInteractiveLogin(marketplaceId = 'flipkart_shopsy') {
+    const selectMp = document.getElementById('select-marketplace');
+    if (selectMp && marketplaceId) {
+      selectMp.value = marketplaceId;
+      const headerMp = document.getElementById('header-select-marketplace');
+      if (headerMp) headerMp.value = marketplaceId;
+    }
+    const btn = document.getElementById('btn-interactive-login');
+    btn?.click();
+  }
+
   const btnLogin = document.getElementById('btn-monitor-login');
   btnLogin?.addEventListener('click', () => {
     const select = document.getElementById('select-marketplace');
