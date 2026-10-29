@@ -196,9 +196,12 @@ export function createEmbeddedPage({
   // count). Merely attaching does not set navigator.webdriver or any
   // automation flag — that only happens for pages launched with
   // --enable-automation. When the debugger is unavailable the adapter falls
-  // back to the fixed settle instead of failing the load.
+  // back to the fixed settle instead of failing the load. Electron's debugger
+  // API is attach / on('message') / sendCommand / detach — sendCommand (not
+  // send) issues protocol commands, and its promise is caught so an
+  // unhandled rejection can never crash the app.
   const netMonitor = (() => {
-    if (!contents.debugger?.attach || !contents.debugger?.on) return null;
+    if (!contents.debugger?.attach || !contents.debugger?.on || !contents.debugger?.sendCommand) return null;
     try {
       contents.debugger.attach('1.3');
     } catch {
@@ -212,7 +215,7 @@ export function createEmbeddedPage({
       }
     });
     try {
-      contents.debugger.send('Network.enable');
+      Promise.resolve(contents.debugger.sendCommand('Network.enable')).catch(() => {});
     } catch {
       return null;
     }

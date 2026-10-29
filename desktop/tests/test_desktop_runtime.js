@@ -1024,7 +1024,11 @@ async function runTests() {
         sent: [],
         attach(version) { this.attached = version; },
         on(event, handler) { if (event === 'message') debuggerHandlers.push(handler); },
-        send(command) { this.sent.push(command); },
+        // Mirrors the REAL Electron WebContents.debugger surface: commands go
+        // through sendCommand (async) — the adapter must not rely on a
+        // nonexistent send() or the monitor would silently disable itself in
+        // production while the fake kept it working.
+        sendCommand(command) { this.sent.push(command); return Promise.resolve({}); },
         detach() { this.attached = null; }
       };
     }
