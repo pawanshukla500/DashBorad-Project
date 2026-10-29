@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
   captureBrowserScreenshot: () => ipcRenderer.invoke('browser-monitor-screenshot'),
   setBrowserVisibility: (visible) => ipcRenderer.invoke('browser-monitor-set-visibility', Boolean(visible)),
   setBrowserEngine: (engine) => ipcRenderer.invoke('browser-monitor-set-engine', typeof engine === 'string' ? engine.trim() : 'embedded'),
+  setMonitorDockBounds: (bounds) => ipcRenderer.invoke('browser-monitor-set-dock-bounds', bounds),
   onBrowserMonitorUpdate: (callback) => {
     const subscription = (event, state) => callback(state);
     ipcRenderer.on('browser-monitor-update', subscription);

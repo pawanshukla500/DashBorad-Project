@@ -543,38 +543,49 @@ function broadcastMonitorState(patch = {}) {
   }
 }
 
+let currentDockBounds = null;
 function getMonitorViewBounds() {
+  if (currentDockBounds && currentDockBounds.width > 100 && currentDockBounds.height > 100) {
+    return currentDockBounds;
+  }
   if (!mainWindow || mainWindow.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
   const size = mainWindow.getContentSize();
   const width = Array.isArray(size) ? size[0] : (size?.width || 1360);
   const height = Array.isArray(size) ? size[1] : (size?.height || 900);
-  const marginX = 280;
-  const marginTop = 200;
-  const viewWidth = Math.max(400, width - marginX - 30);
-  const viewHeight = Math.max(300, height - marginTop - 30);
+  const marginX = 260;
+  const marginTop = 260;
+  const viewWidth = Math.max(400, width - marginX - 40);
+  const viewHeight = Math.max(300, height - marginTop - 40);
   return { x: marginX, y: marginTop, width: viewWidth, height: viewHeight };
 }
 
-async function fetchVaultCredential(session, marketplace = 'flipkart_shopsy') {
+async function fetchVaultCredential(session, marketplace = 'flipkart_shopsy', targetEmail = '') {
   if (!session?.idToken) return null;
   const targetChannel = (marketplace === 'flipkart_shopsy' || marketplace === 'shopsy') ? 'flipkart' : marketplace;
   for (const serverBase of CANDIDATE_API_SERVERS) {
     const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
     try {
       const listRes = await fetch(`${normalizedBase}/api/marketplace-accounts`, {
-        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
+        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(8000)
       });
       if (!listRes.ok) continue;
       const body = await listRes.json();
       const accounts = Array.isArray(body) ? body : (body.accounts || []);
-      const matched = accounts.find(a => 
+      const channelAccounts = accounts.filter(a => 
         (a.marketplace && a.marketplace.toLowerCase() === targetChannel.toLowerCase()) || 
         (a.account_id && a.account_id.toLowerCase() === targetChannel.toLowerCase())
       );
+      if (!channelAccounts.length) continue;
+      const matched = (targetEmail && channelAccounts.find(a => 
+        (a.login_id && a.login_id.toLowerCase() === String(targetEmail).toLowerCase()) ||
+        (a.account_id && a.account_id.toLowerCase() === String(targetEmail).toLowerCase())
+      )) || channelAccounts[0];
       if (!matched || !matched.id) continue;
 
       const revealRes = await fetch(`${normalizedBase}/api/marketplace-accounts/${matched.id}/reveal`, {
-        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
+        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(8000)
       });
       if (revealRes.ok) {
         const revealed = await revealRes.json();
@@ -625,48 +636,53 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       const pollAuth = async () => {
         const deadline = Date.now() + 300000; // 5 minute human login window
         while (Date.now() < deadline) {
-          const authState = await page.evaluate((id) => {
-            const href = window.location.href.toLowerCase();
-            const body = document.body ? document.body.innerText.toLowerCase() : '';
-            const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
-            const hasLoginForm = Boolean(document.querySelector('form[action*="login"], form[action*="signin"]'));
-            if (hasPasswordInput || hasLoginForm) return false;
-            if (id.startsWith('myntra')) {
-              return href.includes('partnerportal') && (href.includes('dashboard') || href.includes('home') || body.includes('logout') || body.includes('seller id'));
-            }
-            if (id === 'meesho') {
-              const notLogin = !href.includes('/login') && !href.includes('auth');
-              const onPanel = href.includes('supplier.meesho.com') && (
-                href.includes('/orders') || href.includes('/catalog') || href.includes('/payments') || href.includes('/returns') || href.includes('/dashboard') || href.includes('/home')
-              );
-              const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('seller id');
-              return notLogin && (onPanel || hasAuthText);
-            }
-            if (id === 'amazon') {
-              return href.includes('sellercentral.amazon.in') && !href.includes('/signin') && (href.includes('home') || href.includes('dashboard') || body.includes('sign out') || body.includes('logout'));
-            }
-            if (id === 'ajio') {
-              return href.includes('supplier.ajio.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
-            }
-            if (id === 'cocoblu') {
-              const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
-              const onAuthRoute = href.includes('/dashboard') || href.includes('/orders') || href.includes('/vendor') || href.includes('/portal') || href.includes('/reports');
-              const hasLogoutAction = body.includes('logout') || body.includes('sign out') || Boolean(document.querySelector('a[href*="logout"], button[class*="logout"]'));
-              return href.includes('cocoblu.biz') && notLogin && (onAuthRoute || hasLogoutAction);
-            }
-            if (id === 'shopify') {
-              const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin') && !href.includes('/signup');
-              const onStoreRoute = (href.includes('/store/') || href.includes('/admin/')) && (
-                href.includes('/home') || href.includes('/orders') || href.includes('/products') || href.includes('/settings') || href.includes('/analytics') || /\/store\/[a-zA-Z0-9\-_]+(\/?$|\?)/.test(href)
-              );
-              const hasAuthenticatedUi = Boolean(document.querySelector(
-                '#AppFrameMain, nav[aria-label*="Navigation" i], nav[aria-label*="Main" i], [data-portal-id], a[href*="logout"], button[class*="logout"], [aria-label*="log out" i], [aria-label*="Store menu" i], [aria-label*="Account menu" i]'
-              ));
-              const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
-              return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
-            }
-            return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
-          }, mpConfig.id);
+          let authState = false;
+          try {
+            authState = await page.evaluate((id) => {
+              const href = window.location.href.toLowerCase();
+              const body = document.body ? document.body.innerText.toLowerCase() : '';
+              const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
+              const hasLoginForm = Boolean(document.querySelector('form[action*="login"], form[action*="signin"]'));
+              if (hasPasswordInput || hasLoginForm) return false;
+              if (id.startsWith('myntra')) {
+                return href.includes('partnerportal') && (href.includes('dashboard') || href.includes('home') || body.includes('logout') || body.includes('seller id'));
+              }
+              if (id === 'meesho') {
+                const notLogin = !href.includes('/login') && !href.includes('auth');
+                const onPanel = href.includes('supplier.meesho.com') && (
+                  href.includes('/orders') || href.includes('/catalog') || href.includes('/payments') || href.includes('/returns') || href.includes('/dashboard') || href.includes('/home')
+                );
+                const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('seller id');
+                return notLogin && (onPanel || hasAuthText);
+              }
+              if (id === 'amazon') {
+                return href.includes('sellercentral.amazon.in') && !href.includes('/signin') && (href.includes('home') || href.includes('dashboard') || body.includes('sign out') || body.includes('logout'));
+              }
+              if (id === 'ajio') {
+                return href.includes('supplier.ajio.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
+              }
+              if (id === 'cocoblu') {
+                const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
+                const onAuthRoute = href.includes('/dashboard') || href.includes('/orders') || href.includes('/vendor') || href.includes('/portal') || href.includes('/reports');
+                const hasLogoutAction = body.includes('logout') || body.includes('sign out') || Boolean(document.querySelector('a[href*="logout"], button[class*="logout"]'));
+                return href.includes('cocoblu.biz') && notLogin && (onAuthRoute || hasLogoutAction);
+              }
+              if (id === 'shopify') {
+                const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin') && !href.includes('/signup');
+                const onStoreRoute = (href.includes('/store/') || href.includes('/admin/')) && (
+                  href.includes('/home') || href.includes('/orders') || href.includes('/products') || href.includes('/settings') || href.includes('/analytics') || /\/store\/[a-zA-Z0-9\-_]+(\/?$|\?)/.test(href)
+                );
+                const hasAuthenticatedUi = Boolean(document.querySelector(
+                  '#AppFrameMain, nav[aria-label*="Navigation" i], nav[aria-label*="Main" i], [data-portal-id], a[href*="logout"], button[class*="logout"], [aria-label*="log out" i], [aria-label*="Store menu" i], [aria-label*="Account menu" i]'
+                ));
+                const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
+                return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
+              }
+              return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
+            }, mpConfig.id);
+          } catch {
+            // Context destroyed during navigation or in-flight redirect; retry on next poll tick
+          }
 
           if (authState) return true;
           broadcastMonitorState({ url: page.url(), title: page.title() });
@@ -802,7 +818,7 @@ async function executeScrapeProcess(config, onProgress) {
   const session = loadAuthSession();
   if (!effectiveConfig.password && session?.idToken) {
     try {
-      const vaultCred = await fetchVaultCredential(session, effectiveConfig.marketplace);
+      const vaultCred = await fetchVaultCredential(session, effectiveConfig.marketplace, effectiveConfig.email);
       if (vaultCred) {
         effectiveConfig.email = vaultCred.email || effectiveConfig.email;
         effectiveConfig.password = vaultCred.password;
@@ -979,6 +995,21 @@ registerHandler('browser-monitor-set-engine', (e, engine) => {
   currentBrowserEngine = next;
   broadcastMonitorState({ engine: next });
   return { success: true, engine: next };
+});
+
+registerHandler('browser-monitor-set-dock-bounds', (e, rect) => {
+  if (rect && typeof rect === 'object' && Number.isFinite(rect.width) && Number.isFinite(rect.height)) {
+    currentDockBounds = {
+      x: Math.round(rect.x || 0),
+      y: Math.round(rect.y || 0),
+      width: Math.round(rect.width || 0),
+      height: Math.round(rect.height || 0)
+    };
+    if (activeEmbeddedPage && typeof activeEmbeddedPage.layout === 'function') {
+      activeEmbeddedPage.layout();
+    }
+  }
+  return { success: true };
 });
 
 // ── Authentication & Authorization IPC Handlers ─────────────────────────────
