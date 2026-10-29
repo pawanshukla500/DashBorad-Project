@@ -90,6 +90,7 @@ function updateUserAuthUI(session) {
 
 // ── Auto-Update Banner (installed desktop app) ────────────────────────────────
 let updateBannerHideTimer = null;
+let pendingUpdateDownloaded = ''; // version whose update is downloaded and awaiting restart
 
 function applyUpdateBanner(status) {
   const banner = document.getElementById('update-banner');
@@ -114,13 +115,22 @@ function applyUpdateBanner(status) {
 
   const kind = status?.status;
   const version = status?.version ? ` v${status.version}` : '';
+  if (kind === 'downloaded') {
+    pendingUpdateDownloaded = version;
+  }
+  // Once an update is downloaded, the restart prompt is sticky: the periodic
+  // 6-hourly re-check cycles (checking / available / downloading / not-available)
+  // must never dismiss it — the downloaded installer is ready regardless.
+  if (pendingUpdateDownloaded) {
+    show(`✅ App update${pendingUpdateDownloaded} is ready to install.`, true);
+    return;
+  }
+
   if (kind === 'available') {
     show(`⬇ New app version${version} found — downloading in the background…`, false);
   } else if (kind === 'downloading') {
     const percent = Number.isFinite(status?.percent) ? ` (${status.percent}%)` : '';
     show(`⬇ Downloading app update${version}${percent}…`, false);
-  } else if (kind === 'downloaded') {
-    show(`✅ App update${version} is ready to install.`, true);
   } else if (kind === 'error') {
     // Transient network failures are expected and retried on the updater's
     // own schedule, so the banner only mentions the failure briefly.

@@ -147,7 +147,7 @@ The worker never ships database credentials — they are provisioned over TLS af
 | :--- | :--- |
 | \`DATABASE_URL\` | The dashboard's own database. When its host is publicly routable it is handed to verified admin/operator sessions verbatim, so the worker lands on the exact same database as the dashboard with no extra configuration. |
 | \`DESKTOP_DATABASE_URL\` | Only needed when \`DATABASE_URL\` is container-internal (e.g. \`postgres:5432\`): the publicly routable address form of that SAME database. A URL naming any other database is refused automatically, as are container-internal and reserved-documentation hosts. |
-| \`DESKTOP_ANALYST_DATABASE_URL\` | Distinct **read-only** principal on the same database for analyst sign-ins. Analysts never receive writer credentials, and a principal pointing at any other database is refused; without this variable analysts sign in with no database access. |
+| \`DESKTOP_ANALYST_DATABASE_URL\` | Distinct **read-only** principal on the same database for analyst sign-ins. Analysts never receive writer credentials, and a principal pointing at any other database is refused; at sign-in the server additionally verifies **under that principal's own credentials** that it holds no writer privileges (fail-closed: an unverifiable or writer-capable principal yields no database access). |
 
 After the variables are configured, sign in once inside the worker to provision. The dashboard and the Settings tab then report an honest connection status, and the API server logs which URL class was issued per role.
 
@@ -157,7 +157,7 @@ The installed Windows app checks GitHub Releases for a new version shortly after
 2. Shows an in-app **Restart to Update** banner and a native Windows notification,
 3. Applies the update automatically on the next app quit even if the prompt is ignored, and installs it immediately when you click **Restart to Update**.
 
-New releases are published by pushing a \`v*.*.*\` tag to the repository — the release then carries the NSIS installer, the portable executable, and the \`latest.yml\` update feed the installed app reads. **Auto-update applies to NSIS installs only**: the portable executable and manual copies do not self-update, so use the NSIS installer (recommended) for always-current installs.
+New releases are published by pushing a \`v*.*.*\` tag that **matches \`desktop/package.json\`'s version** (e.g. \`v1.1.0\` for version 1.1.0 — the release workflow refuses mismatched tags, so bump the package version first) — the release then carries the NSIS installer, the portable executable, and the \`latest.yml\` update feed the installed app reads. **Auto-update applies to NSIS installs only**: the portable executable and manual copies do not self-update, so use the NSIS installer (recommended) for always-current installs.
 
 ---
 

@@ -3,7 +3,9 @@ import {
   desktopAnalystDatabaseUrl,
   desktopDatabaseUrl,
   desktopDatabaseProvisioningForRole,
-  isPubliclyRoutableDbHost
+  isPubliclyRoutableDbHost,
+  verifyAnalystPrincipalIsReadOnly,
+  DESKTOP_MUTATION_TABLES
 } from '../utils/desktopProvisioning.js';
 
 describe('isPubliclyRoutableDbHost', () => {
@@ -191,5 +193,67 @@ describe('desktopDatabaseProvisioningForRole', () => {
       databaseUrl: '',
       databaseAccess: 'none'
     });
+  });
+});
+
+// Stub pg driver so the analyst grant verification is testable offline.
+const makeStubPg = (roleRow, privilegeByTable, connectError) => {
+  const queries = [];
+  class Client {
+    constructor(config) { this.config = config; }
+    async connect() { if (connectError) throw connectError; }
+    async query(sql, params) {
+      queries.push({ sql, params });
+      if (/pg_roles/.test(sql)) return { rows: [roleRow] };
+      if (/has_table_privilege/.test(sql)) {
+        return { rows: [{ allowed: privilegeByTable[params[0]] ?? null }] };
+      }
+      return { rows: [] };
+    }
+    async end() { queries.push({ sql: 'END' }); }
+  }
+  return { Client, queries };
+};
+
+describe('verifyAnalystPrincipalIsReadOnly', () => {
+  const noWriterPrivileges = () => {
+    const privileges = {};
+    for (const table of DESKTOP_MUTATION_TABLES) privileges[table] = false;
+    return privileges;
+  };
+
+  it('accepts a non-superuser principal with no INSERT on any desktop mutation table', async () => {
+    const stub = makeStubPg({ rolsuper: false }, noWriterPrivileges());
+    await expect(
+      verifyAnalystPrincipalIsReadOnly('postgresql://analyst:ro@db.example.com:5432/paymentapp', stub)
+    ).resolves.toBe(true);
+    // The privilege probe must cover every desktop-mutable table.
+    const probedTables = stub.queries.filter((q) => /has_table_privilege/.test(q.sql)).map((q) => q.params[0]);
+    for (const table of DESKTOP_MUTATION_TABLES) {
+      expect(probedTables).toContain(table);
+    }
+  });
+
+  it('refuses a superuser principal', async () => {
+    const stub = makeStubPg({ rolsuper: true }, noWriterPrivileges());
+    await expect(
+      verifyAnalystPrincipalIsReadOnly('postgresql://analyst:ro@db.example.com:5432/paymentapp', stub)
+    ).resolves.toBe(false);
+  });
+
+  it('refuses a principal holding INSERT on any desktop mutation table', async () => {
+    const privileges = noWriterPrivileges();
+    privileges['rc_fixed_fee'] = true;
+    const stub = makeStubPg({ rolsuper: false }, privileges);
+    await expect(
+      verifyAnalystPrincipalIsReadOnly('postgresql://analyst:ro@db.example.com:5432/paymentapp', stub)
+    ).resolves.toBe(false);
+  });
+
+  it('fails closed when the principal cannot be reached', async () => {
+    const stub = makeStubPg({ rolsuper: false }, noWriterPrivileges(), new Error('connection timed out'));
+    await expect(
+      verifyAnalystPrincipalIsReadOnly('postgresql://analyst:ro@db.example.com:5432/paymentapp', stub)
+    ).resolves.toBe(false);
   });
 });

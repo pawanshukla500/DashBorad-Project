@@ -18,8 +18,24 @@
  * Analysts use a separate DESKTOP_ANALYST_DATABASE_URL principal (read-only
  * grants on the same database). It is also refused unless it names the
  * dashboard's own database, and the server never falls back to either
- * writer URL for that role.
+ * writer URL for that role. Because a misconfigured principal would hand a
+ * writer connection to an analyst, the provisioning ROUTES additionally
+ * verify on the server, with a short-lived connection under that principal's
+ * own credentials, that it really holds no writer privileges
+ * (verifyAnalystPrincipalIsReadOnly, fail-closed).
  */
+
+import pg from 'pg';
+
+// The tables a desktop worker can mutate. An analyst principal holding INSERT
+// on any of them is a writer, not a read-only principal.
+export const DESKTOP_MUTATION_TABLES = [
+  'rc_commission',
+  'rc_fixed_fee',
+  'rc_collection_fee',
+  'rc_reverse_shipping',
+  'rate_card_versions'
+];
 
 const NON_ROUTABLE_HOST_SUFFIXES = ['.internal', '.local', '.localdomain', '.lan', '.home.arpa', '.home', '.box'];
 
@@ -238,4 +254,44 @@ export function desktopDatabaseProvisioningForRole(role, env = process.env) {
     return { databaseUrl: desktopDatabaseUrl(env), databaseAccess: 'standard' };
   }
   return { databaseUrl: '', databaseAccess: 'none' };
+}
+
+/**
+ * Verifies, over a short-lived connection made with the analyst principal's
+ * OWN credentials, that it really is read-only: not a superuser and holding no
+ * INSERT privilege on any desktop-mutable table. Configuration alone cannot be
+ * trusted here — a writer URL in DESKTOP_ANALYST_DATABASE_URL would otherwise
+ * hand every analyst a writer connection.
+ *
+ * Fail-closed: any error, any writer privilege, or an unreachable principal
+ * means the URL must NOT be provisioned. The pgModule parameter exists so the
+ * check stays testable offline against a stub driver.
+ */
+export async function verifyAnalystPrincipalIsReadOnly(databaseUrl, pgModule = pg) {
+  let client;
+  try {
+    client = new pgModule.Client({ connectionString: databaseUrl, connectionTimeoutMillis: 8000 });
+    await client.connect();
+
+    const roleRes = await client.query(
+      'SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user'
+    );
+    if (roleRes.rows.length && roleRes.rows[0].rolsuper === true) return false;
+
+    for (const table of DESKTOP_MUTATION_TABLES) {
+      const res = await client.query(
+        'SELECT has_table_privilege(current_user, $1, $2) AS allowed',
+        [table, 'INSERT']
+      );
+      // has_table_privilege returns null when the table does not exist; null
+      // is not a writer privilege. true is.
+      if (res.rows.length && res.rows[0].allowed === true) return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[desktopProvisioning] Analyst principal read-only verification failed:', err.message);
+    return false;
+  } finally {
+    if (client) await client.end().catch(() => {});
+  }
 }
