@@ -1044,14 +1044,18 @@ async function runTests() {
       setBounds(b) { this.boundsSet = b; calls.bounds.push(b); }
     }
     const partitions = [];
+    const storedCookies = [];
     const fakeSession = {
       fromPartition: (partition) => {
         partitions.push(partition);
         return {
           setUserAgent: (ua) => calls.userAgent.push(ua),
           cookies: {
-            get: async () => [{ name: 'sid', value: 'x', domain: '.flipkart.com', path: '/', secure: true, httpOnly: true, expirationDate: 1893456000, sameSite: 'lax' }],
-            set: async (cookie) => calls.cookieSets.push(cookie)
+            get: async (filter = {}) => storedCookies.filter((c) => !filter.name || c.name === filter.name),
+            set: async (cookie) => {
+              storedCookies.push(cookie);
+              calls.cookieSets.push(cookie);
+            }
           }
         };
       }
@@ -1284,6 +1288,18 @@ async function runTests() {
     const flakyElapsed = Date.now() - flakyStartedAt;
     assert(flakyTimedOut, 'a failing evaluator must surface as a TimeoutError');
     assert(flakyElapsed < 1500, `selector waits must honor their own timeout despite evaluation retries, took ${flakyElapsed}ms`);
+
+    // A renderer that never settles (stall) must not hold the wait open
+    // past the timeout either — the deadline bounds a single execution.
+    const stalled = makeFakeEmbeddedDeps();
+    stalled.fakeContents.executeJavaScript = () => new Promise(() => {});
+    const stalledPage = createEmbeddedPage({ window: stalled.fakeWindow, partition: 'persist:marketplace-flipkart', deps: stalled.deps });
+    const stalledStartedAt = Date.now();
+    let stalledTimedOut = false;
+    try { await stalledPage.waitForSelector('#never', { timeout: 300 }); }
+    catch (err) { stalledTimedOut = err.name === 'TimeoutError'; }
+    const stalledElapsed = Date.now() - stalledStartedAt;
+    assert(stalledTimedOut && stalledElapsed < 1500, 'a stalled renderer must not extend a selector wait beyond its timeout');
   });
 
   await runTest('embedded type clears React-safely, sends real key events, and verifies readback', async () => {
@@ -1337,8 +1353,17 @@ async function runTests() {
       'a puppeteer session cookie (expires: -1) must become a browser session cookie, not an already-expired one');
     assert(sessionCookieWrite.name === 'session-only', 'the second cookie write must be the session cookie');
 
+    // The persistent partition outlives the vault file: a stale vault import
+    // must never downgrade a live cookie's expiry (a previous run's refresh).
+    await page.setCookie({ name: 'refreshed', value: 'new', domain: '.flipkart.com', path: '/', secure: true, expires: 2000000000, sameSite: 'lax' });
+    await page.setCookie({ name: 'refreshed', value: 'stale', domain: '.flipkart.com', path: '/', secure: true, expires: 1000000000, sameSite: 'lax' });
+    const refreshedWrites = harness.calls.cookieSets.filter((c) => c.name === 'refreshed');
+    assert(refreshedWrites.length === 1, `a stale vault import must not overwrite a newer partition cookie, writes: ${refreshedWrites.length}`);
+    await page.setCookie({ name: 'refreshed', value: 'newer', domain: '.flipkart.com', path: '/', secure: true, expires: 2100000000, sameSite: 'lax' });
+    assert(harness.calls.cookieSets.filter((c) => c.name === 'refreshed').length === 2, 'a strictly newer cookie must overwrite the partition value');
+
     const list = await page.cookies();
-    assert(list.length === 1, 'the session cookie jar must be readable');
+    assert(list.length === 4, `the session cookie jar must be readable (sid, session-only, refreshed x2), got ${list.length}`);
     assert(list[0].domain === '.flipkart.com' && list[0].expires === 1893456000 && list[0].session === false,
       'cookies() must return the vault-compatible puppeteer shape');
   });

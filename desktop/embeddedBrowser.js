@@ -263,7 +263,13 @@ export function createEmbeddedPage({
     let attempt = 0;
     for (;;) {
       try {
-        return await contents.executeJavaScript(script, true);
+        // The deadline also bounds a single execution: a renderer that never
+        // settles must not hold the caller's wait open past its timeout.
+        return await withTimeout(
+          contents.executeJavaScript(script, true),
+          deadlineMs ? Math.max(deadlineMs - Date.now(), 1) : undefined,
+          'The renderer stalled during script execution.'
+        );
       } catch (err) {
         attempt += 1;
         const remaining = deadlineMs ? deadlineMs - Date.now() : Infinity;
@@ -518,21 +524,30 @@ export function createEmbeddedPage({
 
     /**
      * Puppeteer's page.setCookie(...cookies). Chromium requires a URL per
-     * cookie write, so the domain+path are combined into one.
+     * cookie write, so the domain+path are combined into one. The persistent
+     * partition outlives the vault file, so an import must never DOWNGRADE a
+     * live cookie: when the partition already holds the same name/domain/path
+     * with a later expiry (a previous run's refresh), the stale vault value
+     * is skipped instead of overwriting it.
      */
     async setCookie(...cookieList) {
       const flat = cookieList.flat();
       if (!flat.length) return;
       for (const cookie of flat) {
+        const url = toCookieUrl(cookie);
+        const incomingExpiry = (Number.isFinite(cookie.expires) && cookie.expires > 0) ? cookie.expires : undefined;
+        const existing = await embedSession.cookies.get({ url, name: String(cookie.name || '') });
+        const liveExpiry = existing.find((c) => c.domain === cookie.domain)?.expirationDate ?? existing[0]?.expirationDate;
+        if (liveExpiry && (!incomingExpiry || incomingExpiry < liveExpiry)) continue;
         await embedSession.cookies.set({
-          url: toCookieUrl(cookie),
+          url,
           name: String(cookie.name || ''),
           value: String(cookie.value ?? ''),
           domain: cookie.domain,
           path: cookie.path || '/',
           secure: cookie.secure !== false,
           httpOnly: Boolean(cookie.httpOnly),
-          expirationDate: (Number.isFinite(cookie.expires) && cookie.expires > 0) ? cookie.expires : undefined,
+          expirationDate: incomingExpiry,
           sameSite: sameSiteToElectron(cookie.sameSite)
         });
       }
