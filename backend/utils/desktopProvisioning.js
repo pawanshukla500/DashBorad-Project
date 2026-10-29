@@ -111,6 +111,10 @@ export function isPubliclyRoutableDbHost(hostname) {
   // Container-internal single-label service names (postgres, db, ...)
   if (!host.includes('.') && !host.includes(':')) return false;
   if (NON_ROUTABLE_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) return false;
+  // RFC 2606 / 6761 special-use TLDs (db.example, db.invalid, payment.test)
+  // are reserved for documentation and local testing: they can never resolve
+  // publicly, so a URL under one is never provisioned.
+  if (/\.(example|invalid|test)$/.test(host)) return false;
   return true;
 }
 

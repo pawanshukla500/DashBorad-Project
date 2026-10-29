@@ -138,6 +138,10 @@ export function isPubliclyRoutableHost(hostname) {
   // Loopback / wildcard / unspecified
   if (effective === 'localhost' || host.endsWith('.localhost') || effective === '::1' || effective === '::' || effective === '0.0.0.0') return false;
   if (NON_PUBLIC_IP_PATTERNS.some((pattern) => pattern.test(effective))) return false;
+  // RFC 2606 / 6761 special-use TLDs (db.example, db.invalid, payment.test) can
+  // never resolve publicly, so a server-provisioned URL under one is refused.
+  // Deliberately saved local URLs keep the sanitizeSavedDbUrl policy instead.
+  if (/\.(example|invalid|test)$/.test(host)) return false;
   return true;
 }
 

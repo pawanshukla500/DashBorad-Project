@@ -13,6 +13,7 @@
  */
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -464,6 +465,9 @@ async function runTests() {
     assert(isDesktopReachableDbUrl('postgresql://app:pass@0x7f.0.0.1:5432/paymentapp') === false, 'hex loopback must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@127.1:5432/paymentapp') === false, 'short-form loopback must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@08.0.0.1:5432/paymentapp') === false, 'malformed numeric host must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@db.example:5432/paymentapp') === false, 'reserved .example TLD must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@db.invalid:5432/paymentapp') === false, 'reserved .invalid TLD must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@payment.test:5432/paymentapp') === false, 'reserved .test TLD must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@192.0.2.1:5432/paymentapp') === false, 'TEST-NET-1 must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@localhost.:5432/paymentapp') === false, 'trailing-dot loopback must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@db.localhost:5432/paymentapp') === false, '.localhost subdomain must be refused');
@@ -677,6 +681,34 @@ async function runTests() {
     }
   });
 
+  await runTest('resolveDatabaseUrl discards container-internal environment URLs', async () => {
+    const prevDatabaseUrl = process.env.DATABASE_URL;
+    const prevReconUrl = process.env.RECON_DATABASE_URL;
+    const prevUserDir = process.env.RECON_USER_DATA_DIR;
+    const tmpUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-env-url-'));
+    try {
+      setDesktopDatabaseAccess(null);
+      process.env.RECON_USER_DATA_DIR = tmpUserDir;
+      process.env.DATABASE_URL = 'postgresql://app:pass@postgres:5432/paymentapp';
+      delete process.env.RECON_DATABASE_URL;
+      // A container-internal env URL must fail closed as "not configured"
+      // (falling through to the absent saved config), never reach the pool.
+      assert(resolveDatabaseUrl() === null, 'container-internal env DATABASE_URL must fail closed');
+      // Deliberate local-development env URLs stay usable.
+      process.env.DATABASE_URL = 'postgresql://app:pass@localhost:5432/paymentapp';
+      assert(resolveDatabaseUrl() === 'postgresql://app:pass@localhost:5432/paymentapp', 'loopback env URL must stay usable for local development');
+    } finally {
+      setDesktopDatabaseAccess(null);
+      if (prevDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prevDatabaseUrl;
+      if (prevReconUrl === undefined) delete process.env.RECON_DATABASE_URL;
+      else process.env.RECON_DATABASE_URL = prevReconUrl;
+      if (prevUserDir === undefined) delete process.env.RECON_USER_DATA_DIR;
+      else process.env.RECON_USER_DATA_DIR = prevUserDir;
+      try { fs.rmSync(tmpUserDir, { recursive: true, force: true }); } catch {}
+    }
+  });
+
   // ── rateCardService.detectBrandRateChanges ────────────────────────────────
   await runTest('detectBrandRateChanges surfaces collection fee differences for review', async () => {
     const { detectBrandRateChanges } = await import('../rateCardService.js');
@@ -747,6 +779,16 @@ async function runTests() {
   });
 
   // ── Packaging invariants ───────────────────────────────────────────────────
+  await runTest('Linux installer verifies runtime modules resolve before skipping npm install', async () => {
+    const installer = fs.readFileSync(path.join(path.resolve(desktopDir, '..'), 'released', 'linux', 'install-linux.sh'), 'utf8');
+    // Old node_modules directories predate puppeteer-core; the installer must
+    // verify every runtime module RESOLVES (not just that directories exist)
+    // so upgraded installs never ship a browserRuntime that fails at startup.
+    assert(installer.includes('puppeteer-core'), 'installer dependency check must cover puppeteer-core');
+    assert(installer.includes('require.resolve'), 'installer must verify modules resolve, not just that node_modules directories exist');
+    assert(/exit 1/.test(installer), 'installer must fail loudly when dependencies cannot be installed');
+  });
+
   await runTest('preload bridge is packaged as preload.cjs (not preload.js)', async () => {
     assert(fs.existsSync(path.join(desktopDir, 'preload.cjs')), 'desktop/preload.cjs is missing');
     assert(!fs.existsSync(path.join(desktopDir, 'preload.js')), 'stale desktop/preload.js still present');

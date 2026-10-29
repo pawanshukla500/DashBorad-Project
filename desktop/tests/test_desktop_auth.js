@@ -454,9 +454,33 @@ async function runTests() {
 
     fs.rmSync(path.join(tempUserDataDir, 'auth-session.json'), { force: true });
 
+    // 14. Sealed session persistence: the standalone worker has no Electron
+    // safeStorage, so its session tokens must be AES-256-GCM vault-sealed on
+    // disk — never plaintext JSON readable by same-user processes or backups.
+    const { saveAuthSession, loadAuthSession } = await import('../desktopServer.mjs');
+    const sealedWrite = saveAuthSession({
+      authenticated: true,
+      user: { id: 3, username: 'seal-test', email: 'seal-test@vbexports.co.in', role: 'admin', firebase_uid: 'seal-test-uid' },
+      idToken: 'probe-id-token-never-plaintext',
+      refreshToken: 'probe-refresh-token-never-plaintext',
+      authorizedAt: new Date().toISOString()
+    });
+    const sessionFileRaw = fs.existsSync(path.join(tempUserDataDir, 'auth-session.json'))
+      ? fs.readFileSync(path.join(tempUserDataDir, 'auth-session.json'), 'utf8')
+      : '';
+    const storedSession = JSON.parse(sessionFileRaw || '{}');
+    const restoredSession = loadAuthSession();
+    const isSealedSessionVerified = sealedWrite.success === true &&
+      Boolean(storedSession.encrypted) &&
+      !sessionFileRaw.includes('probe-id-token-never-plaintext') &&
+      restoredSession.authenticated === true &&
+      restoredSession.idToken === 'probe-id-token-never-plaintext';
+    console.log(`  • Session file sealed with the AES-256-GCM vault (no plaintext tokens, clean round-trip): Passed = ${isSealedSessionVerified}`);
+    fs.rmSync(path.join(tempUserDataDir, 'auth-session.json'), { force: true });
+
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isSavedSessionOnlyBlocked && isAllowedOriginAdmitted && isSpoofedOriginBlocked && isCrossOriginLoginBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid && isNoDbPreviewKept) {
+    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isSavedSessionOnlyBlocked && isAllowedOriginAdmitted && isSpoofedOriginBlocked && isCrossOriginLoginBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid && isNoDbPreviewKept && isSealedSessionVerified) {
       console.log('  ✓ Pass: Behavioral HTTP tests for auth gating, caller proof, origin policy, channel validation, isolation, preview filtering, and endpoint security verified.');
       passed++;
     } else {
@@ -480,7 +504,8 @@ async function runTests() {
         allPhase2Gated,
         isPreviewIsolated,
         isMpListValid,
-        isNoDbPreviewKept
+        isNoDbPreviewKept,
+        isSealedSessionVerified
       });
       failed++;
     }

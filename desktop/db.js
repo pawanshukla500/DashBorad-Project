@@ -69,12 +69,11 @@ export function resolveDatabaseUrl(customUrl = null) {
   if (customUrl && typeof customUrl === 'string' && customUrl.trim()) {
     return customUrl.trim();
   }
-  if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) {
-    return process.env.DATABASE_URL.trim();
-  }
-  if (process.env.RECON_DATABASE_URL && process.env.RECON_DATABASE_URL.trim()) {
-    return process.env.RECON_DATABASE_URL.trim();
-  }
+  // Environment URLs get the same container-internal sanitization as saved
+  // ones: a DATABASE_URL inherited from a container deployment (postgres:5432)
+  // must fail closed as "not configured", never reach the pool as a DNS error.
+  const envUrl = sanitizeSavedDbUrl(process.env.DATABASE_URL) || sanitizeSavedDbUrl(process.env.RECON_DATABASE_URL);
+  if (envUrl) return envUrl;
 
   // Check saved worker-config.json in user-data dir
   try {

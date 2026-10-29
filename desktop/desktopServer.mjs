@@ -36,6 +36,7 @@ import {
   isAllowedDesktopOrigin, isSameDesktopOrigin
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { encryptVaultData, decryptVaultData } from './cookieVault.js';
 
 let activeTokenVerifier = verifyDesktopTokenAuthorization;
 export function setDesktopTokenVerifier(verifier) {
@@ -289,11 +290,14 @@ async function refreshFirebaseIdToken(refreshToken) {
   return null;
 }
 
-function loadAuthSession() {
+export function loadAuthSession() {
   try {
     if (fs.existsSync(SESSION_FILE)) {
-      const raw = fs.readFileSync(SESSION_FILE, 'utf8');
-      const session = JSON.parse(raw);
+      const raw = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+      // Sealed sessions are decrypted with the AES-256-GCM vault key; legacy
+      // plaintext files (older builds) still load so an upgrade never
+      // silently signs the operator out.
+      const session = raw?.encrypted ? JSON.parse(decryptVaultData(raw.encrypted) || 'null') : raw;
       if (session && session.user && session.authenticated) {
         return session;
       }
@@ -302,9 +306,15 @@ function loadAuthSession() {
   return { authenticated: false, user: null };
 }
 
-function saveAuthSession(sessionData) {
+export function saveAuthSession(sessionData) {
   try {
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessionData, null, 2), { mode: 0o600 });
+    // The standalone worker has no Electron safeStorage, so the session
+    // (idToken / refreshToken) is sealed with the AES-256-GCM vault using the
+    // machine-local key. The 0600 permissions remain, but the tokens are no
+    // longer readable by same-user processes or backups of the data directory.
+    const sealed = encryptVaultData(JSON.stringify(sessionData));
+    if (!sealed) return { success: false, error: 'Could not seal the session before writing it.' };
+    fs.writeFileSync(SESSION_FILE, JSON.stringify({ encrypted: sealed }, null, 2), { mode: 0o600 });
     fs.chmodSync(SESSION_FILE, 0o600);
     return { success: true };
   } catch (err) {
@@ -1141,6 +1151,12 @@ const server = http.createServer(async (req, res) => {
       const targetBrands = body.brands || config.selectedBrands;
       const targetVerticals = body.verticals || config.selectedVerticals;
 
+      // Re-check after the body await: a request that raced past the earlier
+      // checks while this body was parsing must not overwrite the running job.
+      if (activeScrapeJob.running || withBrowserTask.busy) {
+        return sendJson(409, { success: false, error: 'A scraping job is already running.' });
+      }
+
       // A new run supersedes the previous staging; a failed run must not leave
       // old cards syncable. Wipe only once the request has been fully accepted.
       stagedExtraction.cards = [];
@@ -1242,11 +1258,15 @@ const server = http.createServer(async (req, res) => {
 
         broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
 
-        // Execute login asynchronously without blocking HTTP response. Browser
-        // tasks share the cookie vault, so the login is serialized through
-        // withBrowserTask like every other browser launch in the app.
-        (async () => {
-          const gate = await withBrowserTask(async () => {
+        // The browser slot is claimed synchronously right before the response:
+        // withBrowserTask acquires in its synchronous prefix, so a request
+        // that raced past the earlier busy check while its body was still
+        // parsing gets an honest 409 instead of a false "launched" 200.
+        if (withBrowserTask.busy) {
+          try { fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
+          return sendJson(409, { success: false, error: 'A browser task is already running. Finish login or extraction before starting another.' });
+        }
+        withBrowserTask(async () => {
           let browser = null;
           try {
             browser = await puppeteer.launch({
@@ -1342,14 +1362,15 @@ const server = http.createServer(async (req, res) => {
             } catch {}
           }
           return { ran: true };
-          });
+        }).then((gate) => {
+          // Unreachable while the busy check above stays adjacent to the call,
+          // kept as defense in depth: a lost race must never leave a temp
+          // profile behind or stay silent about skipping the login.
           if (!gate || gate.ran !== true) {
-            // The gate lost a race with another browser task: clean the temp
-            // profile and say so instead of silently doing nothing.
             try { fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
             broadcastProgress('⏳ Interactive login skipped: another browser task is already running. Finish it and try again.');
           }
-        })();
+        }).catch(() => {});
 
         return sendJson(200, { 
           success: true, 

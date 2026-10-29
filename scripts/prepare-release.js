@@ -136,7 +136,18 @@ The ReconCentral RateCard Desktop Worker is a standalone, cross-platform PC appl
 4. Or launch the web control panel: \`http://localhost:3388\`
 5. Check background service status: \`systemctl status reconcentral-ratecard\`
 
+## 5. API Server Database Provisioning (Required Before First Sync)
+The worker never ships database credentials — they are provisioned over TLS after Firebase role verification. Configure these environment variables on the ReconCentral API server (Docker / Hostinger deployment) and restart the API service:
+
+| Variable | Purpose |
+| :--- | :--- |
+| \`DESKTOP_DATABASE_URL\` | Publicly routable PostgreSQL URL handed to verified admin/operator sessions. Container-internal hosts (e.g. \`postgres:5432\`) and reserved-documentation hosts are refused automatically. |
+| \`DESKTOP_ANALYST_DATABASE_URL\` | Distinct **read-only** database principal for analyst sign-ins. Analysts never receive writer credentials; without this variable they sign in with no database access. |
+
+After both variables are configured, sign in once inside the worker to provision. The dashboard and the Settings tab then report an honest connection status, and the API server logs which URL class was issued per role.
+
 ---
+
 © ReconCentral Enterprise Reconciliation • VB Exports
 `;
 

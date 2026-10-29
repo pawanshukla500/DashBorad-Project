@@ -34,6 +34,9 @@ describe('isPubliclyRoutableDbHost', () => {
     ['0x7f.0.0.1'],                // hex loopback
     ['08.0.0.1'],                  // malformed octal-looking host
     ['2130706433'],                // single-number IPv4 (loopback)
+    ['db.example'],                // RFC 2606 reserved documentation TLD
+    ['db.invalid'],                // RFC 2606 reserved TLD
+    ['payment.test'],              // RFC 6761 reserved testing TLD
     ['::1'],                         // IPv6 loopback
     ['0.0.0.0'],
     ['10.0.0.5'],                    // private IPv4
