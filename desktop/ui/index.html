@@ -64,6 +64,11 @@
 
     <!-- Main Content Area -->
     <main class="content-area">
+      <!-- Auto-Update Banner (shown by the updater; hidden by default) -->
+      <div id="update-banner" style="display: none; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: rgba(144, 42, 74, 0.22); border: 1px solid var(--primary); padding: 10px 18px; border-radius: var(--radius); margin-bottom: 14px;">
+        <span id="update-banner-text" style="color: #fbe9f0; font-size: 13px; font-weight: 500;"></span>
+        <button id="btn-update-restart" class="btn btn-sm" style="display: none; background: var(--primary); color: #fff;">Restart to Update</button>
+      </div>
       <!-- Top Header -->
       <header class="app-header">
         <div class="header-left">

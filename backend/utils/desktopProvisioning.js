@@ -1,19 +1,24 @@
 /**
  * Desktop provisioning resolver.
  *
- * The API server usually runs inside Docker, where DATABASE_URL points at the
- * container-internal service host (e.g. postgres:5432). Such a URL can never be
- * reached from a desktop worker machine, so it must never be handed to clients.
+ * Desktop workers must always land on the SAME PostgreSQL database the
+ * ReconCentral dashboard itself uses — a desktop worker is an extension of
+ * the dashboard, never a separate data system.
  *
  * Resolution order for operator/admin URLs provisioned to desktop workers:
- *   1. DESKTOP_DATABASE_URL — explicit override, trusted verbatim (set this on
- *      the production server to the publicly routable PostgreSQL URL).
- *   2. DATABASE_URL — only when its host is publicly routable.
+ *   1. DATABASE_URL — the dashboard's own database, provisioned verbatim
+ *      whenever its host is publicly routable from a desktop machine.
+ *   2. DESKTOP_DATABASE_URL — containerized-deployment escape hatch for the
+ *      rare case where DATABASE_URL points at a container-internal service
+ *      host (e.g. postgres:5432). It must be the routable address form of
+ *      that SAME database; a URL naming any other database is refused.
  *   3. '' (empty) — the desktop app then reports "Not Configured" and the
  *      operator supplies the URL manually in Settings.
  *
- * Analysts use a separate DESKTOP_ANALYST_DATABASE_URL principal. The server
- * never falls back to either writer URL for that role.
+ * Analysts use a separate DESKTOP_ANALYST_DATABASE_URL principal (read-only
+ * grants on the same database). It is also refused unless it names the
+ * dashboard's own database, and the server never falls back to either
+ * writer URL for that role.
  */
 
 const NON_ROUTABLE_HOST_SUFFIXES = ['.internal', '.local', '.localdomain', '.lan', '.home.arpa', '.home', '.box'];
@@ -146,23 +151,46 @@ export function isPubliclyRoutableDbHost(hostname) {
 }
 
 /**
+ * Database name component of a PostgreSQL URL ('' when absent or unparsable).
+ * Used to keep desktop provisioning pinned to the dashboard's own database.
+ */
+function databaseNameOf(rawUrl) {
+  try {
+    const { pathname } = new URL(String(rawUrl || '').trim());
+    return decodeURIComponent(pathname.replace(/^\/+/, ''));
+  } catch {
+    return '';
+  }
+}
+
+/**
  * The database URL that may be provisioned to a desktop worker, or '' when the
- * server has no desktop-reachable URL to hand out.
+ * server has no desktop-reachable URL for the dashboard's own database.
  */
 export function desktopDatabaseUrl(env = process.env) {
-  const explicit = String(env.DESKTOP_DATABASE_URL || '').trim();
-  if (explicit) return explicit;
-
+  // The dashboard's own DATABASE_URL is the source of truth: whenever it is
+  // directly routable it is provisioned verbatim, so desktop workers always
+  // work against the very same database the dashboard uses.
   const dbUrl = String(env.DATABASE_URL || '').trim();
-  if (!dbUrl) return '';
-
-  try {
-    const { hostname } = new URL(dbUrl);
-    if (isPubliclyRoutableDbHost(hostname)) return dbUrl;
-  } catch {
-    // Malformed DATABASE_URL is never provisioned.
+  if (dbUrl) {
+    try {
+      const { hostname } = new URL(dbUrl);
+      if (isPubliclyRoutableDbHost(hostname)) return dbUrl;
+    } catch {
+      // Malformed DATABASE_URL is never provisioned.
+    }
   }
-  return '';
+
+  // DESKTOP_DATABASE_URL is the containerized-deployment escape hatch: the
+  // routable address form of the SAME database when DATABASE_URL itself is
+  // container-internal. A URL naming any other database is refused outright.
+  const explicit = String(env.DESKTOP_DATABASE_URL || '').trim();
+  if (!explicit) return '';
+  const dashboardDatabase = databaseNameOf(dbUrl);
+  if (dashboardDatabase && databaseNameOf(explicit) !== dashboardDatabase) {
+    return '';
+  }
+  return explicit;
 }
 
 /**
@@ -175,11 +203,18 @@ export function desktopAnalystDatabaseUrl(env = process.env) {
 
   try {
     const { hostname } = new URL(explicit);
-    if (isPubliclyRoutableDbHost(hostname)) return explicit;
+    if (!isPubliclyRoutableDbHost(hostname)) return '';
   } catch {
     // Malformed or non-routable read-only URLs are never provisioned.
+    return '';
   }
-  return '';
+  // The read-only principal must be a principal on the dashboard's own
+  // database; a separate analyst database is never provisioned.
+  const dashboardDatabase = databaseNameOf(String(env.DATABASE_URL || ''));
+  if (dashboardDatabase && databaseNameOf(explicit) !== dashboardDatabase) {
+    return '';
+  }
+  return explicit;
 }
 
 export function desktopDatabaseProvisioningForRole(role, env = process.env) {

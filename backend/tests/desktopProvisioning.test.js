@@ -71,13 +71,34 @@ describe('isPubliclyRoutableDbHost', () => {
 });
 
 describe('desktopDatabaseUrl', () => {
-  it('returns DESKTOP_DATABASE_URL verbatim even when DATABASE_URL is container-internal', () => {
+  it('provisions the dashboard\'s own routable DATABASE_URL even when DESKTOP_DATABASE_URL is set', () => {
+    // The desktop worker is an extension of the dashboard, never a separate
+    // data system: the dashboard's own database always wins when reachable.
+    const dashboardUrl = 'postgresql://app:pass@db.example.com:5432/paymentapp?sslmode=require';
+    expect(
+      desktopDatabaseUrl({
+        DATABASE_URL: dashboardUrl,
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@other.example.com:5432/legacy_db?sslmode=require'
+      })
+    ).toBe(dashboardUrl);
+  });
+
+  it('falls back to DESKTOP_DATABASE_URL for the same database when DATABASE_URL is container-internal', () => {
     expect(
       desktopDatabaseUrl({
         DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/paymentapp?sslmode=require',
         DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp'
       })
     ).toBe('postgresql://worker:pass@db.example.com:5432/paymentapp?sslmode=require');
+  });
+
+  it('refuses a DESKTOP_DATABASE_URL that names a different database than the dashboard\'s own', () => {
+    expect(
+      desktopDatabaseUrl({
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/worker_only_db?sslmode=require',
+        DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp'
+      })
+    ).toBe('');
   });
 
   it('never provisions a container-internal DATABASE_URL', () => {
@@ -117,6 +138,13 @@ describe('desktopAnalystDatabaseUrl', () => {
       DESKTOP_DATABASE_URL: 'postgresql://worker:write@db.example.com:5432/paymentapp',
       DATABASE_URL: 'postgresql://app:write@db.example.com:5432/paymentapp'
     })).toBe(analystUrl);
+  });
+
+  it('refuses a read-only principal that names a different database than the dashboard\'s own', () => {
+    expect(desktopAnalystDatabaseUrl({
+      DESKTOP_ANALYST_DATABASE_URL: 'postgresql://analyst:readonly@db.example.com:5432/analyst_only_db',
+      DATABASE_URL: 'postgresql://app:write@db.example.com:5432/paymentapp'
+    })).toBe('');
   });
 
   it('never falls back to a writer URL and rejects non-routable analyst URLs', () => {

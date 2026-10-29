@@ -22,9 +22,12 @@ services:
       PORT: 3001
       NODE_OPTIONS: "--max-old-space-size=768"
       CLIENT_DIST_PATH: /app/frontend/dist
-      # Publicly routable PostgreSQL URL handed to desktop workers at sign-in.
-      # Without this, /api/auth/desktop-login returns an empty databaseUrl and
-      # each desktop user configures the URL manually in the app's Settings.
+      # Desktop workers must always connect to the SAME database the dashboard
+      # itself uses. The dashboard's own DATABASE_URL is provisioned verbatim
+      # whenever it is publicly routable, so this variable is ONLY the
+      # containerized-deployment escape hatch: set it to the routable address
+      # form of that same database when DATABASE_URL is container-internal
+      # (e.g. postgres:5432). A URL naming any other database is refused.
       DESKTOP_DATABASE_URL: ${DESKTOP_DATABASE_URL:-}
       PG_SSL: ${PG_SSL:-false}
       PG_POOL_MAX: ${PG_POOL_MAX:-20}

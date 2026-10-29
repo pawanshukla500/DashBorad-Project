@@ -32,7 +32,13 @@ if (!window.ratecardAPI) {
           } catch {}
         };
       } catch (err) {}
-    }
+    },
+    // Auto-update exists only in the installed Electron app; the standalone
+    // Chrome mode runs from local files, so these are honest no-ops.
+    getUpdateStatus: () => Promise.resolve({ success: true, status: { status: 'unsupported' } }),
+    checkForUpdates: () => Promise.resolve({ success: false, error: 'Updates are only available in the installed desktop app.' }),
+    installUpdate: () => Promise.resolve({ success: false, error: 'Updates are only available in the installed desktop app.' }),
+    onUpdateStatus: () => () => {}
   };
 }
 
@@ -82,11 +88,83 @@ function updateUserAuthUI(session) {
   }
 }
 
+// ── Auto-Update Banner (installed desktop app) ────────────────────────────────
+let updateBannerHideTimer = null;
+
+function applyUpdateBanner(status) {
+  const banner = document.getElementById('update-banner');
+  const text = document.getElementById('update-banner-text');
+  const restartBtn = document.getElementById('btn-update-restart');
+  if (!banner || !text || !restartBtn) return;
+
+  if (updateBannerHideTimer) {
+    clearTimeout(updateBannerHideTimer);
+    updateBannerHideTimer = null;
+  }
+
+  const show = (message, showRestart) => {
+    text.textContent = message;
+    restartBtn.style.display = showRestart ? '' : 'none';
+    banner.style.display = 'flex';
+  };
+  const hide = () => {
+    banner.style.display = 'none';
+    restartBtn.style.display = 'none';
+  };
+
+  const kind = status?.status;
+  const version = status?.version ? ` v${status.version}` : '';
+  if (kind === 'available') {
+    show(`⬇ New app version${version} found — downloading in the background…`, false);
+  } else if (kind === 'downloading') {
+    const percent = Number.isFinite(status?.percent) ? ` (${status.percent}%)` : '';
+    show(`⬇ Downloading app update${version}${percent}…`, false);
+  } else if (kind === 'downloaded') {
+    show(`✅ App update${version} is ready to install.`, true);
+  } else if (kind === 'error') {
+    // Transient network failures are expected and retried on the updater's
+    // own schedule, so the banner only mentions the failure briefly.
+    show('⚠ Update check failed — will retry automatically.', false);
+    updateBannerHideTimer = setTimeout(hide, 30 * 1000);
+  } else {
+    // checking, not-available, idle, unsupported: nothing to surface.
+    hide();
+  }
+}
+
+async function initUpdateBanner() {
+  try {
+    const res = await window.ratecardAPI.getUpdateStatus();
+    if (res?.success) applyUpdateBanner(res.status);
+  } catch (err) {
+    console.warn('Could not read update status:', err);
+  }
+  const restartBtn = document.getElementById('btn-update-restart');
+  restartBtn?.addEventListener('click', async () => {
+    restartBtn.disabled = true;
+    restartBtn.textContent = 'Restarting…';
+    try {
+      const res = await window.ratecardAPI.installUpdate();
+      if (!res?.success) {
+        restartBtn.disabled = false;
+        restartBtn.textContent = 'Restart to Update';
+        alert(res?.error || 'The update could not be installed.');
+      }
+    } catch (err) {
+      restartBtn.disabled = false;
+      restartBtn.textContent = 'Restart to Update';
+      console.warn('Install update failed:', err);
+    }
+  });
+  window.ratecardAPI.onUpdateStatus((status) => applyUpdateBanner(status));
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
   setupEventListeners();
   subscribeToEvents();
-  
+  initUpdateBanner();
+
   const isAuthorized = await checkAuthSession();
   if (isAuthorized) {
     await loadInitialState();
