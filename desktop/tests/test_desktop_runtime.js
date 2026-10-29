@@ -1386,6 +1386,38 @@ async function runTests() {
     const interleavedNav = await interleavedPromise;
     assert(interleavedNav.ok === true, 'a subframe navigation must not consume the in-page listener before a main-frame navigation');
 
+    // The default waitUntil 'load' must poll for the real load event: a
+    // commit plus a fixed settle resolves before a slow page is usable.
+    const slowDoc = makeFakeEmbeddedDeps();
+    let loadPolls = 0;
+    slowDoc.setBehavior((script) => {
+      if (/document\.readyState/.test(script)) {
+        if (script.includes('=== \'complete\'') && !script.includes('||')) {
+          loadPolls += 1;
+          return loadPolls >= 3;
+        }
+        return true;
+      }
+      return 'ok';
+    });
+    const slowDocPage = createEmbeddedPage({ window: slowDoc.fakeWindow, partition: 'persist:marketplace-flipkart', deps: slowDoc.deps });
+    slowDoc.fire('did-navigate');
+    const slowDocNav = await slowDocPage.waitForNavigation({ timeout: 2000 });
+    assert(slowDocNav.ok === true, 'the load wait must resolve once the document completes');
+    assert(loadPolls >= 3, `the load wait must poll readyState instead of trusting the settle, polls: ${loadPolls}`);
+
+    // A document that never completes must fail the wait, not return early.
+    const neverLoaded = makeFakeEmbeddedDeps();
+    neverLoaded.setBehavior((script) => (/document\.readyState/.test(script) ? false : 'ok'));
+    const neverLoadedPage = createEmbeddedPage({ window: neverLoaded.fakeWindow, partition: 'persist:marketplace-flipkart', deps: neverLoaded.deps });
+    neverLoaded.fire('did-navigate');
+    let neverLoadedTimedOut = false;
+    const neverLoadedStartedAt = Date.now();
+    try { await neverLoadedPage.waitForNavigation({ timeout: 300 }); }
+    catch (err) { neverLoadedTimedOut = err.name === 'TimeoutError' && /load state/.test(err.message); }
+    const neverLoadedElapsed = Date.now() - neverLoadedStartedAt;
+    assert(neverLoadedTimedOut && neverLoadedElapsed < 1500, 'a never-completing document must reject the load wait within its budget');
+
     // A navigation that PRECEDED the action can never be the submit's
     // navigation: it must be ignored, not accepted through the grace window.
     // (A real-time gap separates the stale navigation from the action —

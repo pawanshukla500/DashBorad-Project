@@ -418,6 +418,20 @@ export function createEmbeddedPage({
       }
       const settleMs = Math.min(NAV_POLL_SETTLE_MS / 2, Math.max(remaining(), 0));
       if (settleMs > 0) await delay(settleMs);
+      if (waitUntil === 'load' || waitUntil === 'networkidle2') {
+        // did-navigate fires when the navigation COMMITS, not when the page
+        // has loaded: without the readyState poll a slow page would resolve
+        // before its load event. SPA in-page navigations are already
+        // 'complete', so the poll passes immediately for them.
+        for (;;) {
+          const done = await evaluateRaw(`document.readyState === 'complete'`, { retries: POLL_RETRIES, gapMs: POLL_GAP_MS, deadlineMs: deadline });
+          if (done === true) break;
+          if (Date.now() >= deadline) {
+            throw timeoutError(`Page never reached the load state within ${timeout}ms after navigation.`);
+          }
+          await delay(Math.min(POLL_GAP_MS, Math.max(deadline - Date.now(), 1)));
+        }
+      }
       if (waitUntil === 'networkidle2') {
         const networkWait = await waitForNetworkQuiet(slice());
         if (networkWait === 'quiet-timeout') {
