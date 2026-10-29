@@ -222,17 +222,22 @@ export function createEmbeddedPage({
    * executeJavaScript rejects when a navigation destroys the renderer context
    * mid-evaluation. Retrying absorbs that, exactly like puppeteer's waits do.
    * A script's own thrown errors also reject, so callers that expect page-level
-   * failures pass a small retry budget; polls pass a large one.
+   * failures pass a small retry budget; polls pass a large one. deadlineMs is
+   * an absolute timestamp: when set, the retry loop never sleeps past it, so
+   * a poll's caller-defined budget is honored even while every attempt fails
+   * (40 retries x 700ms gaps would otherwise run a "15 second" wait minutes
+   * late).
    */
-  const evaluateRaw = async (script, { retries = DEFAULT_EVAL_RETRIES, gapMs = DEFAULT_EVAL_GAP_MS } = {}) => {
+  const evaluateRaw = async (script, { retries = DEFAULT_EVAL_RETRIES, gapMs = DEFAULT_EVAL_GAP_MS, deadlineMs = null } = {}) => {
     let attempt = 0;
     for (;;) {
       try {
         return await contents.executeJavaScript(script, true);
       } catch (err) {
         attempt += 1;
-        if (attempt >= retries) throw err;
-        await delay(gapMs);
+        const remaining = deadlineMs ? deadlineMs - Date.now() : Infinity;
+        if (attempt >= retries || remaining <= 0) throw err;
+        await delay(Math.min(gapMs, remaining));
       }
     }
   };
@@ -270,17 +275,23 @@ export function createEmbeddedPage({
      * back to a fixed settle, which the scraper's own post-goto delay
      * already tolerates. A quiet timeout FAILS the navigation: returning
      * ok while rate-card XHRs are still pending is exactly the incomplete
-     * read this monitor exists to prevent.
+     * read this monitor exists to prevent. `timeout` is the budget for the
+     * WHOLE navigation — load, readiness, and network quiet share one
+     * deadline instead of each getting a fresh copy of the limit.
      */
     async goto(targetUrl, { waitUntil = 'load', timeout = 45000 } = {}) {
+      const budget = Number.isFinite(timeout) && timeout > 0 ? timeout : 45000;
+      const deadline = Date.now() + budget;
+      const remaining = () => deadline - Date.now();
+      const slice = () => Math.max(remaining(), 1);
       const load = contents.loadURL(targetUrl);
-      await withTimeout(load, timeout, `Navigation timed out after ${timeout}ms: ${targetUrl}`);
+      await withTimeout(load, slice(), `Navigation timed out after ${timeout}ms: ${targetUrl}`);
       if (waitUntil === 'networkidle2' || waitUntil === 'load') {
-        const ready = evaluateRaw(`document.readyState === 'complete' || document.readyState === 'interactive'`, { retries: 20, gapMs: 500 });
-        await withTimeout(ready, timeout, 'Page never reached an interactive state.');
+        const ready = evaluateRaw(`document.readyState === 'complete' || document.readyState === 'interactive'`, { retries: 20, gapMs: 500, deadlineMs: deadline });
+        await withTimeout(ready, slice(), 'Page never reached an interactive state.');
       }
       if (waitUntil === 'networkidle2') {
-        const networkWait = await waitForNetworkQuiet(timeout);
+        const networkWait = await waitForNetworkQuiet(slice());
         if (networkWait === 'quiet-timeout') {
           throw timeoutError(`Navigation to ${targetUrl} never reached a quiet network state within ${timeout}ms`);
         }
@@ -289,7 +300,11 @@ export function createEmbeddedPage({
       return { ok: true, url: page.url(), networkWait: null };
     },
 
-    /** Polls for a selector; rejects with TimeoutError when it never appears. */
+    /**
+     * Polls for a selector; rejects with TimeoutError when it never appears.
+     * The evaluation retries share the poll's own deadline, so a flaky
+     * renderer can never make the wait return seconds past its timeout.
+     */
     async waitForSelector(selector, { visible = false, timeout = 15000 } = {}) {
       const script = `(() => {
         const el = document.querySelector(${JSON.stringify(selector)});
@@ -297,14 +312,22 @@ export function createEmbeddedPage({
         if (${visible ? '!el.offsetParent' : 'false'}) return 'hidden';
         return 'present';
       })()`;
-      const deadline = Date.now() + timeout;
+      const deadline = Date.now() + (Number.isFinite(timeout) && timeout > 0 ? timeout : 15000);
       for (;;) {
-        const state = await evaluateRaw(script, { retries: POLL_RETRIES, gapMs: POLL_GAP_MS });
+        let state;
+        try {
+          state = await evaluateRaw(script, { retries: POLL_RETRIES, gapMs: POLL_GAP_MS, deadlineMs: deadline });
+        } catch (err) {
+          if (Date.now() >= deadline) {
+            throw timeoutError(`Waiting for selector ${selector} failed: timeout ${timeout}ms exceeded (${err.message})`);
+          }
+          throw err;
+        }
         if (state === 'present') return { ok: true };
         if (Date.now() >= deadline) {
           throw timeoutError(`Waiting for selector ${selector} failed: timeout ${timeout}ms exceeded`);
         }
-        await delay(400);
+        await delay(Math.min(400, Math.max(deadline - Date.now(), 1)));
       }
     },
 
@@ -312,13 +335,19 @@ export function createEmbeddedPage({
      * Resolves on the next top-frame navigation, honoring waitUntil the way
      * puppeteer does: 'networkidle2' additionally waits for the CDP network
      * monitor to go quiet after the navigation, so a slow login XHR is never
-     * mistaken for a complete session. The scraper clicks a submit button
+     * mistaken for a complete session. `timeout` bounds the WHOLE wait — the
+     * navigation event, the settle pause, and the network-quiet phase share
+     * one deadline. The scraper clicks a submit button
      * (through evaluate) and only then calls this, so a navigation that fired
      * after the action armed the watch, within a small grace window before
      * this call, counts too — a navigation that PRECEDED the action is
      * ignored, because it cannot be the submit's navigation.
      */
     async waitForNavigation({ timeout = 45000, graceMs = 800, waitUntil = 'load' } = {}) {
+      const budget = Number.isFinite(timeout) && timeout > 0 ? timeout : 45000;
+      const deadline = Date.now() + budget;
+      const remaining = () => deadline - Date.now();
+      const slice = () => Math.max(remaining(), 1);
       let via = 'navigation-event';
       if (lastNavAt >= armedAt && Date.now() - lastNavAt <= graceMs) {
         via = 'recent-navigation';
@@ -335,11 +364,12 @@ export function createEmbeddedPage({
             contents.once('did-navigate-in-page', onInPage);
           }
         });
-        await withTimeout(navigated, timeout, `Navigation timed out after ${timeout}ms`);
+        await withTimeout(navigated, slice(), `Navigation timed out after ${timeout}ms`);
       }
-      await delay(NAV_POLL_SETTLE_MS / 2);
+      const settleMs = Math.min(NAV_POLL_SETTLE_MS / 2, Math.max(remaining(), 0));
+      if (settleMs > 0) await delay(settleMs);
       if (waitUntil === 'networkidle2') {
-        const networkWait = await waitForNetworkQuiet(timeout);
+        const networkWait = await waitForNetworkQuiet(slice());
         if (networkWait === 'quiet-timeout') {
           throw timeoutError(`Network never reached a quiet state after navigation within ${timeout}ms`);
         }

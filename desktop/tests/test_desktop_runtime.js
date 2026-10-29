@@ -977,7 +977,7 @@ async function runTests() {
   // ── Embedded browser engine (Electron WebContentsView adapter) ────────────
   const { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } = await import('../embeddedBrowser.js');
 
-  function makeFakeEmbeddedDeps({ loadHangs = false, evalBehavior = null, withDebugger = false } = {}) {
+  function makeFakeEmbeddedDeps({ loadHangs = false, loadDelayMs = 0, evalBehavior = null, withDebugger = false } = {}) {
     const calls = { userAgent: [], cookieSets: [], inputEvents: [], order: [], bounds: [], attached: 0, removed: 0, closed: false, visible: [] };
     let loadedUrl = '';
     let behavior = evalBehavior || ((script) => {
@@ -995,6 +995,7 @@ async function runTests() {
       async loadURL(url) {
         loadedUrl = url;
         if (loadHangs) return new Promise(() => {});
+        if (loadDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, loadDelayMs));
         return { url };
       },
       getURL: () => 'https://seller.flipkart.com/fake',
@@ -1155,6 +1156,26 @@ async function runTests() {
     catch (err) { noisyTimedOut = err.name === 'TimeoutError' && /quiet network state/.test(err.message); }
     assert(noisyTimedOut, 'a network that never quiets must reject goto with a TimeoutError');
 
+    // `timeout` is the budget for the WHOLE navigation: a slow load must eat
+    // into the network-quiet wait, not grant it a fresh copy of the limit.
+    const slowLoad = makeFakeEmbeddedDeps({ loadDelayMs: 500, withDebugger: true });
+    slowLoad.setBehavior((script) => {
+      if (/document\.readyState/.test(script)) {
+        slowLoad.emitNetwork('Network.requestWillBeSent');
+        slowLoad.emitNetwork('Network.requestWillBeSent');
+        slowLoad.emitNetwork('Network.requestWillBeSent');
+      }
+      return true;
+    });
+    const slowLoadPage = createEmbeddedPage({ window: slowLoad.fakeWindow, partition: 'persist:marketplace-flipkart', deps: slowLoad.deps });
+    const slowLoadStartedAt = Date.now();
+    let slowLoadTimedOut = false;
+    try { await slowLoadPage.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 800 }); }
+    catch (err) { slowLoadTimedOut = err.name === 'TimeoutError'; }
+    const slowLoadElapsed = Date.now() - slowLoadStartedAt;
+    assert(slowLoadTimedOut, 'a navigation whose network never quiets must reject');
+    assert(slowLoadElapsed < 1100, `the timeout must bound the whole navigation (load + quiet), took ${slowLoadElapsed}ms`);
+
     const hanging = makeFakeEmbeddedDeps({ loadHangs: true });
     const slowPage = createEmbeddedPage({ window: hanging.fakeWindow, partition: 'persist:marketplace-flipkart', deps: hanging.deps });
     let timedOut = false;
@@ -1197,6 +1218,19 @@ async function runTests() {
     try { await blindPage.waitForSelector('#never', { timeout: 150 }); }
     catch (err) { timedOut = err.name === 'TimeoutError'; }
     assert(timedOut, 'a never-appearing selector must reject with a TimeoutError');
+
+    // Evaluation retries must share the poll's deadline: a renderer that
+    // rejects every attempt (real retry gaps) must not run a 300ms wait late.
+    const flaky = makeFakeEmbeddedDeps({ evalBehavior: () => { throw new Error('Script failed to execute during navigation'); } });
+    flaky.deps.delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); // real retry gaps
+    const flakyPage = createEmbeddedPage({ window: flaky.fakeWindow, partition: 'persist:marketplace-flipkart', deps: flaky.deps });
+    const flakyStartedAt = Date.now();
+    let flakyTimedOut = false;
+    try { await flakyPage.waitForSelector('#never', { timeout: 300 }); }
+    catch (err) { flakyTimedOut = err.name === 'TimeoutError'; }
+    const flakyElapsed = Date.now() - flakyStartedAt;
+    assert(flakyTimedOut, 'a failing evaluator must surface as a TimeoutError');
+    assert(flakyElapsed < 1500, `selector waits must honor their own timeout despite evaluation retries, took ${flakyElapsed}ms`);
   });
 
   await runTest('embedded type clears React-safely, sends real key events, and verifies readback', async () => {
@@ -1324,6 +1358,21 @@ async function runTests() {
     try { await silentPage.waitForNavigation({ timeout: 100 }); }
     catch (err) { timedOut = err.name === 'TimeoutError'; }
     assert(timedOut, 'a navigation that never happens must reject with a TimeoutError');
+
+    // `timeout` bounds the whole wait: the settle pause and the network-quiet
+    // phase share the navigation's budget instead of fresh copies of it.
+    const budgeted = makeFakeEmbeddedDeps({ withDebugger: true });
+    budgeted.deps.delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)); // real settle gaps
+    const budgetedPage = createEmbeddedPage({ window: budgeted.fakeWindow, partition: 'persist:marketplace-flipkart', deps: budgeted.deps });
+    const budgetStartedAt = Date.now();
+    const budgetPromise = budgetedPage.waitForNavigation({ waitUntil: 'networkidle2', timeout: 800 });
+    budgeted.fire('did-navigate');
+    let budgetTimedOut = false;
+    try { await budgetPromise; }
+    catch (err) { budgetTimedOut = err.name === 'TimeoutError' && /quiet state after navigation/.test(err.message); }
+    const budgetElapsed = Date.now() - budgetStartedAt;
+    assert(budgetTimedOut, 'the post-navigation quiet wait must fail loudly inside the budget');
+    assert(budgetElapsed < 1500, `waitForNavigation must bound settle + quiet by its timeout, took ${budgetElapsed}ms`);
   });
 
   await runTest('embedded runtime binds the marketplace context at creation and mirrors the puppeteer launch surface', async () => {
