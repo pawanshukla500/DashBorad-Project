@@ -30,6 +30,21 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # electron-builder publishes whatever desktop/package.json says, and the
+      # tag only names the release: a v1.2.0 tag against a 1.1.0 package would
+      # publish an update feed that tells 1.1.0 clients "no update available".
+      - name: Verify tag matches the packaged version
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: desktop
+        shell: bash
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match desktop/package.json version ${PKG_VERSION}. Bump the package version before tagging."
+            exit 1
+          fi
+
       # On a v*.*.* tag push this publishes a live GitHub Release: the NSIS
       # installer, the portable exe, their .blockmap files, and latest.yml —
       # the feed electron-updater's auto-update in the installed app reads.

@@ -882,7 +882,7 @@ async function runTests() {
     const loadIdx = mainSource.indexOf('function loadAutoUpdater()');
     assert(loadIdx !== -1, 'loadAutoUpdater not found');
     const loadWindow = mainSource.slice(loadIdx, loadIdx + 500);
-    assert(loadWindow.includes('if (!app.isPackaged) return null;'), 'dev runs must never attempt auto-updates');
+    assert(loadWindow.includes('if (!app.isPackaged || process.platform !== \'win32\') return null;'), 'dev runs must never attempt auto-updates, and packaged Linux GUI builds must not check a feed the release workflow never publishes');
     assert(loadWindow.includes("require('electron-updater')"), 'packaged updater must load electron-updater');
     const setupIdx = mainSource.indexOf('function setupAutoUpdate()');
     assert(setupIdx !== -1, 'setupAutoUpdate not found');
@@ -968,6 +968,8 @@ async function runTests() {
     assert(workflow.includes('needs.build-windows.result == \'success\''), 'Linux assets must only attach after the release exists — attaching to a missing release would create an update feed with no installer');
     assert(workflow.includes('softprops/action-gh-release@v2'), 'Linux packages attach via softprops/action-gh-release');
     assert(workflow.includes('npm ci'), 'CI builds must be reproducible (npm ci against the lockfile)');
+    assert(workflow.includes('${GITHUB_REF_NAME#v}'), 'tag builds must refuse a tag that does not match desktop/package.json\'s version');
+    assert(/does not match desktop\/package\.json version/.test(workflow), 'the tag/version guard must fail the build with a clear error');
   });
 
   console.log('\n=================================================================');

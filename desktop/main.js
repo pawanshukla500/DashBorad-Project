@@ -372,9 +372,12 @@ function broadcastUpdateStatus(status) {
 }
 
 function loadAutoUpdater() {
-  // Updates ship only for packaged installs: dev and standalone-CLI runs keep
-  // working without electron-updater present in node_modules.
-  if (!app.isPackaged) return null;
+  // Updates ship only for packaged installs, and only for platforms a real
+  // update feed is published for: the release workflow publishes the Windows
+  // latest.yml feed (NSIS installer). Linux GUI packages are artifacts only —
+  // there is no latest-linux.yml, so checking there would surface recurring
+  // feed errors instead of updates.
+  if (!app.isPackaged || process.platform !== 'win32') return null;
   try {
     return require('electron-updater').autoUpdater;
   } catch (err) {

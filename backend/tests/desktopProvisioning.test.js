@@ -101,6 +101,21 @@ describe('desktopDatabaseUrl', () => {
     ).toBe('');
   });
 
+  it('guards against the dashboard\'s discrete PG_DATABASE setting when DATABASE_URL is unset', () => {
+    expect(
+      desktopDatabaseUrl({
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/other_db',
+        PG_DATABASE: 'paymentapp'
+      })
+    ).toBe('');
+    expect(
+      desktopDatabaseUrl({
+        DESKTOP_DATABASE_URL: 'postgresql://worker:pass@db.example.com:5432/paymentapp',
+        PG_DATABASE: 'paymentapp'
+      })
+    ).toBe('postgresql://worker:pass@db.example.com:5432/paymentapp');
+  });
+
   it('never provisions a container-internal DATABASE_URL', () => {
     expect(desktopDatabaseUrl({ DATABASE_URL: 'postgresql://app:pass@postgres:5432/paymentapp' })).toBe('');
   });

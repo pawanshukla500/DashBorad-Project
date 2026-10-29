@@ -164,6 +164,18 @@ function databaseNameOf(rawUrl) {
 }
 
 /**
+ * The database name the dashboard itself uses, from either configuration
+ * style: a full DATABASE_URL or discrete PG_DATABASE/PGDATABASE settings
+ * (backend/db resolves the pool from either). '' when unconfigured — in
+ * that state the API server cannot verify roles either, so login never
+ * reaches desktop provisioning at all.
+ */
+function expectedDashboardDatabaseName(env) {
+  return databaseNameOf(String(env.DATABASE_URL || '')) ||
+    String(env.PG_DATABASE || env.PGDATABASE || '').trim();
+}
+
+/**
  * The database URL that may be provisioned to a desktop worker, or '' when the
  * server has no desktop-reachable URL for the dashboard's own database.
  */
@@ -186,7 +198,7 @@ export function desktopDatabaseUrl(env = process.env) {
   // container-internal. A URL naming any other database is refused outright.
   const explicit = String(env.DESKTOP_DATABASE_URL || '').trim();
   if (!explicit) return '';
-  const dashboardDatabase = databaseNameOf(dbUrl);
+  const dashboardDatabase = expectedDashboardDatabaseName(env);
   if (dashboardDatabase && databaseNameOf(explicit) !== dashboardDatabase) {
     return '';
   }
@@ -210,7 +222,7 @@ export function desktopAnalystDatabaseUrl(env = process.env) {
   }
   // The read-only principal must be a principal on the dashboard's own
   // database; a separate analyst database is never provisioned.
-  const dashboardDatabase = databaseNameOf(String(env.DATABASE_URL || ''));
+  const dashboardDatabase = expectedDashboardDatabaseName(env);
   if (dashboardDatabase && databaseNameOf(explicit) !== dashboardDatabase) {
     return '';
   }
