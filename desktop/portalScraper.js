@@ -104,7 +104,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
   stagingDir = path.join(getResolvedUserDataDir(), 'staging'),
   runtime = getBrowserRuntime(),
   executablePath,
-  delay = wait
+  delay = wait,
+  onSessionExpiry
 } = {}) {
   const marketplace = config.marketplace || 'both';
   if (!['both', 'flipkart_shopsy', 'flipkart', 'shopsy'].includes(marketplace)) {
@@ -135,27 +136,44 @@ export async function scrapeFlipkartRateCards(config = {}, {
         (body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out'));
     });
     if (!await checkSession()) {
-      if (!config.password) throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
-      onProgress('Session expired. Signing in to Seller Hub...');
-      await page.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 45000 });
-      await page.evaluate(() => {
-        Array.from(document.querySelectorAll('button, a')).find((el) => el.innerText?.trim() === 'Login')?.click();
-      });
-      await page.waitForSelector('input[name="username"]', { visible: true, timeout: 15000 });
-      await page.type('input[name="username"]', config.email, { delay: 40 });
-      await page.evaluate(() => {
-        Array.from(document.querySelectorAll('button')).find((el) => el.innerText?.trim().toLowerCase() === 'next')?.click();
-      });
-      await page.waitForSelector('input[name="password"], input[type="password"]', { visible: true, timeout: 15000 });
-      await page.type('input[name="password"], input[type="password"]', config.password, { delay: 40 });
-      await page.evaluate(() => {
-        Array.from(document.querySelectorAll('button')).find((el) => el.innerText?.trim().toLowerCase() === 'login')?.click();
-      });
-      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 }).catch(() => null);
-      await delay(4000);
-      if (!await checkSession()) throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
-      const cookies = await page.cookies();
-      saveEncryptedCookies(cookiesPath, cookies);
+      if (!config.password) {
+        if (typeof onSessionExpiry === 'function') {
+          onProgress('🔐 Session expired or login challenge detected. Opening in-view authentication prompt...');
+          const authed = await onSessionExpiry(page);
+          if (!authed) throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
+        } else {
+          throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
+        }
+      } else {
+        onProgress('Session expired. Signing in to Seller Hub...');
+        await page.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 45000 });
+        await page.evaluate(() => {
+          Array.from(document.querySelectorAll('button, a')).find((el) => el.innerText?.trim() === 'Login')?.click();
+        });
+        await page.waitForSelector('input[name="username"]', { visible: true, timeout: 15000 });
+        await page.type('input[name="username"]', config.email, { delay: 40 });
+        await page.evaluate(() => {
+          Array.from(document.querySelectorAll('button')).find((el) => el.innerText?.trim().toLowerCase() === 'next')?.click();
+        });
+        await page.waitForSelector('input[name="password"], input[type="password"]', { visible: true, timeout: 15000 });
+        await page.type('input[name="password"], input[type="password"]', config.password, { delay: 40 });
+        await page.evaluate(() => {
+          Array.from(document.querySelectorAll('button')).find((el) => el.innerText?.trim().toLowerCase() === 'login')?.click();
+        });
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 }).catch(() => null);
+        await delay(4000);
+        if (!await checkSession()) {
+          if (typeof onSessionExpiry === 'function') {
+            onProgress('🔐 2FA verification challenge required. Please complete OTP challenge in the browser viewport...');
+            const authed = await onSessionExpiry(page);
+            if (!authed) throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
+          } else {
+            throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
+          }
+        }
+        const cookies = await page.cookies();
+        saveEncryptedCookies(cookiesPath, cookies);
+      }
     }
     let verticals = config.selectedVerticals?.length ? [...config.selectedVerticals] : [
       'ethnic_set', 'kurta', 'sari', 'top', 'fabric', 'blouse', 'lehenga_choli', 'gown', 'shopsy_kurta', 'shopsy_ethnic_set'

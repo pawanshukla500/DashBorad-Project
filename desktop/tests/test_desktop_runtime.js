@@ -1674,6 +1674,69 @@ async function runTests() {
     assert(rendererContent.includes("window.ratecardAPI.setBrowserVisibility(false)"), 'renderer.js must hide browser on leaving monitor tab');
   });
 
+  await runTest('portalScraper triggers onSessionExpiry when session check fails (stage 3)', async () => {
+    const { scrapeFlipkartRateCards } = await import('../portalScraper.js');
+    let sessionExpiryTriggered = false;
+    let authChecked = false;
+
+    const fakePage = {
+      setCookie: async () => {},
+      goto: async () => {},
+      evaluate: async () => {
+        authChecked = true;
+        return false;
+      },
+      url: () => 'https://seller.flipkart.com/login',
+      title: () => 'Login Required',
+      cookies: async () => [{ name: 'refreshed_session', value: '123' }]
+    };
+
+    const fakeBrowser = {
+      pages: async () => [fakePage],
+      newPage: async () => fakePage,
+      close: async () => {}
+    };
+
+    const fakeRuntime = {
+      launch: async () => fakeBrowser,
+      partition: 'persist:test'
+    };
+
+    await scrapeFlipkartRateCards({ marketplace: 'flipkart' }, {
+      runtime: fakeRuntime,
+      onProgress: () => {},
+      delay: () => {},
+      onSessionExpiry: async (page) => {
+        sessionExpiryTriggered = true;
+        assert(page === fakePage, 'onSessionExpiry must receive active page');
+        return true;
+      }
+    }).catch(() => null);
+
+    assert(authChecked, 'checkSession must be called on home page');
+    assert(sessionExpiryTriggered, 'onSessionExpiry must be invoked when checkSession fails');
+  });
+
+  await runTest('executeScrapeProcess implements 2-attempt retry loop with backoff (stage 3)', async () => {
+    const mainPath = path.join(desktopDir, 'main.js');
+    const mainContent = fs.readFileSync(mainPath, 'utf8');
+
+    assert(mainContent.includes('const MAX_ATTEMPTS = 2;'), 'main.js must define MAX_ATTEMPTS = 2');
+    assert(mainContent.includes('isPermanentScrapeError(err)'), 'main.js must guard against retrying permanent errors');
+    assert(mainContent.includes('onSessionExpiry'), 'main.js must wire onSessionExpiry into scrapeFlipkartRateCards');
+    assert(mainContent.includes("status: 'login_prompt'"), 'main.js must transition monitor status to login_prompt on expiry');
+  });
+
+  await runTest('preload.cjs and renderer.js wire onBrowserMonitorPromptLogin (stage 3)', async () => {
+    const preloadPath = path.join(desktopDir, 'preload.cjs');
+    const preloadContent = fs.readFileSync(preloadPath, 'utf8');
+    assert(preloadContent.includes('onBrowserMonitorPromptLogin:'), 'preload.cjs must expose onBrowserMonitorPromptLogin');
+
+    const rendererPath = path.join(desktopDir, 'ui', 'renderer.js');
+    const rendererContent = fs.readFileSync(rendererPath, 'utf8');
+    assert(rendererContent.includes('onBrowserMonitorPromptLogin'), 'renderer.js must subscribe to onBrowserMonitorPromptLogin');
+  });
+
   console.log('\n=================================================================');
   console.log(` Results: ${passed} passed, ${failed} failed`);
   console.log('=================================================================');
