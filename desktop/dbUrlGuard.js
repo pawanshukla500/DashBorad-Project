@@ -37,6 +37,9 @@ const NON_PUBLIC_IP_PATTERNS = [
   /^fe[89ab][0-9a-f]?:/i,                     // fe80::/10 link-local IPv6
   /^ff[0-9a-f]{2}:/i,                         // ff00::/8 multicast IPv6
   /^2001:0?db8:/i,                            // 2001:db8::/32 documentation IPv6
+  /^2001::/i,                                 // 2001::/32 Teredo
+  /^2001:0?2:/i,                              // 2001:2::/48 RFC 2544/5180 benchmarking
+  /^2001:1[0-9a-f]:/i,                        // 2001:10::/28 deprecated ORCHID
   /^::ffff:/i                                 // IPv4-mapped IPv6
 ];
 

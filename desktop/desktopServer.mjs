@@ -1001,7 +1001,14 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/auth/logout
     if (pathname === '/api/auth/logout' && req.method === 'POST') {
-      if (!(await requireDesktopAuth())) return;
+      // Sign-out is a local-state clearing operation and must complete even
+      // when the stored session already expired or was revoked — otherwise a
+      // dead session could never be removed from this machine. Only the
+      // origin policy stays: a cross-site page must not be able to force it.
+      const origin = String(req.headers.origin || '');
+      if (origin && !isSameDesktopOrigin(req) && !isAllowedDesktopOrigin(req)) {
+        return sendJson(403, { success: false, error: 'Cross-origin sign-out is not allowed.' });
+      }
       const cleared = clearAuthSession();
       res.setHeader('Set-Cookie', expiredBrowserCookie);
       await closeDesktopPool();

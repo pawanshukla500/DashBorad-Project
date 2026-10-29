@@ -59,6 +59,9 @@ describe('isPubliclyRoutableDbHost', () => {
     ['::ffff:10.0.0.1'],             // IPv4-mapped IPv6
     ['::a00:5'],                     // IPv4-compatible IPv6 hex tail encoding 10.0.0.5
     ['::10.0.0.5'],                  // deprecated IPv4-compatible dotted form
+    ['2001:2::1'],                   // RFC 2544/5180 benchmarking IPv6
+    ['2001::1'],                     // Teredo
+    ['2001:10::1'],                  // deprecated ORCHID
     ['registry.internal'],
     ['database.local'],
     ['']

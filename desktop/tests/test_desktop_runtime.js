@@ -471,6 +471,9 @@ async function runTests() {
     assert(isDesktopReachableDbUrl('postgresql://app:pass@[::a00:5]:5432/paymentapp') === false, 'IPv4-compatible IPv6 literal encoding a private address must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@[::10.0.0.5]:5432/paymentapp') === false, 'deprecated dotted IPv4-compatible IPv6 literal must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@[::ffff:10.0.0.5]:5432/paymentapp') === false, 'IPv4-mapped IPv6 literal must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@[2001:2::1]:5432/paymentapp') === false, 'RFC 2544/5180 benchmarking IPv6 must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@[2001::1]:5432/paymentapp') === false, 'Teredo IPv6 must be refused');
+    assert(isDesktopReachableDbUrl('postgresql://app:pass@[2001:10::1]:5432/paymentapp') === false, 'deprecated ORCHID IPv6 must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@192.0.2.1:5432/paymentapp') === false, 'TEST-NET-1 must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@localhost.:5432/paymentapp') === false, 'trailing-dot loopback must be refused');
     assert(isDesktopReachableDbUrl('postgresql://app:pass@db.localhost:5432/paymentapp') === false, '.localhost subdomain must be refused');
@@ -792,7 +795,7 @@ async function runTests() {
     ];
     for (const [label, idx] of checks) {
       assert(idx !== -1, `${label} logout path not found`);
-      const window = (label === 'main.js' ? mainSource : serverSource).slice(idx, idx + 800);
+      const window = (label === 'main.js' ? mainSource : serverSource).slice(idx, idx + 1400);
       assert(window.includes('clearAuthSession();'), `${label} logout must clear the session`);
       assert(window.includes('cleared.success') && window.includes('cleared.error'), `${label} logout must report a failed session-file removal honestly`);
     }

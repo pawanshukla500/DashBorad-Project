@@ -478,9 +478,30 @@ async function runTests() {
     console.log(`  • Session file sealed with the AES-256-GCM vault (no plaintext tokens, clean round-trip): Passed = ${isSealedSessionVerified}`);
     fs.rmSync(path.join(tempUserDataDir, 'auth-session.json'), { force: true });
 
+    // 15. Sign-out is a local-state operation: a cross-site page cannot force
+    // it, and it completes even when the stored session can no longer be
+    // verified (expired or revoked) — otherwise a dead session could never
+    // be removed from this machine.
+    fs.writeFileSync(path.join(tempUserDataDir, 'auth-session.json'), JSON.stringify({
+      authenticated: true,
+      user: { id: 4, username: 'stale-logout-test', email: 'stale-logout@vbexports.co.in', role: 'admin', firebase_uid: 'stale-logout-uid' },
+      idToken: 'stale-token-cannot-be-verified',
+      refreshToken: 'stale-refresh',
+      authorizedAt: new Date().toISOString()
+    }, null, 2), 'utf8');
+    const crossLogoutRes = await fetch(`${testBase}/api/auth/logout`, { method: 'POST', headers: { 'Origin': 'https://evil-attacker.example.com' } });
+    const crossLogoutBlocked = crossLogoutRes.status === 403 &&
+      fs.existsSync(path.join(tempUserDataDir, 'auth-session.json'));
+    console.log(`  • Cross-origin sign-out rejected and session preserved (HTTP ${crossLogoutRes.status}): Passed = ${crossLogoutBlocked}`);
+    const staleLogoutRes = await fetch(`${testBase}/api/auth/logout`, { method: 'POST' });
+    const staleLogoutData = await staleLogoutRes.json();
+    const staleLogoutWorks = staleLogoutRes.status === 200 && staleLogoutData.success === true &&
+      !fs.existsSync(path.join(tempUserDataDir, 'auth-session.json'));
+    console.log(`  • Sign-out with an unverifiable (expired/revoked) session completes and removes the file (HTTP ${staleLogoutRes.status}): Passed = ${staleLogoutWorks}`);
+
     server.close();
 
-    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isSavedSessionOnlyBlocked && isAllowedOriginAdmitted && isSpoofedOriginBlocked && isCrossOriginLoginBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid && isNoDbPreviewKept && isSealedSessionVerified) {
+    if (isUnkRejected && allPhase2Blocked && isPreviewGated && isMpListGated && isAccountFilteringValid && isFkShopsyIsolated && isInteractiveLoginGated && isFakeBearerBlocked && isForgedAdminBlocked && isRevokedTokenBlocked && isRebindingBlocked && isSavedSessionOnlyBlocked && isAllowedOriginAdmitted && isSpoofedOriginBlocked && isCrossOriginLoginBlocked && isUnkValidated && allPhase2Gated && isPreviewIsolated && isMpListValid && isNoDbPreviewKept && isSealedSessionVerified && crossLogoutBlocked && staleLogoutWorks) {
       console.log('  ✓ Pass: Behavioral HTTP tests for auth gating, caller proof, origin policy, channel validation, isolation, preview filtering, and endpoint security verified.');
       passed++;
     } else {
@@ -505,7 +526,9 @@ async function runTests() {
         isPreviewIsolated,
         isMpListValid,
         isNoDbPreviewKept,
-        isSealedSessionVerified
+        isSealedSessionVerified,
+        crossLogoutBlocked,
+        staleLogoutWorks
       });
       failed++;
     }
