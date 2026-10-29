@@ -812,7 +812,17 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   }
 }
 
-// ── Automated Scraper Process (Supports Embedded Engine & Vault Credentials) ──
+// ── Automated Scraper Process (Supports Embedded Engine, In-View 2FA & 2-Attempt Retry) ──
+function isPermanentScrapeError(err) {
+  if (!err || !err.message) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes('verticals selected') ||
+         msg.includes('not implemented for') ||
+         msg.includes('human login (2fa)') ||
+         msg.includes('user cancelled') ||
+         msg.includes('unauthorized');
+}
+
 async function executeScrapeProcess(config, onProgress) {
   let effectiveConfig = { ...config };
   const session = loadAuthSession();
@@ -829,66 +839,129 @@ async function executeScrapeProcess(config, onProgress) {
     }
   }
 
-  if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
-    broadcastMonitorState({
-      active: true,
-      status: 'extracting',
-      marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
-      url: 'https://seller.flipkart.com'
-    });
-    const partition = `persist:marketplace-${effectiveConfig.marketplace || 'flipkart_shopsy'}`;
-    const baseRuntime = createEmbeddedRuntime({
-      partition,
-      window: mainWindow,
-      bounds: () => getMonitorViewBounds()
-    });
-    const runtime = {
-      ...baseRuntime,
-      async launch(options = {}) {
-        const browser = await baseRuntime.launch(options);
-        activeEmbeddedPage = browser.page;
-        const origClose = browser.close.bind(browser);
-        browser.close = async () => {
-          if (activeEmbeddedPage === browser.page) activeEmbeddedPage = null;
-          await origClose();
-        };
-        return browser;
-      }
-    };
+  const MAX_ATTEMPTS = 2;
+  let lastErr;
 
-    const wrappedProgress = (msg) => {
-      onProgress(msg);
-      broadcastMonitorState({
-        status: 'extracting',
-        progressMessage: msg,
-        url: activeEmbeddedPage ? activeEmbeddedPage.url() : monitorState.url
-      });
-    };
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      const backoffMs = 4000;
+      onProgress(`⚠️ Extraction attempt 1 encountered a transient issue (${lastErr?.message || 'unknown'}). Retrying with backoff (${backoffMs}ms)...`);
+      await new Promise((r) => setTimeout(r, backoffMs));
+    }
 
     try {
-      const scrapeRes = await scrapeFlipkartRateCards(effectiveConfig, {
-        onProgress: wrappedProgress,
+      if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
+        broadcastMonitorState({
+          active: true,
+          status: 'extracting',
+          marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
+          url: 'https://seller.flipkart.com'
+        });
+        const partition = `persist:marketplace-${effectiveConfig.marketplace || 'flipkart_shopsy'}`;
+        const baseRuntime = createEmbeddedRuntime({
+          partition,
+          window: mainWindow,
+          bounds: () => getMonitorViewBounds()
+        });
+        const runtime = {
+          ...baseRuntime,
+          async launch(options = {}) {
+            const browser = await baseRuntime.launch(options);
+            activeEmbeddedPage = browser.page;
+            const origClose = browser.close.bind(browser);
+            browser.close = async () => {
+              if (activeEmbeddedPage === browser.page) activeEmbeddedPage = null;
+              await origClose();
+            };
+            return browser;
+          }
+        };
+
+        const wrappedProgress = (msg) => {
+          onProgress(msg);
+          broadcastMonitorState({
+            status: 'extracting',
+            progressMessage: msg,
+            url: activeEmbeddedPage ? activeEmbeddedPage.url() : monitorState.url
+          });
+        };
+
+        const onSessionExpiry = async (page) => {
+          broadcastMonitorState({
+            active: true,
+            status: 'login_prompt',
+            url: page.url(),
+            title: page.title()
+          });
+          onProgress('🔐 2FA / Session authentication required. Please complete verification in the browser viewport...');
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('browser-monitor-prompt-login', {
+              marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
+              url: page.url()
+            });
+          }
+          const startTime = Date.now();
+          const timeoutMs = 90000;
+          while (Date.now() - startTime < timeoutMs) {
+            await new Promise((r) => setTimeout(r, 1000));
+            try {
+              const authed = await page.evaluate(() => {
+                const body = document.body?.innerText.toLowerCase() || '';
+                return !document.querySelector('input[type="password"]') &&
+                  (body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out'));
+              });
+              if (authed) {
+                const cookies = await page.cookies();
+                saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
+                saveEncryptedCookies(COOKIES_PATH, cookies);
+                broadcastMonitorState({
+                  active: true,
+                  status: 'extracting',
+                  url: page.url(),
+                  title: page.title()
+                });
+                onProgress('✓ In-view authentication complete. Session cookies encrypted and saved.');
+                return true;
+              }
+            } catch {
+              // Context destroyed during navigation or redirect; continue polling
+            }
+          }
+          return false;
+        };
+
+        try {
+          const scrapeRes = await scrapeFlipkartRateCards(effectiveConfig, {
+            onProgress: wrappedProgress,
+            cookiesPath: getMarketplaceCookiesPath('flipkart_shopsy'),
+            fallbackCookiesPath: COOKIES_PATH,
+            stagingDir: STAGING_DIR,
+            runtime,
+            onSessionExpiry
+          });
+          activeEmbeddedPage = null;
+          broadcastMonitorState({ active: false, status: scrapeRes.success ? 'completed' : 'error' });
+          return scrapeRes;
+        } catch (err) {
+          activeEmbeddedPage = null;
+          broadcastMonitorState({ active: false, status: 'error', error: err.message });
+          throw err;
+        }
+      }
+
+      return await scrapeFlipkartRateCards(effectiveConfig, {
+        onProgress,
         cookiesPath: getMarketplaceCookiesPath('flipkart_shopsy'),
         fallbackCookiesPath: COOKIES_PATH,
-        stagingDir: STAGING_DIR,
-        runtime
+        stagingDir: STAGING_DIR
       });
-      activeEmbeddedPage = null;
-      broadcastMonitorState({ active: false, status: scrapeRes.success ? 'completed' : 'error' });
-      return scrapeRes;
     } catch (err) {
-      activeEmbeddedPage = null;
-      broadcastMonitorState({ active: false, status: 'error', error: err.message });
-      throw err;
+      lastErr = err;
+      if (attempt === MAX_ATTEMPTS || isPermanentScrapeError(err)) {
+        throw err;
+      }
     }
   }
-
-  return scrapeFlipkartRateCards(effectiveConfig, {
-    onProgress,
-    cookiesPath: getMarketplaceCookiesPath('flipkart_shopsy'),
-    fallbackCookiesPath: COOKIES_PATH,
-    stagingDir: STAGING_DIR
-  });
 }
 
 const authorizeSession = createSessionAccess({

@@ -55,7 +55,8 @@ if (!window.ratecardAPI) {
     setBrowserVisibility: () => Promise.resolve({ success: true }),
     setBrowserEngine: () => Promise.resolve({ success: true }),
     setMonitorDockBounds: () => Promise.resolve({ success: true }),
-    onBrowserMonitorUpdate: () => () => {}
+    onBrowserMonitorUpdate: () => () => {},
+    onBrowserMonitorPromptLogin: () => () => {}
   };
 }
 
@@ -363,6 +364,11 @@ function updateBrowserMonitorUI(state) {
 
 function initBrowserMonitorListeners() {
   window.addEventListener('resize', syncMonitorDockBounds);
+
+  window.ratecardAPI?.onBrowserMonitorPromptLogin?.((payload) => {
+    const tabBtn = document.querySelector('[data-tab="monitor"]');
+    tabBtn?.click();
+  });
 
   const engineSelect = document.getElementById('select-monitor-engine');
   engineSelect?.addEventListener('change', async (e) => {

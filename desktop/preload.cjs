@@ -80,5 +80,10 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
     const subscription = (event, state) => callback(state);
     ipcRenderer.on('browser-monitor-update', subscription);
     return () => ipcRenderer.removeListener('browser-monitor-update', subscription);
+  },
+  onBrowserMonitorPromptLogin: (callback) => {
+    const subscription = (event, payload) => callback(payload);
+    ipcRenderer.on('browser-monitor-prompt-login', subscription);
+    return () => ipcRenderer.removeListener('browser-monitor-prompt-login', subscription);
   }
 });
