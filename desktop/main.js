@@ -21,6 +21,7 @@ import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards }
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
 
 const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
@@ -520,10 +521,76 @@ async function checkDailySchedule() {
 }
 
 
+// ── Live Browser Monitor & Embedded View Management ────────────────────────
+let activeEmbeddedPage = null;
+let currentBrowserEngine = 'embedded'; // 'embedded' | 'external'
+let monitorState = {
+  active: false,
+  engine: 'embedded',
+  visible: false,
+  url: '',
+  title: '',
+  status: 'idle', // 'idle' | 'navigating' | 'extracting' | 'login_prompt' | 'completed' | 'error'
+  marketplace: 'flipkart_shopsy',
+  lastScreenshot: null,
+  updatedAt: new Date().toISOString()
+};
+
+function broadcastMonitorState(patch = {}) {
+  monitorState = { ...monitorState, ...patch, engine: currentBrowserEngine, updatedAt: new Date().toISOString() };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('browser-monitor-update', monitorState);
+  }
+}
+
+function getMonitorViewBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
+  const size = mainWindow.getContentSize();
+  const width = Array.isArray(size) ? size[0] : (size?.width || 1360);
+  const height = Array.isArray(size) ? size[1] : (size?.height || 900);
+  const marginX = 280;
+  const marginTop = 200;
+  const viewWidth = Math.max(400, width - marginX - 30);
+  const viewHeight = Math.max(300, height - marginTop - 30);
+  return { x: marginX, y: marginTop, width: viewWidth, height: viewHeight };
+}
+
+async function fetchVaultCredential(session, marketplace = 'flipkart_shopsy') {
+  if (!session?.idToken) return null;
+  const targetChannel = (marketplace === 'flipkart_shopsy' || marketplace === 'shopsy') ? 'flipkart' : marketplace;
+  for (const serverBase of CANDIDATE_API_SERVERS) {
+    const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
+    try {
+      const listRes = await fetch(`${normalizedBase}/api/marketplace-accounts`, {
+        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
+      });
+      if (!listRes.ok) continue;
+      const body = await listRes.json();
+      const accounts = Array.isArray(body) ? body : (body.accounts || []);
+      const matched = accounts.find(a => 
+        (a.marketplace && a.marketplace.toLowerCase() === targetChannel.toLowerCase()) || 
+        (a.account_id && a.account_id.toLowerCase() === targetChannel.toLowerCase())
+      );
+      if (!matched || !matched.id) continue;
+
+      const revealRes = await fetch(`${normalizedBase}/api/marketplace-accounts/${matched.id}/reveal`, {
+        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' }
+      });
+      if (revealRes.ok) {
+        const revealed = await revealRes.json();
+        if (revealed && (revealed.password || revealed.login_id)) {
+          return { email: revealed.login_id || matched.login_id, password: revealed.password || '' };
+        }
+      }
+    } catch (err) {
+      console.warn(`[VaultCredential] Could not fetch credential from ${serverBase}:`, err.message);
+    }
+  }
+  return null;
+}
+
 // ── Interactive Human Login Flow (Multi-Marketplace) ─────────────────────────
 async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
-  const puppeteer = getBrowserRuntime();
-
   const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
   const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId);
   if (!mpConfig) {
@@ -532,9 +599,109 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   }
   const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
 
+  if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
+    broadcastMonitorState({ active: true, status: 'navigating', marketplace: mpConfig.id, url: mpConfig.loginUrl });
+    const partition = `persist:marketplace-${mpConfig.id}`;
+    const page = createEmbeddedPage({
+      window: mainWindow,
+      partition,
+      bounds: () => getMonitorViewBounds(),
+      visible: true
+    });
+    activeEmbeddedPage = page;
+    try {
+      if (fs.existsSync(cookiesPath)) {
+        const existing = loadEncryptedCookies(cookiesPath);
+        if (existing?.length) await page.setCookie(...existing);
+      } else if (fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+        const existing = loadEncryptedCookies(COOKIES_PATH);
+        if (existing?.length) await page.setCookie(...existing);
+      }
+
+      console.log(`[InteractiveLogin:Embedded] Opening ${mpConfig.name} at ${mpConfig.loginUrl}...`);
+      await page.goto(mpConfig.loginUrl, { waitUntil: 'load', timeout: 60000 });
+      broadcastMonitorState({ status: 'login_prompt', url: page.url(), title: page.title() });
+
+      const pollAuth = async () => {
+        const deadline = Date.now() + 300000; // 5 minute human login window
+        while (Date.now() < deadline) {
+          const authState = await page.evaluate((id) => {
+            const href = window.location.href.toLowerCase();
+            const body = document.body ? document.body.innerText.toLowerCase() : '';
+            const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
+            const hasLoginForm = Boolean(document.querySelector('form[action*="login"], form[action*="signin"]'));
+            if (hasPasswordInput || hasLoginForm) return false;
+            if (id.startsWith('myntra')) {
+              return href.includes('partnerportal') && (href.includes('dashboard') || href.includes('home') || body.includes('logout') || body.includes('seller id'));
+            }
+            if (id === 'meesho') {
+              const notLogin = !href.includes('/login') && !href.includes('auth');
+              const onPanel = href.includes('supplier.meesho.com') && (
+                href.includes('/orders') || href.includes('/catalog') || href.includes('/payments') || href.includes('/returns') || href.includes('/dashboard') || href.includes('/home')
+              );
+              const hasAuthText = body.includes('logout') || body.includes('sign out') || body.includes('seller id');
+              return notLogin && (onPanel || hasAuthText);
+            }
+            if (id === 'amazon') {
+              return href.includes('sellercentral.amazon.in') && !href.includes('/signin') && (href.includes('home') || href.includes('dashboard') || body.includes('sign out') || body.includes('logout'));
+            }
+            if (id === 'ajio') {
+              return href.includes('supplier.ajio.com') && !href.includes('/login') && (href.includes('dashboard') || href.includes('home') || body.includes('logout'));
+            }
+            if (id === 'cocoblu') {
+              const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin');
+              const onAuthRoute = href.includes('/dashboard') || href.includes('/orders') || href.includes('/vendor') || href.includes('/portal') || href.includes('/reports');
+              const hasLogoutAction = body.includes('logout') || body.includes('sign out') || Boolean(document.querySelector('a[href*="logout"], button[class*="logout"]'));
+              return href.includes('cocoblu.biz') && notLogin && (onAuthRoute || hasLogoutAction);
+            }
+            if (id === 'shopify') {
+              const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin') && !href.includes('/signup');
+              const onStoreRoute = (href.includes('/store/') || href.includes('/admin/')) && (
+                href.includes('/home') || href.includes('/orders') || href.includes('/products') || href.includes('/settings') || href.includes('/analytics') || /\/store\/[a-zA-Z0-9\-_]+(\/?$|\?)/.test(href)
+              );
+              const hasAuthenticatedUi = Boolean(document.querySelector(
+                '#AppFrameMain, nav[aria-label*="Navigation" i], nav[aria-label*="Main" i], [data-portal-id], a[href*="logout"], button[class*="logout"], [aria-label*="log out" i], [aria-label*="Store menu" i], [aria-label*="Account menu" i]'
+              ));
+              const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
+              return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
+            }
+            return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
+          }, mpConfig.id);
+
+          if (authState) return true;
+          broadcastMonitorState({ url: page.url(), title: page.title() });
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+        return false;
+      };
+
+      const loggedIn = await pollAuth();
+      if (!loggedIn) throw new Error('Interactive login timed out after 5 minutes.');
+
+      const cookies = await page.cookies();
+      saveEncryptedCookies(cookiesPath, cookies);
+      if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
+        saveEncryptedCookies(COOKIES_PATH, cookies);
+      }
+      broadcastMonitorState({ active: false, status: 'completed', url: page.url(), title: page.title() });
+      await page.close();
+      activeEmbeddedPage = null;
+      return { success: true, marketplace: mpConfig.id, cookiesCount: cookies.length };
+    } catch (err) {
+      if (activeEmbeddedPage) {
+        await activeEmbeddedPage.close().catch(() => {});
+        activeEmbeddedPage = null;
+      }
+      broadcastMonitorState({ active: false, status: 'error', error: err.message });
+      return { success: false, marketplace: mpConfig.id, error: err.message };
+    }
+  }
+
+  // External Chrome runtime fallback
+  const puppeteer = getBrowserRuntime();
   const browser = await puppeteer.launch({
     executablePath: requireChromeExecutable(),
-    headless: false, // Visible window for human login / OTP
+    headless: false,
     defaultViewport: null,
     args: ['--start-maximized', '--no-sandbox', '--disable-setuid-sandbox']
   });
@@ -565,7 +732,6 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
       const hasLoginForm = Boolean(document.querySelector('form[action*="login"], form[action*="signin"]'));
 
-      // If the page is still presenting a password field or login form, it is NOT authenticated yet
       if (hasPasswordInput || hasLoginForm) return false;
 
       if (id.startsWith('myntra')) {
@@ -598,7 +764,6 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       }
       if (id === 'shopify') {
         const notLogin = !href.includes('/login') && !href.includes('/auth') && !href.includes('/signin') && !href.includes('/signup');
-        // Matches /store/<store_name> (root store dashboard), /store/<store_name>/home, /orders, /products, /settings, /analytics
         const onStoreRoute = (href.includes('/store/') || href.includes('/admin/')) && (
           href.includes('/home') ||
           href.includes('/orders') ||
@@ -607,7 +772,6 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
           href.includes('/analytics') ||
           /\/store\/[a-zA-Z0-9\-_]+(\/?$|\?)/.test(href)
         );
-        // Robust post-login indicators: Polaris navigation, AppFrame, account menu, or logout button
         const hasAuthenticatedUi = Boolean(document.querySelector(
           '#AppFrameMain, nav[aria-label*="Navigation" i], nav[aria-label*="Main" i], [data-portal-id], a[href*="logout"], button[class*="logout"], [aria-label*="log out" i], [aria-label*="Store menu" i], [aria-label*="Account menu" i]'
         ));
@@ -632,9 +796,78 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   }
 }
 
-// ── Automated Scraper Process (Supports Visible Chrome Mode) ──────────────────
+// ── Automated Scraper Process (Supports Embedded Engine & Vault Credentials) ──
 async function executeScrapeProcess(config, onProgress) {
-  return scrapeFlipkartRateCards(config, {
+  let effectiveConfig = { ...config };
+  const session = loadAuthSession();
+  if (!effectiveConfig.password && session?.idToken) {
+    try {
+      const vaultCred = await fetchVaultCredential(session, effectiveConfig.marketplace);
+      if (vaultCred) {
+        effectiveConfig.email = vaultCred.email || effectiveConfig.email;
+        effectiveConfig.password = vaultCred.password;
+        onProgress('🔒 Vault credentials successfully loaded from ReconCentral Admin Center.');
+      }
+    } catch (vaultErr) {
+      console.warn('[Scrape] Vault credential retrieval skipped:', vaultErr.message);
+    }
+  }
+
+  if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
+    broadcastMonitorState({
+      active: true,
+      status: 'extracting',
+      marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
+      url: 'https://seller.flipkart.com'
+    });
+    const partition = `persist:marketplace-${effectiveConfig.marketplace || 'flipkart_shopsy'}`;
+    const baseRuntime = createEmbeddedRuntime({
+      partition,
+      window: mainWindow,
+      bounds: () => getMonitorViewBounds()
+    });
+    const runtime = {
+      ...baseRuntime,
+      async launch(options = {}) {
+        const browser = await baseRuntime.launch(options);
+        activeEmbeddedPage = browser.page;
+        const origClose = browser.close.bind(browser);
+        browser.close = async () => {
+          if (activeEmbeddedPage === browser.page) activeEmbeddedPage = null;
+          await origClose();
+        };
+        return browser;
+      }
+    };
+
+    const wrappedProgress = (msg) => {
+      onProgress(msg);
+      broadcastMonitorState({
+        status: 'extracting',
+        progressMessage: msg,
+        url: activeEmbeddedPage ? activeEmbeddedPage.url() : monitorState.url
+      });
+    };
+
+    try {
+      const scrapeRes = await scrapeFlipkartRateCards(effectiveConfig, {
+        onProgress: wrappedProgress,
+        cookiesPath: getMarketplaceCookiesPath('flipkart_shopsy'),
+        fallbackCookiesPath: COOKIES_PATH,
+        stagingDir: STAGING_DIR,
+        runtime
+      });
+      activeEmbeddedPage = null;
+      broadcastMonitorState({ active: false, status: scrapeRes.success ? 'completed' : 'error' });
+      return scrapeRes;
+    } catch (err) {
+      activeEmbeddedPage = null;
+      broadcastMonitorState({ active: false, status: 'error', error: err.message });
+      throw err;
+    }
+  }
+
+  return scrapeFlipkartRateCards(effectiveConfig, {
     onProgress,
     cookiesPath: getMarketplaceCookiesPath('flipkart_shopsy'),
     fallbackCookiesPath: COOKIES_PATH,
@@ -707,6 +940,45 @@ registerHandler('update-install', () => {
   // Silent install that relaunches the app with the new version.
   autoUpdater.quitAndInstall(true, true);
   return { success: true };
+});
+
+// ── Live Browser Monitor & Automation Control Handlers ───────────────────────
+registerHandler('browser-monitor-get-state', () => ({
+  success: true,
+  state: monitorState
+}));
+
+registerHandler('browser-monitor-screenshot', async () => {
+  if (activeEmbeddedPage && typeof activeEmbeddedPage.screenshot === 'function') {
+    try {
+      const pngBuffer = await activeEmbeddedPage.screenshot();
+      const base64 = `data:image/png;base64,${pngBuffer.toString('base64')}`;
+      broadcastMonitorState({ lastScreenshot: base64 });
+      return { success: true, screenshot: base64 };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+  return { success: false, error: 'No active embedded browser view to capture.' };
+});
+
+registerHandler('browser-monitor-set-visibility', (e, visible) => {
+  const isVis = Boolean(visible);
+  if (activeEmbeddedPage && typeof activeEmbeddedPage.setVisible === 'function') {
+    activeEmbeddedPage.setVisible(isVis);
+    if (isVis && typeof activeEmbeddedPage.layout === 'function') {
+      activeEmbeddedPage.layout();
+    }
+  }
+  broadcastMonitorState({ visible: isVis });
+  return { success: true, visible: isVis };
+});
+
+registerHandler('browser-monitor-set-engine', (e, engine) => {
+  const next = engine === 'external' ? 'external' : 'embedded';
+  currentBrowserEngine = next;
+  broadcastMonitorState({ engine: next });
+  return { success: true, engine: next };
 });
 
 // ── Authentication & Authorization IPC Handlers ─────────────────────────────

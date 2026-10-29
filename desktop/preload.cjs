@@ -68,5 +68,16 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
     const subscription = (event, status) => callback(status);
     ipcRenderer.on('update-status', subscription);
     return () => ipcRenderer.removeListener('update-status', subscription);
+  },
+
+  // Live Browser & Automation Monitor (Embedded Chromium View & Screenshot Stream)
+  getBrowserMonitorState: () => ipcRenderer.invoke('browser-monitor-get-state'),
+  captureBrowserScreenshot: () => ipcRenderer.invoke('browser-monitor-screenshot'),
+  setBrowserVisibility: (visible) => ipcRenderer.invoke('browser-monitor-set-visibility', Boolean(visible)),
+  setBrowserEngine: (engine) => ipcRenderer.invoke('browser-monitor-set-engine', typeof engine === 'string' ? engine.trim() : 'embedded'),
+  onBrowserMonitorUpdate: (callback) => {
+    const subscription = (event, state) => callback(state);
+    ipcRenderer.on('browser-monitor-update', subscription);
+    return () => ipcRenderer.removeListener('browser-monitor-update', subscription);
   }
 });
