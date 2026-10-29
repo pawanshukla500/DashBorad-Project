@@ -158,6 +158,10 @@ export function createEmbeddedPage({
   attach();
   view.setVisible?.(Boolean(visible));
   layout();
+  // Host-window resizes must re-layout the embedded view: stale bounds clip
+  // or blank the surface after the operator resizes or maximizes the app.
+  const onHostResize = () => layout();
+  if (window?.on) window.on('resize', onHostResize);
 
   const contents = view.webContents;
 
@@ -388,7 +392,13 @@ export function createEmbeddedPage({
             contents.removeListener?.('did-navigate', onNav);
             contents.removeListener?.('did-navigate-in-page', onInPage);
           };
-          if (contents.once) {
+          // `on` + manual removal, NOT `once`: once would unregister the
+          // listener on the first subframe event too, so a later main-frame
+          // navigation could never resolve the wait.
+          if (contents.on) {
+            contents.on('did-navigate', onNav);
+            contents.on('did-navigate-in-page', onInPage);
+          } else if (contents.once) {
             contents.once('did-navigate', onNav);
             contents.once('did-navigate-in-page', onInPage);
           }
@@ -521,6 +531,11 @@ export function createEmbeddedPage({
       if (contents.removeListener && onAnyNav) {
         contents.removeListener('did-navigate', onAnyNav);
         contents.removeListener('did-navigate-in-page', onAnyInPage);
+      }
+      try {
+        window?.removeListener?.('resize', onHostResize);
+      } catch {
+        /* window already destroyed */
       }
       try {
         contents.debugger?.detach?.();

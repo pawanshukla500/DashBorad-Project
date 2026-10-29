@@ -1052,8 +1052,14 @@ async function runTests() {
         };
       }
     };
+    let contentSize = { width: 1024, height: 640 };
+    const winListeners = {};
     const fakeWindow = {
-      getContentSize: () => ({ width: 1024, height: 640 }),
+      getContentSize: () => ({ ...contentSize }),
+      on(event, handler) { (winListeners[event] = winListeners[event] || []).push(handler); },
+      removeListener(event, handler) {
+        winListeners[event] = (winListeners[event] || []).filter((h) => h !== handler);
+      },
       contentView: {
         addChildView: () => { calls.attached += 1; },
         removeChildView: () => { calls.removed += 1; }
@@ -1074,6 +1080,10 @@ async function runTests() {
       debuggerAttached: () => (fakeContents.debugger ? fakeContents.debugger.attached : 'absent'),
       debuggerCommands: () => (fakeContents.debugger ? fakeContents.debugger.sent : []),
       partitionsUsed: () => partitions,
+      resizeWindow: (width, height) => {
+        contentSize = { width, height };
+        [...(winListeners.resize || [])].forEach((h) => h());
+      },
       loadedUrl: () => loadedUrl
     };
   }
@@ -1112,6 +1122,10 @@ async function runTests() {
     const unbounded = createEmbeddedPage({ window: harness.fakeWindow, partition: 'persist:marketplace-flipkart', deps: harness.deps });
     assert(unbounded._view.boundsSet && unbounded._view.boundsSet.width === 1024 && unbounded._view.boundsSet.height === 640,
       'without explicit bounds the view must cover the host window content area, never a blank 0x0 surface');
+    harness.resizeWindow(1440, 900);
+    assert(unbounded._view.boundsSet.width === 1440 && unbounded._view.boundsSet.height === 900,
+      'resizing the host window must re-layout the embedded view (stale bounds clip or blank the surface)');
+    await unbounded.close();
     const bareWindowPage = createEmbeddedPage({
       window: { contentView: { addChildView: () => {}, removeChildView: () => {} } },
       partition: 'persist:marketplace-flipkart',
@@ -1346,6 +1360,16 @@ async function runTests() {
     const mainFrame = await mainFramePromise;
     assert(mainFrame.ok === true && mainFrame.via === 'navigation-event',
       'a main-frame in-page navigation must satisfy the wait (and the subframe nav must not have armed the grace window)');
+
+    // A subframe event arriving FIRST must not consume the in-page listener:
+    // the following main-frame navigation still has to resolve the wait.
+    const interleaved = makeFakeEmbeddedDeps();
+    const interleavedPage = createEmbeddedPage({ window: interleaved.fakeWindow, partition: 'persist:marketplace-flipkart', deps: interleaved.deps });
+    const interleavedPromise = interleavedPage.waitForNavigation({ timeout: 2000 });
+    interleaved.fire('did-navigate-in-page', null, 'https://ads.example.com/frame#sub', false);
+    interleaved.fire('did-navigate-in-page', null, 'https://seller.flipkart.com/#payments', true);
+    const interleavedNav = await interleavedPromise;
+    assert(interleavedNav.ok === true, 'a subframe navigation must not consume the in-page listener before a main-frame navigation');
 
     // A navigation that PRECEDED the action can never be the submit's
     // navigation: it must be ignored, not accepted through the grace window.
