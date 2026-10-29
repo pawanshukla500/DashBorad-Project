@@ -388,7 +388,14 @@ function renderCatalogTable(catalog) {
 }
 
 // ── Load Full Rate Card Preview & Diff ───────────────────────────────────────
+// Overlapping previews share module state (channel switched while a slower
+// request is still in flight). Only the newest request may write that state:
+// a stale response is dropped, so it can never re-enable commit or render
+// rate cards for a selection the user has already navigated away from.
+let previewRequestSeq = 0;
+
 async function loadRateCardPreview() {
+  const requestId = ++previewRequestSeq;
   const tbody = document.getElementById('diff-tbody');
   tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Generating brand-wise rate cards and comparing with PostgreSQL database...</td></tr>';
 
@@ -406,8 +413,10 @@ async function loadRateCardPreview() {
     const changesBadge = document.getElementById('changes-badge');
     if (changesBadge) changesBadge.style.display = 'none';
     const res = await window.ratecardAPI.getRateCardPreview({ marketplace: selectedChannel });
+    if (requestId !== previewRequestSeq) return; // superseded by a newer selection
     if (res.success && res.rateCards?.length > 0) {
       const diffRes = await window.ratecardAPI.detectBrandRateChanges(res.rateCards);
+      if (requestId !== previewRequestSeq) return; // superseded by a newer selection
       if (!diffRes?.success) throw new Error(diffRes?.error || 'Change detection failed.');
       currentRateCards = res.rateCards;
       currentChanges = diffRes.changes || [];
@@ -440,6 +449,9 @@ async function loadRateCardPreview() {
       setTableMessage(tbody, 8, res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.');
     }
   } catch (err) {
+    // A stale request's failure belongs to a selection nobody is looking at
+    // anymore: do not clobber the newer preview's state or table.
+    if (requestId !== previewRequestSeq) return;
     currentCanSync = false;
     currentRateCards = [];
     currentChanges = [];

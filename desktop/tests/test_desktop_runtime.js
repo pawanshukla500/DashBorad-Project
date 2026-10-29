@@ -805,6 +805,16 @@ async function runTests() {
     assert(rendererWindow.includes('res?.success'), 'renderer logout must check the response before claiming deauthorization');
   });
 
+  await runTest('preview responses are generation-guarded (static invariant)', async () => {
+    const rendererSource = fs.readFileSync(path.join(desktopDir, 'ui', 'renderer.js'), 'utf8');
+    const fnIdx = rendererSource.indexOf('async function loadRateCardPreview');
+    assert(fnIdx !== -1, 'loadRateCardPreview not found');
+    const fnWindow = rendererSource.slice(fnIdx, fnIdx + 3400);
+    assert(fnWindow.includes('requestId = ++previewRequestSeq'), 'each preview must claim a generation');
+    const guardCount = (fnWindow.match(/requestId !== previewRequestSeq/g) || []).length;
+    assert(guardCount >= 3, `stale responses must be dropped after each await, including the catch path (found ${guardCount} guards)`);
+  });
+
   await runTest('Linux installer verifies runtime modules resolve before skipping npm install', async () => {
     const installer = fs.readFileSync(path.join(path.resolve(desktopDir, '..'), 'released', 'linux', 'install-linux.sh'), 'utf8');
     // Old node_modules directories predate puppeteer-core; the installer must
