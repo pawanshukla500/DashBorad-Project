@@ -1,6 +1,6 @@
 {
   "name": "reconcentral-ratecard-worker",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Cross-Platform Flipkart & Marketplace Rate Card Scraper Worker and Desktop App",
   "main": "main.js",
   "type": "module",
@@ -17,7 +17,11 @@
     "worker:sync": "node worker.js --marketplace=both --auto-sync",
     "build:win": "electron-builder --win --x64",
     "build:linux": "electron-builder --linux AppImage deb",
-    "build:all": "electron-builder -wl"
+    "build:all": "electron-builder -wl",
+    "test:runtime": "node tests/test_desktop_runtime.js",
+    "test:auth": "node tests/test_desktop_auth.js",
+    "test:e2e": "node tests/test_desktop_e2e.js",
+    "test": "node tests/test_desktop_runtime.js && node tests/test_desktop_auth.js && node tests/test_desktop_e2e.js"
   },
   "keywords": [
     "ratecard",

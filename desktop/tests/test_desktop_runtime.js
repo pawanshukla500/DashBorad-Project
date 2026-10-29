@@ -1867,7 +1867,7 @@ async function runTests() {
     assert.strictEqual(res.updated, true);
     assert.strictEqual(res.anomaliesCount, 1);
     assert(insertedSnapshot, 'rich audit snapshot must be inserted into rate_card_versions');
-    assert.strictEqual(insertedSnapshot.version, '1.5.0');
+    assert.strictEqual(insertedSnapshot.version, '1.6.0');
     assert.strictEqual(insertedSnapshot.actor, 'pawan@vbexports.co.in');
     assert.strictEqual(insertedSnapshot.stats.anomaliesCount, 1);
     assert.strictEqual(insertedSnapshot.summary.anomalies.length, 1);
@@ -1887,6 +1887,22 @@ async function runTests() {
     assert(rendererContent.includes("activeDiffFilter === 'anomalies'"), 'renderer.js must handle anomalies filter');
     assert(rendererContent.includes("r.anomaly"), 'renderer.js must check r.anomaly');
     assert(rendererContent.includes("diff-anomaly-alert"), 'renderer.js must toggle diff-anomaly-alert');
+  });
+
+  await runTest('desktop package.json ships test:e2e script and test_desktop_e2e.js (stage 5)', async () => {
+    const pkgPath = path.join(desktopDir, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    assert.strictEqual(pkg.version, '1.6.0', 'version must be 1.6.0');
+    assert(pkg.scripts['test:e2e'], 'package.json must define test:e2e');
+    assert(pkg.scripts['test'].includes('test_desktop_e2e.js'), 'test script must include test_desktop_e2e.js');
+
+    const e2ePath = path.join(desktopDir, 'tests', 'test_desktop_e2e.js');
+    assert(fs.existsSync(e2ePath), 'test_desktop_e2e.js must exist');
+    const e2eContent = fs.readFileSync(e2ePath, 'utf8');
+    assert(e2eContent.includes('E2E 1: Full Extraction Pipeline'), 'e2e test must cover extraction');
+    assert(e2eContent.includes('E2E 4: Detects rate changes'), 'e2e test must cover rate anomalies');
+    assert(e2eContent.includes('E2E 7: Session expiry triggers onSessionExpiry'), 'e2e test must cover session expiry');
+    assert(e2eContent.includes('E2E 8: Network drop on attempt 1'), 'e2e test must cover retry backoff');
   });
 
   console.log('\n=================================================================');
