@@ -214,7 +214,8 @@ workerJobsRouter.get('/', async (req, res) => {
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    params.push(Math.min(parseInt(limit, 10) || 50, 100));
+    const safeLimit = Math.max(1, Math.min(parseInt(limit, 10) || 50, 100));
+    params.push(safeLimit);
 
     const result = await pool.query(`
       SELECT 
@@ -333,18 +334,25 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
 
   const pool = getPool();
   try {
-    const conditions = ['id = $1', "status IN ('claimed', 'running')"];
-    const checkParams = [id];
-    if (worker_id) {
-      conditions.push('lease_worker_id = $2');
-      checkParams.push(worker_id);
-    }
-    const jobRes = await pool.query(`SELECT * FROM worker_jobs WHERE ${conditions.join(' AND ')}`, checkParams);
+    const jobRes = await pool.query(
+      `SELECT * FROM worker_jobs WHERE id = $1 AND status IN ('queued', 'claimed', 'running')`,
+      [id]
+    );
     if (jobRes.rows.length === 0) {
-      return res.status(409).json({ error: 'Job is not running or has been reassigned/cancelled', code: 'JOB_NOT_ACTIVE' });
+      return res.status(409).json({ error: 'Job is not active or has been cancelled', code: 'JOB_NOT_ACTIVE' });
     }
 
     const job = jobRes.rows[0];
+
+    // If assigned to a worker lease, strictly enforce lease ownership and expiry
+    if (job.lease_worker_id) {
+      if (!worker_id || job.lease_worker_id !== worker_id) {
+        return res.status(409).json({ error: 'Job lease belongs to another worker or lease has expired', code: 'LEASE_MISMATCH' });
+      }
+      if (job.lease_expires_at && new Date(job.lease_expires_at) < new Date()) {
+        return res.status(409).json({ error: 'Job lease has expired', code: 'LEASE_EXPIRED' });
+      }
+    }
 
     // Determine effectiveDate from extraction or parameters
     const scrapeEffectiveDate = effective_date ||
@@ -389,7 +397,7 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
  * Publish approved job results to active rc_* tables
  * POST /api/worker-jobs/:id/publish
  */
-workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => {
+workerJobsRouter.post('/:id/publish', requireRole('operator', 'admin'), async (req, res) => {
   const { id } = req.params;
   const pool = getPool();
 

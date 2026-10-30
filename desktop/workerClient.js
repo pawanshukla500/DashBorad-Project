@@ -187,12 +187,12 @@ export async function reportJobFailure(session, jobId, errorMessage, errorCode =
   return await res.json();
 }
 
-export async function submitJobResults(session, jobId, results) {
+export async function submitJobResults(session, jobId, results, workerId = null) {
   const baseUrl = await getActiveBackendUrl();
   const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/results`, {
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
-    body: JSON.stringify({ results })
+    body: JSON.stringify({ results, worker_id: workerId })
   });
 
   if (!res.ok) {

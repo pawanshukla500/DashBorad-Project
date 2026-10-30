@@ -1678,7 +1678,7 @@ router.post('/check-category', async (req, res) => {
         status, priority, parameters, created_by, created_at, updated_at
       ) VALUES ($1, 'flipkart', 'default', 'RATE_CARD_SCRAPE', 'queued', 10, $2, $3, NOW(), NOW())
       RETURNING *
-    `, [`check-cat-${cleanCategory}-${Date.now()}`, JSON.stringify({ verticals: [cleanCategory], autoPublish: !!sync }), req.user?.email || 'system']);
+    `, [`check-cat-${cleanCategory}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, JSON.stringify({ verticals: [cleanCategory], autoPublish: !!sync }), req.user?.email || 'system']);
 
     res.json({
       success: true,

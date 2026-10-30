@@ -614,7 +614,7 @@ async function executeBackgroundWorkerJob(session, job) {
     await reportJobProgress(session, job.id, 80, 'Observations staged in SQLite. Submitting to ReconCentral...');
 
     // Submit results to backend (backend runs canonical diff)
-    const submitRes = await submitJobResults(session, job.id, normalizedCards);
+    const submitRes = await submitJobResults(session, job.id, normalizedCards, WORKER_ID);
     markStagedJobStatus(db, `job-${job.id}`, 'completed');
     // Prune completed observation rows to prevent unbounded disk growth
     clearStagedJob(db, `job-${job.id}`);
@@ -1622,14 +1622,14 @@ registerHandler('get-brand-fsn-catalog', async () => {
   const session = loadAuthSession();
   try {
     const res = await fetchBrandCatalogFromApi(session);
-    if (res.success && Array.isArray(res.catalog)) {
+    if (res && res.success && Array.isArray(res.catalog)) {
       return { success: true, catalog: res.catalog };
     }
+    return { success: false, error: res?.error || 'Failed to fetch catalog from API', catalog: [] };
   } catch (err) {
     console.warn('[get-brand-fsn-catalog] API fetch error:', err.message);
+    return { success: false, error: err.message, catalog: [] };
   }
-
-  return { success: true, catalog: [] };
 });
 
 // Full Brand-Wise Preview (Flipkart & Shopsy)
@@ -1655,11 +1655,14 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
 registerHandler('detect-brand-rate-changes', async (e, brandRateCards, options = {}) => {
   const session = loadAuthSession();
   try {
-    const cards = stagedExtraction.cards.length ? stagedExtraction.cards : brandRateCards;
+    const targetMp = options?.marketplace || options?.channel || (brandRateCards?.[0]?.marketplace) || (stagedExtraction.cards[0]?.marketplace) || 'flipkart';
+    let cards = brandRateCards && brandRateCards.length ? brandRateCards : stagedExtraction.cards;
+    if (targetMp && targetMp !== 'all' && cards.length) {
+      cards = filterRateCardsByChannel(targetMp, cards);
+    }
     if (!cards || cards.length === 0) {
       return { success: true, changes: [], changesCount: 0, anomaliesCount: 0 };
     }
-    const targetMp = options?.marketplace || options?.channel || (cards[0]?.marketplace) || 'flipkart';
     const diffRes = await detectRateChangesViaApi(session, cards, targetMp);
     return {
       success: true,
@@ -1707,7 +1710,7 @@ registerHandler('sync-brand-rate-cards', async (e, brandRateCards, options = {})
     }
 
     const jobId = jobData.job.id;
-    await submitJobResults(session, jobId, cardsToSync);
+    await submitJobResults(session, jobId, cardsToSync, WORKER_ID);
     const pubRes = await publishJobViaApi(session, jobId);
 
     return {

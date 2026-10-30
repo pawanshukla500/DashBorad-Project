@@ -628,7 +628,12 @@ async function loadCatalogData() {
 
   try {
     const res = await window.ratecardAPI.getBrandFsnCatalog();
-    if (res.success && res.catalog?.length > 0) {
+    if (!res || !res.success) {
+      setBrandsKpi('API Error', res?.error || 'Failed to reach ReconCentral catalog API', '#ef4444');
+      appendTerminalLine(`! Catalog fetch failed: ${res?.error || 'Unknown error'}`);
+      return;
+    }
+    if (res.catalog?.length > 0) {
       currentCatalog = res.catalog;
       renderCatalogTable(currentCatalog);
       const brands = [...new Set(currentCatalog.map(item => item.brand).filter(Boolean))];
