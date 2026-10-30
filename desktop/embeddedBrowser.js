@@ -331,8 +331,15 @@ export function createEmbeddedPage({
       const deadline = Date.now() + budget;
       const remaining = () => deadline - Date.now();
       const slice = () => Math.max(remaining(), 1);
-      const load = contents.loadURL(targetUrl);
-      await withTimeout(load, slice(), `Navigation timed out after ${timeout}ms: ${targetUrl}`);
+      try {
+        const load = contents.loadURL(targetUrl);
+        await withTimeout(load, slice(), `Navigation timed out after ${timeout}ms: ${targetUrl}`);
+      } catch (loadErr) {
+        const isAborted = String(loadErr?.message || loadErr).includes('ERR_ABORTED') || loadErr?.errno === -3 || loadErr?.code === 'ERR_ABORTED';
+        if (!isAborted) {
+          throw loadErr;
+        }
+      }
       if (waitUntil === 'networkidle2' || waitUntil === 'load') {
         const ready = evaluateRaw(`document.readyState === 'complete' || document.readyState === 'interactive'`, { retries: 20, gapMs: 500, deadlineMs: deadline });
         await withTimeout(ready, slice(), 'Page never reached an interactive state.');
