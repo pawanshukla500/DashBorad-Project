@@ -104,7 +104,7 @@ async function main() {
   } finally {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
+    } catch { }
   }
 
   console.log(`\nStaging tests summary: ${passed} passed, ${failed} failed.`);

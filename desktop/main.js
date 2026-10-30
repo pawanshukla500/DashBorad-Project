@@ -468,6 +468,11 @@ app.whenReady().then(async () => {
   createWindow();
   setupAutoUpdate();
   fs.mkdirSync(STAGING_DIR, { recursive: true });
+  try {
+    const defaultCookiesPath = getMarketplaceCookiesPath('flipkart_shopsy');
+    if (!fs.existsSync(defaultCookiesPath)) loadEncryptedCookies(defaultCookiesPath);
+    if (!fs.existsSync(COOKIES_PATH)) loadEncryptedCookies(COOKIES_PATH);
+  } catch {}
 
   try {
     const session = await authorizeSession();
@@ -1141,11 +1146,36 @@ async function executeScrapeProcess(config, onProgress) {
         }
       }
 
+      const externalSessionExpiry = async (page) => {
+        onProgress('🔐 2FA / Session authentication required. Please complete login in the opened browser window...');
+        const startTime = Date.now();
+        const timeoutMs = 90000;
+        while (Date.now() - startTime < timeoutMs) {
+          await new Promise((r) => setTimeout(r, 1000));
+          try {
+            const authed = await page.evaluate(() => {
+              const body = document.body?.innerText.toLowerCase() || '';
+              return !document.querySelector('input[type="password"]') &&
+                (body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out'));
+            });
+            if (authed) {
+              const cookies = await page.cookies();
+              saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
+              saveEncryptedCookies(COOKIES_PATH, cookies);
+              onProgress('✓ In-browser authentication complete. Session cookies encrypted and saved.');
+              return true;
+            }
+          } catch {}
+        }
+        return false;
+      };
+
       return await scrapeFlipkartRateCards(effectiveConfig, {
         onProgress,
         cookiesPath: getMarketplaceCookiesPath('flipkart_shopsy'),
         fallbackCookiesPath: COOKIES_PATH,
-        stagingDir: STAGING_DIR
+        stagingDir: STAGING_DIR,
+        onSessionExpiry: externalSessionExpiry
       });
     } catch (err) {
       lastErr = err;
