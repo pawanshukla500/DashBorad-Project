@@ -152,7 +152,7 @@ export async function scrapeRateCard(options = {}) {
     }
 
     // Update Fixed Fees (Clear & Insert approach for simplicity if ranges change)
-    await pool.query('DELETE FROM flipkart_fixed_fees');
+    // Deprecated legacy write disabled: DELETE FROM flipkart_fixed_fees
     for (const f of extractedData.fixed_fees) {
       await pool.query(`
         INSERT INTO flipkart_fixed_fees (fulfillment_type, price_range_start, price_range_end, fee_amount, updated_at)
@@ -171,7 +171,7 @@ export async function scrapeRateCard(options = {}) {
     }
 
     // Update Shipping Fees
-    await pool.query('DELETE FROM flipkart_shipping_fees');
+    // Deprecated legacy write disabled: DELETE FROM flipkart_shipping_fees
     for (const s of extractedData.shipping_fees) {
       await pool.query(`
         INSERT INTO flipkart_shipping_fees (tier, weight_slab_grams, local_fee, zonal_fee, national_fee, is_reverse_shipping, updated_at)

@@ -23,6 +23,7 @@ import uploadHealthRoutes from './uploadHealth.js';
 import sorRoutes from './sor.js';
 import sorUploadRoutes from './sorUpload.js';
 import marketplaceAccountsRoutes from './marketplaceAccounts.js';
+import { workersRouter, workerJobsRouter } from './workerJobs.js';
 import {
   authMiddleware,
   mutationAccessGuard,
@@ -129,4 +130,10 @@ export function mountApiRoutes(app) {
   protectMutations(app, '/api/sor');
   app.use('/api/sor', sorRoutes);
   app.use('/api/sor', sorUploadRoutes);
+
+  // Distributed Rate Card Workers & Background Job Queue
+  protectMutations(app, '/api/workers');
+  app.use('/api/workers', workersRouter);
+  protectMutations(app, '/api/worker-jobs');
+  app.use('/api/worker-jobs', workerJobsRouter);
 }

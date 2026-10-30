@@ -21,7 +21,7 @@
     "test:runtime": "node tests/test_desktop_runtime.js",
     "test:auth": "node tests/test_desktop_auth.js",
     "test:e2e": "node tests/test_desktop_e2e.js",
-    "test": "node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js",
+    "test": "node tests/test_local_staging.js && node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js",
     "test:all": "node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js && node tests/test_desktop_auth.js"
   },
   "keywords": [
@@ -46,6 +46,7 @@
     "puppeteer-core": "^24.43.1",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "sql.js": "^1.15.2",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
