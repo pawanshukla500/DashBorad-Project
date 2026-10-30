@@ -20,7 +20,13 @@ if (!window.ratecardAPI) {
     openExcelFile: (path) => fetch(`${API_BASE}/api/open-excel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.json()),
     startScrape: (options) => fetch(`${API_BASE}/api/scrape/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options || {}) }).then(r => r.json()),
     runInteractiveLogin: (payload) => fetch(`${API_BASE}/api/interactive-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) }).then(r => r.json()),
-    clearMarketplaceSession: (marketplace) => fetch(`${API_BASE}/api/clear-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marketplace }) }).then(r => r.json()),
+    clearMarketplaceSession: (marketplace) => fetch(`${API_BASE}/api/clear-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marketplace }) }).then(async r => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.success === false) {
+        throw new Error(data.error || data.message || `HTTP ${r.status}`);
+      }
+      return data;
+    }),
     getMarketplaces: () => fetch(`${API_BASE}/api/desktop/marketplaces`).then(r => r.json()),
     getMarketplaceAccounts: () => fetch(`${API_BASE}/api/desktop/marketplace-accounts`).then(r => r.json()),
     onProgress: (callback) => {
@@ -1151,11 +1157,14 @@ function setupEventListeners() {
     appendTerminalLine(`Purging saved session cookies for ${selectedVal}...`);
     try {
       if (window.ratecardAPI?.clearMarketplaceSession) {
-        await window.ratecardAPI.clearMarketplaceSession(selectedVal);
+        const res = await window.ratecardAPI.clearMarketplaceSession(selectedVal);
+        if (res && res.success === false) {
+          throw new Error(res.error || res.message || 'Failed to clear session cookies');
+        }
       }
-      appendTerminalLine(`✓ Saved cookies purged. Fresh login will be used.`);
+      appendTerminalLine(`✓ Saved cookies purged for ${selectedVal}. Fresh login will be used.`);
     } catch (err) {
-      appendTerminalLine(`Reset error: ${err.message}`);
+      appendTerminalLine(`❌ Reset error: ${err.message}`);
     } finally {
       await loadSessionStatusUI();
     }

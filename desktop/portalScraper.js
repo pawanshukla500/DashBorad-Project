@@ -296,12 +296,21 @@ export async function scrapeFlipkartRateCards(config = {}, {
         await safeGoto(`https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=${encodeURIComponent(JSON.stringify(query))}`, {
           waitUntil: 'load', timeout: 35000
         });
-        await delay(config.visible ? 3000 : 2000);
-        const tables = await page.evaluate(() => Array.from(document.querySelectorAll('table')).map(
-          (table) => Array.from(table.querySelectorAll('tr')).map(
-            (row) => Array.from(row.querySelectorAll('th, td')).map((cell) => cell.innerText.trim())
-          )
-        ));
+        // Wait dynamically for rate-card XHR data to render into table elements
+        if (typeof page.waitForSelector === 'function') {
+          await page.waitForSelector('table tr td, table tr th', { timeout: 8000 }).catch(() => null);
+        }
+        let tables = [];
+        const pollDeadline = Date.now() + (config.visible ? 8000 : 6000);
+        while (Date.now() < pollDeadline) {
+          tables = await page.evaluate(() => Array.from(document.querySelectorAll('table')).map(
+            (table) => Array.from(table.querySelectorAll('tr')).map(
+              (row) => Array.from(row.querySelectorAll('th, td')).map((cell) => cell.innerText.trim())
+            )
+          ));
+          if (tables.some((table) => table.length > 1)) break;
+          await delay(800);
+        }
         const hasTables = tables.some((table) => table.length > 1);
         if (!hasTables && !isShopsyVertical) {
           onProgress(`⚠️ No rate card tables found for ${vertical} (${fulfilment}). Skipping...`);
