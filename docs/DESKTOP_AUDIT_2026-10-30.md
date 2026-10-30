@@ -157,3 +157,28 @@ publish, same-day replacement, duplicate rejection and unchanged replay passed o
 that commit. Linux Debian installation succeeded; its launcher selection test
 matched both a documentation directory and the executable. The workflow now uses
 the package-installed command from PATH; Linux runtime acceptance is being rerun.
+
+## Final installed acceptance and dependency audit
+
+On source commit 2b84812, all installed package gates passed:
+
+- Windows: NSIS installation followed by the installed executable's Chromium,
+  native mouse/OTP input, source hashes/commit, cookie and SQLite checks.
+- Linux: AppImage and Debian builds, apt installation and the installed command
+  under Xvfb passed the same runtime checks and expected-commit assertion.
+- PostgreSQL: isolated migration, dimensional publication, duplicate rejection,
+  same-day replacement and zero-write replay passed (no production connection).
+- Backend default suite and frontend build passed. Release publishing was skipped.
+
+Evidence: https://github.com/pawanshukla500/DashBorad-Project/actions/runs/41099285160
+and https://github.com/pawanshukla500/DashBorad-Project/actions/runs/41099285196.
+The CI artifacts retain the packages, JSON assertion results and native screenshots.
+
+The required dependency audit, npm audit --omit=dev --audit-level=high, currently
+fails on existing locked dependencies: backend 14 findings (7 high), desktop 9
+findings (5 high), frontend 3 findings (1 high). Backend reports body-parser,
+multer, undici and zod/transitive browser tooling among its high findings;
+desktop reports extract-zip/browser tooling and zod; frontend reports
+follow-redirects. Application test success does not resolve those advisories.
+Dependency upgrades need a compatibility and regression pass. CodeAnt review is
+pending; no merge or production action is authorized by these acceptance results.
