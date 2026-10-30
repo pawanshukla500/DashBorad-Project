@@ -281,16 +281,21 @@ function setupNavigation() {
 }
 
 // ── Live Browser Monitor UI ──────────────────────────────────────────────────
+let lastDockBounds = '';
 function syncMonitorDockBounds() {
   const dock = document.getElementById('browser-view-dock');
   if (dock && window.ratecardAPI && typeof window.ratecardAPI.setMonitorDockBounds === 'function') {
     const rect = dock.getBoundingClientRect();
-    window.ratecardAPI.setMonitorDockBounds({
-      x: Math.round(rect.x),
-      y: Math.round(rect.y),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height)
-    });
+    const clip = document.querySelector('.views-wrapper').getBoundingClientRect();
+    const x = Math.max(0, rect.left, clip.left), y = Math.max(0, rect.top, clip.top);
+    const next = { x, y,
+      width: Math.max(0, Math.min(innerWidth, rect.right, clip.right) - x),
+      height: Math.max(0, Math.min(innerHeight, rect.bottom, clip.bottom) - y) };
+    if (!dock.getClientRects().length) next.width = next.height = 0;
+    const signature = JSON.stringify(next);
+    if (signature === lastDockBounds) return;
+    lastDockBounds = signature;
+    window.ratecardAPI.setMonitorDockBounds(next).catch(err => console.warn('Browser layout failed:', err.message));
   }
 }
 
@@ -388,7 +393,12 @@ function triggerInteractiveLogin(marketplaceId = 'flipkart_shopsy') {
 }
 
 function initBrowserMonitorListeners() {
-  window.addEventListener('resize', syncMonitorDockBounds);
+  let pending = false;
+  const syncLayout = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; syncMonitorDockBounds(); }); };
+  window.addEventListener('resize', syncLayout);
+  document.addEventListener('scroll', syncLayout, true);
+  const dock = document.getElementById('browser-view-dock');
+  if (dock) new ResizeObserver(syncLayout).observe(dock);
 
   window.ratecardAPI?.onBrowserMonitorPromptLogin?.((payload) => {
     const tabBtn = document.querySelector('[data-tab="monitor"]');
@@ -846,7 +856,7 @@ function renderDiffTable() {
   const rows = [];
 
   for (const card of currentRateCards) {
-    const { marketplace, category, brand, commissions, fixedFees, reverseShipping, collectionFees = [] } = card;
+    const { marketplace, category, brand, commissions, fixedFees, reverseShipping, collectionFees = [], pickPackFees = [] } = card;
 
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission' || activeDiffFilter === 'anomalies') {
@@ -864,8 +874,8 @@ function renderDiffTable() {
           category,
           brand,
           slab: c.price_max >= 999990 ? `≥ ₹${c.price_min}` : `₹${c.price_min} - ₹${c.price_max}`,
-          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(1)}%` : (change ? '—' : 'Active / Matched'),
-          newRate: `${(c.rate * 100).toFixed(1)}%`,
+          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(4)}%` : (change ? '—' : 'Active / Matched'),
+          newRate: `${(c.rate * 100).toFixed(4)}%`,
           status: change ? (change.reason || 'Modified') : 'Active',
           anomaly: Boolean(change?.anomaly),
           anomalySeverity: change?.anomalySeverity
@@ -943,13 +953,24 @@ function renderDiffTable() {
           brand: 'Standard',
           slab: `${r.weight_slab} (₹${r.price_min} - ₹${r.price_max})`,
           oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}`),
-          newRate: `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}`,
+          newRate: `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}; above ${r.base_weight}kg add L/Z/N ₹${r.local_additional_fee}/${r.zonal_additional_fee}/${r.national_additional_fee} per ${r.increment_weight}kg`,
           status: change ? (change.reason || 'Modified') : 'Active',
           anomaly: Boolean(change?.anomaly),
           anomalySeverity: change?.anomalySeverity
         });
       }
     }
+  }
+
+  // Include every changed component and removed slab in the review. The full
+  // records expose weight increments and zone values which a headline rate hides.
+  for (const change of currentChanges) {
+    rows.push({type: change.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : 'Change detail',
+      marketplace: change.marketplace.toUpperCase(), category: change.category,
+      brand: change.brand || 'All', slab: change.slab,
+      oldRate: change.oldRow ? JSON.stringify(change.oldRow) : '—',
+      newRate: change.newRow ? JSON.stringify(change.newRow) : 'Removed',
+      status: change.reason || change.changeType, anomaly: Boolean(change.anomaly)});
   }
 
   // Filter for anomalies only if requested
@@ -964,7 +985,7 @@ function renderDiffTable() {
   }
 
   // Deduplicate and render up to 100 rows
-  const displayRows = filteredRows.slice(0, 100);
+  const displayRows = filteredRows;
   tbody.innerHTML = displayRows.map(r => `
     <tr class="${r.anomaly ? 'row-anomaly' : ''}" style="${r.anomaly ? 'background: rgba(245, 158, 11, 0.08);' : ''}">
       <td><span class="badge ${r.type === 'Commission' ? 'badge-portal' : 'badge-account'}">${escapeHtml(r.type)}</span></td>

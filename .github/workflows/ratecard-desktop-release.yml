@@ -1,127 +1,150 @@
-name: Build & Release RateCard Desktop App
+name: Test installed RateCard desktop packages
 
 on:
+  pull_request:
+    branches: [master]
   push:
-    tags:
-      - 'v*.*.*'
-    branches:
-      - ratecard_automation
+    tags: ['v*.*.*']
+    branches: [ratecard_automation]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-windows:
-    name: Build Windows installers & publish the GitHub release (tags)
-    runs-on: windows-latest
+  postgres:
+    name: Real PostgreSQL rate-card migration and publication
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: ratecard_fixture
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - '127.0.0.1:5432:5432'
+        options: >-
+          --health-cmd 'pg_isready -U postgres -d ratecard_fixture'
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
         with:
-          node-version: 20
-          cache: 'npm'
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --prefix backend
+      - run: npm test --prefix backend -- tests/rateCardPostgresIntegration.test.js
+        env:
+          RATECARD_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/ratecard_fixture
+  package:
+    name: Install and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
           cache-dependency-path: desktop/package-lock.json
-
-      - name: Install Desktop Dependencies
-        working-directory: desktop
-        run: npm ci
-
-      # electron-builder publishes whatever desktop/package.json says, and the
-      # tag only names the release: a v1.2.0 tag against a 1.1.0 package would
-      # publish an update feed that tells 1.1.0 clients "no update available".
-      - name: Verify tag matches the packaged version
+      - name: Install dependencies
+        run: npm ci --prefix desktop
+      - name: Desktop regression tests
+        run: npm test --prefix desktop
+      - name: Verify release tag
         if: startsWith(github.ref, 'refs/tags/')
-        working-directory: desktop
         shell: bash
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match desktop/package.json version ${PKG_VERSION}. Bump the package version before tagging."
+          VERSION=$(node -p "require('./desktop/package.json').version")
+          if [ "${GITHUB_REF_NAME#v}" != "$VERSION" ]; then
+            echo "Tag does not match desktop/package.json version"
             exit 1
           fi
-
-      # On a v*.*.* tag push this publishes a live GitHub Release: the NSIS
-      # installer, the portable exe, their .blockmap files, and latest.yml —
-      # the feed electron-updater's auto-update in the installed app reads.
-      # Non-tag runs (branch pushes, manual dispatch) stay artifact-only.
-      - name: Build for Windows
+      - name: Build Windows installer and portable app
+        if: runner.os == 'Windows'
         working-directory: desktop
-        run: npx electron-builder --win --x64 --publish "$env:PUBLISH_MODE"
+        run: npx electron-builder --win --x64 --publish never
+      - name: Install and launch actual Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
         env:
-          PUBLISH_MODE: ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ratecard-desktop-Windows
-          path: |
-            desktop/dist-release/*.exe
-            desktop/dist-release/*.exe.blockmap
-            desktop/dist-release/latest.yml
-          if-no-files-found: error
-
-  build-linux:
-    name: Build Linux packages
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: desktop/package-lock.json
-
-      - name: Install Desktop Dependencies
-        working-directory: desktop
-        run: npm ci
-
-      - name: Build for Linux
+          RECON_EXPECT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
+          $installDir = Join-Path $env:RUNNER_TEMP 'ratecard-installed'
+          $setup = Join-Path $pwd "released/build/ReconCentral RateCard Worker Setup $version.exe"
+          $installer = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$installDir" -WindowStyle Hidden -PassThru
+          if (-not $installer.WaitForExit(120000)) { throw 'Installer timeout' }
+          if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+          $output = Join-Path $pwd 'released/build/windows-smoke.json'
+          $app = Start-Process -FilePath (Join-Path $installDir 'ReconCentral RateCard Worker.exe') -ArgumentList "--ratecard-smoke-test=$output" -WindowStyle Hidden -PassThru
+          if (-not $app.WaitForExit(90000)) { throw 'Installed Electron smoke test timeout' }
+          if ($app.ExitCode -ne 0) { throw "Installed Electron failed: $($app.ExitCode)" }
+          $result = Get-Content $output -Raw | ConvertFrom-Json
+          if (-not $result.success -or $result.commit -ne $env:RECON_EXPECT_COMMIT) { throw ($result | ConvertTo-Json -Depth 8) }
+      - name: Install Linux build/runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 libfuse2
+      - name: Build Linux AppImage and Debian package
+        if: runner.os == 'Linux'
         working-directory: desktop
         run: npx electron-builder --linux AppImage deb --publish never
-
-      - name: Upload Artifacts
+      - name: Install and launch actual Linux package
+        if: runner.os == 'Linux'
+        env:
+          RECON_EXPECT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          sudo dpkg -i released/build/*.deb
+          PACKAGE=$(dpkg-deb -f released/build/*.deb Package)
+          EXECUTABLE=$(dpkg -L "$PACKAGE" | sed -n '\#/reconcentral-ratecard-worker$#p')
+          test -n "$EXECUTABLE"
+          timeout 90s xvfb-run -a "$EXECUTABLE" --no-sandbox --ratecard-smoke-test="$PWD/released/build/linux-smoke.json"
+          node -e "const r=require('./released/build/linux-smoke.json'); if(!r.success || r.commit!==process.env.RECON_EXPECT_COMMIT) throw Error(JSON.stringify(r));"
+      - name: Upload packages and runtime evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ratecard-desktop-Linux
+          name: ratecard-desktop-${{ runner.os }}
           path: |
-            desktop/dist-release/*.AppImage
-            desktop/dist-release/*.deb
-          if-no-files-found: error
+            released/build/*.exe
+            released/build/*.blockmap
+            released/build/*.yml
+            released/build/*.deb
+            released/build/*.AppImage
+            released/build/*-smoke.json
+            released/build/*-smoke.json.png
+          if-no-files-found: warn
 
-  attach-linux-release-assets:
-    name: Attach Linux packages to the GitHub release
-    # The Windows job creates the release (installer + latest.yml). Only after
-    # both build jobs succeed do the Linux packages join it — attaching to a
-    # release that was never created would publish an auto-update feed with no
-    # installer in it.
-    if: >-
-      startsWith(github.ref, 'refs/tags/') &&
-      needs.build-windows.result == 'success' &&
-      needs.build-linux.result == 'success'
-    needs: [build-windows, build-linux]
+  publish:
+    name: Publish tested release assets (tags only)
+    needs: [package, postgres]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           pattern: ratecard-desktop-*
           merge-multiple: true
           path: artifacts
-
-      - name: Attach AppImage & deb to the release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/*.AppImage
+            artifacts/*.exe
+            artifacts/*.blockmap
+            artifacts/*.yml
             artifacts/*.deb
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            artifacts/*.AppImage

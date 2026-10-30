@@ -1,276 +1,86 @@
-/**
- * Rate Card Safe Publisher
- * 
- * Safely publishes validated rate card diffs to PostgreSQL rc_* tables.
- * Strict zero-change invariant:
- * If no genuine rate changes exist, returns published = false and performs
- * ZERO database modifications.
- */
 import { getPool } from '../db/index.js';
 import { clearRateCardCache } from './rateCard.js';
-import { dayBefore } from '../routes/rateCard.js';
-import { compareScrapedRatesWithActive, roundCurrency, roundRate } from './rateCardCanonicalEngine.js';
+import { forEachDbBatch } from '../utils/dbBatch.js';
+import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
+import { RATE_TABLES, validateRateObservations } from './rateCardObservationPlan.js';
+
+const before = date => {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() - 1);
+  return value.toISOString().slice(0, 10);
+};
+const iso = date => date instanceof Date ? date.toISOString().slice(0, 10) : date;
 
 export async function publishRateCardObservations(observations, options = {}) {
-  const {
-    marketplace = 'flipkart',
-    sellerAccount = 'default',
-    effectiveDate = (Array.isArray(observations) && (observations.find(o => o.effectiveDate || o.source_effective_date)?.effectiveDate || observations.find(o => o.source_effective_date)?.source_effective_date)) || new Date().toISOString().slice(0, 10),
-    publishedBy = 'system',
-    jobId = null
-  } = options;
-
-  const pool = getPool();
-  const client = await pool.connect();
-
+  const { marketplace = 'flipkart', sellerAccount = 'default', publishedBy,
+    effectiveDate = observations?.[0]?.effectiveDate, jobId = null } = options;
+  validateRateObservations(observations, { marketplace, complete: true, expectedVerticals: options.expectedVerticals });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate || '') ||
+      new Date(`${effectiveDate}T00:00:00Z`).toISOString().slice(0, 10) !== effectiveDate ||
+      observations.some(o => o.effectiveDate !== effectiveDate)) throw new Error('One valid extraction date is required.');
+  if (!publishedBy) throw new Error('An authenticated reviewer is required.');
+  const client = await (options.pool || getPool()).connect();
   try {
     await client.query('BEGIN');
-    // Lock publication to prevent concurrent race conditions
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))`);
-    await client.query(`SELECT set_config('lock_timeout', '5s', true)`);
-    await client.query(`SELECT set_config('statement_timeout', '60s', true)`);
-
-    // 1. Run canonical comparison against active rules inside transaction
-    const diffResult = await compareScrapedRatesWithActive(observations, {
-      marketplace,
-      sellerAccount,
-      effectiveDate,
-      dbClient: client
-    });
-
-    if (!diffResult.hasChanges) {
+    await client.query("SELECT set_config('lock_timeout', '5s', true)");
+    await client.query("SELECT set_config('statement_timeout', '60s', true)");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))");
+    const plan = await compareScrapedRatesWithActive(observations, { marketplace, sellerAccount, effectiveDate, dbClient: client });
+    if (!options.reviewFingerprint || plan.fingerprint !== options.reviewFingerprint) throw new Error('REVIEW_STALE: rates changed since review. Refresh and review again.');
+    if (!plan.hasChanges) {
       await client.query('ROLLBACK');
-      return {
-        published: false,
-        message: 'Zero rate changes detected against active rate cards. Database unchanged.',
-        diffCount: 0,
-        summary: diffResult.summary
-      };
+      return { published: false, diffCount: 0, summary: plan.summary, message: 'Rates are unchanged.' };
     }
+    // Pending source migrations are not live readiness. Refuse writes until
+    // active-row uniqueness has been reviewed and applied to this database.
+    const readiness = await client.query(`SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()
+      AND indexdef LIKE 'CREATE UNIQUE INDEX%'
+      AND indexname IN ('rc_commission_uniq_active','rc_fixed_fee_uniq_active','rc_collection_fee_uniq_active','rc_reverse_shipping_uniq_portal_active','rc_pick_pack_uniq_portal_active')`);
+    const columns = await client.query(`SELECT table_name,column_name FROM information_schema.columns WHERE table_schema = current_schema()
+      AND table_name IN ('rc_reverse_shipping','rc_pick_pack') AND column_name IN ('weight_min','weight_max','base_weight','increment_weight','local_fee','zonal_fee','national_fee','local_additional_fee','zonal_additional_fee','national_additional_fee')`);
+    if (readiness.rows.length !== 5 || columns.rows.length !== 20) throw new Error('RATE_SCHEMA_NOT_READY: dimensional fee columns or uniqueness indexes are missing. Review migrations before publishing.');
 
-    const previousEndDate = dayBefore(effectiveDate);
-    const affectedCategories = new Set(diffResult.diffs.map(d => d.category));
-
-    // Track which categories have already been auto-closed in this publish run,
-    // ensuring multiple observations for the same category never re-close newly inserted rows.
-    const closedCommissions = new Set();
-    const closedFixedFees = new Set();
-    const closedCollFees = new Set();
-    const closedRevShip = new Set();
-
-    // 2. Publish scoped changes only for affected categories
-    for (const obs of observations) {
-      const category = obs.vertical || obs.category;
-      if (!category || !affectedCategories.has(category)) continue;
-
-      const categoryDiffs = diffResult.diffs.filter(d => d.category === category);
-      const hasCommissionDiff = categoryDiffs.some(d => d.table === 'rc_commission');
-      const hasFixedFeeDiff = categoryDiffs.some(d => d.table === 'rc_fixed_fee');
-      const hasCollFeeDiff = categoryDiffs.some(d => d.table === 'rc_collection_fee');
-      const hasRevShipDiff = categoryDiffs.some(d => d.table === 'rc_reverse_shipping');
-
-      // A. Commissions
-      if (hasCommissionDiff) {
-        const obsBrand = obs.brand || obs.brand_name || null;
-        const commCloseKey = `${category}:${obsBrand || ''}`;
-        if (!closedCommissions.has(commCloseKey)) {
-          if (obsBrand) {
-            await client.query(`
-              UPDATE rc_commission
-              SET end_date = $1, updated_at = NOW()
-              WHERE marketplace = $2 AND seller_account = $3 AND category = $4
-                AND brand_name = $5
-                AND (start_date IS NULL OR start_date <= $1)
-                AND (end_date IS NULL OR end_date >= $6)
-            `, [previousEndDate, marketplace, sellerAccount, category, obsBrand, effectiveDate]);
-          } else {
-            await client.query(`
-              UPDATE rc_commission
-              SET end_date = $1, updated_at = NOW()
-              WHERE marketplace = $2 AND seller_account = $3 AND category = $4
-                AND (brand_name IS NULL OR brand_name = '')
-                AND (start_date IS NULL OR start_date <= $1)
-                AND (end_date IS NULL OR end_date >= $5)
-            `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
-          }
-          closedCommissions.add(commCloseKey);
-        }
-
-        for (const comm of (obs.commissions || [])) {
-          await client.query(`
-            INSERT INTO rc_commission (category, brand_name, marketplace, seller_account, start_date, end_date, price_min, price_max, rate, updated_at)
-            VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, NOW())
-            ON CONFLICT (marketplace, seller_account, category, COALESCE(brand_name, ''), start_date, end_date, price_min, price_max)
-            DO UPDATE SET rate = EXCLUDED.rate, updated_at = NOW()
-          `, [
-            category,
-            comm.brand_name || obsBrand || null,
-            marketplace,
-            sellerAccount,
-            effectiveDate,
-            roundCurrency(comm.price_min || 0),
-            roundCurrency(comm.price_max || 999999),
-            roundRate(comm.rate || 0)
-          ]);
+    for (const diff of plan.diffs) {
+      const descriptor = RATE_TABLES.find(t => t.table === diff.table);
+      const sameDay = diff.oldRow && iso(diff.oldRow.start_date) === effectiveDate;
+      if (diff.oldRow) {
+        if (sameDay && !diff.newRow) {
+          await client.query(`DELETE FROM ${descriptor.table} WHERE id = $1`, [diff.oldRow.id]);
+        } else if (sameDay) {
+          await client.query(`UPDATE ${descriptor.table} SET ${descriptor.values.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = NOW() WHERE id = $1`,
+            [diff.oldRow.id, ...descriptor.values.map(k => diff.newRow[k])]);
+        } else {
+          await client.query(`UPDATE ${descriptor.table} SET end_date = $1, updated_at = NOW() WHERE id = $2`, [before(effectiveDate), diff.oldRow.id]);
         }
       }
-
-      // B. Fixed Fees
-      if (hasFixedFeeDiff) {
-        if (!closedFixedFees.has(category)) {
-          await client.query(`
-            UPDATE rc_fixed_fee
-            SET end_date = $1, updated_at = NOW()
-            WHERE marketplace = $2 AND seller_account = $3 AND category = $4
-              AND (start_date IS NULL OR start_date <= $1)
-              AND (end_date IS NULL OR end_date >= $5)
-          `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
-          closedFixedFees.add(category);
-        }
-
-        for (const ff of (obs.fixedFees || [])) {
-          await client.query(`
-            INSERT INTO rc_fixed_fee (category, fulfilment_type, marketplace, seller_account, start_date, end_date, price_min, price_max, rate, updated_at)
-            VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, NOW())
-            ON CONFLICT (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max)
-            DO UPDATE SET rate = EXCLUDED.rate, updated_at = NOW()
-          `, [
-            category,
-            ff.fulfilment_type || 'All',
-            marketplace,
-            sellerAccount,
-            effectiveDate,
-            roundCurrency(ff.price_min || 0),
-            roundCurrency(ff.price_max || 999999),
-            roundCurrency(ff.rate || 0)
-          ]);
-        }
-      }
-
-      // C. Collection Fees (includes explicit prepaid_type & postpaid_type)
-      if (hasCollFeeDiff) {
-        if (!closedCollFees.has(category)) {
-          await client.query(`
-            UPDATE rc_collection_fee
-            SET end_date = $1, updated_at = NOW()
-            WHERE marketplace = $2 AND seller_account = $3 AND category = $4
-              AND (start_date IS NULL OR start_date <= $1)
-              AND (end_date IS NULL OR end_date >= $5)
-          `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
-          closedCollFees.add(category);
-        }
-
-        for (const cf of (obs.collectionFees || [])) {
-          const prepaidType = (cf.prepaid_type || 'pct').toLowerCase() === 'pct' ? 'pct' : 'flat';
-          const postpaidType = (cf.postpaid_type || 'flat').toLowerCase() === 'pct' ? 'pct' : 'flat';
-          const prepaidVal = prepaidType === 'pct' ? roundRate(cf.prepaid) : roundCurrency(cf.prepaid);
-          const postpaidVal = postpaidType === 'pct' ? roundRate(cf.postpaid) : roundCurrency(cf.postpaid);
-
-          await client.query(`
-            INSERT INTO rc_collection_fee (
-              category, fulfilment_type, marketplace, seller_account,
-              start_date, end_date, price_min, price_max,
-              prepaid, postpaid, prepaid_type, postpaid_type, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9, $10, $11, NOW())
-            ON CONFLICT (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max)
-            DO UPDATE SET
-              prepaid = EXCLUDED.prepaid,
-              postpaid = EXCLUDED.postpaid,
-              prepaid_type = EXCLUDED.prepaid_type,
-              postpaid_type = EXCLUDED.postpaid_type,
-              updated_at = NOW()
-          `, [
-            category,
-            cf.fulfilment_type || 'All',
-            marketplace,
-            sellerAccount,
-            effectiveDate,
-            roundCurrency(cf.price_min || 0),
-            roundCurrency(cf.price_max || 999999),
-            prepaidVal,
-            postpaidVal,
-            prepaidType,
-            postpaidType
-          ]);
-        }
-      }
-
-      // D. Reverse Shipping
-      if (hasRevShipDiff) {
-        if (!closedRevShip.has(category)) {
-          await client.query(`
-            UPDATE rc_reverse_shipping
-            SET end_date = $1, updated_at = NOW()
-            WHERE marketplace = $2 AND seller_account = $3 AND category = $4
-              AND (start_date IS NULL OR start_date <= $1)
-              AND (end_date IS NULL OR end_date >= $5)
-          `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
-          closedRevShip.add(category);
-        }
-
-        for (const rs of (obs.reverseShipping || [])) {
-          await client.query(`
-            INSERT INTO rc_reverse_shipping (category, weight_slab, marketplace, seller_account, start_date, end_date, price_min, price_max, local_fee, zonal_fee, national_fee, updated_at)
-            VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9, $10, NOW())
-          `, [
-            category,
-            (rs.weight_slab || '0kg-0.5kg').toLowerCase(),
-            marketplace,
-            sellerAccount,
-            effectiveDate,
-            roundCurrency(rs.price_min || 0),
-            roundCurrency(rs.price_max || 999999),
-            roundCurrency(rs.local_fee || 0),
-            roundCurrency(rs.zonal_fee || 0),
-            roundCurrency(rs.national_fee || 0)
-          ]);
-        }
-      }
+      if (!diff.newRow || sameDay) continue;
+      const row = diff.newRow;
+      const keys = ['category', ...descriptor.keys];
+      // Respect already scheduled periods for the exact same identity.
+      const future = await client.query(`SELECT MIN(start_date) AS next_start FROM ${descriptor.table}
+        WHERE marketplace = $1 AND seller_account = $2 AND start_date > $3
+        AND ${keys.map((k, i) => `${k} IS NOT DISTINCT FROM $${i + 4}`).join(' AND ')}`,
+        [marketplace, sellerAccount, effectiveDate, ...keys.map(k => row[k])]);
+      const next = iso(future.rows[0]?.next_start);
+      const endDate = next ? before(next) : (iso(diff.oldRow?.end_date) || null);
+      const columns = ['marketplace', 'seller_account', 'start_date', 'end_date', ...keys, ...descriptor.values];
+      const values = [marketplace, sellerAccount, effectiveDate, endDate, ...keys.map(k => row[k]), ...descriptor.values.map(k => row[k])];
+      await client.query(`INSERT INTO ${descriptor.table} (${columns.join(', ')}) VALUES (${values.map((_, i) => `$${i + 1}`).join(', ')})`, values);
     }
-
-    // 3. Create Immutable Version Snapshot in rate_card_versions
-    const versionName = `v${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-flipkart-${Date.now().toString().slice(-4)}`;
-    const snapshotPayload = {
-      effectiveDate,
-      diffSummary: diffResult.summary,
-      affectedCategories: Array.from(affectedCategories),
-      publishedBy: String(publishedBy || 'system'),
-      jobId,
-      notes: `Published via ReconCentral Canonical Publisher (Job #${jobId || 'direct'})`,
-      publishedAt: new Date().toISOString()
-    };
-
-    const verRes = await client.query(`
-      INSERT INTO rate_card_versions (marketplace, seller_account, version_name, status, effective_from, snapshot, created_at, published_at)
-      VALUES ($1, $2, $3, 'published', $4, $5, NOW(), NOW())
-      RETURNING id, version_name
-    `, [
-      marketplace,
-      sellerAccount,
-      versionName,
-      effectiveDate,
-      JSON.stringify(snapshotPayload)
-    ]);
-
+    const versionName = `rc-${marketplace}-${effectiveDate}-${Date.now()}`;
+    const snapshot = { effectiveDate, publishedBy, jobId, diffs: plan.diffs, summary: plan.summary };
+    let version;
+    await forEachDbBatch([snapshot], 5, async () => {
+      version = await client.query(`INSERT INTO rate_card_versions (marketplace,seller_account,version_name,status,effective_from,snapshot,created_at,published_at)
+        VALUES ($1,$2,$3,'published',$4,$5,NOW(),NOW()) RETURNING id,version_name`,
+      [marketplace, sellerAccount, versionName, effectiveDate, JSON.stringify(snapshot)]);
+    });
     await client.query('COMMIT');
-
-    // Invalidate in-memory calculation cache
     clearRateCardCache();
-
-    return {
-      published: true,
-      versionId: verRes.rows[0]?.id,
-      versionName: verRes.rows[0]?.version_name,
-      diffCount: diffResult.diffCount,
-      affectedCategories: Array.from(affectedCategories),
-      summary: diffResult.summary
-    };
-
+    return { published: true, versionId: version.rows[0]?.id, versionName,
+      diffCount: plan.diffCount, summary: plan.summary };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
-  } finally {
-    client.release();
-  }
+  } finally { client.release(); }
 }

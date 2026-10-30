@@ -1,0 +1,20 @@
+// Discovery data comes from the authenticated backend's real orders catalog.
+// There is no static category list, invented FSN or fee-policy fallback.
+export function buildFsnPlan(catalog, { marketplace = 'both', brand = 'all', verticals, requiredVerticals = verticals } = {}) {
+  if (!Array.isArray(catalog) || !catalog.length) throw new Error('No database FSNs are available for extraction.');
+  const targets = new Map();
+  for (const item of catalog) {
+    const channel = item.marketplace === 'shopsy' || item.category?.startsWith('shopsy_') ? 'shopsy' : item.marketplace;
+    if (!['flipkart','shopsy'].includes(channel)) continue;
+    if (['flipkart','shopsy'].includes(marketplace) && channel !== marketplace) continue;
+    if (brand && brand !== 'all' && item.brand?.toLowerCase() !== brand.toLowerCase()) continue;
+    if (verticals?.length && !verticals.includes(item.category)) continue;
+    if (!item.category || !item.brand || !/^[A-Z0-9]{16}$/.test(item.sample_fsn || '')) throw new Error('Catalog has a missing or invalid real FSN, brand or category. Nothing was staged.');
+    const key = JSON.stringify([channel,item.category,item.brand.toLowerCase()]);
+    if (!targets.has(key)) targets.set(key, {...item,marketplace:channel});
+  }
+  const missing = (requiredVerticals || []).filter(category => ![...targets.values()].some(t=>t.category === category));
+  if (missing.length) throw new Error(`No database FSN for configured categories: ${missing.join(', ')}. Nothing was staged.`);
+  if (!targets.size) throw new Error('No database FSNs match the selected marketplace and brand.');
+  return [...targets.values()];
+}

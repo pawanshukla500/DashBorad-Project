@@ -26,6 +26,8 @@ export async function attachRcFees(orders) {
 
     const fees = calculateFees(rc, {
       category:      o.category,
+      brandName:     o.brandName || o.brand_name || o.brand,
+      weight:        o.weightSlab || o.weight_slab || o.weight,
       price:         mp === 'myntra'
         ? (parseFloat(o.sellerPrice || o.seller_price || o.totalShareAmount || o.total_share_amount || o.finalInvoiceAmount || o.invoiceAmount || o.final_invoice_amount) || 0)
         : (parseFloat(o.finalInvoiceAmount || o.invoiceAmount || o.final_invoice_amount) || 0),

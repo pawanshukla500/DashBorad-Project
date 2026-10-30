@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
 
-const desktopDist = path.join(projectRoot, 'desktop', 'dist-release');
+const desktopDist = path.join(projectRoot, 'released', 'build');
 // electron-builder names the output executables after desktop/package.json's
 // version; read it from there so this script never drifts from a version bump.
 const desktopPackage = JSON.parse(fs.readFileSync(path.join(projectRoot, 'desktop', 'package.json'), 'utf8'));
@@ -46,6 +46,14 @@ function copyDesktopPayloadForLinux(targetLinuxDir) {
     'worker.js',
     'browserRuntime.js',
     'embeddedBrowser.js',
+    'portalSession.js',
+    'portalRates.js',
+    'fsnPlan.js',
+    'rateCardCapture.js',
+    'scrapeDiagnostics.js',
+    'packagedSmoke.js',
+    'prepareBuild.js',
+    'build-info.json',
     'sessionAccess.js',
     'scrapeResults.js',
     'dbUrlGuard.js',
@@ -58,6 +66,7 @@ function copyDesktopPayloadForLinux(targetLinuxDir) {
     'excelExport.js',
     'authValidation.js',
     'workerClient.js',
+    'workerEngine.js',
     'localStaging.js',
     'ui'
   ];

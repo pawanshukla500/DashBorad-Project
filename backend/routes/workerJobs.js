@@ -3,6 +3,7 @@ import { getPool } from '../db/index.js';
 import { requireRole } from '../utils/authMiddleware.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { publishRateCardObservations } from '../services/rateCardPublisher.js';
+import { validateRateObservations } from '../services/rateCardObservationPlan.js';
 
 export const workersRouter = express.Router();
 export const workerJobsRouter = express.Router();
@@ -354,6 +355,11 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
 
     const job = jobRes.rows[0];
 
+    try {
+      validateRateObservations(results, { marketplace: job.marketplace, complete: true,
+        expectedVerticals: job.parameters?.verticals || [] });
+    } catch (err) { return res.status(400).json({ error: err.message, code: 'INCOMPLETE_EXTRACTION' }); }
+
     // If assigned to a worker lease, strictly enforce lease ownership and expiry
     if (job.lease_worker_id) {
       if (!worker_id || job.lease_worker_id !== worker_id) {
@@ -377,6 +383,9 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
       sellerAccount: job.seller_account,
       effectiveDate: scrapeEffectiveDate
     });
+    if (job.parameters?.reviewFingerprint && job.parameters.reviewFingerprint !== diffResult.fingerprint) {
+      return res.status(409).json({ error: 'Rates changed since desktop review. Refresh and review again.', code: 'REVIEW_STALE' });
+    }
 
     const updateRes = await pool.query(`
       UPDATE worker_jobs
@@ -424,6 +433,7 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
     }
 
     const job = jobRes.rows[0];
+    if (job.status !== 'completed') return res.status(409).json({ error: 'Only completed, reviewed extractions can be published.' });
     if (!job.results || !Array.isArray(job.results)) {
       return res.status(400).json({ error: 'Job does not contain valid extraction results to publish' });
     }
@@ -442,7 +452,9 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
       sellerAccount: job.seller_account,
       effectiveDate,
       jobId: job.id,
-      publishedBy: req.user?.email || 'admin'
+      publishedBy: req.user?.email,
+      expectedVerticals: job.parameters?.verticals || [],
+      reviewFingerprint: job.diff_summary?.fingerprint
     });
 
     res.json({

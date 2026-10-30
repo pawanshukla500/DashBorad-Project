@@ -56,7 +56,7 @@ const {
   storedDatabaseUrlForRole,
   dbHostFromUrl
 } = await import('../dbUrlGuard.js');
-const { parseRateCardTables } = await import('../portalScraper.js');
+
 const {
   isSameDesktopOrigin,
   isAllowedDesktopOrigin,
@@ -412,7 +412,7 @@ async function runTests() {
         vertical: 'Women Kurtas',
         commissions: [{ price_min: 0, price_max: 500, rate: 0.15 }],
         fixedFees: [{ fulfilment_type: 'PREP', price_min: 0, price_max: 500, rate: 15 }],
-        reverseShipping: [{ weight_slab: '0-0.5kg', price_min: 0, price_max: 500, local_fee: 30 }]
+        reverseShipping: [{ weight_slab: '0-0.5kg', price_min: 0, price_max: 500, local_fee: 30, zonal_fee: 40, national_fee: 50 }]
       },
       {
         marketplace: 'flipkart',
@@ -436,7 +436,7 @@ async function runTests() {
     assert(fk.category === 'Women Kurtas', 'vertical must become the category');
     assert(fk.source === 'seller_portal', 'flipkart source wrong');
     const sh = cards.find(c => c.marketplace === 'shopsy');
-    assert(sh.source === 'shopsy_policy', 'shopsy source wrong');
+    assert(sh.source === 'seller_portal', 'Shopsy rates must come from Seller Hub');
     assert(sh.commissions.length === 1 && sh.commissions[0].rate === 0, 'shopsy 0% commission slab lost');
   });
 
@@ -526,84 +526,6 @@ async function runTests() {
     assert(dbHostFromUrl('postgresql://u:p@db.example.com:5432/paymentapp') === 'db.example.com', 'public host parse failed');
     assert(dbHostFromUrl('garbage') === null, 'malformed URL must yield null');
     assert(dbHostFromUrl(null) === null, 'null input must yield null');
-  });
-
-  // ── portalScraper.parseRateCardTables ───────────────────────────────────────
-  await runTest('parseRateCardTables classifies commission tables as percentage or fixed fee', async () => {
-    const percentage = parseRateCardTables([
-      [
-        ['Order Item Value', 'Fee charged as % of Order item value'],
-        ['₹0 - ₹500', '15%'],
-        ['₹501 - ₹1000', '20.5%']
-      ]
-    ], 'kurta', '2026-10-28', 'flipkart');
-    assert(percentage.commissions.length === 2, 'commission slabs were not parsed');
-    assert(Math.abs(percentage.commissions[0].rate - 0.15) < 1e-12, '15% must be stored as 0.15');
-    assert(Math.abs(percentage.commissions[1].rate - 0.205) < 1e-12, '20.5% must be stored as 0.205');
-    assert(percentage.fixedFees.length === 0, 'a percentage table must not produce fixed fees');
-
-    const fixed = parseRateCardTables([
-      [
-        ['Order Item Value', 'Fee charged'],
-        ['₹0 - ₹500', '₹15'],
-        ['₹501 - ₹1000', '₹25']
-      ]
-    ], 'kurta', '2026-10-28', 'flipkart');
-    assert(fixed.commissions.length === 0, 'a flat-fee table must not produce commission slabs');
-    assert(fixed.fixedFees.length === 8, `4 tiers x 2 slabs of fixed fees expected (got ${fixed.fixedFees.length})`);
-    assert(fixed.fixedFees.every(f => ['Bronze', 'Silver', 'Gold', 'Diamond'].includes(f.fulfilment_type)), 'fixed fee tier labels wrong');
-    assert(fixed.fixedFees[0].rate === 15, 'flat fee amount wrong');
-  });
-
-  await runTest('parseRateCardTables classifies prepaid and postpaid collection fees independently', async () => {
-    // Regression: a flat ₹15 prepaid fee combined with a 0.3% postpaid fee used to
-    // be mis-typed as percentages for BOTH columns.
-    const parsed = parseRateCardTables([
-      [
-        ['Order Item Value', 'Prepaid', 'Postpaid'],
-        ['₹0 - ₹750', '₹15', '0.3%']
-      ]
-    ], 'kurta', '2026-10-28', 'flipkart');
-    assert(parsed.collectionFees.length === 1, 'collection fee row not parsed');
-    const fee = parsed.collectionFees[0];
-    assert(fee.prepaid === 15 && fee.prepaid_type === 'flat', `flat prepaid must stay ₹15 flat (got ${fee.prepaid_type} ${fee.prepaid})`);
-    assert(Math.abs(fee.postpaid - 0.3) < 1e-12 && fee.postpaid_type === 'percentage', `percent postpaid must stay 0.3 percentage (got ${fee.postpaid_type} ${fee.postpaid})`);
-    assert(fee.price_min === 0 && fee.price_max === 750, 'collection price range wrong');
-  });
-
-  await runTest('parseRateCardTables encodes the fixed Shopsy policy (0% commission)', async () => {
-    const parsed = parseRateCardTables([], 'shopsy_kurta', '2026-10-28', 'shopsy');
-    assert(parsed.marketplace === 'shopsy', 'marketplace wrong');
-    assert(parsed.commissions.length === 1 && parsed.commissions[0].rate === 0, 'Shopsy commission must be exactly one 0% slab');
-    assert(parsed.fixedFees.length === 8, `4 tiers x 2 slabs expected (got ${parsed.fixedFees.length})`);
-    const zeroFee = parsed.fixedFees.filter(f => f.price_max === 1500);
-    const tenFee = parsed.fixedFees.filter(f => f.price_min === 1501);
-    assert(zeroFee.length === 4 && zeroFee.every(f => f.rate === 0), '₹0-1500 slab must be free');
-    assert(tenFee.length === 4 && tenFee.every(f => f.rate === 10), '₹1501+ slab must be ₹10');
-    assert(parsed.reverseShipping.length === 6, 'Shopsy reverse shipping must have 6 slabs');
-    const first = parsed.reverseShipping[0];
-    assert(
-      first.weight_slab === '0kg-0.5kg' && first.price_min === 0 && first.price_max === 500 &&
-      first.local_fee === 122 && first.zonal_fee === 142 && first.national_fee === 182,
-      '0kg-0.5kg / ₹0-500 reverse shipping slab wrong'
-    );
-  });
-
-  await runTest('parseRateCardTables parses reverse shipping weight slabs', async () => {
-    const parsed = parseRateCardTables([
-      [
-        ['Weight slab 0kg - 0.5kg', 'Local', 'Zonal', 'National'],
-        ['₹0 - ₹500', '₹30', '₹45', '₹60'],
-        ['₹501 - ₹1000', '₹35', '₹50', '₹65']
-      ]
-    ], 'kurta', '2026-10-28', 'flipkart');
-    assert(parsed.reverseShipping.length === 2, 'reverse shipping rows not parsed');
-    assert(parsed.reverseShipping[0].weight_slab === '0kg-0.5kg', 'weight slab label wrong');
-    assert(parsed.reverseShipping[0].price_min === 0 && parsed.reverseShipping[0].price_max === 500, 'price range wrong');
-    assert(
-      parsed.reverseShipping[0].local_fee === 30 && parsed.reverseShipping[0].zonal_fee === 45 && parsed.reverseShipping[0].national_fee === 60,
-      'local/zonal/national fees wrong'
-    );
   });
 
   // ── httpAccess (HTTP caller proof) ──────────────────────────────────────────
@@ -965,19 +887,16 @@ async function runTests() {
     assert(clickWindow.includes('res?.success'), 'restart button must check the install result before claiming success');
   });
 
-  await runTest('release workflow publishes real releases on version tags (static invariant)', async () => {
-    const workflowPath = path.join(path.resolve(desktopDir, '..'), '.github', 'workflows', 'ratecard-desktop-release.yml');
-    const workflow = fs.readFileSync(workflowPath, 'utf8');
-    assert(workflow.includes("- 'v*.*.*'"), 'the workflow must trigger on version tags');
-    assert(workflow.includes("startsWith(github.ref, 'refs/tags/') && 'always' || 'never'"), 'publishing must happen on tags only');
-    assert(workflow.includes('--publish "$env:PUBLISH_MODE"'), 'Windows builds must let electron-builder publish (it uploads latest.yml, the update feed)');
-    assert(workflow.includes('GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'), 'electron-builder needs GH_TOKEN to publish the release');
-    assert(workflow.includes('latest.yml'), 'the Windows artifact set must include latest.yml');
-    assert(workflow.includes('needs.build-windows.result == \'success\''), 'Linux assets must only attach after the release exists — attaching to a missing release would create an update feed with no installer');
-    assert(workflow.includes('softprops/action-gh-release@v2'), 'Linux packages attach via softprops/action-gh-release');
-    assert(workflow.includes('npm ci'), 'CI builds must be reproducible (npm ci against the lockfile)');
-    assert(workflow.includes('${GITHUB_REF_NAME#v}'), 'tag builds must refuse a tag that does not match desktop/package.json\'s version');
-    assert(/does not match desktop\/package\.json version/.test(workflow), 'the tag/version guard must fail the build with a clear error');
+  await runTest('release workflow tests installed packages before publishing version tags', async () => {
+    const workflow=fs.readFileSync(path.resolve(desktopDir,'../.github/workflows/ratecard-desktop-release.yml'),'utf8');
+    assert(workflow.includes("tags: ['v*.*.*']"), 'Version tags are required');
+    assert(workflow.includes('pull_request:'), 'PRs must execute packaged acceptance');
+    assert(workflow.includes('--publish never'), 'Building must not publish untested packages');
+    assert(workflow.includes('needs: [package, postgres]'), 'Publication must depend on both installed-package checks');
+    assert(workflow.includes('Install and launch actual Windows package') && workflow.includes('Install and launch actual Linux package'), 'Both OS packages must execute after installation');
+    assert(workflow.includes('softprops/action-gh-release@v2'), 'Tag releases must upload artifacts and feed');
+    assert(workflow.includes('npm ci') && workflow.includes('npm test'), 'Reproducible desktop tests must gate packaging');
+    assert(workflow.includes('does not match desktop/package.json version'), 'Tag/version mismatch must fail clearly');
   });
 
   // ── Embedded browser engine (Electron WebContentsView adapter) ────────────
@@ -1378,7 +1297,7 @@ async function runTests() {
     // Same name on a DIFFERENT path is a different cookie: its expiry must
     // not suppress this path's import.
     await page.setCookie({ name: 'paths', value: 'a', domain: '.flipkart.com', path: '/', expires: 2000000000, sameSite: 'lax' });
-    await page.setCookie({ name: 'paths', value: 'b', domain: '.flipkart.com', path: '/dashboard', expires: 1000000000, sameSite: 'lax' });
+    await page.setCookie({ name: 'paths', value: 'b', domain: '.flipkart.com', path: '/dashboard', expires: 1900000000, sameSite: 'lax' });
     assert(harness.calls.cookieSets.filter((c) => c.name === 'paths').length === 2,
       'a different-path cookie must not be suppressed by another path with a later expiry');
 
@@ -1651,7 +1570,7 @@ async function runTests() {
     const monitorHandlers = [
       'browser-monitor-get-state',
       'browser-monitor-screenshot',
-      'browser-monitor-set-visibility',
+
       'browser-monitor-set-engine'
     ];
     for (const handler of monitorHandlers) {
@@ -1970,7 +1889,7 @@ async function runTests() {
     assert(isAllowedBackendUrl('https://payments.youthnic.shop'), 'Official domain must be allowed');
     assert(isAllowedBackendUrl('https://reconcentral.srv1845788.hstgr.cloud'), 'Hostinger subdomain must be allowed');
     assert(isAllowedBackendUrl('https://recon.srv1845788.hstgr.cloud'), 'Secondary Hostinger domain must be allowed');
-    
+
     // Insecure / unallowlisted hosts rejected
     assert(!isAllowedBackendUrl('http://insecure-host.com'), 'Plaintext HTTP must be rejected');
     assert(!isAllowedBackendUrl('https://evil-attacker.com'), 'Non-allowlisted domain must be rejected');

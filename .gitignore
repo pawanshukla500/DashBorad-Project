@@ -66,6 +66,8 @@ frontend/*.cjs
 .codex-tmp/
 **/.codex-tmp/
 desktop/dist-release/
+released/build/
+desktop/build-info.json
 desktop/node_modules/
 released/*.exe
 released/linux/desktop/

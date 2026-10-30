@@ -138,7 +138,7 @@ export function getResolvedCapturesDir() {
   return path.join(userDir, 'ratecard_captures');
 }
 
-export const DEFAULT_MAX_COOKIE_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours max cookie lifetime
+export const DEFAULT_MAX_COOKIE_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Session-vault retention; never extends portal cookie expiry
 
 /**
  * Deletes encrypted cookies file from disk safely.
@@ -192,7 +192,7 @@ function extractValidCookies(parsed, statMtimeMs, maxAgeMs) {
   if (areCookiesExpired(cookies, maxAgeMs, savedAt)) {
     return null;
   }
-  return cookies;
+  return cookies.filter(c => c && (!c.expires || c.expires <= 0 || c.expires > Date.now() / 1000));
 }
 
 /**
@@ -209,11 +209,12 @@ export function saveEncryptedCookies(filePath, cookies) {
   };
   const serialized = JSON.stringify(payload, null, 2);
   const encrypted = encryptVaultData(serialized);
-  fs.writeFileSync(filePath, encrypted, 'utf8');
+  fs.writeFileSync(filePath, encrypted, { encoding: 'utf8', mode: 0o600 });
+  fs.chmodSync(filePath, 0o600);
 }
 
 /**
- * Loads cookies with AES-256-GCM decryption, verifying expiration (default 12 hours).
+ * Loads cookies with AES-256-GCM decryption, verifying expiration (30-day vault retention; portal expiry still applies).
  * Stale or expired cookies are purged immediately.
  */
 export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS } = {}) {

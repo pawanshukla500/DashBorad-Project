@@ -38,6 +38,11 @@ import {
   isAllowedDesktopOrigin, isSameDesktopOrigin
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { isFlipkartAuthenticated } from './portalSession.js';
+import { createWorkerEngine } from './workerEngine.js';
+import { getStagingDb, stageReview, recoverReview, saveStagedJob, saveStagedObservations, markStagedJobStatus } from './localStaging.js';
+import { registerWorkerWithBackend, sendWorkerHeartbeat, claimNextWorkerJob, reportJobFailure, submitJobResults,
+  fetchBrandCatalogFromApi, fetchConfiguredVerticals, reviewRatesViaApi, publishReviewedRatesViaApi } from './workerClient.js';
 import { encryptVaultData, decryptVaultData } from './cookieVault.js';
 
 let activeTokenVerifier = verifyDesktopTokenAuthorization;
@@ -117,6 +122,7 @@ const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
 fs.mkdirSync(STAGING_DIR, { recursive: true });
 
 function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
+  if (['flipkart','shopsy','both','flipkart_shopsy'].includes(marketplace)) marketplace = 'flipkart_shopsy';
   const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
   const dir = path.join(USER_DATA_DIR, 'cookies');
   fs.mkdirSync(dir, { recursive: true });
@@ -327,6 +333,7 @@ export function saveAuthSession(sessionData) {
 const stagedExtraction = createStagedExtractionState();
 
 function clearAuthSession() {
+  serverWorker?.stop();
   stagedExtraction.resetForAuthChange();
   disconnectTelemetryClients();
   try {
@@ -349,6 +356,34 @@ const authorizeSession = createSessionAccess({
   onAuthorized: (session) => setDesktopDatabaseAccess(session.user.role, storedDatabaseUrlForRole(session.user.role, loadConfig()))
 });
 
+const serverWorkerId = `server-${process.platform}-${os.hostname()}`;
+const serverWorker = createWorkerEngine({
+  getSession: () => authorizeSession(),
+  register: session => registerWorkerWithBackend(session, { id: serverWorkerId, name: os.hostname(), platform: process.platform,
+    version: '1.8.3', capabilities: ['flipkart','shopsy'], metadata: { runtime: 'standalone' } }),
+  heartbeat: (session, status) => sendWorkerHeartbeat(session, serverWorkerId, status),
+  claim: session => claimNextWorkerJob(session, serverWorkerId),
+  isBusy: () => withBrowserTask.busy,
+  execute: async (session, job) => {
+    const db = getStagingDb(USER_DATA_DIR), id = `job-${job.id}`;
+    const authGeneration = stagedExtraction.authGeneration;
+    try {
+      saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, parameters: job.parameters });
+      const fsnCatalog = (await fetchBrandCatalogFromApi(session)).catalog;
+      const result = await withBrowserTask(async () => scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace) }, { onProgress: broadcastProgress }));
+      if (!result.success) throw new Error(result.error);
+      const cards = normalizeScrapedCards(result.data);
+      if (authGeneration !== stagedExtraction.authGeneration) throw new Error('The account changed during extraction. Results were not submitted.');
+      saveStagedObservations(db, id, cards);
+      await submitJobResults(session, job.id, cards, serverWorkerId);
+      markStagedJobStatus(db, id, 'completed');
+    } catch (error) {
+      markStagedJobStatus(db, id, 'failed');
+      await reportJobFailure(session, job.id, error.message, 'EXTRACTION_REJECTED', serverWorkerId);
+    }
+  },
+  log: event => console.log(JSON.stringify(event))
+});
 const sseClients = new Set();
 function disconnectTelemetryClients() {
   for (const client of sseClients) client.end();
@@ -608,7 +643,10 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/preview' && req.method === 'GET') {
       if (!(await requireDesktopAuth())) return;
       try {
-        // Staged extractions are reviewable without a database; templates need one.
+        if (!stagedExtraction.cards.length) {
+          const review = recoverReview(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
+          if (review) stagedExtraction.cards = review.cards;
+        }
         const rateCards = stagedExtraction.cards.length ? stagedExtraction.cards : await buildBrandRateCardSet(getPool());
         const targetMp = urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || '';
         const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
@@ -931,6 +969,7 @@ const server = http.createServer(async (req, res) => {
         }
         const bound = bindBrowserSession(session);
         const savedSession = saveAuthSession(bound.session);
+        if (savedSession.success && isDirectRun) { serverWorker.stop(); serverWorker.start().catch(err => console.warn(err.message)); }
         if (!savedSession.success) return sendJson(500, savedSession);
         stagedExtraction.resetForAuthChange();
         disconnectTelemetryClients();
@@ -1119,17 +1158,12 @@ const server = http.createServer(async (req, res) => {
       let body = null;
       try {
         body = await parseJsonBody();
-        const pool = getPool();
-        const cardsToTest = body.rateCards?.length ? body.rateCards : await buildBrandRateCardSet(pool);
-        const changes = await detectBrandRateChanges(cardsToTest, pool);
-        const anomaliesCount = changes.filter(c => c.anomaly).length;
-        return sendJson(200, {
-          success: true,
-          changesCount: changes.length,
-          anomaliesCount,
-          changes,
-          dbAvailable: true
-        });
+        const cards = selectStagedCards(stagedExtraction.cards, body.rateCards);
+        if (!cards) return sendJson(409, { success: false, error: 'Review a successful staged extraction first.' });
+        const sellerAccount = body.options?.seller_account || 'default';
+        const review = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
+        stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: review.fingerprints };
+        return sendJson(200, { success: true, ...review, dbAvailable: true });
       } catch (err) {
         // /api/preview can serve staged cards without a database; change
         // detection cannot. Keep the staged review visible with an explicit
@@ -1157,22 +1191,12 @@ const server = http.createServer(async (req, res) => {
         if (!cardsToSync) {
           return sendJson(409, { success: false, error: 'Payload does not match the reviewed staged extraction. Review the staged results and commit the selected cards explicitly.' });
         }
-        const pool = getPool();
-        broadcastProgress('Initiating database synchronization with date auto-closing...');
-        const syncOptions = {
-          forceUpdate: true,
-          ...body.options,
-          actor: authSession?.user?.email || authSession?.user?.name || 'desktop-operator',
-          runMetadata: {
-            source: 'desktop-server',
-            platform: process.platform,
-            arch: process.arch,
-            appVersion: '1.7.0',
-            syncTime: new Date().toISOString(),
-            ...(body?.options?.runMetadata || {})
-          }
-        };
-        const result = await syncBrandRateCardsToDatabase(cardsToSync, syncOptions, pool);
+        const review = stagedExtraction.review;
+        if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== (body.options?.seller_account || 'default')) {
+          return sendJson(409, { success: false, error: 'Refresh the PostgreSQL comparison and review it before publication.' });
+        }
+        const result = await publishReviewedRatesViaApi(authSession, cardsToSync, review.fingerprints, review.sellerAccount);
+        stagedExtraction.review = null;
         broadcastProgress(`✓ ${result.message}`);
         return sendJson(200, { success: true, result });
       } catch (err) {
@@ -1243,13 +1267,14 @@ const server = http.createServer(async (req, res) => {
       (async () => {
         try {
           broadcastProgress(`🚀 Scraper job initiated (${targetMp.toUpperCase()} | Mode: ${isVisible ? 'Visible Chrome' : 'Stealth'})...`);
-          const result = await withBrowserTask(() => scrapeFlipkartRateCards(
+          const result = await withBrowserTask(async () => scrapeFlipkartRateCards(
             {
               marketplace: normalizedChannel,
               visible: isVisible,
-              selectedVerticals: targetVerticals,
-              email: config.email,
-              password: config.password
+              fsnCatalog: (await fetchBrandCatalogFromApi(loadAuthSession())).catalog,
+              scopeVerticals: body.verticals,
+              brand: body.brand || 'all',
+              requiredVerticals: body.verticals?.length ? body.verticals : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel)
             },
             { onProgress: broadcastProgress }
           ));
@@ -1259,7 +1284,10 @@ const server = http.createServer(async (req, res) => {
             result.error = 'The account changed while the extraction was running. Results were discarded; run the extraction again.';
           } else if (result.success) {
             try {
-              stagedExtraction.cards = normalizeScrapedCards(result.data);
+              const cards = normalizeScrapedCards(result.data);
+              stageReview(getStagingDb(USER_DATA_DIR), `review-${Date.now()}`, loadAuthSession().user.firebase_uid, cards[0].marketplace, cards);
+              stagedExtraction.cards = cards;
+              stagedExtraction.review = null;
               result.rateCards = stagedExtraction.cards;
             } catch (stageErr) {
               result.success = false;
@@ -1366,7 +1394,9 @@ const server = http.createServer(async (req, res) => {
 
             broadcastProgress(`✓ Browser window opened for ${mpConfig.name}. Please complete 2FA or human login in the window...`);
 
-            await page.waitForFunction((id) => {
+            if (mpConfig.id === 'flipkart_shopsy') {
+              await page.waitForFunction(isFlipkartAuthenticated, { timeout: 300000, polling: 1000 });
+            } else await page.waitForFunction((id) => {
               const href = window.location.href.toLowerCase();
               const body = document.body ? document.body.innerText.toLowerCase() : '';
               const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
@@ -1412,7 +1442,7 @@ const server = http.createServer(async (req, res) => {
               const dontAllow = notifBtns.find(b => b.innerText?.trim().toLowerCase() === "don't allow");
               if (dontAllow) dontAllow.click();
               return href.includes('#dashboard') || href.includes('home-page') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
-            }, { timeout: 300000 }, mpConfig.id);
+            }, { timeout: 300000, polling: 1000 }, mpConfig.id);
 
             const cookies = await page.cookies();
             saveEncryptedCookies(cookiesPath, cookies);
@@ -1460,7 +1490,7 @@ const server = http.createServer(async (req, res) => {
         const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
         const cookiesPath = getMarketplaceCookiesPath(targetId);
         deleteEncryptedCookies(cookiesPath);
-        if (targetId === 'flipkart_shopsy' || targetId === 'flipkart') {
+        if (['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId)) {
           deleteEncryptedCookies(COOKIES_PATH);
         }
         broadcastProgress(`✓ Purged saved cookies for ${targetId}`);
@@ -1571,6 +1601,7 @@ if (isDirectRun) {
   });
 
   server.listen(PORT, '127.0.0.1', () => {
+    serverWorker.start().catch(err => console.warn(err.message));
     console.log('======================================================================');
     console.log(`⚡ ReconCentral RateCard Desktop Control Server running on port ${PORT}`);
     console.log(`Platform: ${process.platform} (${process.arch}) | Node: ${process.version}`);

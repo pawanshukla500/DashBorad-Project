@@ -21,7 +21,9 @@ function persist(db, filePath) {
   try {
     const data = db.export();
     const tmpPath = `${target}.tmp.${Date.now()}`;
-    fs.writeFileSync(tmpPath, Buffer.from(data));
+    const fd = fs.openSync(tmpPath, 'w', 0o600);
+    try { fs.writeFileSync(fd, Buffer.from(data)); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
     fs.renameSync(tmpPath, target);
   } catch (err) {
     console.error('[Local Staging] Failed to persist SQLite db:', err.message);
@@ -53,8 +55,7 @@ export function getStagingDb(userDataDir) {
       const fileBuffer = fs.readFileSync(dbPath);
       dbInstance = new SQL.Database(fileBuffer);
     } catch (err) {
-      console.warn('[Local Staging] Existing DB read failed, creating fresh:', err.message);
-      dbInstance = new SQL.Database();
+      throw new Error(`Existing SQLite staging database could not be opened; it was preserved for recovery: ${err.message}`);
     }
   } else {
     dbInstance = new SQL.Database();
@@ -76,6 +77,7 @@ export function getStagingDb(userDataDir) {
   // Performance and schema setup
   dbInstance.run('PRAGMA journal_mode = WAL;');
   dbInstance.run('PRAGMA synchronous = NORMAL;');
+  dbInstance.run('PRAGMA foreign_keys = ON;');
 
   dbInstance.run(`
     CREATE TABLE IF NOT EXISTS staged_jobs (
@@ -145,12 +147,10 @@ export function saveStagedObservations(db, jobId, observations) {
   if (!targetDb) throw new Error('Staging database is not initialized');
 
   targetDb.run('BEGIN TRANSACTION;');
-  const stmt = targetDb.prepare(`
-    INSERT INTO staged_observations (job_id, vertical, fulfilment_type, payload)
-    VALUES (?, ?, ?, ?);
-  `);
-
+  let stmt;
   try {
+    targetDb.run('DELETE FROM staged_observations WHERE job_id = ?;', [String(jobId)]);
+    stmt = targetDb.prepare(`INSERT INTO staged_observations (job_id, vertical, fulfilment_type, payload) VALUES (?, ?, ?, ?);`);
     for (const item of observations) {
       stmt.run([
         String(jobId),
@@ -159,12 +159,31 @@ export function saveStagedObservations(db, jobId, observations) {
         JSON.stringify(item)
       ]);
     }
+    targetDb.run('COMMIT;');
+  } catch (err) {
+    targetDb.run('ROLLBACK;');
+    throw err;
   } finally {
-    stmt.free();
+    stmt?.free();
   }
 
-  targetDb.run('COMMIT;');
   persist(targetDb, currentDbPath);
+}
+
+export function stageReview(db, jobId, owner, marketplace, cards) {
+  if (!owner) throw new Error('Verified review owner is required.');
+  saveStagedJob(db, { id: jobId, marketplace, status: 'staging', parameters: { owner } });
+  saveStagedObservations(db, jobId, cards);
+  markStagedJobStatus(db, jobId, 'review');
+}
+
+export function recoverReview(db, owner) {
+  const rows = db.exec("SELECT id, parameters FROM staged_jobs WHERE status = 'review' ORDER BY created_at DESC, rowid DESC");
+  for (const [id, parameters] of rows[0]?.values || []) {
+    if (JSON.parse(parameters || '{}').owner !== owner) continue;
+    return { id, cards: getStagedObservations(db, id).map(({ _staged_id, _created_at, ...card }) => card) };
+  }
+  return null;
 }
 
 export function getStagedObservations(db, jobId) {

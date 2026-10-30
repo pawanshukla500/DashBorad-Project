@@ -21,8 +21,8 @@
     "test:runtime": "node tests/test_desktop_runtime.js",
     "test:auth": "node tests/test_desktop_auth.js",
     "test:e2e": "node tests/test_desktop_e2e.js",
-    "test": "node tests/test_local_staging.js && node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js",
-    "test:all": "node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js && node tests/test_desktop_auth.js"
+    "test": "node tests/test_local_staging.js && node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js && node --test tests/browserSafety.test.js",
+    "test:all": "npm test && node tests/test_desktop_auth.js"
   },
   "keywords": [
     "ratecard",
@@ -57,6 +57,7 @@
     "basic-ftp": "^6.2.3"
   },
   "build": {
+    "beforePack": "./prepareBuild.js",
     "appId": "com.reconcentral.ratecardworker",
     "productName": "ReconCentral RateCard Worker",
     "publish": [
@@ -68,7 +69,7 @@
       }
     ],
     "directories": {
-      "output": "dist-release"
+      "output": "../released/build"
     },
     "win": {
       "icon": "ui/icon.png",
