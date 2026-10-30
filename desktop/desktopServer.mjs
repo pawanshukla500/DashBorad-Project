@@ -40,7 +40,7 @@ import {
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { isFlipkartAuthenticated } from './portalSession.js';
 import { createWorkerEngine } from './workerEngine.js';
-import { getStagingDb, stageReview, recoverReview, saveStagedJob, saveStagedObservations, markStagedJobStatus } from './localStaging.js';
+import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, markStagedJobStatus } from './localStaging.js';
 import { registerWorkerWithBackend, sendWorkerHeartbeat, claimNextWorkerJob, reportJobFailure, submitJobResults,
   fetchBrandCatalogFromApi, fetchConfiguredVerticals, reviewRatesViaApi, publishReviewedRatesViaApi } from './workerClient.js';
 import { encryptVaultData, decryptVaultData } from './cookieVault.js';
@@ -1250,6 +1250,8 @@ const server = http.createServer(async (req, res) => {
       // A new run supersedes the previous staging; a failed run must not leave
       // old cards syncable. Wipe only once the request has been fully accepted.
       stagedExtraction.cards = [];
+      stagedExtraction.review = null;
+      supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
       const jobAuthGeneration = stagedExtraction.authGeneration;
 
       activeScrapeJob = {

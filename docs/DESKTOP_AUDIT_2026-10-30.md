@@ -59,7 +59,8 @@ No deployment, merge, schema migration or production rate-card writes are author
 - Actual FSN search is essential: generic Kurta returned one 0% commission slab;
   a real database Sangria FSN returned eight product-specific commission slabs.
   Requests carry `variables.input.fsn`, partner context, service profile and date.
-  Reloading the accepted search hash is necessary to obtain fresh fees.
+  An accepted FSN search and fresh matched responses are required. Reload is
+  only a recovery path if the mounted SPA does not issue the requested context.
 - Actual responses include 21 reverse-shipping weight/price combinations and
   two FBF pick/pack weight bands with incremental charges. Flattening them loses
   material fee components. The manual SQL migration adds these dimensions.
@@ -95,12 +96,57 @@ reviews every commit. Production migration/publication requires separate approva
 - Immediate worker registration/claim with bounded requests; actual loopback HTTP
   fixture registers and claims in approximately 50–60ms. Production WAN and
   authenticated installed-worker timing remain separate acceptance checks.
-- Backend: 87 files / 609 tests passed; isolated real PostgreSQL integration
+- Backend: 87 files / 611 tests passed; isolated real PostgreSQL integration
   is skipped locally without an explicit loopback fixture database and runs in CI.
-- Desktop: 4 SQLite + 67 runtime + 9 E2E + 10 safety tests passed.
-- Frontend production build passed in 6.76 seconds.
+- Desktop: 4 SQLite + 68 runtime + 9 E2E + 9 safety tests passed.
+- Frontend production build passed in 6.89 seconds.
 - Installed-package acceptance is being run. Compilation and unit tests alone
   do not establish Windows/Linux installed runtime success.
 
 No release tag, deployment, production migration, merge, or production rate
 publication was performed.
+
+## Authenticated live extraction evidence
+
+- Real database FSNs, retrieved read-only by brand/category: 32 raw profiles,
+  31 distinct profiles after case-alias deduplication. Complete Chrome run:
+  62 observations, 14 categories, 27 Flipkart cards and 4 separate Shopsy cards.
+  Both channels pass backend complete-observation validation. Evidence remains
+  local in SQLite and private runtime captures; no fees were published.
+- Actual Electron WebContentsView run using the production adapter and saved
+  cookies: Sangria/Kurta and Shopsy/Kurta, both modes, 4 observations / 2 cards.
+  Flipkart commission has 8 slabs; the separate Shopsy response has 1 slab.
+- Native authentication required a second observed shell variant: Home,
+  Advertising and Help dashboard anchors exist before Orders/Payments dropdowns
+  are opened. Marketing body text remains insufficient authentication proof.
+- Native input updates React state, but search submission is an explicit Enter
+  handler. The search icon is display:none after typing; it is not a valid
+  physical click target. URL equality and complete response matching are required.
+- Electron 33 Network.getResponseBody fails for actual fee bodies with
+  'No resource with given identifier found'. Response-stage Fetch capture works
+  for all five fee families and always resumes unrelated and failed requests.
+- Initial installed testing found a missing ASAR lockfile in the source manifest,
+  unavailable native getVisible API, a geometry test race, and unmet Debian
+  dependencies. Manifest now hashes shipped source/assets, checks version and
+  commit independently, visibility tracks the requested state on Electron 33,
+  dock IPC checks real bounds, and apt resolves declared package dependencies.
+- Local packaged Windows Chromium acceptance passes nonblank frame, mouse input,
+  hidden OTP editor input, preload/auth barrier, shared HttpOnly cookie session,
+  source hash/commit matching and packaged SQLite recovery. Installed NSIS and
+  Debian acceptance on GitHub Actions remains the final platform gate.
+
+## Remaining approval and verification boundaries
+
+The full configured-category run is blocked for the five missing database FSNs;
+no matching FSNs exist in catalog_cogs either (verified read-only). Shared legacy
+commission/collection/reverse tables reject differing fulfilment-mode observations
+or conflicting generic fees between brands, rather than flattening them. The
+observed account's complete catalog passes these agreement checks. Universal
+pick/pack price scope is preserved explicitly through the reviewed migration.
+
+Live production API comparison of these new observations requires the reviewed
+backend contract; the currently deployed API is older. The desktop fails closed
+when that contract is absent. Actual portal OTP was not triggered by this account;
+OTP entry is exercised with real Chromium fixtures. Production WAN registration
+latency remains unverified; the real HTTP fixture registers and polls in <100ms.
+Production migration/publication and deployment still require separate approval.

@@ -27,7 +27,7 @@
  */
 
 import { createRequire } from 'node:module';
-import { createRateCardCapture, isRateResponseUrl } from './rateCardCapture.js';
+import { createRateCardCapture, isRateRequest } from './rateCardCapture.js';
 
 const DEFAULT_EVAL_RETRIES = 3;
 const DEFAULT_EVAL_GAP_MS = 1000;
@@ -233,30 +233,32 @@ export function createEmbeddedPage({
       return null;
     }
     const state = { pending: 0, broken: false };
-    const requests = new Map();
     const pendingIds = new Set();
-    contents.debugger.on('message', (_event, method, params = {}) => {
+    const warn = error => console.warn(JSON.stringify({ event: 'rate_response_capture_failed', code: 'BODY_UNAVAILABLE', message: error.message }));
+    contents.debugger.on('message', (_event, method, params = {}, sessionId) => {
+      const requestKey = (sessionId || '') + ':' + params.requestId;
       if (method === 'Network.requestWillBeSent') {
-        if (params.requestId) { pendingIds.add(params.requestId); state.pending = pendingIds.size; }
+        if (params.requestId) { pendingIds.add(requestKey); state.pending = pendingIds.size; }
         else state.pending += 1;
-      }
-      else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
-        if (params.requestId) { pendingIds.delete(params.requestId); state.pending = pendingIds.size; }
+      } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+        if (params.requestId) { pendingIds.delete(requestKey); state.pending = pendingIds.size; }
         else state.pending = Math.max(0, state.pending - 1);
       }
-      if (method === 'Network.requestWillBeSent' && isRateResponseUrl(params.request?.url)) {
-        requests.set(params.requestId, { url: params.request.url, postData: params.request.postData });
-      }
-      if (method === 'Network.responseReceived' && requests.has(params.requestId)) requests.get(params.requestId).status = params.response.status;
-      if (method === 'Network.loadingFinished' && requests.has(params.requestId)) {
-        const request = requests.get(params.requestId);
-        requests.delete(params.requestId);
-        contents.debugger.sendCommand('Network.getResponseBody', { requestId: params.requestId }).then(response => {
-          const body = JSON.parse(response.base64Encoded ? Buffer.from(response.body, 'base64').toString('utf8') : response.body);
-          rateCardCapture.observe({ ...request, body });
-        }).catch(() => {});
-      }
-      if (method === 'Network.loadingFailed') requests.delete(params.requestId);
+      if (method !== 'Fetch.requestPaused') return;
+      // Network.getResponseBody lost real Seller Hub bodies after completion in
+      // Electron 33. Read the response while paused, then always release it.
+      const send = (command, args) => contents.debugger.sendCommand(command, args, sessionId || undefined);
+      (async () => {
+        if (!isRateRequest(params.request?.url, params.request?.postData)) return;
+        if (params.responseErrorReason) {
+          rateCardCapture.observe({ url: params.request.url, postData: params.request.postData, status: 0, body: { errors: [params.responseErrorReason] } });
+          return;
+        }
+        const response = await withTimeout(send('Fetch.getResponseBody', { requestId: params.requestId }), 10000, 'Rate response body timed out.');
+        const body = JSON.parse(response.base64Encoded ? Buffer.from(response.body, 'base64').toString('utf8') : response.body);
+        rateCardCapture.observe({ url: params.request.url, postData: params.request.postData, status: params.responseStatusCode, body });
+      })().catch(warn).finally(() => Promise.resolve()
+        .then(() => send('Fetch.continueRequest', { requestId: params.requestId })).catch(warn));
     });
     try {
       // A rejected Network.enable (debugger disconnected, etc.) must not
@@ -264,6 +266,10 @@ export function createEmbeddedPage({
       // that would falsely report busy pages quiet. Marking it broken makes
       // the quiet wait degrade to the honest fixed settle.
       Promise.resolve(contents.debugger.sendCommand('Network.enable')).catch(() => { state.broken = true; });
+      Promise.resolve(contents.debugger.sendCommand('Fetch.enable', { patterns: [
+        { urlPattern: 'https://seller.flipkart.com/orchestrator/graphql*', requestStage: 'Response' },
+        { urlPattern: 'https://seller.flipkart.com/napi/rate-card/get-complete-category-tree*', requestStage: 'Response' }
+      ] })).catch(warn);
     } catch {
       return null;
     }
@@ -646,7 +652,9 @@ export function createEmbeddedPage({
     /** Screenshot of the live page (monitoring + debugging aid). */
     async screenshot() {
       const image = await contents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-      return image.toPNG();
+      const png = image.toPNG();
+      if (!png.length) throw new Error('Chromium has no rendered frame to capture.');
+      return png;
     },
 
     setVisible(next) {

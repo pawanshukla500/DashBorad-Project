@@ -17,6 +17,7 @@ ALTER TABLE rc_reverse_shipping
   ADD COLUMN IF NOT EXISTS national_additional_fee NUMERIC(12,2);
 
 ALTER TABLE rc_pick_pack
+  ADD COLUMN IF NOT EXISTS price_scope TEXT CHECK (price_scope IS NULL OR price_scope IN ('all','range')),
   ADD COLUMN IF NOT EXISTS weight_min NUMERIC(12,3),
   ADD COLUMN IF NOT EXISTS weight_max NUMERIC(12,3),
   ADD COLUMN IF NOT EXISTS base_weight NUMERIC(12,3),

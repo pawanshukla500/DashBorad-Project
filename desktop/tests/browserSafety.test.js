@@ -8,10 +8,10 @@ import path from 'node:path';
 import vm from 'node:vm';
 import http from 'node:http';
 import { isFlipkartAuthenticated, portalPartition } from '../portalSession.js';
-import { createRateCardCapture, resolvePortalVertical } from '../rateCardCapture.js';
+import { createRateCardCapture } from '../rateCardCapture.js';
 import { parsePortalRateSnapshot } from '../portalRates.js';
 import { createWorkerEngine } from '../workerEngine.js';
-import { getStagingDb, stageReview, recoverReview, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
+import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
 import { rateFixture } from './fixtures/portalRateFixture.js';
 
 test('public Seller Hub, visible login and OTP challenges never count as authentication', () => {
@@ -57,15 +57,6 @@ test('unrecognized layouts and missing fees cannot be substituted with Shopsy co
   assert.throws(()=>parsePortalRateSnapshot(malformed,{marketplace:'flipkart',fulfilment:'NON_FBF'}),/Invalid/);
 });
 
-test('category discovery uses exact portal names and unambiguous labels; ambiguous aliases require review', () => {
-  const tree=[{verticalName:'apparel_set',verticalDisplayName:'Co-ords'},{verticalName:'kurta',synonyms:['kurti']},{verticalName:'salwar_kurta_dupatta',synonyms:['kurti']}];
-  assert.equal(resolvePortalVertical('shopsy_kurta',tree),'kurta');
-  assert.equal(resolvePortalVertical('co_ords',tree),'apparel_set');
-  assert.throws(()=>resolvePortalVertical('kurti',tree),/mapping required/);
-  assert.throws(()=>resolvePortalVertical('dress_material',tree),/mapping required/);
-  assert.equal(resolvePortalVertical('kurti',tree,{kurti:'kurta'}),'kurta');
-});
-
 test('SQLite review survives restart, rejects a different owner and rolls back a failed replacement', () => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rate-review-'));
   try {
@@ -75,6 +66,10 @@ test('SQLite review survives restart, rejects a different owner and rolls back a
     closeStagingDb();db=getStagingDb(dir);
     assert.equal(recoverReview(db,'owner').cards[0].category,'kurta');
     assert.equal(recoverReview(db,'another-owner'),null);
+    supersedeReviews(db,'owner');
+    closeStagingDb();db=getStagingDb(dir);
+    assert.equal(recoverReview(db,'owner'),null,'A superseded review must not return after a failed new extraction');
+    assert.equal(getStagedObservations(db,'review').length,1,'Audit evidence remains available');
   } finally { closeStagingDb();fs.rmSync(dir,{recursive:true,force:true}); }
 });
 

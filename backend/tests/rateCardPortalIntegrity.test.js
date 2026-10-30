@@ -16,7 +16,7 @@ function database(observations = cards(), { ready = true } = {}) {
     ({ id: ++id, start_date: '2026-10-01', end_date: null, ...normalizeObservationRow(d, row, o) })))]));
   const client = { release: vi.fn(), query: vi.fn(async (sql, params) => {
     if (sql.includes('FROM pg_indexes')) return { rows: ready ? Array.from({length:5}, () => ({})) : [] };
-    if (sql.includes('FROM information_schema.columns')) return { rows: ready ? Array.from({length:20}, () => ({})) : [] };
+    if (sql.includes('FROM information_schema.columns')) return { rows: ready ? Array.from({length:21}, () => ({})) : [] };
     if (sql.includes('SELECT MIN')) return { rows: [{ next_start: null }] };
     const descriptor = RATE_TABLES.find(d => sql.includes(`FROM ${d.table}`));
     if (sql.includes('SELECT *') && descriptor) return { rows: tables[descriptor.table] };
@@ -119,6 +119,12 @@ describe('Portal observations and reviewed publication', () => {
     const db=database();
     for(const table of ['rc_reverse_shipping','rc_pick_pack'])for(const row of db.tables[table])for(const key of Object.keys(row))if(typeof row[key]==='number'&&key!=='id')row[key]=row[key].toFixed(3);
     expect((await compare(db)).diffCount).toBe(0);
+  });
+
+  it('preserves portal pick/pack all-price scope without imposing an invented price ceiling', () => {
+    expect(cards()[0].pickPackFees[0].price_scope).toBe('all');
+    const rc={commission:[],fixedFee:[],collectionFee:[],franchiseFee:[],reverseShipping:[],pickAndPack:[{category:'kurta',fulfilmentType:'FBF',priceMin:0,priceMax:999999,allPrices:true,rate:14}]};
+    expect(calculateFees(rc,{category:'kurta',price:2000000,fulfilmentType:'FBF',orderDate:date}).pickPack).toBe(14);
   });
 
 });

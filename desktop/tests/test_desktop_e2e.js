@@ -90,7 +90,7 @@ async function runE2ETests() {
       cookies: async () => [],
       evaluate: async (fn) => {
         if (fn.name === 'isFlipkartAuthenticated') return true;
-        if (fn.toString().includes('searchIcon')) currentQuery.fsn=pendingFsn;
+        if (fn.toString().includes('KeyboardEvent')) { currentQuery.fsn=pendingFsn; return true; }
         if (fn.toString().includes('q.fsn === expected')) return Boolean(currentQuery.fsn);
         const lastUrl = navigatedUrls[navigatedUrls.length - 1] || '';
         if (lastUrl.includes('dashboard/home-page')) return true; // session valid
@@ -136,6 +136,19 @@ async function runE2ETests() {
     const shopsyCard = stagedContent.find(c => c.marketplace === 'shopsy');
     assert(shopsyCard, 'Shopsy card must exist');
     assert(shopsyCard.commissions.every(c => c.rate === 0), 'All Shopsy commissions must be 0%');
+
+    // A freshly submitted FSN issues complete queries. Reloading here used to
+    // abort their bodies in real Electron; require this path to avoid reload.
+    const evaluateBefore = fakePage.evaluate;
+    fakePage.evaluate = async fn => {
+      const value = await evaluateBefore(fn);
+      if (fn.toString().includes('KeyboardEvent')) await fakePage.goto('https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=' + encodeURIComponent(JSON.stringify(currentQuery)));
+      return value;
+    };
+    fakePage.reload = async () => { throw new Error('A complete fresh search must not be reloaded'); };
+    const fresh = await scrapeFlipkartRateCards({marketplace:'flipkart',fsnCatalog:[{marketplace:'flipkart',category:'kurta',brand:'Fixture',sample_fsn:'ABCDEFGHIJKLMNOP'}]},
+      {runtime:fakeRuntime,cookiesPath:tempCookies,stagingDir:tempDir,delay:()=>{},onProgress:()=>{}});
+    assert(fresh.success, 'Fresh complete query responses must survive without reload: ' + fresh.error);
 
     // Clean up
     fs.rmSync(tempDir, { recursive: true, force: true });

@@ -48,7 +48,7 @@ import {
   getStagedObservations,
   markStagedJobStatus,
   clearStagedJob,
-  stageReview, recoverReview
+  stageReview, recoverReview, supersedeReviews
 } from './localStaging.js';
 
 const require = createRequire(import.meta.url);
@@ -656,6 +656,8 @@ async function checkDailySchedule() {
       }
       // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
       stagedExtraction.cards = [];
+      stagedExtraction.review = null;
+      supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
       const jobAuthGeneration = stagedExtraction.authGeneration;
       const result = await withBrowserTask(() => executeScrapeProcess(config, (msg) => {
         if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
@@ -1105,7 +1107,7 @@ async function executeScrapeProcess(config, onProgress) {
       const externalSessionExpiry = async (page) => {
         onProgress('🔐 2FA / Session authentication required. Please complete login in the opened browser window...');
         const startTime = Date.now();
-        const timeoutMs = 90000;
+        const timeoutMs = 300000;
         while (Date.now() - startTime < timeoutMs) {
           await new Promise((r) => setTimeout(r, 1000));
           try {
@@ -1647,6 +1649,8 @@ registerHandler('start-scrape', async (e, options) => {
   }
   // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
   stagedExtraction.cards = [];
+  stagedExtraction.review = null;
+  supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
   const jobAuthGeneration = stagedExtraction.authGeneration;
   const result = await withBrowserTask(() => executeScrapeProcess(mergedOptions, (msg) => {
     if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);

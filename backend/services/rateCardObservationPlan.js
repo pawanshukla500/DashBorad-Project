@@ -11,7 +11,7 @@ export const RATE_TABLES = [
   { table: 'rc_fixed_fee', field: 'fixedFees', keys: ['fulfilment_type', 'price_min', 'price_max'], values: ['rate'] },
   { table: 'rc_collection_fee', field: 'collectionFees', keys: ['fulfilment_type', 'price_min', 'price_max'], values: ['prepaid', 'postpaid', 'prepaid_type', 'postpaid_type'] },
   { table: 'rc_reverse_shipping', field: 'reverseShipping', keys: ['weight_slab', 'price_min', 'price_max'], values: ['local_fee', 'zonal_fee', 'national_fee', 'weight_min', 'weight_max', 'base_weight', 'increment_weight', 'local_additional_fee', 'zonal_additional_fee', 'national_additional_fee'] },
-  { table: 'rc_pick_pack', field: 'pickPackFees', keys: ['fulfilment_type', 'weight_min', 'weight_max', 'price_min', 'price_max'], values: ['rate', 'local_fee', 'zonal_fee', 'national_fee', 'base_weight', 'increment_weight', 'local_additional_fee', 'zonal_additional_fee', 'national_additional_fee'] }
+  { table: 'rc_pick_pack', field: 'pickPackFees', keys: ['fulfilment_type', 'weight_min', 'weight_max', 'price_min', 'price_max'], values: ['price_scope', 'rate', 'local_fee', 'zonal_fee', 'national_fee', 'base_weight', 'increment_weight', 'local_additional_fee', 'zonal_additional_fee', 'national_additional_fee'] }
 ];
 
 const brand = value => !value || ['general', 'all brands'].includes(String(value).toLowerCase()) ? null : String(value);
@@ -44,6 +44,7 @@ export function normalizeObservationRow(descriptor, row, observation = {}) {
     row.weight_min ??= 0; row.weight_max ??= 999999;
     result.weight_min = decimal(row.weight_min, 'weight_min', 3);
     result.weight_max = decimal(row.weight_max, 'weight_max', 3);
+    row.price_scope ??= 'range';
     row.rate ??= row.local_fee;
     row.local_fee ??= row.rate; row.zonal_fee ??= row.rate; row.national_fee ??= row.rate;
   }
@@ -56,7 +57,10 @@ export function normalizeObservationRow(descriptor, row, observation = {}) {
     }
   }
   for (const key of descriptor.values) {
-    if (key.endsWith('_type')) {
+    if (key === 'price_scope') {
+      if (!['all','range'].includes(row[key])) throw new Error('Invalid price scope.');
+      result[key] = row[key];
+    } else if (key.endsWith('_type')) {
       if (!['pct', 'flat'].includes(row[key])) throw new Error(`Invalid ${key}.`);
       result[key] = row[key];
     } else {

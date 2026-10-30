@@ -4,6 +4,14 @@ export function isRateResponseUrl(value) {
     ['/orchestrator/graphql', '/napi/rate-card/get-complete-category-tree'].includes(url.pathname); } catch { return false; }
 }
 
+export function isRateRequest(url, postData) {
+  if (!isRateResponseUrl(url)) return false;
+  if (new URL(url).pathname.endsWith('get-complete-category-tree')) return true;
+  try { const input = JSON.parse(postData).variables.input;
+    return Boolean((input.fsn || input.vertical) && input.serviceProfile && input.partnerContext);
+  } catch { return false; }
+}
+
 export function createRateCardCapture() {
   let records = [], categoryTree = null;
   return {
@@ -47,7 +55,7 @@ export function attachRateCardCapture(page) {
   if (page.rateCardCapture) return { capture: page.rateCardCapture, detach() {} };
   const capture = createRateCardCapture();
   const receive = async response => {
-    if (!isRateResponseUrl(response.url())) return;
+    if (!isRateRequest(response.url(), response.request().postData())) return;
     try { capture.observe({ url: response.url(), postData: response.request().postData(), status: response.status(), body: await response.json() }); }
     catch { /* A missing/invalid response cannot satisfy the completeness gate. */ }
   };
@@ -55,24 +63,3 @@ export function attachRateCardCapture(page) {
   return { capture, detach() { page.off?.('response', receive); } };
 }
 
-const norm = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-export function resolvePortalVertical(category, tree, mappings = {}) {
-  const rows = [];
-  const visit = value => {
-    if (Array.isArray(value)) value.forEach(visit);
-    else if (value && typeof value === 'object') {
-      if (value.verticalName) rows.push(value);
-      else Object.values(value).forEach(visit);
-    }
-  };
-  visit(tree);
-  const requested = category.replace(/^shopsy_/, '');
-  if (mappings[category]) {
-    if (!rows.some(row => row.verticalName === mappings[category])) throw new Error(`Mapped portal vertical is unavailable: ${category}.`);
-    return mappings[category];
-  }
-  if (rows.some(row => row.verticalName === requested)) return requested;
-  const matches = [...new Set(rows.filter(row => [row.verticalDisplayName, ...(row.synonyms || [])].some(value => norm(value) === norm(requested))).map(row => row.verticalName))];
-  if (matches.length === 1) return matches[0];
-  throw new Error(`Category mapping required for ${category}${matches.length ? ` (${matches.join(', ')})` : ''}. Nothing was staged.`);
-}

@@ -96,10 +96,10 @@ export function getHeaders(token, targetUrl) {
   return headers;
 }
 
-async function safeFetch(url, options = {}) {
+async function safeFetch(url, { timeoutMs = 3000, ...options } = {}) {
   if (!isAllowedBackendUrl(url)) throw new Error('Untrusted backend URL.');
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000), ...options, redirect: 'error' });
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), ...options, redirect: 'error' });
     if (res.status >= 502 && res.status <= 504) {
       clearCachedActiveServer();
     }
@@ -195,6 +195,7 @@ export async function reportJobFailure(session, jobId, errorMessage, errorCode =
 export async function submitJobResults(session, jobId, results, workerId = null) {
   const baseUrl = await getActiveBackendUrl();
   const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/results`, {
+    timeoutMs: 30000,
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
     body: JSON.stringify({ results, worker_id: workerId })
@@ -210,6 +211,7 @@ export async function submitJobResults(session, jobId, results, workerId = null)
 export async function fetchBrandCatalogFromApi(session) {
   const baseUrl = await getActiveBackendUrl();
   const res = await safeFetch(`${baseUrl}/api/rate-card/brand-fsn-catalog`, {
+    timeoutMs: 30000,
     method: 'GET',
     headers: getHeaders(session?.idToken, baseUrl)
   });
@@ -224,6 +226,7 @@ export async function fetchBrandCatalogFromApi(session) {
 export async function detectRateChangesViaApi(session, scrapedObservations, marketplace = 'flipkart', sellerAccount = 'default') {
   const baseUrl = await getActiveBackendUrl();
   const res = await safeFetch(`${baseUrl}/api/rate-card/detect-changes`, {
+    timeoutMs: 30000,
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
     body: JSON.stringify({ scrapedData: scrapedObservations, marketplace, seller_account: sellerAccount })
@@ -271,6 +274,7 @@ export async function publishReviewedRatesViaApi(session, cards, fingerprints, s
 export async function publishJobViaApi(session, jobId) {
   const baseUrl = await getActiveBackendUrl();
   const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/publish`, {
+    timeoutMs: 65000,
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl)
   });

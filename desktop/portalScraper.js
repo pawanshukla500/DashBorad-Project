@@ -117,6 +117,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
         const date = effectiveDate + ' 12:00:00';
         const query = { marketplace: queryMarketplace, fulfillment: fulfilment, date };
         await onProgress('Searching database FSN ' + fsn + ' / ' + brand + ' / ' + vertical + ' (' + mode + ')...');
+        capture.reset();
         await safeGoto('https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=' + encodeURIComponent(JSON.stringify(query)), { waitUntil: 'load', timeout: 35000 });
         await page.waitForSelector(searchSelector, { visible: true, timeout: 30000 });
         // Puppeteer appends by default. Clear through the native input setter
@@ -127,13 +128,15 @@ export async function scrapeFlipkartRateCards(config = {}, {
           el.dispatchEvent(new Event('input', { bubbles: true }));
         }, searchSelector);
         await page.type(searchSelector, fsn, { delay: 60 });
-        // The live Seller Hub input updates its controlled value on input, but
-        // Electron insertText does not submit the widget's search action.
-        await page.evaluate(() => {
-          const search = document.querySelector('[data-testid="searchIcon"]');
-          if (!search || !search.getClientRects().length) throw new Error('Seller Hub FSN search button is missing.');
-          search.click();
-        });
+        // The observed widget submits on Enter; its search icon is hidden
+        // after typing. Dispatch that observed widget event in both engines.
+        const submitted = await page.evaluate(selector => {
+          const input = document.querySelector(selector);
+          if (!input) return false;
+          input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', charCode: 13, keyCode: 13, which: 13, bubbles: true }));
+          return true;
+        }, searchSelector);
+        if (submitted !== true) throw new Error('Seller Hub FSN search input disappeared. Nothing was staged.');
         let matched = false;
         for (let attempt = 0; attempt < 15; attempt++) {
           matched = await page.evaluate((expected, channel, fulfillment) => {
@@ -145,16 +148,25 @@ export async function scrapeFlipkartRateCards(config = {}, {
           if (matched === true) break;
         }
         if (matched !== true) throw new Error('Seller Hub did not accept FSN search ' + fsn + '. Nothing was staged.');
-        // Live inspection showed hash navigation can retain stale mounted fees.
-        // Require fresh responses after reloading the accepted FSN search URL.
-        capture.reset();
-        await page.reload({ waitUntil: 'load', timeout: 35000 });
         Object.assign(context, { stage: 'rate_responses' });
+        const readSnapshot = () => capture.snapshot({ fsn, marketplace: queryMarketplace, fulfilment: mode, date });
         let snapshot;
-        for (let attempt = 0; attempt < 30; attempt++) {
+        // Submitting an FSN normally starts fresh queries. Let those complete:
+        // reloading immediately aborts their response bodies in real Electron.
+        for (let attempt = 0; attempt < 10; attempt++) {
           await delay(1000);
-          snapshot = capture.snapshot({ fsn, marketplace: queryMarketplace, fulfilment: mode, date });
+          snapshot = readSnapshot();
           if (!snapshot.missing.length) break;
+        }
+        if (snapshot.missing.length) {
+          // Recover mounted SPA panels that did not issue this search context.
+          capture.reset();
+          await page.reload({ waitUntil: 'load', timeout: 35000 });
+          for (let attempt = 0; attempt < 30; attempt++) {
+            await delay(1000);
+            snapshot = readSnapshot();
+            if (!snapshot.missing.length) break;
+          }
         }
         if (snapshot.missing.length) throw new Error('Missing rate responses for ' + fsn + ' / ' + mode + ': ' + snapshot.missing.join(', ') + '. Nothing was staged.');
         data.push(parsePortalRateSnapshot(snapshot, { vertical, marketplace: queryMarketplace, fulfilment: mode, effectiveDate, brand, fsn, sku: target.sample_sku, orderCount: target.order_count }));

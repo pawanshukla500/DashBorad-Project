@@ -37,8 +37,8 @@ export async function publishRateCardObservations(observations, options = {}) {
       AND indexdef LIKE 'CREATE UNIQUE INDEX%'
       AND indexname IN ('rc_commission_uniq_active','rc_fixed_fee_uniq_active','rc_collection_fee_uniq_active','rc_reverse_shipping_uniq_portal_active','rc_pick_pack_uniq_portal_active')`);
     const columns = await client.query(`SELECT table_name,column_name FROM information_schema.columns WHERE table_schema = current_schema()
-      AND table_name IN ('rc_reverse_shipping','rc_pick_pack') AND column_name IN ('weight_min','weight_max','base_weight','increment_weight','local_fee','zonal_fee','national_fee','local_additional_fee','zonal_additional_fee','national_additional_fee')`);
-    if (readiness.rows.length !== 5 || columns.rows.length !== 20) throw new Error('RATE_SCHEMA_NOT_READY: dimensional fee columns or uniqueness indexes are missing. Review migrations before publishing.');
+      AND table_name IN ('rc_reverse_shipping','rc_pick_pack') AND column_name IN ('weight_min','weight_max','base_weight','increment_weight','local_fee','zonal_fee','national_fee','local_additional_fee','zonal_additional_fee','national_additional_fee','price_scope')`);
+    if (readiness.rows.length !== 5 || columns.rows.length !== 21) throw new Error('RATE_SCHEMA_NOT_READY: dimensional fee columns or uniqueness indexes are missing. Review migrations before publishing.');
 
     for (const diff of plan.diffs) {
       const descriptor = RATE_TABLES.find(t => t.table === diff.table);

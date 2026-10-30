@@ -1009,7 +1009,7 @@ async function runTests() {
       fakeWindow,
       setBehavior: (next) => { behavior = next; },
       fire: (event, ...args) => [...(listeners[event] || [])].forEach((h) => h(...args)),
-      emitNetwork: (method) => debuggerHandlers.forEach((h) => h({}, method)),
+      emitNetwork: (method, params = {}, sessionId) => debuggerHandlers.forEach((h) => h({}, method, params, sessionId)),
       debuggerAttached: () => (fakeContents.debugger ? fakeContents.debugger.attached : 'absent'),
       debuggerCommands: () => (fakeContents.debugger ? fakeContents.debugger.sent : []),
       partitionsUsed: () => partitions,
@@ -1066,6 +1066,31 @@ async function runTests() {
     });
     assert(bareWindowPage._view.boundsSet.width === 1280 && bareWindowPage._view.boundsSet.height === 720,
       'a window without a content size must still receive non-zero default bounds');
+  });
+
+  await runTest('response-stage capture preserves fee bodies and always resumes failed and unrelated requests', async () => {
+    const harness = makeFakeEmbeddedDeps({withDebugger:true});
+    const commands=[];
+    harness.fakeContents.debugger.sendCommand = async (command, params, sessionId) => {
+      commands.push({command,params,sessionId});
+      if(command==='Fetch.getResponseBody') {
+        if(params.requestId==='broken') throw new Error('fixture body unavailable');
+        return {body:JSON.stringify({data:{settlement:{platformFee:{serviceProfile:'NON_FBF',slabs:{asp:[]}}}}})};
+      }
+      return {};
+    };
+    const page=createEmbeddedPage({window:harness.fakeWindow,partition:'persist:capture-test',deps:harness.deps});
+    const postData=JSON.stringify({variables:{input:{fsn:'ABCDEFGHIJKLMNOP',partnerContext:'flipkart',serviceProfile:'NON_FBF',date:'2026-10-30',darwinTier:'fixture'}}});
+    for(const requestId of ['valid','broken','unrelated']) harness.emitNetwork('Fetch.requestPaused',{
+      requestId,responseStatusCode:200,request:{url:'https://seller.flipkart.com/orchestrator/graphql',postData:requestId==='unrelated'?'{}':postData}
+    },'fixture-session');
+    await new Promise(resolve=>setTimeout(resolve,20));
+    const snapshot=page.rateCardCapture.snapshot({fsn:'ABCDEFGHIJKLMNOP',marketplace:'flipkart',fulfilment:'NON_FBF',date:'2026-10-30'});
+    assert(snapshot.fees.platformFee,'The exact response must be captured while paused');
+    assert.strictEqual(commands.filter(c=>c.command==='Fetch.continueRequest').length,3,'Every paused response must be released');
+    assert.strictEqual(commands.filter(c=>c.command==='Fetch.getResponseBody').length,2,'Unrelated GraphQL bodies must not be read');
+    assert(commands.filter(c=>c.command==='Fetch.getResponseBody').every(c=>c.sessionId==='fixture-session'),'Commands must target the emitting session');
+    await page.close();
   });
 
   await runTest('embedded goto waits for real network quiet via the CDP monitor, with honest fallback', async () => {

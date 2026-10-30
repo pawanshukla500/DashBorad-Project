@@ -193,7 +193,7 @@ async function loadFromDb(marketplace = 'flipkart', sellerAccount = 'default') {
       weightMax: r.weight_max == null ? undefined : +r.weight_max, baseWeight: +(r.base_weight ?? 0),
       incrementWeight: +(r.increment_weight ?? 0), localAdditional: +(r.local_additional_fee ?? 0),
       zonalAdditional: +(r.zonal_additional_fee ?? 0), nationalAdditional: +(r.national_additional_fee ?? 0) });
-    const pickAndPack     = ppRes.rows.map(r   => ({ category: normalizeCategory(r.category), startDate: r.start_date, endDate: r.end_date, fulfilmentType: r.fulfilment_type || 'ALL', priceMin: +r.price_min, priceMax: +r.price_max, rate: +r.rate, local: +(r.local_fee ?? r.rate), zonal: +(r.zonal_fee ?? r.rate), national: +(r.national_fee ?? r.rate), ...dimensions(r) }));
+    const pickAndPack     = ppRes.rows.map(r   => ({ category: normalizeCategory(r.category), startDate: r.start_date, endDate: r.end_date, fulfilmentType: r.fulfilment_type || 'ALL', priceMin: +r.price_min, priceMax: +r.price_max, rate: +r.rate, allPrices: r.price_scope === 'all', local: +(r.local_fee ?? r.rate), zonal: +(r.zonal_fee ?? r.rate), national: +(r.national_fee ?? r.rate), ...dimensions(r) }));
     const reverseShipping = revRes.rows.map(r  => ({ category: normalizeCategory(r.category), sellerAccount: r.seller_account, startDate: r.start_date, endDate: r.end_date, priceMin: Number(r.price_min ?? 0), priceMax: Number(r.price_max ?? 999999), weightSlab: r.weight_slab, local: +r.local_fee, zonal: +r.zonal_fee, national: +r.national_fee, ...dimensions(r) }));
     const franchiseFee    = franRes.rows.map(r => ({ category: normalizeCategory(r.category) || 'all', brandName: r.brand_name || null, startDate: r.start_date, endDate: r.end_date, priceMin: +r.price_min, priceMax: +r.price_max, rate: +r.rate }));
     return { commission, fixedFee, collectionFee, pickAndPack, reverseShipping, franchiseFee };
@@ -441,7 +441,7 @@ function matchPickAndPack(rc, cat, fulfilmentType, price, orderDate, weight) {
     r.category === cat &&
     (canonicalFulfilmentType(r.fulfilmentType) === ft || canonicalFulfilmentType(r.fulfilmentType) === 'ALL') &&
     inRange(orderDate, r.startDate, r.endDate) &&
-    price >= r.priceMin && price <= r.priceMax &&
+    (r.allPrices || (price >= r.priceMin && price <= r.priceMax)) &&
     (r.weightMin == null || (Number(weight) > r.weightMin || r.weightMin === 0)) &&
     (r.weightMax == null || Number(weight) <= r.weightMax)
   ) ?? null;

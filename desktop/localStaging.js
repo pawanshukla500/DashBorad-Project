@@ -177,6 +177,12 @@ export function stageReview(db, jobId, owner, marketplace, cards) {
   markStagedJobStatus(db, jobId, 'review');
 }
 
+export function supersedeReviews(db, owner) {
+  if (!owner) throw new Error('Verified review owner is required.');
+  db.run("UPDATE staged_jobs SET status = 'superseded', updated_at = datetime('now') WHERE status = 'review' AND json_extract(parameters, '$.owner') = ?", [owner]);
+  persist(db, currentDbPath);
+}
+
 export function recoverReview(db, owner) {
   const rows = db.exec("SELECT id, parameters FROM staged_jobs WHERE status = 'review' ORDER BY created_at DESC, rowid DESC");
   for (const [id, parameters] of rows[0]?.values || []) {

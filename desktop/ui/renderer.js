@@ -851,6 +851,18 @@ async function loadRateCardPreview() {
   }
 }
 
+function describeRateRecord(table, row) {
+  if (!row) return '—';
+  if (table === 'rc_commission') return (Number(row.rate) * 100).toFixed(4) + '%';
+  if (table === 'rc_fixed_fee') return row.fulfilment_type + ': ₹' + row.rate;
+  if (table === 'rc_collection_fee') return 'Prepaid ' + row.prepaid + ' (' + row.prepaid_type + '), postpaid ' + row.postpaid + ' (' + row.postpaid_type + ')';
+  const base = [row.local_fee ?? row.rate, row.zonal_fee ?? row.rate, row.national_fee ?? row.rate].join('/');
+  const extra = [row.local_additional_fee ?? 0, row.zonal_additional_fee ?? 0, row.national_additional_fee ?? 0].join('/');
+  return (row.weight_slab || (row.weight_min + '–' + row.weight_max + 'kg')) + '; L/Z/N ₹' + base +
+    '; above ' + (row.base_weight ?? 0) + 'kg add L/Z/N ₹' + extra + ' per ' + (row.increment_weight ?? 0) + 'kg' +
+    (row.price_scope === 'all' ? '; all prices' : '');
+}
+
 function renderDiffTable() {
   const tbody = document.getElementById('diff-tbody');
   const rows = [];
@@ -968,8 +980,8 @@ function renderDiffTable() {
     rows.push({type: change.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : 'Change detail',
       marketplace: change.marketplace.toUpperCase(), category: change.category,
       brand: change.brand || 'All', slab: change.slab,
-      oldRate: change.oldRow ? JSON.stringify(change.oldRow) : '—',
-      newRate: change.newRow ? JSON.stringify(change.newRow) : 'Removed',
+      oldRate: describeRateRecord(change.table, change.oldRow),
+      newRate: change.newRow ? describeRateRecord(change.table, change.newRow) : 'Removed',
       status: change.reason || change.changeType, anomaly: Boolean(change.anomaly)});
   }
 
