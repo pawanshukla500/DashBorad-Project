@@ -162,9 +162,16 @@ export function areCookiesExpired(cookies, maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS,
     return true;
   }
   const nowSec = Date.now() / 1000;
-  const sessionCookies = cookies.filter(c => c && typeof c.expires === 'number' && c.expires > 0);
-  if (sessionCookies.length > 0) {
-    const validCookies = sessionCookies.filter(c => c.expires > nowSec);
+  // If the cookie jar contains pure session cookies (no expires or expires <= 0, or session === true),
+  // they remain active and valid within the savedAt TTL window
+  const hasPureSessionCookies = cookies.some(c => c && (!c.expires || c.expires <= 0 || c.session === true));
+  if (hasPureSessionCookies) {
+    return false;
+  }
+  // If all cookies are persistent, ensure at least one has not expired
+  const persistentCookies = cookies.filter(c => c && typeof c.expires === 'number' && c.expires > 0);
+  if (persistentCookies.length > 0) {
+    const validCookies = persistentCookies.filter(c => c.expires > nowSec);
     if (validCookies.length === 0) return true;
   }
   return false;

@@ -154,7 +154,13 @@ function clearAuthSession() {
       fs.unlinkSync(SESSION_FILE);
     }
     deleteEncryptedCookies(COOKIES_PATH);
-    deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
+    const cookiesDir = path.join(USER_DATA_DIR, 'cookies');
+    if (fs.existsSync(cookiesDir)) {
+      const files = fs.readdirSync(cookiesDir);
+      for (const f of files) {
+        try { fs.unlinkSync(path.join(cookiesDir, f)); } catch {}
+      }
+    }
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1695,22 +1701,33 @@ registerHandler('interactive-login', async (e, marketplace) => {
 });
 
 registerHandler('clear-marketplace-session', async (e, marketplace) => {
-  const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
-  const cookiesPath = getMarketplaceCookiesPath(targetId);
-  deleteEncryptedCookies(cookiesPath);
-  if (targetId === 'flipkart_shopsy' || targetId === 'flipkart') {
-    deleteEncryptedCookies(COOKIES_PATH);
+  if (withBrowserTask.busy) {
+    return { success: false, error: 'A browser task is running. Finish or stop it before purging session cookies.' };
   }
-  try {
-    const { session: electronSession } = require('electron');
-    if (electronSession) {
-      const part = electronSession.fromPartition(`persist:marketplace-${targetId}`);
-      if (part?.clearStorageData) {
-        await part.clearStorageData({ storages: ['cookies'] }).catch(() => {});
-      }
+  return await withBrowserTask(async () => {
+    const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
+    const cookiesPath = getMarketplaceCookiesPath(targetId);
+    deleteEncryptedCookies(cookiesPath);
+    if (targetId === 'flipkart_shopsy' || targetId === 'flipkart') {
+      deleteEncryptedCookies(COOKIES_PATH);
     }
-  } catch {}
-  return { success: true, marketplace: targetId };
+    let partitionErr = null;
+    try {
+      const { session: electronSession } = require('electron');
+      if (electronSession) {
+        const part = electronSession.fromPartition(`persist:marketplace-${targetId}`);
+        if (part?.clearStorageData) {
+          await part.clearStorageData({ storages: ['cookies'] });
+        }
+      }
+    } catch (err) {
+      partitionErr = err.message;
+    }
+    if (partitionErr) {
+      return { success: false, error: `Failed to clear in-memory partition cookies: ${partitionErr}` };
+    }
+    return { success: true, marketplace: targetId };
+  });
 });
 
 registerHandler('start-scrape', async (e, options) => {
