@@ -493,7 +493,7 @@ app.whenReady().then(async () => {
   if (smokeOutput) {
     const { runPackagedSmoke } = await import('./packagedSmoke.js');
     await runPackagedSmoke({ app, window: mainWindow, output: path.resolve(smokeOutput), nativeImage: require('electron').nativeImage,
-      setPage: page => { activeEmbeddedPage = page; } });
+      getBounds: getMonitorViewBounds, setPage: page => { activeEmbeddedPage = page; } });
     return;
   }
   setupAutoUpdate();
@@ -1056,7 +1056,7 @@ async function executeScrapeProcess(config, onProgress) {
           }
           const startTime = Date.now();
           page.setVisible(true);
-          layoutEmbeddedView();
+          page.layout?.();
           const timeoutMs = 300000;
           while (Date.now() - startTime < timeoutMs) {
             await new Promise((r) => setTimeout(r, 1000));

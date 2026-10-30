@@ -18,5 +18,10 @@ export function isFlipkartAuthenticated() {
   const dashboard = location.pathname === '/index.html' && /^#dashboard(?:\/|$)/i.test(location.hash);
   const shell = controls.some(el => /^(log\s*out|sign\s*out|my profile)$/i.test(el.innerText.trim()) ||
     /#dashboard\/(?:orders|payments|listings)/i.test(el.getAttribute('href') || ''));
-  return dashboard && shell;
+  // The authenticated home layout uses dropdowns for Orders/Payments, so
+  // those anchors do not exist until opened. Require the observed dashboard
+  // home + advertising + assistance navigation rather than marketing text.
+  const routes = controls.map(el => el.getAttribute('href') || '');
+  const homeShell = ['#dashboard/home-page', '#dashboard/ads/home', '#dashboard/assistance/'].every(route => routes.some(href => href.startsWith(route)));
+  return dashboard && (shell || homeShell);
 }

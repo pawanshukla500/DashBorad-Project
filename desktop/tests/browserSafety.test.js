@@ -23,6 +23,8 @@ test('public Seller Hub, visible login and OTP challenges never count as authent
   assert.equal(check({controls:[element('Seller Hub')]}),false);
   const route={pathname:'/index.html',hash:'#dashboard/payments/rate-card',controls:[element('Payments','#dashboard/payments/account-summary')]};
   assert.equal(check(route),true);
+  assert.equal(check({...route,controls:[element('Home','#dashboard/home-page'),element('Advertising','#dashboard/ads/home'),element('Help','#dashboard/assistance/node/landing')]}),true);
+  assert.equal(check({...route,controls:[element('Home','#dashboard/home-page')]}),false);
   assert.equal(check({...route,inputs:[element('OTP')]}),false);
   assert.equal(check({...route,controls:[...route.controls,element('Login')]}),false);
   assert.equal(portalPartition('flipkart'),portalPartition('shopsy'));

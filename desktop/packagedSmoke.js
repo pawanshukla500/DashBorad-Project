@@ -6,7 +6,7 @@ import { createEmbeddedPage } from './embeddedBrowser.js';
 import { portalPartition } from './portalSession.js';
 import { getStagingDb, stageReview, recoverReview, closeStagingDb } from './localStaging.js';
 
-export async function runPackagedSmoke({ app, window, output, setPage, nativeImage }) {
+export async function runPackagedSmoke({ app, window, output, setPage, getBounds, nativeImage }) {
   const result = { platform: process.platform, version: app.getVersion(), packaged: app.isPackaged, checks: [] };
   const check = (condition, label) => { if (!condition) throw new Error(label); result.checks.push(label); };
   let server, page;
@@ -31,7 +31,8 @@ export async function runPackagedSmoke({ app, window, output, setPage, nativeIma
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const url = `http://127.0.0.1:${server.address().port}/`;
-    page = createEmbeddedPage({ window, partition: portalPartition('flipkart'), bounds: { x: 20, y: 120, width: 550, height: 380 }, visible: true });
+    await window.webContents.executeJavaScript('window.ratecardAPI.setMonitorDockBounds({x:20,y:120,width:550,height:380})');
+    page = createEmbeddedPage({ window, partition: portalPartition('flipkart'), bounds: getBounds, visible: true });
     setPage(page);
     await page.goto(url);
     check(page._view.getBounds().width === 550 && page.getVisible() && window.contentView.children.includes(page._view), 'Real WebContentsView is attached with nonzero bounds and visible');

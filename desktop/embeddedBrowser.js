@@ -645,7 +645,7 @@ export function createEmbeddedPage({
 
     /** Screenshot of the live page (monitoring + debugging aid). */
     async screenshot() {
-      const image = await contents.capturePage();
+      const image = await contents.capturePage(undefined, { stayHidden: true, stayAwake: true });
       return image.toPNG();
     },
 
