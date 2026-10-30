@@ -217,22 +217,22 @@ export async function publishRateCardObservations(observations, options = {}) {
       effectiveDate,
       diffSummary: diffResult.summary,
       affectedCategories: Array.from(affectedCategories),
-      publishedBy,
+      publishedBy: String(publishedBy || 'system'),
       jobId,
+      notes: `Published via ReconCentral Canonical Publisher (Job #${jobId || 'direct'})`,
       publishedAt: new Date().toISOString()
     };
 
     const verRes = await client.query(`
-      INSERT INTO rate_card_versions (marketplace, version_name, effective_date, snapshot, created_by, notes)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO rate_card_versions (marketplace, seller_account, version_name, status, effective_from, snapshot, created_at, published_at)
+      VALUES ($1, $2, $3, 'published', $4, $5, NOW(), NOW())
       RETURNING id, version_name
     `, [
       marketplace,
+      sellerAccount,
       versionName,
       effectiveDate,
-      JSON.stringify(snapshotPayload),
-      publishedBy,
-      `Published via ReconCentral Canonical Publisher (Job #${jobId || 'direct'})`
+      JSON.stringify(snapshotPayload)
     ]);
 
     await client.query('COMMIT');

@@ -2768,14 +2768,17 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
     try {
       const res = await checkCategoryRateCard(cat, autoSync);
       if (res.success) {
-        setInspectResult(res);
         if (res.jobId) {
+          setInspectResult(null);
           setActiveJob(res.job || { id: res.jobId, status: 'queued', progress_pct: 0, progress_message: 'Job queued' });
           setToast(`Worker job #${res.jobId} queued for category "${cat}".`);
-        } else if (autoSync) {
-          setToast(`✓ Category "${cat}" rate card successfully extracted and saved to DB!`);
-          if (onSyncComplete) onSyncComplete();
-          loadStatus();
+        } else if (res.rates) {
+          setInspectResult(res);
+          if (autoSync) {
+            setToast(`✓ Category "${cat}" rate card successfully extracted and saved to DB!`);
+            if (onSyncComplete) onSyncComplete();
+            loadStatus();
+          }
         }
       } else {
         setError(res.error || `Could not find rate card for category "${cat}" on Flipkart`);

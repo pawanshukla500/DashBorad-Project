@@ -1685,7 +1685,10 @@ router.post('/check-category', async (req, res) => {
       category: cleanCategory,
       isConfiguredInDb,
       queued: true,
-      message: `Worker job #${result.rows[0].id} queued to inspect vertical "${cleanCategory}".`,
+      synced: false,
+      message: sync
+        ? `Worker job #${result.rows[0].id} queued to extract and synchronize rate card for vertical "${cleanCategory}".`
+        : `Worker job #${result.rows[0].id} queued to inspect vertical "${cleanCategory}".`,
       jobId: result.rows[0].id,
       job: result.rows[0]
     });

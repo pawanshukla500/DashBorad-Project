@@ -342,9 +342,20 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
         const srvZon = roundCurrency(srv.zonal_fee);
         const srvNat = roundCurrency(srv.national_fee);
 
-        const matchIdx = dbRev.findIndex(r =>
-          (r.weight_slab || '0kg-0.5kg').toLowerCase() === srvSlab
-        );
+        let matchIdx = dbRev.findIndex((r, idx) => {
+          if (matchedDbRevIdxs.has(idx)) return false;
+          const sameSlab = (r.weight_slab || '0kg-0.5kg').toLowerCase() === srvSlab;
+          if (!sameSlab) return false;
+          const rMin = roundCurrency(r.price_min ?? 0);
+          const sMin = roundCurrency(srv.price_min ?? 0);
+          return Math.abs(rMin - sMin) < 1.05;
+        });
+
+        if (matchIdx === -1) {
+          matchIdx = dbRev.findIndex((r, idx) =>
+            !matchedDbRevIdxs.has(idx) && (r.weight_slab || '0kg-0.5kg').toLowerCase() === srvSlab
+          );
+        }
 
         if (matchIdx === -1) {
           addedCount++;

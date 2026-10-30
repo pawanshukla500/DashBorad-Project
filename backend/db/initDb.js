@@ -3373,17 +3373,62 @@ export async function ensureRateCardWorkerSchema(pool) {
 
   const mig2 = await runVersionedMigration(pool, '2026.10.ratecard-worker-jobs-2', async (tx) => {
     await tx.query(`
+      -- Clean up pre-existing duplicate active rows keeping the newest ID before creating unique indexes
+      DELETE FROM rc_fixed_fee a USING rc_fixed_fee b
+      WHERE a.id < b.id
+        AND a.marketplace = b.marketplace
+        AND a.seller_account = b.seller_account
+        AND a.category = b.category
+        AND COALESCE(a.fulfilment_type, '') = COALESCE(b.fulfilment_type, '')
+        AND a.start_date = b.start_date
+        AND a.price_min = b.price_min
+        AND a.price_max = b.price_max
+        AND a.end_date IS NULL AND b.end_date IS NULL;
+
       CREATE UNIQUE INDEX IF NOT EXISTS rc_fixed_fee_uniq_active 
         ON rc_fixed_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, price_min, price_max) 
         WHERE end_date IS NULL;
+
+      DELETE FROM rc_collection_fee a USING rc_collection_fee b
+      WHERE a.id < b.id
+        AND a.marketplace = b.marketplace
+        AND a.seller_account = b.seller_account
+        AND a.category = b.category
+        AND COALESCE(a.fulfilment_type, '') = COALESCE(b.fulfilment_type, '')
+        AND a.start_date = b.start_date
+        AND a.price_min = b.price_min
+        AND a.price_max = b.price_max
+        AND a.end_date IS NULL AND b.end_date IS NULL;
 
       CREATE UNIQUE INDEX IF NOT EXISTS rc_collection_fee_uniq_active 
         ON rc_collection_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, price_min, price_max) 
         WHERE end_date IS NULL;
 
+      DELETE FROM rc_commission a USING rc_commission b
+      WHERE a.id < b.id
+        AND a.marketplace = b.marketplace
+        AND a.seller_account = b.seller_account
+        AND a.category = b.category
+        AND COALESCE(a.brand_name, '') = COALESCE(b.brand_name, '')
+        AND a.start_date = b.start_date
+        AND a.price_min = b.price_min
+        AND a.price_max = b.price_max
+        AND a.end_date IS NULL AND b.end_date IS NULL;
+
       CREATE UNIQUE INDEX IF NOT EXISTS rc_commission_uniq_active 
         ON rc_commission (marketplace, seller_account, category, COALESCE(brand_name, ''), start_date, price_min, price_max) 
         WHERE end_date IS NULL;
+
+      DELETE FROM rc_pick_pack a USING rc_pick_pack b
+      WHERE a.id < b.id
+        AND a.marketplace = b.marketplace
+        AND a.seller_account = b.seller_account
+        AND a.category = b.category
+        AND COALESCE(a.fulfilment_type, '') = COALESCE(b.fulfilment_type, '')
+        AND a.start_date = b.start_date
+        AND a.price_min = b.price_min
+        AND a.price_max = b.price_max
+        AND a.end_date IS NULL AND b.end_date IS NULL;
 
       CREATE UNIQUE INDEX IF NOT EXISTS rc_pick_pack_uniq_active 
         ON rc_pick_pack (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, price_min, price_max) 

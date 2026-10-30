@@ -1541,10 +1541,16 @@ registerHandler('get-marketplace-accounts', async () => {
 
 registerHandler('auth-get-session', async () => {
   const session = await authorizeSession();
-  if (session) saveAuthSession(session);
+  if (session) {
+    saveAuthSession(session);
+    if (!workerPollingInterval && session.authenticated) {
+      startWorkerEngine(session).catch(e => console.warn('[Worker Engine] Session restore start error:', e.message));
+    }
+  }
   return publicSession(session);
 });
 registerHandler('auth-logout', async () => {
+  stopWorkerEngine();
   const cleared = clearAuthSession();
   await closeDesktopPool();
   setDesktopDatabaseAccess(null);
