@@ -1369,13 +1369,7 @@ registerHandler('get-marketplace-accounts', async () => {
 
 registerHandler('auth-get-session', async () => {
   const session = await authorizeSession();
-  if (session) {
-    saveAuthSession(session);
-    const config = loadConfig();
-    if (config.databaseUrl) {
-      setDesktopDatabaseAccess(session.user?.role, config.databaseUrl);
-    }
-  }
+  if (session) saveAuthSession(session);
   return publicSession(session);
 });
 registerHandler('auth-logout', async () => {
