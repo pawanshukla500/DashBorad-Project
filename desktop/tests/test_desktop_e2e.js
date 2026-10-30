@@ -68,7 +68,7 @@ async function runE2ETests() {
     const capture = createRateCardCapture();
     capture.observe({url:'https://seller.flipkart.com/napi/rate-card/get-complete-category-tree',status:200,body:{result:[{verticalName:'kurta'}]}});
     let navigatedUrls = [];
-    let currentQuery;
+    let currentQuery, pendingFsn;
     const fakePage = {
       setCookie: async () => {},
       rateCardCapture: capture,
@@ -86,11 +86,12 @@ async function runE2ETests() {
       },
       reload: async () => fakePage.goto('https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query='+encodeURIComponent(JSON.stringify(currentQuery))),
       waitForSelector: async () => {},
-      type: async (_selector, fsn) => { currentQuery.fsn=fsn; },
+      type: async (_selector, fsn) => { pendingFsn=fsn; },
       cookies: async () => [],
       evaluate: async (fn) => {
         if (fn.name === 'isFlipkartAuthenticated') return true;
-        if (fn.toString().includes('q.fsn === expected')) return true;
+        if (fn.toString().includes('searchIcon')) currentQuery.fsn=pendingFsn;
+        if (fn.toString().includes('q.fsn === expected')) return Boolean(currentQuery.fsn);
         const lastUrl = navigatedUrls[navigatedUrls.length - 1] || '';
         if (lastUrl.includes('dashboard/home-page')) return true; // session valid
         return [];

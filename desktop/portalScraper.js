@@ -127,6 +127,13 @@ export async function scrapeFlipkartRateCards(config = {}, {
           el.dispatchEvent(new Event('input', { bubbles: true }));
         }, searchSelector);
         await page.type(searchSelector, fsn, { delay: 60 });
+        // The live Seller Hub input updates its controlled value on input, but
+        // Electron insertText does not submit the widget's search action.
+        await page.evaluate(() => {
+          const search = document.querySelector('[data-testid="searchIcon"]');
+          if (!search || !search.getClientRects().length) throw new Error('Seller Hub FSN search button is missing.');
+          search.click();
+        });
         let matched = false;
         for (let attempt = 0; attempt < 15; attempt++) {
           matched = await page.evaluate((expected, channel, fulfillment) => {

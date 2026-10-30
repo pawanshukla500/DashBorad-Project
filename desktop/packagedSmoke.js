@@ -35,7 +35,10 @@ export async function runPackagedSmoke({ app, window, output, setPage, getBounds
     page = createEmbeddedPage({ window, partition: portalPartition('flipkart'), bounds: getBounds, visible: true });
     setPage(page);
     await page.goto(url);
-    check(page._view.getBounds().width === 550 && page.getVisible() && window.contentView.children.includes(page._view), 'Real WebContentsView is attached with nonzero bounds and visible');
+    const initialDock = await window.webContents.executeJavaScript('window.ratecardAPI.setMonitorDockBounds({x:20,y:120,width:550,height:380})');
+    check(initialDock.success === true, 'Trusted renderer dock IPC is accepted');
+    check(page._view.getBounds().width === 550, 'Real native view bounds: ' + JSON.stringify(page._view.getBounds()));
+    check(page.getVisible() && window.contentView.children.includes(page._view), 'Real WebContentsView is attached and visible');
     page.setVisible(false);
     await page.type('#otp', '123456', { delay: 10 });
     check(await page.evaluate(() => document.querySelector('#otp').value) === '123456', 'Hidden renderer accepts real OTP editor input');
