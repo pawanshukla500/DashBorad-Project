@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
 
   // Authentication & Live Browser
   runInteractiveLogin: (marketplace) => ipcRenderer.invoke('interactive-login', marketplace),
+  clearMarketplaceSession: (marketplace) => ipcRenderer.invoke('clear-marketplace-session', marketplace),
   startScrape: (options) => ipcRenderer.invoke('start-scrape', options),
 
   // Brand-Wise & FSN Catalog

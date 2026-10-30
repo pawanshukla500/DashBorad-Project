@@ -13,7 +13,10 @@ export {
   getResolvedCookiesPath, 
   getResolvedCapturesDir, 
   saveEncryptedCookies, 
-  loadEncryptedCookies 
+  loadEncryptedCookies,
+  deleteEncryptedCookies,
+  areCookiesExpired,
+  DEFAULT_MAX_COOKIE_AGE_MS
 } from './cookieVault.js';
 
 /**

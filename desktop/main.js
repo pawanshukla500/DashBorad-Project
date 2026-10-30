@@ -11,6 +11,7 @@ import {
   filterRateCardsByChannel, 
   saveEncryptedCookies,
   loadEncryptedCookies,
+  deleteEncryptedCookies,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
@@ -151,6 +152,14 @@ function clearAuthSession() {
   try {
     if (fs.existsSync(SESSION_FILE)) {
       fs.unlinkSync(SESSION_FILE);
+    }
+    deleteEncryptedCookies(COOKIES_PATH);
+    const cookiesDir = path.join(USER_DATA_DIR, 'cookies');
+    if (fs.existsSync(cookiesDir)) {
+      const files = fs.readdirSync(cookiesDir);
+      for (const f of files) {
+        try { fs.unlinkSync(path.join(cookiesDir, f)); } catch {}
+      }
     }
     return { success: true };
   } catch (err) {
@@ -1647,6 +1656,17 @@ registerHandler('auth-logout', async () => {
   const cleared = clearAuthSession();
   await closeDesktopPool();
   setDesktopDatabaseAccess(null);
+  try {
+    const { session: electronSession } = require('electron');
+    if (electronSession) {
+      for (const mp of SUPPORTED_MARKETPLACES) {
+        const part = electronSession.fromPartition(`persist:marketplace-${mp.id}`);
+        if (part?.clearStorageData) {
+          await part.clearStorageData({ storages: ['cookies'] }).catch(() => {});
+        }
+      }
+    }
+  } catch {}
   // An undeleted session file keeps working tokens on disk that session
   // restoration would sign straight back in with: never claim a clean
   // deauthorization when the removal failed.
@@ -1678,6 +1698,36 @@ registerHandler('test-db-connection', async (e, customUrl) => {
 });
 registerHandler('interactive-login', async (e, marketplace) => {
   return await withBrowserTask(() => executeInteractiveLogin(marketplace));
+});
+
+registerHandler('clear-marketplace-session', async (e, marketplace) => {
+  if (withBrowserTask.busy) {
+    return { success: false, error: 'A browser task is running. Finish or stop it before purging session cookies.' };
+  }
+  return await withBrowserTask(async () => {
+    const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
+    const cookiesPath = getMarketplaceCookiesPath(targetId);
+    deleteEncryptedCookies(cookiesPath);
+    if (targetId === 'flipkart_shopsy' || targetId === 'flipkart') {
+      deleteEncryptedCookies(COOKIES_PATH);
+    }
+    let partitionErr = null;
+    try {
+      const { session: electronSession } = require('electron');
+      if (electronSession) {
+        const part = electronSession.fromPartition(`persist:marketplace-${targetId}`);
+        if (part?.clearStorageData) {
+          await part.clearStorageData({ storages: ['cookies'] });
+        }
+      }
+    } catch (err) {
+      partitionErr = err.message;
+    }
+    if (partitionErr) {
+      return { success: false, error: `Failed to clear in-memory partition cookies: ${partitionErr}` };
+    }
+    return { success: true, marketplace: targetId };
+  });
 });
 
 registerHandler('start-scrape', async (e, options) => {

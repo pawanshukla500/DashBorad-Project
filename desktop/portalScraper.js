@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js';
-import { getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies } from './cookieVault.js';
+import { getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, deleteEncryptedCookies } from './cookieVault.js';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -127,21 +127,28 @@ export async function scrapeFlipkartRateCards(config = {}, {
     const cookieFile = fs.existsSync(cookiesPath) ? cookiesPath : fallbackCookiesPath;
     if (fs.existsSync(cookieFile)) {
       const cookies = loadEncryptedCookies(cookieFile);
-      if (cookies?.length) await page.setCookie(...cookies);
+      if (cookies?.length) {
+        await page.setCookie(...cookies);
+      } else {
+        deleteEncryptedCookies(cookieFile);
+      }
     }
     const safeGoto = async (targetUrl, options = {}) => {
       try {
-        return await page.goto(targetUrl, options);
+        return await page.goto(targetUrl, { waitUntil: 'load', timeout: 35000, ...options });
       } catch (navErr) {
         const msg = String(navErr?.message || navErr);
         if (msg.includes('ERR_ABORTED') || navErr?.code === 'ERR_ABORTED' || navErr?.errno === -3) {
           return { ok: true, redirected: true };
         }
+        if (msg.includes('quiet network state')) {
+          return { ok: true, quietTimeout: true };
+        }
         throw navErr;
       }
     };
 
-    await safeGoto('https://seller.flipkart.com/index.html#dashboard/home-page', { waitUntil: 'networkidle2', timeout: 45000 });
+    await safeGoto('https://seller.flipkart.com/index.html#dashboard/home-page', { waitUntil: 'load', timeout: 35000 });
     const checkSession = () => page.evaluate(() => {
       const href = window.location.href.toLowerCase();
       const body = document.body?.innerText.toLowerCase() || '';
@@ -156,6 +163,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
       );
     });
     if (!await checkSession()) {
+      deleteEncryptedCookies(cookiesPath);
+      deleteEncryptedCookies(fallbackCookiesPath);
       if (!config.password) {
         if (typeof onSessionExpiry === 'function') {
           // Trigger modal opening if landing page is shown
@@ -178,7 +187,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
         }
       } else {
         onProgress('Session expired. Signing in to Seller Hub...');
-        await safeGoto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 45000 });
+        await safeGoto('https://seller.flipkart.com/', { waitUntil: 'load', timeout: 35000 });
         
         // 1. Open login modal if not already open
         const isModalOpen = await page.evaluate(() => {
@@ -285,14 +294,23 @@ export async function scrapeFlipkartRateCards(config = {}, {
         const query = { marketplace: queryMarketplace, fulfillment: fulfilment, date: `${effectiveDate} 12:00:00`, vertical: queryVertical };
         onProgress(`Extracting ${vertical} (${fulfilment})...`);
         await safeGoto(`https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=${encodeURIComponent(JSON.stringify(query))}`, {
-          waitUntil: 'networkidle2', timeout: 35000
+          waitUntil: 'load', timeout: 35000
         });
-        await delay(config.visible ? 3000 : 2000);
-        const tables = await page.evaluate(() => Array.from(document.querySelectorAll('table')).map(
-          (table) => Array.from(table.querySelectorAll('tr')).map(
-            (row) => Array.from(row.querySelectorAll('th, td')).map((cell) => cell.innerText.trim())
-          )
-        ));
+        // Wait dynamically for rate-card XHR data to render into table elements
+        if (typeof page.waitForSelector === 'function') {
+          await page.waitForSelector('table tr td, table tr th', { timeout: 8000 }).catch(() => null);
+        }
+        let tables = [];
+        const pollDeadline = Date.now() + (config.visible ? 8000 : 6000);
+        while (Date.now() < pollDeadline) {
+          tables = await page.evaluate(() => Array.from(document.querySelectorAll('table')).map(
+            (table) => Array.from(table.querySelectorAll('tr')).map(
+              (row) => Array.from(row.querySelectorAll('th, td')).map((cell) => cell.innerText.trim())
+            )
+          ));
+          if (tables.some((table) => table.length > 1)) break;
+          await delay(800);
+        }
         const hasTables = tables.some((table) => table.length > 1);
         if (!hasTables && !isShopsyVertical) {
           onProgress(`⚠️ No rate card tables found for ${vertical} (${fulfilment}). Skipping...`);
