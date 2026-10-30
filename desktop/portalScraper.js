@@ -188,8 +188,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
     const effectiveDate = new Date().toISOString().slice(0, 10);
     const data = [];
     for (const vertical of verticals) {
+      const isShopsyVertical = vertical.toLowerCase().startsWith('shopsy_') || marketplace === 'shopsy';
       for (const fulfilment of ['non-fbf', 'fbf']) {
-        const query = { marketplace: vertical.startsWith('shopsy_') ? 'shopsy' : 'flipkart', fulfillment: fulfilment, date: `${effectiveDate} 12:00:00`, vertical };
+        const queryVertical = vertical.replace(/^shopsy_/, '');
+        const queryMarketplace = isShopsyVertical ? 'shopsy' : 'flipkart';
+        const query = { marketplace: queryMarketplace, fulfillment: fulfilment, date: `${effectiveDate} 12:00:00`, vertical: queryVertical };
         onProgress(`Extracting ${vertical} (${fulfilment})...`);
         await page.goto(`https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=${encodeURIComponent(JSON.stringify(query))}`, {
           waitUntil: 'networkidle2', timeout: 35000
@@ -200,12 +203,19 @@ export async function scrapeFlipkartRateCards(config = {}, {
             (row) => Array.from(row.querySelectorAll('th, td')).map((cell) => cell.innerText.trim())
           )
         ));
-        if (!tables.some((table) => table.length > 1)) throw new Error(`No rate card tables found for ${vertical} (${fulfilment}). Nothing was staged.`);
+        const hasTables = tables.some((table) => table.length > 1);
+        if (!hasTables && !isShopsyVertical) {
+          onProgress(`⚠️ No rate card tables found for ${vertical} (${fulfilment}). Skipping...`);
+          continue;
+        }
         data.push({
           ...parseRateCardTables(tables, vertical, effectiveDate, query.marketplace),
           fulfilment_type: fulfilment === 'fbf' ? 'FBF' : 'NON_FBF'
         });
       }
+    }
+    if (data.length === 0) {
+      throw new Error('No rate card tables found for any selected vertical. Nothing was staged.');
     }
     fs.mkdirSync(stagingDir, { recursive: true, mode: 0o700 });
     const stagingFile = path.join(stagingDir, `ratecards_${Date.now()}.json`);

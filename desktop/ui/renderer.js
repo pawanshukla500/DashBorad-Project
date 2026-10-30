@@ -1207,7 +1207,7 @@ function setupEventListeners() {
       const syncOptions = {
         forceUpdate: true,
         actor: session?.user?.email || session?.user?.name || 'desktop-operator',
-        runMetadata: { source: 'desktop-worker-ui', uiVersion: '1.7.0' }
+        runMetadata: { source: 'desktop-worker-ui', uiVersion: '1.8.0' }
       };
       const res = await window.ratecardAPI.syncBrandRateCards(currentRateCards, syncOptions);
       if (res.success && res.result?.updated) {

@@ -1867,7 +1867,7 @@ async function runTests() {
     assert.strictEqual(res.updated, true);
     assert.strictEqual(res.anomaliesCount, 1);
     assert(insertedSnapshot, 'rich audit snapshot must be inserted into rate_card_versions');
-    assert.strictEqual(insertedSnapshot.version, '1.7.0');
+    assert.strictEqual(insertedSnapshot.version, '1.8.0');
     assert.strictEqual(insertedSnapshot.actor, 'pawan@vbexports.co.in');
     assert.strictEqual(insertedSnapshot.stats.anomaliesCount, 1);
     assert.strictEqual(insertedSnapshot.summary.anomalies.length, 1);
@@ -1892,7 +1892,7 @@ async function runTests() {
   await runTest('desktop package.json ships test:e2e script and test_desktop_e2e.js (stage 5)', async () => {
     const pkgPath = path.join(desktopDir, 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    assert.strictEqual(pkg.version, '1.7.0', 'version must be 1.7.0');
+    assert.strictEqual(pkg.version, '1.8.0', 'version must be 1.8.0');
     assert(pkg.scripts['test:e2e'], 'package.json must define test:e2e');
     assert(pkg.scripts['test'].includes('test_desktop_e2e.js'), 'test script must include test_desktop_e2e.js');
     assert(!pkg.scripts['test'].includes('test_desktop_auth.js'), 'default test script must remain offline/CI-safe without live auth');
@@ -1918,7 +1918,7 @@ async function runTests() {
     assert(rendererContent.includes('function triggerInteractiveLogin('), 'renderer.js must define module-scoped triggerInteractiveLogin');
     assert(rendererContent.includes('data-tab="monitor"'), 'renderer.js must navigate to monitor tab for live view');
     assert(rendererContent.includes('syncMonitorDockBounds'), 'renderer.js must synchronize dock bounds');
-    assert(rendererContent.includes("uiVersion: '1.7.0'"), 'renderer.js must send 1.7.0 uiVersion');
+    assert(rendererContent.includes("uiVersion: '1.8.0'"), 'renderer.js must send 1.8.0 uiVersion');
   });
 
   await runTest('workerClient strictly enforces HTTPS allowlist and refuses bearer tokens on untrusted origins', async () => {

@@ -148,7 +148,44 @@ export function saveEncryptedCookies(filePath, cookies) {
  */
 export function loadEncryptedCookies(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return null;
+    if (!fs.existsSync(filePath)) {
+      const candidates = [
+        path.join(path.dirname(filePath), 'cookies.json'),
+        path.join(path.dirname(filePath), '..', 'cookies.json'),
+        path.join(process.cwd(), '.runtime', path.basename(filePath)),
+        path.join(process.cwd(), '.runtime', 'cookies.json'),
+        path.join(__dirname, '..', '.runtime', 'cookies.json'),
+        path.join(__dirname, '.runtime', 'cookies.json')
+      ];
+      for (const cand of candidates) {
+        if (cand !== filePath && fs.existsSync(cand)) {
+          try {
+            const raw = fs.readFileSync(cand, 'utf8').trim();
+            if (raw) {
+              let fallbackCookies = null;
+              if (raw.includes(':')) {
+                try {
+                  const dec = decryptVaultData(raw);
+                  if (dec) fallbackCookies = JSON.parse(dec);
+                } catch {}
+              }
+              if (!fallbackCookies) {
+                try {
+                  fallbackCookies = JSON.parse(raw);
+                } catch {}
+              }
+              if (Array.isArray(fallbackCookies) && fallbackCookies.length > 0) {
+                try {
+                  saveEncryptedCookies(filePath, fallbackCookies);
+                } catch {}
+                return fallbackCookies;
+              }
+            }
+          } catch {}
+        }
+      }
+      return null;
+    }
     const raw = fs.readFileSync(filePath, 'utf8').trim();
     if (!raw) return null;
     // Check if AES-256-GCM serialized format: ivHex:authTagHex:ciphertextHex
