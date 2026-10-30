@@ -71,15 +71,29 @@ export async function publishRateCardObservations(observations, options = {}) {
 
       // A. Commissions
       if (hasCommissionDiff) {
-        if (!closedCommissions.has(category)) {
-          await client.query(`
-            UPDATE rc_commission
-            SET end_date = $1, updated_at = NOW()
-            WHERE marketplace = $2 AND seller_account = $3 AND category = $4
-              AND (start_date IS NULL OR start_date <= $1)
-              AND (end_date IS NULL OR end_date >= $5)
-          `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
-          closedCommissions.add(category);
+        const obsBrand = obs.brand || obs.brand_name || null;
+        const commCloseKey = `${category}:${obsBrand || ''}`;
+        if (!closedCommissions.has(commCloseKey)) {
+          if (obsBrand) {
+            await client.query(`
+              UPDATE rc_commission
+              SET end_date = $1, updated_at = NOW()
+              WHERE marketplace = $2 AND seller_account = $3 AND category = $4
+                AND brand_name = $5
+                AND (start_date IS NULL OR start_date <= $1)
+                AND (end_date IS NULL OR end_date >= $6)
+            `, [previousEndDate, marketplace, sellerAccount, category, obsBrand, effectiveDate]);
+          } else {
+            await client.query(`
+              UPDATE rc_commission
+              SET end_date = $1, updated_at = NOW()
+              WHERE marketplace = $2 AND seller_account = $3 AND category = $4
+                AND (brand_name IS NULL OR brand_name = '')
+                AND (start_date IS NULL OR start_date <= $1)
+                AND (end_date IS NULL OR end_date >= $5)
+            `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
+          }
+          closedCommissions.add(commCloseKey);
         }
 
         for (const comm of (obs.commissions || [])) {
@@ -90,7 +104,7 @@ export async function publishRateCardObservations(observations, options = {}) {
             DO UPDATE SET rate = EXCLUDED.rate, updated_at = NOW()
           `, [
             category,
-            comm.brand_name || null,
+            comm.brand_name || obsBrand || null,
             marketplace,
             sellerAccount,
             effectiveDate,

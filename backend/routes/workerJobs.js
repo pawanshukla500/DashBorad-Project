@@ -385,8 +385,14 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
         completed_at = NOW(),
         updated_at = NOW()
       WHERE id = $3
+        AND status IN ('queued', 'claimed', 'running')
+        AND (lease_worker_id IS NULL OR lease_worker_id = $4)
       RETURNING *
-    `, [JSON.stringify(results), JSON.stringify(diffResult), id]);
+    `, [JSON.stringify(results), JSON.stringify(diffResult), id, worker_id]);
+
+    if (updateRes.rows.length === 0) {
+      return res.status(409).json({ error: 'Job lease was reclaimed, cancelled, or expired before results could be saved', code: 'LEASE_LOST' });
+    }
 
     res.json({
       success: true,
@@ -403,7 +409,7 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
  * Publish approved job results to active rc_* tables
  * POST /api/worker-jobs/:id/publish
  */
-workerJobsRouter.post('/:id/publish', requireRole('operator', 'admin'), async (req, res) => {
+workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => {
   const { id } = req.params;
   const pool = getPool();
 
@@ -419,9 +425,12 @@ workerJobsRouter.post('/:id/publish', requireRole('operator', 'admin'), async (r
     }
 
     const effectiveDate = req.body?.effectiveDate ||
+      job.diff_summary?.effectiveDate ||
       job.results.find(r => r.effectiveDate || r.source_effective_date)?.effectiveDate ||
       job.results.find(r => r.source_effective_date)?.source_effective_date ||
       job.parameters?.effectiveDate ||
+      (job.completed_at ? new Date(job.completed_at).toISOString().slice(0, 10) : null) ||
+      (job.created_at ? new Date(job.created_at).toISOString().slice(0, 10) : null) ||
       new Date().toISOString().slice(0, 10);
 
     const publishResult = await publishRateCardObservations(job.results, {

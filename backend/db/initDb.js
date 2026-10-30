@@ -3357,13 +3357,13 @@ export async function ensureRateCardWorkerSchema(pool) {
         ON workers (status, last_heartbeat DESC);
 
       CREATE UNIQUE INDEX IF NOT EXISTS rc_fixed_fee_uniq_period 
-        ON rc_fixed_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max);
+        ON rc_fixed_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, COALESCE(end_date, '9999-12-31'::date), price_min, price_max);
 
       CREATE UNIQUE INDEX IF NOT EXISTS rc_collection_fee_uniq_period 
-        ON rc_collection_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max);
+        ON rc_collection_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, COALESCE(end_date, '9999-12-31'::date), price_min, price_max);
 
       CREATE UNIQUE INDEX IF NOT EXISTS rc_pick_pack_uniq_period 
-        ON rc_pick_pack (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max);
+        ON rc_pick_pack (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, COALESCE(end_date, '9999-12-31'::date), price_min, price_max);
     `);
   }, { lockTimeout: '5s' });
 

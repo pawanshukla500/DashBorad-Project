@@ -464,12 +464,23 @@ function setupAutoUpdate() {
 // done) under this identity; it must match build.appId in package.json.
 app.setAppUserModelId('com.reconcentral.ratecardworker');
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   createWindow();
   setupAutoUpdate();
-  const existingSession = loadAuthSession();
-  if (existingSession?.authenticated) startWorkerEngine(existingSession).catch(() => {});
   fs.mkdirSync(STAGING_DIR, { recursive: true });
+
+  try {
+    const session = await authorizeSession();
+    if (session?.authenticated) {
+      saveAuthSession(session);
+      startWorkerEngine(session).catch(e => console.warn('[Worker Engine] Startup engine error:', e.message));
+    }
+  } catch (err) {
+    const fallbackSession = loadAuthSession();
+    if (fallbackSession?.authenticated) {
+      startWorkerEngine(fallbackSession).catch(() => {});
+    }
+  }
 
   // Start background scheduler check; a rejected run (e.g. token refresh
   // during a network outage) is logged, never surfaced as an unhandled rejection.
@@ -572,10 +583,10 @@ function stopWorkerEngine() {
 }
 
 async function executeBackgroundWorkerJob(session, job) {
-  isWorkerExecutingJob = true;
   let db = null;
 
   try {
+    isWorkerExecutingJob = true;
     db = getStagingDb(USER_DATA_DIR);
     saveStagedJob(db, {
       id: `job-${job.id}`,

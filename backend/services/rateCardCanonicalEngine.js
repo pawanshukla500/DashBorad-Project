@@ -81,14 +81,22 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
 
       // ── 1. Check Commission Slabs ──────────────────────────────────────────
       const scrapedComms = obs.commissions || [];
-      const dbComms = activeCommissions.filter(c => c.category === category);
+      const obsBrand = obs.brand || obs.brand_name || null;
+      // If observation specifies a brand, compare against that brand's rules in DB.
+      // If observation is generic (no brand), compare only against generic DB rules (c.brand_name is null/empty).
+      // This ensures generic portal scrapes do not mistakenly report named brand rates as "removed".
+      const dbComms = activeCommissions.filter(c => {
+        if (c.category !== category) return false;
+        if (obsBrand) return (c.brand_name || null) === obsBrand;
+        return !c.brand_name;
+      });
       const matchedDbCommIdxs = new Set();
 
       for (const sc of scrapedComms) {
         const scMin = roundCurrency(sc.price_min || 0);
         const scMax = roundCurrency(sc.price_max || 999999);
         const scRate = roundRate(sc.rate);
-        const scBrand = sc.brand_name || null;
+        const scBrand = sc.brand_name || obsBrand || null;
 
         const matchIdx = dbComms.findIndex(c =>
           roundCurrency(c.price_min) === scMin &&
