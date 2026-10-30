@@ -434,48 +434,6 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
         </div>
       </div>
 
-      {activeJob && (
-        <div className="px-5 py-3 bg-primary-container/30 border-b border-primary/20 text-xs">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-primary">Job #{activeJob.id}</span>
-              <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-white/80 border border-primary/20 text-primary">
-                {activeJob.status}
-              </span>
-              <span className="text-secondary">{activeJob.progress_message || 'Processing...'}</span>
-            </div>
-            {activeJob.status === 'completed' && activeJob.diff_summary?.diffCount > 0 && (
-              <button
-                type="button"
-                onClick={() => handlePublishJob(activeJob.id)}
-                disabled={publishing}
-                className="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 active:scale-95 transition-all shadow-sm flex items-center gap-1 disabled:opacity-50"
-              >
-                {publishing ? 'Publishing...' : 'Approve & Publish to PostgreSQL'}
-              </button>
-            )}
-          </div>
-          {activeJob.status === 'running' && (
-            <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2 overflow-hidden">
-              <div className="bg-primary h-1.5 rounded-full transition-all duration-300" style={{ width: `${activeJob.progress_pct || 20}%` }} />
-            </div>
-          )}
-          {activeJob.status === 'completed' && activeJob.diff_summary?.diffs?.length > 0 && (
-            <div className="mt-3 p-3 bg-white rounded-xl border border-primary/10 max-h-48 overflow-y-auto">
-              <div className="font-bold text-[11px] text-ink mb-1">Detected Rate Differences ({activeJob.diff_summary.diffCount}):</div>
-              <ul className="space-y-1 text-[11px]">
-                {activeJob.diff_summary.diffs.map((d, i) => (
-                  <li key={i} className="flex items-center justify-between text-secondary">
-                    <span><strong>{d.category}</strong> ({d.table}): {d.details || d.slab}</span>
-                    <span className="font-mono text-primary font-bold">{d.oldRate ?? 'None'} → {d.newRate}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-
       {supersededKeys.length > 0 && (
         <div className="mx-5 mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900" role="status">
           <p className="font-semibold">
@@ -2888,6 +2846,48 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
         <div className="px-5 py-2.5 bg-rose-50 border-b border-rose-200 text-xs font-semibold text-rose-800 flex items-center justify-between">
           <span>{error}</span>
           <button type="button" onClick={() => setError('')} className="text-rose-600 hover:text-rose-900">✕</button>
+        </div>
+      )}
+
+            {activeJob && (
+        <div className="px-5 py-3 bg-primary-container/30 border-b border-primary/20 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-primary">Job #{activeJob.id}</span>
+              <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-white/80 border border-primary/20 text-primary">
+                {activeJob.status}
+              </span>
+              <span className="text-secondary">{activeJob.progress_message || 'Processing...'}</span>
+            </div>
+            {activeJob.status === 'completed' && activeJob.diff_summary?.diffCount > 0 && (
+              <button
+                type="button"
+                onClick={() => handlePublishJob(activeJob.id)}
+                disabled={publishing}
+                className="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 active:scale-95 transition-all shadow-sm flex items-center gap-1 disabled:opacity-50"
+              >
+                {publishing ? 'Publishing...' : 'Approve & Publish to PostgreSQL'}
+              </button>
+            )}
+          </div>
+          {activeJob.status === 'running' && (
+            <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2 overflow-hidden">
+              <div className="bg-primary h-1.5 rounded-full transition-all duration-300" style={{ width: `${activeJob.progress_pct || 20}%` }} />
+            </div>
+          )}
+          {activeJob.status === 'completed' && activeJob.diff_summary?.diffs?.length > 0 && (
+            <div className="mt-3 p-3 bg-white rounded-xl border border-primary/10 max-h-48 overflow-y-auto">
+              <div className="font-bold text-[11px] text-ink mb-1">Detected Rate Differences ({activeJob.diff_summary.diffCount}):</div>
+              <ul className="space-y-1 text-[11px]">
+                {activeJob.diff_summary.diffs.map((d, i) => (
+                  <li key={i} className="flex items-center justify-between text-secondary">
+                    <span><strong>{d.category}</strong> ({d.table}): {d.details || d.slab}</span>
+                    <span className="font-mono text-primary font-bold">{d.oldRate ?? 'None'} → {d.newRate}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
