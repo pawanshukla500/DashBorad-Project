@@ -48,6 +48,7 @@ const MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION = '2026.09.myntra-ej-rate-cards-1';
 const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimization-1';
 const LOOKUP_INDEXES_SCHEMA_VERSION = '2026.09.lookup-indexes-1';
 const MARKETPLACE_CREDENTIALS_SCHEMA_VERSION = '2026.10.marketplace-credentials-1';
+export const RATE_CARD_WORKER_SCHEMA_VERSION = '2026.10.ratecard-worker-jobs-1';
 
 const TABLES = [`
   CREATE TABLE IF NOT EXISTS orders (
@@ -1088,6 +1089,7 @@ export async function initDb() {
       await ensureDbConnectionOptimization(db);
       await ensureLookupIndexes(pool);
       await ensureMarketplaceCredentialsSchema(db);
+      await ensureRateCardWorkerSchema(pool);
       // A read-model migration changes the view definition as well as the
       // backing table, so it must run on already-current installations too.
       await ensureAmazonSettlementReportingRollups(pool, db);
@@ -1786,6 +1788,7 @@ export async function initDb() {
     await ensureDbConnectionOptimization(db);
     await ensureLookupIndexes(pool);
     await ensureMarketplaceCredentialsSchema(db);
+    await ensureRateCardWorkerSchema(pool);
 
     db.throwIfInterrupted();
     await db.query(
@@ -3290,6 +3293,79 @@ export async function ensureMarketplaceCredentialsSchema(db) {
   } catch (err) {
     console.warn('[db] ensureMarketplaceCredentialsSchema failed:', err.message);
   }
+}
+
+/**
+ * Rate Card Worker & Distributed Job Execution Schema.
+ * Sets up workers registry, central worker_jobs queue, lease tracking indexes,
+ * and fixes unique period constraints on rc_* tables.
+ */
+export async function ensureRateCardWorkerSchema(pool) {
+  return runVersionedMigration(pool, RATE_CARD_WORKER_SCHEMA_VERSION, async client => {
+    // 1. Workers registry table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS workers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'online',
+        last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        capabilities JSONB NOT NULL DEFAULT '[]'::jsonb,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS worker_jobs (
+        id BIGSERIAL PRIMARY KEY,
+        idempotency_key TEXT UNIQUE,
+        marketplace TEXT NOT NULL,
+        seller_account TEXT NOT NULL DEFAULT 'default',
+        job_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        priority INT NOT NULL DEFAULT 0,
+        lease_worker_id TEXT REFERENCES workers(id) ON DELETE SET NULL,
+        lease_expires_at TIMESTAMPTZ,
+        progress_pct INT NOT NULL DEFAULT 0,
+        progress_message TEXT,
+        attempts INT NOT NULL DEFAULT 0,
+        max_attempts INT NOT NULL DEFAULT 3,
+        parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+        results JSONB,
+        diff_summary JSONB,
+        error_code TEXT,
+        error_message TEXT,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      );
+
+      CREATE INDEX IF NOT EXISTS ix_worker_jobs_claim 
+        ON worker_jobs (status, priority DESC, created_at ASC) 
+        WHERE status = 'queued';
+
+      CREATE INDEX IF NOT EXISTS ix_worker_jobs_lease 
+        ON worker_jobs (lease_worker_id, lease_expires_at) 
+        WHERE status IN ('claimed', 'running');
+
+      CREATE INDEX IF NOT EXISTS ix_worker_jobs_lookup 
+        ON worker_jobs (marketplace, seller_account, status, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS ix_workers_heartbeat 
+        ON workers (status, last_heartbeat DESC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS rc_fixed_fee_uniq_period 
+        ON rc_fixed_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS rc_collection_fee_uniq_period 
+        ON rc_collection_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS rc_pick_pack_uniq_period 
+        ON rc_pick_pack (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max);
+    `);
+  }, { lockTimeout: '5s' });
 }
 
 /**

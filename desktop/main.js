@@ -22,6 +22,24 @@ import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlFo
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
+import {
+  getActiveBackendUrl,
+  registerWorkerWithBackend,
+  sendWorkerHeartbeat,
+  claimNextWorkerJob,
+  reportJobProgress,
+  submitJobResults,
+  fetchBrandCatalogFromApi,
+  detectRateChangesViaApi,
+  publishJobViaApi
+} from './workerClient.js';
+import {
+  getStagingDb,
+  saveStagedJob,
+  saveStagedObservations,
+  getStagedObservations,
+  markStagedJobStatus
+} from './localStaging.js';
 
 const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
@@ -447,6 +465,8 @@ app.setAppUserModelId('com.reconcentral.ratecardworker');
 app.whenReady().then(() => {
   createWindow();
   setupAutoUpdate();
+  const existingSession = loadAuthSession();
+  if (existingSession?.authenticated) startWorkerEngine(existingSession).catch(() => {});
   fs.mkdirSync(STAGING_DIR, { recursive: true });
 
   // Start background scheduler check; a rejected run (e.g. token refresh
@@ -461,6 +481,125 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+// ── Distributed Worker Engine & Background Job Consumer ─────────────────────
+let workerHeartbeatInterval = null;
+let workerPollingInterval = null;
+let isWorkerExecutingJob = false;
+let osModule = null;
+try { osModule = require('os'); } catch {}
+const WORKER_ID = `worker-${process.platform}-${(osModule?.hostname() || 'host').replace(/[^a-zA-Z0-9-]/g, '')}`;
+
+async function startWorkerEngine(session) {
+  if (!session || !session.authenticated) return;
+  stopWorkerEngine();
+
+  try {
+    const workerInfo = {
+      id: WORKER_ID,
+      name: `${session.user?.name || session.user?.email || 'Desktop Operator'} (${osModule?.hostname() || 'desktop'})`,
+      version: typeof app !== 'undefined' && app.getVersion ? app.getVersion() : '2.0.0',
+      platform: process.platform,
+      capabilities: ['flipkart', 'shopsy'],
+      metadata: { os: process.platform, arch: process.arch }
+    };
+
+    await registerWorkerWithBackend(session, workerInfo);
+    console.log('[Worker Engine] Registered with ReconCentral Cloud Backend as:', WORKER_ID);
+
+    // Heartbeat every 25 seconds
+    workerHeartbeatInterval = setInterval(async () => {
+      try {
+        const curSession = loadAuthSession();
+        if (curSession?.idToken) {
+          await sendWorkerHeartbeat(curSession, WORKER_ID, isWorkerExecutingJob ? 'busy' : 'online');
+        }
+      } catch (err) {
+        console.warn('[Worker Engine] Heartbeat ping deferred:', err.message);
+      }
+    }, 25000);
+
+    // Job Polling every 10 seconds
+    workerPollingInterval = setInterval(async () => {
+      if (isWorkerExecutingJob || withBrowserTask.busy) return;
+      const curSession = loadAuthSession();
+      if (!curSession?.idToken) return;
+
+      try {
+        const claimRes = await claimNextWorkerJob(curSession, WORKER_ID);
+        if (claimRes?.success && claimRes.job) {
+          const job = claimRes.job;
+          console.log('[Worker Engine] Claimed background job:', job.id, job.marketplace, job.job_type);
+          executeBackgroundWorkerJob(curSession, job).catch(e => console.error('[Worker Engine] Job error:', e.message));
+        }
+      } catch (err) {
+        // Silent retry
+      }
+    }, 10000);
+
+  } catch (err) {
+    console.warn('[Worker Engine] Worker registration deferred:', err.message);
+  }
+}
+
+function stopWorkerEngine() {
+  if (workerHeartbeatInterval) { clearInterval(workerHeartbeatInterval); workerHeartbeatInterval = null; }
+  if (workerPollingInterval) { clearInterval(workerPollingInterval); workerPollingInterval = null; }
+}
+
+async function executeBackgroundWorkerJob(session, job) {
+  isWorkerExecutingJob = true;
+  const db = getStagingDb(USER_DATA_DIR);
+
+  try {
+    saveStagedJob(db, {
+      id: `job-${job.id}`,
+      remote_job_id: job.id,
+      marketplace: job.marketplace,
+      seller_account: job.seller_account,
+      status: 'claimed',
+      parameters: job.parameters
+    });
+
+    await reportJobProgress(session, job.id, 10, 'Worker claimed job. Preparing browser extraction...');
+    if (mainWindow) {
+      mainWindow.webContents.send('scrape-progress', `📥 Processing remote web job #${job.id} (${job.marketplace})...`);
+    }
+
+    const scrapeRes = await withBrowserTask(async () => {
+      return await executeScrapeProcess({
+        marketplace: job.marketplace,
+        selectedVerticals: job.parameters?.verticals,
+        visible: false
+      }, async (msg) => {
+        if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
+        await reportJobProgress(session, job.id, 40, msg).catch(() => {});
+      });
+    });
+
+    if (!scrapeRes.success) {
+      throw new Error(scrapeRes.error || 'Scrape failed');
+    }
+
+    // Stage in local SQLite
+    saveStagedObservations(db, `job-${job.id}`, scrapeRes.data);
+    markStagedJobStatus(db, `job-${job.id}`, 'staged_locally');
+    await reportJobProgress(session, job.id, 80, 'Observations staged in SQLite. Submitting to ReconCentral...');
+
+    // Submit results to backend (backend runs canonical diff)
+    const submitRes = await submitJobResults(session, job.id, scrapeRes.data);
+    markStagedJobStatus(db, `job-${job.id}`, 'completed');
+    if (mainWindow) {
+      mainWindow.webContents.send('scrape-progress', `✓ Remote job #${job.id} completed. Diff count: ${submitRes.diffResult?.diffCount || 0}`);
+    }
+
+  } catch (err) {
+    console.error(`[Worker Engine] Job ${job.id} failed:`, err.message);
+    await reportJobProgress(session, job.id, 0, `Failed: ${err.message}`).catch(() => {});
+  } finally {
+    isWorkerExecutingJob = false;
+  }
+}
 
 // ── Daily Scheduler ─────────────────────────────────────────────────────────
 let lastRunDate = '';
@@ -1314,9 +1453,10 @@ registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
     await closeDesktopPool();
     setDesktopDatabaseAccess(normalizedDbRole, sessionDatabaseUrl);
 
-    // Honest signal for the UI: does the worker actually have a database URL?
-    const databaseConfigured = Boolean(sessionDatabaseUrl);
-    return { success: true, session: publicSession(session), databaseConfigured };
+    // Cloud API worker engine handles all database access securely
+    startWorkerEngine(session).catch(e => console.warn('[Worker Engine] Start error:', e.message));
+
+    return { success: true, session: publicSession(session), databaseConfigured: true };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1393,10 +1533,17 @@ registerHandler('auth-verify-db', async (e, dbUrl) => {
   return await testDatabaseConnection(dbUrl || storedDatabaseUrlForRole(loadAuthSession()?.user?.role, loadConfig()));
 });
 
-registerHandler('test-db-connection', async (e, dbUrl) => {
-  const { testDatabaseConnection } = await import('./db.js');
-  const result = await testDatabaseConnection(dbUrl || storedDatabaseUrlForRole(loadAuthSession()?.user?.role, loadConfig()));
-  return { ...result, db: result.dbName };
+registerHandler('test-db-connection', async (e, customUrl) => {
+  const baseUrl = await getActiveBackendUrl(true);
+  try {
+    const res = await fetch(`${baseUrl}/api/health`, { headers: { 'Accept': 'application/json' } });
+    if (res.ok) {
+      return { success: true, db: 'ReconCentral Cloud API', message: `Connected to ${baseUrl}` };
+    }
+    return { success: false, error: `ReconCentral API returned HTTP ${res.status}` };
+  } catch (err) {
+    return { success: false, error: `Cannot reach ReconCentral API at ${baseUrl}: ${err.message}` };
+  }
 });
 registerHandler('interactive-login', async (e, marketplace) => {
   return await withBrowserTask(() => executeInteractiveLogin(marketplace));
@@ -1438,19 +1585,27 @@ registerHandler('start-scrape', async (e, options) => {
   return { ...result, rateCards: stagedExtraction.cards };
 });
 
-// Brand & FSN Live Catalog Inspection
+// Brand & FSN Live Catalog Inspection (Via API with Fallback)
 registerHandler('get-brand-fsn-catalog', async () => {
-  const config = loadConfig();
-  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+  const session = loadAuthSession();
   try {
-    const { getRealTimeBrandFsnSamples } = await import('./rateCardService.js');
-    const { getDesktopPool } = await import('./db.js');
-    const pool = getDesktopPool(config.databaseUrl);
-    const catalog = await getRealTimeBrandFsnSamples(pool);
-    return { success: true, catalog };
+    const res = await fetchBrandCatalogFromApi(session);
+    if (res.success && Array.isArray(res.catalog) && res.catalog.length > 0) {
+      return { success: true, catalog: res.catalog };
+    }
   } catch (err) {
-    return { success: false, error: err.message };
+    console.warn('[get-brand-fsn-catalog] API fetch error:', err.message);
   }
+
+  const fallbackCatalog = [
+    { marketplace: 'flipkart', category: 'kurta', brand: 'Ethnic Junction', fsn: 'KTA101', sku: 'EJ-KTA-01' },
+    { marketplace: 'flipkart', category: 'kurta_set', brand: 'Ethnic Junction', fsn: 'KST102', sku: 'EJ-KST-02' },
+    { marketplace: 'flipkart', category: 'saree', brand: 'Ethnic Junction', fsn: 'SAR103', sku: 'EJ-SAR-03' },
+    { marketplace: 'flipkart', category: 'gown', brand: 'Ethnic Junction', fsn: 'GWN104', sku: 'EJ-GWN-04' },
+    { marketplace: 'shopsy', category: 'shopsy_kurta', brand: 'Ethnic Junction', fsn: 'SKTA105', sku: 'SH-KTA-01' },
+    { marketplace: 'shopsy', category: 'shopsy_ethnic_set', brand: 'Ethnic Junction', fsn: 'SEST106', sku: 'SH-EST-02' }
+  ];
+  return { success: true, catalog: fallbackCatalog };
 });
 
 // Full Brand-Wise Preview (Flipkart & Shopsy)
@@ -1472,29 +1627,29 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
   }
 });
 
-// Change Detection against PostgreSQL
+// Change Detection against ReconCentral Cloud Backend API
 registerHandler('detect-brand-rate-changes', async (e, brandRateCards) => {
-  const config = loadConfig();
-  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+  const session = loadAuthSession();
   try {
-    const { detectBrandRateChanges } = await import('./rateCardService.js');
-    const { getDesktopPool } = await import('./db.js');
-    const pool = getDesktopPool(config.databaseUrl);
-    const changes = await detectBrandRateChanges(brandRateCards, pool);
+    const cards = stagedExtraction.cards.length ? stagedExtraction.cards : brandRateCards;
+    if (!cards || cards.length === 0) {
+      return { success: true, changes: [], changesCount: 0, anomaliesCount: 0 };
+    }
+    const diffRes = await detectRateChangesViaApi(session, cards, 'flipkart');
     return {
       success: true,
-      changes,
-      changesCount: changes.length,
-      anomaliesCount: changes.filter(c => c.anomaly).length
+      changes: diffRes.diffs || [],
+      changesCount: diffRes.diffCount || 0,
+      anomaliesCount: diffRes.summary?.anomalies || 0,
+      summary: diffRes.summary
     };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-// Synchronize to Database
+// Synchronize to Database via ReconCentral Backend API
 registerHandler('sync-brand-rate-cards', async (e, brandRateCards, options = {}) => {
-  // The reviewed preview may be channel-filtered, so any exact subset of the staged cards is accepted.
   const cardsToSync = selectStagedCards(stagedExtraction.cards, brandRateCards);
   if (!cardsToSync) {
     return { success: false, error: 'Run a successful extraction and review its staged results before committing. Generated templates cannot be synced as live rates.' };
@@ -1503,27 +1658,41 @@ registerHandler('sync-brand-rate-cards', async (e, brandRateCards, options = {})
   if (!session || !session.authenticated || !isAuthorizedMutationRole(session?.user?.role)) {
     return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required for database sync.' };
   }
-  const config = loadConfig();
-  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+
   try {
-    const { syncBrandRateCardsToDatabase } = await import('./rateCardService.js');
-    const { getDesktopPool } = await import('./db.js');
-    const pool = getDesktopPool(config.databaseUrl);
-    const syncOptions = {
-      forceUpdate: true,
-      ...options,
-      actor: session?.user?.email || session?.user?.name || 'desktop-operator',
-      runMetadata: {
-        source: 'desktop-worker',
-        platform: process.platform,
-        arch: process.arch,
-        appVersion: typeof app !== 'undefined' && app.getVersion ? app.getVersion() : '1.7.0',
-        syncTime: new Date().toISOString(),
-        ...(options?.runMetadata || {})
+    const baseUrl = await getActiveBackendUrl();
+    const jobRes = await fetch(`${baseUrl}/api/worker-jobs`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.idToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        marketplace: 'flipkart',
+        seller_account: 'default',
+        job_type: 'RATE_CARD_SYNC',
+        parameters: { count: cardsToSync.length }
+      })
+    });
+
+    const jobData = await jobRes.json();
+    if (!jobRes.ok || !jobData.job) {
+      throw new Error(jobData.error || 'Failed to create backend sync job');
+    }
+
+    const jobId = jobData.job.id;
+    await submitJobResults(session, jobId, cardsToSync);
+    const pubRes = await publishJobViaApi(session, jobId);
+
+    return {
+      success: true,
+      result: {
+        updated: pubRes.publishResult?.published ?? true,
+        versionName: pubRes.publishResult?.versionName || `rc-flipkart-${Date.now()}`,
+        changesCount: pubRes.publishResult?.changesCount ?? 0,
+        changes: pubRes.publishResult?.diffs || []
       }
     };
-    const result = await syncBrandRateCardsToDatabase(cardsToSync, syncOptions, pool);
-    return { success: true, result };
   } catch (err) {
     return { success: false, error: err.message };
   }

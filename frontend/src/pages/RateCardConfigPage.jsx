@@ -11,6 +11,7 @@ import {
   publishRateCardVersion, rollbackRateCardVersion,
   fetchRateCardNotificationStatus, sendRateCardNotificationTest,
   fetchFlipkartSyncStatus, fetchUnconfiguredCategories, checkCategoryRateCard, syncFlipkartRateCards,
+  fetchWorkers, fetchWorkerJob, publishWorkerJob,
 } from '../api/client';
 
 /* ─── Date helpers ────────────────────────────────────────────────
@@ -432,6 +433,48 @@ function CategoryCard({ category, allRows, config, onEdit, onEditPeriod, onCopyP
           </button>
         </div>
       </div>
+
+      {activeJob && (
+        <div className="px-5 py-3 bg-primary-container/30 border-b border-primary/20 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-primary">Job #{activeJob.id}</span>
+              <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-white/80 border border-primary/20 text-primary">
+                {activeJob.status}
+              </span>
+              <span className="text-secondary">{activeJob.progress_message || 'Processing...'}</span>
+            </div>
+            {activeJob.status === 'completed' && activeJob.diff_summary?.diffCount > 0 && (
+              <button
+                type="button"
+                onClick={() => handlePublishJob(activeJob.id)}
+                disabled={publishing}
+                className="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 active:scale-95 transition-all shadow-sm flex items-center gap-1 disabled:opacity-50"
+              >
+                {publishing ? 'Publishing...' : 'Approve & Publish to PostgreSQL'}
+              </button>
+            )}
+          </div>
+          {activeJob.status === 'running' && (
+            <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2 overflow-hidden">
+              <div className="bg-primary h-1.5 rounded-full transition-all duration-300" style={{ width: `${activeJob.progress_pct || 20}%` }} />
+            </div>
+          )}
+          {activeJob.status === 'completed' && activeJob.diff_summary?.diffs?.length > 0 && (
+            <div className="mt-3 p-3 bg-white rounded-xl border border-primary/10 max-h-48 overflow-y-auto">
+              <div className="font-bold text-[11px] text-ink mb-1">Detected Rate Differences ({activeJob.diff_summary.diffCount}):</div>
+              <ul className="space-y-1 text-[11px]">
+                {activeJob.diff_summary.diffs.map((d, i) => (
+                  <li key={i} className="flex items-center justify-between text-secondary">
+                    <span><strong>{d.category}</strong> ({d.table}): {d.details || d.slab}</span>
+                    <span className="font-mono text-primary font-bold">{d.oldRate ?? 'None'} → {d.newRate}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
       {supersededKeys.length > 0 && (
         <div className="mx-5 mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900" role="status">
@@ -2635,6 +2678,9 @@ function RateCardVersionPanel({ marketplace, sellerAccount, onRestored }) {
 function FlipkartAutomationPanel({ onSyncComplete }) {
   const [status, setStatus] = useState(null);
   const [unconfigured, setUnconfigured] = useState([]);
+  const [workers, setWorkers] = useState([]);
+  const [activeJob, setActiveJob] = useState(null);
+  const [publishing, setPublishing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [customCat, setCustomCat] = useState('');
@@ -2646,12 +2692,14 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
   const loadStatus = useCallback(async () => {
     setLoading(true);
     try {
-      const [sData, uData] = await Promise.all([
+      const [sData, uData, wData] = await Promise.all([
         fetchFlipkartSyncStatus().catch(() => null),
-        fetchUnconfiguredCategories().catch(() => ({ categories: [] }))
+        fetchUnconfiguredCategories().catch(() => ({ categories: [] })),
+        fetchWorkers().catch(() => ({ workers: [] }))
       ]);
       setStatus(sData);
       setUnconfigured(uData?.categories || []);
+      setWorkers(wData?.workers || []);
     } catch (e) {
       console.warn('Status load note:', e.message);
     } finally {
@@ -2663,23 +2711,75 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
     loadStatus();
   }, [loadStatus]);
 
+  // Poll active worker job if running
+  useEffect(() => {
+    if (!activeJob || ['completed', 'published', 'failed', 'cancelled'].includes(activeJob.status)) {
+      return;
+    }
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetchWorkerJob(activeJob.id);
+        if (res.success && res.job) {
+          setActiveJob(res.job);
+          if (res.job.status === 'completed') {
+            setSyncing(false);
+            if (res.job.diff_summary?.diffCount === 0) {
+              setToast('✓ Flipkart rate card verified. Live rates in PostgreSQL already 100% identical. Zero rows modified.');
+            } else {
+              setToast(`✓ Extraction complete. ${res.job.diff_summary?.diffCount || 0} rate changes detected for review.`);
+            }
+          } else if (res.job.status === 'failed') {
+            setSyncing(false);
+            setError(res.job.error_message || 'Worker scrape task failed');
+          }
+        }
+      } catch (err) {
+        console.warn('Job polling error:', err.message);
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [activeJob]);
+
   const handleSyncAll = async () => {
     setSyncing(true);
     setError('');
     setToast('');
     try {
-      const res = await syncFlipkartRateCards({ forceUpdate: true });
+      const res = await syncFlipkartRateCards();
+      if (res.success && res.job) {
+        setActiveJob(res.job);
+        setToast(`✓ Extraction job #${res.job.id} queued for Desktop Worker. Tracking live progress...`);
+      } else if (res.jobId) {
+        setActiveJob({ id: res.jobId, status: 'queued', progress_pct: 0, progress_message: 'Job queued' });
+        setToast(`✓ Extraction job #${res.jobId} queued for Desktop Worker.`);
+      } else {
+        setError(res.error || 'Failed to dispatch worker job');
+        setSyncing(false);
+      }
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Worker dispatch failed');
+      setSyncing(false);
+    }
+  };
+
+  const handlePublishJob = async (jobId) => {
+    if (!jobId) return;
+    setPublishing(true);
+    setError('');
+    try {
+      const res = await publishWorkerJob(jobId);
       if (res.success) {
-        setToast(`✓ Successfully synced ${res.scrapedCount || 0} categories from Flipkart Seller Hub!`);
+        setToast(`✓ Successfully published rate card changes to database! Version: ${res.publishResult?.versionName || ''}`);
+        setActiveJob(prev => prev ? { ...prev, status: 'published' } : null);
         if (onSyncComplete) onSyncComplete();
         loadStatus();
       } else {
-        setError(res.error || 'Failed to sync Flipkart rate cards');
+        setError(res.error || 'Failed to publish changes');
       }
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Sync failed');
+      setError(err.response?.data?.error || err.message || 'Publish failed');
     } finally {
-      setSyncing(false);
+      setPublishing(false);
     }
   };
 
@@ -2724,10 +2824,17 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-bold text-ink">Flipkart Live Rate Card Automation</h3>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
-                Live Sync Engine
-              </span>
+              {workers.some(w => w.status === 'online') ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800" title="Connected Desktop Worker online">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                  Desktop Worker Online
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800" title="Launch desktop worker to process automated scraping jobs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
+                  Worker Standby
+                </span>
+              )}
             </div>
             <p className="text-xs text-secondary mt-0.5">
               Directly checks & extracts Commission, Fixed Fee, and Reverse Shipping from Flipkart Seller Hub (<strong className="text-ink">EthnicJunction</strong>).

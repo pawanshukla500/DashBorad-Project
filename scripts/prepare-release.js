@@ -57,6 +57,8 @@ function copyDesktopPayloadForLinux(targetLinuxDir) {
     'rateCardService.js',
     'excelExport.js',
     'authValidation.js',
+    'workerClient.js',
+    'localStaging.js',
     'ui'
   ];
 

@@ -23,6 +23,7 @@ import {
   syncBrandRateCardsToDatabase 
 } from '../services/brandRateCardService.js';
 import { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } from '../services/brandwiseExcelExport.js';
+import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 
 const router = express.Router();
 
@@ -979,18 +980,20 @@ router.post('/notifications/test', async (req, res) => {
 
 router.post('/sync', async (req, res) => {
   try {
-    const { email, password } = process.env;
-    const headless = process.env.SCRAPER_HEADLESS === 'true';
-    const result = await scrapeRateCard({
-      email: email || process.env.FLIPKART_EMAIL,
-      password: password || process.env.FLIPKART_PASSWORD,
-      headless,
+    const pool = getPool();
+    const result = await pool.query(`
+      INSERT INTO worker_jobs (
+        idempotency_key, marketplace, seller_account, job_type,
+        status, priority, parameters, created_by, created_at, updated_at
+      ) VALUES ($1, 'flipkart', 'default', 'RATE_CARD_SCRAPE', 'queued', 10, '{}'::jsonb, $2, NOW(), NOW())
+      RETURNING *
+    `, [`legacy-sync-${Date.now()}`, req.user?.email || 'system']);
+
+    res.json({
+      message: 'Rate card scrape job dispatched to desktop worker queue.',
+      jobId: result.rows[0].id,
+      status: 'queued'
     });
-    if (result.success) {
-      res.json({ message: 'Rate card synced successfully.', data: result.data });
-    } else {
-      res.status(500).json({ error: 'Failed to sync rate card.', details: result.error });
-    }
   } catch (error) {
     console.error('[rate-card/sync]', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -1576,32 +1579,21 @@ router.get('/sync-status', async (req, res) => {
  */
 router.post('/sync-flipkart', async (req, res) => {
   try {
-    const { verticals, headless = 'new', forceUpdate = false } = req.body || {};
-    
-    // 1. Scrape rates from Flipkart Seller Hub
-    const scrapeResult = await scrapeFlipkartRateCards({
-      verticals,
-      headless
-    });
-
-    if (!scrapeResult.success) {
-      return res.status(500).json({
-        success: false,
-        error: scrapeResult.error
-      });
-    }
-
-    // 2. Commit to Database and Detect Changes
-    const syncResult = await syncRateCardsToDatabase(scrapeResult.data, {
-      marketplace: 'flipkart',
-      sellerAccount: 'default',
-      forceUpdate
-    });
+    const { verticals, priority = 10 } = req.body || {};
+    const pool = getPool();
+    const result = await pool.query(`
+      INSERT INTO worker_jobs (
+        idempotency_key, marketplace, seller_account, job_type,
+        status, priority, parameters, created_by, created_at, updated_at
+      ) VALUES ($1, 'flipkart', 'default', 'RATE_CARD_SCRAPE', 'queued', $2, $3, $4, NOW(), NOW())
+      RETURNING *
+    `, [`sync-fk-${Date.now()}`, priority, JSON.stringify({ verticals: verticals || [] }), req.user?.email || 'system']);
 
     res.json({
       success: true,
-      scrapedCount: scrapeResult.count,
-      syncResult
+      message: 'Flipkart rate card extraction job created and queued for desktop worker.',
+      jobId: result.rows[0].id,
+      job: result.rows[0]
     });
   } catch (err) {
     console.error('[sync-flipkart] Error:', err);
@@ -1611,19 +1603,16 @@ router.post('/sync-flipkart', async (req, res) => {
 
 /**
  * POST /api/rate-card/detect-changes
- * Preview changes without committing to the database
+ * Canonical preview comparison without committing to database
  */
 router.post('/detect-changes', async (req, res) => {
   try {
-    const { scrapedData } = req.body || {};
+    const { scrapedData, marketplace = 'flipkart', seller_account = 'default' } = req.body || {};
     if (!Array.isArray(scrapedData)) {
       return res.status(400).json({ error: 'scrapedData array is required' });
     }
-    const changes = await detectRateChanges(scrapedData, 'flipkart', 'default');
-    res.json({
-      changesCount: changes.length,
-      changes
-    });
+    const diffResult = await compareScrapedRatesWithActive(scrapedData, { marketplace, sellerAccount: seller_account });
+    res.json(diffResult);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1666,7 +1655,7 @@ router.get('/unconfigured-categories', async (req, res) => {
  */
 router.post('/check-category', async (req, res) => {
   try {
-    const { category, sync = false } = req.body || {};
+    const { category } = req.body || {};
     if (!category || typeof category !== 'string' || !category.trim()) {
       return res.status(400).json({ error: 'Valid category name is required' });
     }
@@ -1682,46 +1671,21 @@ router.post('/check-category', async (req, res) => {
     `, [cleanCategory]);
     const isConfiguredInDb = parseInt(existing.rows[0].count, 10) > 0;
 
-    // Scrape live rates for this single category
-    const scrapeResult = await scrapeFlipkartRateCards({
-      verticals: [cleanCategory],
-      headless: 'new'
-    });
-
-    if (!scrapeResult.success || !scrapeResult.data.length) {
-      return res.status(500).json({
-        success: false,
-        error: scrapeResult.error || `No rate tables found on Flipkart for vertical "${cleanCategory}"`
-      });
-    }
-
-    const categoryData = scrapeResult.data[0];
-    const changes = await detectRateChanges([categoryData], 'flipkart', 'default');
-
-    let syncResult = null;
-    if (sync) {
-      syncResult = await syncRateCardsToDatabase([categoryData], {
-        marketplace: 'flipkart',
-        sellerAccount: 'default',
-        forceUpdate: true
-      });
-    }
+    // Queue worker job for this vertical
+    const result = await pool.query(`
+      INSERT INTO worker_jobs (
+        idempotency_key, marketplace, seller_account, job_type,
+        status, priority, parameters, created_by, created_at, updated_at
+      ) VALUES ($1, 'flipkart', 'default', 'RATE_CARD_SCRAPE', 'queued', 10, $2, $3, NOW(), NOW())
+      RETURNING *
+    `, [`check-cat-${cleanCategory}-${Date.now()}`, JSON.stringify({ verticals: [cleanCategory] }), req.user?.email || 'system']);
 
     res.json({
       success: true,
       category: cleanCategory,
       isConfiguredInDb,
-      changesCount: changes.length,
-      changes,
-      rates: {
-        commissionsCount: categoryData.commissions.length,
-        fixedFeesCount: categoryData.fixedFees.length,
-        collectionFeesCount: categoryData.collectionFees.length,
-        reverseShippingCount: categoryData.reverseShipping.length,
-        data: categoryData
-      },
-      synced: Boolean(sync),
-      syncResult
+      message: `Worker job queued to inspect vertical "${cleanCategory}".`,
+      jobId: result.rows[0].id
     });
   } catch (err) {
     console.error('[check-category] Error:', err);
