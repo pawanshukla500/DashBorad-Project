@@ -1921,6 +1921,18 @@ async function runTests() {
     assert(rendererContent.includes("uiVersion: '1.7.0'"), 'renderer.js must send 1.7.0 uiVersion');
   });
 
+  await runTest('workerClient strictly enforces HTTPS allowlist and refuses bearer tokens on untrusted origins', async () => {
+    const { isAllowedBackendUrl, OFFICIAL_PRODUCTION_SERVERS } = await import('../workerClient.js');
+    assert(OFFICIAL_PRODUCTION_SERVERS.length >= 3, 'Must define official production servers');
+    assert(isAllowedBackendUrl('https://payments.youthnic.shop'), 'Official domain must be allowed');
+    assert(isAllowedBackendUrl('https://reconcentral.srv1845788.hstgr.cloud'), 'Hostinger subdomain must be allowed');
+    
+    // Insecure / unallowlisted hosts rejected
+    assert(!isAllowedBackendUrl('http://insecure-host.com'), 'Plaintext HTTP must be rejected');
+    assert(!isAllowedBackendUrl('https://evil-attacker.com'), 'Non-allowlisted domain must be rejected');
+    assert(!isAllowedBackendUrl('https://payments.youthnic.shop:8080'), 'Non-standard port must be rejected');
+  });
+
   console.log('\n=================================================================');
   console.log(` Results: ${passed} passed, ${failed} failed`);
   console.log('=================================================================');
