@@ -827,7 +827,29 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       }
 
       console.log(`[InteractiveLogin:Embedded] Opening ${mpConfig.name} at ${mpConfig.loginUrl}...`);
-      await page.goto(mpConfig.loginUrl, { waitUntil: 'load', timeout: 60000 });
+      try {
+        await page.goto(mpConfig.loginUrl, { waitUntil: 'load', timeout: 60000 });
+      } catch (gotoErr) {
+        if (!String(gotoErr?.message || '').includes('ERR_ABORTED')) throw gotoErr;
+      }
+
+      if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
+        try {
+          await new Promise((r) => setTimeout(r, 1200));
+          await page.evaluate(() => {
+            const href = window.location.href.toLowerCase();
+            const body = document.body ? document.body.innerText.toLowerCase() : '';
+            if (href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard')) return;
+            const modalOpen = Boolean(document.querySelector('input[name="username"], input[name="password"]'));
+            if (!modalOpen) {
+              const all = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+              const btn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 120 && el.offsetWidth > 0) ||
+                          all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
+              if (btn) btn.click();
+            }
+          });
+        } catch {}
+      }
       broadcastMonitorState({ status: 'login_prompt', url: page.url(), title: page.title() });
 
       const pollAuth = async () => {
@@ -875,7 +897,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
                 const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
                 return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
               }
-              return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
+              return href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
             }, mpConfig.id);
           } catch {
             // Context destroyed during navigation or in-flight redirect; retry on next poll tick
@@ -936,7 +958,29 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     }
 
     console.log(`[InteractiveLogin] Opening ${mpConfig.name} at ${mpConfig.loginUrl}...`);
-    await page.goto(mpConfig.loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    try {
+      await page.goto(mpConfig.loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    } catch (gotoErr) {
+      if (!String(gotoErr?.message || '').includes('ERR_ABORTED')) throw gotoErr;
+    }
+
+    if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
+      try {
+        await new Promise((r) => setTimeout(r, 1200));
+        await page.evaluate(() => {
+          const href = window.location.href.toLowerCase();
+          const body = document.body ? document.body.innerText.toLowerCase() : '';
+          if (href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard')) return;
+          const modalOpen = Boolean(document.querySelector('input[name="username"], input[name="password"]'));
+          if (!modalOpen) {
+            const all = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+            const btn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 120 && el.offsetWidth > 0) ||
+                        all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
+            if (btn) btn.click();
+          }
+        });
+      } catch {}
+    }
 
     console.log(`[InteractiveLogin] Waiting for ${mpConfig.name} authenticated navigation...`);
     await page.waitForFunction((id) => {
@@ -991,7 +1035,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
         const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
         return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
       }
-      return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
+      return href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
     }, { timeout: 300000 }, mpConfig.id);
 
     const cookies = await page.cookies();
@@ -1103,9 +1147,10 @@ async function executeScrapeProcess(config, onProgress) {
             await new Promise((r) => setTimeout(r, 1000));
             try {
               const authed = await page.evaluate(() => {
+                const href = window.location.href.toLowerCase();
                 const body = document.body?.innerText.toLowerCase() || '';
                 return !document.querySelector('input[type="password"]') &&
-                  (body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out'));
+                  (href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out') || body.includes('seller hub'));
               });
               if (authed) {
                 const cookies = await page.cookies();
@@ -1154,9 +1199,10 @@ async function executeScrapeProcess(config, onProgress) {
           await new Promise((r) => setTimeout(r, 1000));
           try {
             const authed = await page.evaluate(() => {
+              const href = window.location.href.toLowerCase();
               const body = document.body?.innerText.toLowerCase() || '';
               return !document.querySelector('input[type="password"]') &&
-                (body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out'));
+                (href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out') || body.includes('seller hub'));
             });
             if (authed) {
               const cookies = await page.cookies();

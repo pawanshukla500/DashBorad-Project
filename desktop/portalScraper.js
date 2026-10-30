@@ -129,15 +129,47 @@ export async function scrapeFlipkartRateCards(config = {}, {
       const cookies = loadEncryptedCookies(cookieFile);
       if (cookies?.length) await page.setCookie(...cookies);
     }
-    await page.goto('https://seller.flipkart.com/index.html#dashboard/home-page', { waitUntil: 'networkidle2', timeout: 45000 });
+    const safeGoto = async (targetUrl, options = {}) => {
+      try {
+        return await page.goto(targetUrl, options);
+      } catch (navErr) {
+        const msg = String(navErr?.message || navErr);
+        if (msg.includes('ERR_ABORTED') || navErr?.code === 'ERR_ABORTED' || navErr?.errno === -3) {
+          return { ok: true, redirected: true };
+        }
+        throw navErr;
+      }
+    };
+
+    await safeGoto('https://seller.flipkart.com/index.html#dashboard/home-page', { waitUntil: 'networkidle2', timeout: 45000 });
     const checkSession = () => page.evaluate(() => {
+      const href = window.location.href.toLowerCase();
       const body = document.body?.innerText.toLowerCase() || '';
-      return !document.querySelector('input[type="password"]') &&
-        (body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out'));
+      const hasPassword = Boolean(document.querySelector('input[type="password"]'));
+      return !hasPassword && (
+        href.includes('#dashboard') ||
+        href.includes('listings-management') ||
+        body.includes('seller dashboard') ||
+        body.includes('logout') ||
+        body.includes('sign out') ||
+        body.includes('seller hub')
+      );
     });
     if (!await checkSession()) {
       if (!config.password) {
         if (typeof onSessionExpiry === 'function') {
+          // Trigger modal opening if landing page is shown
+          try {
+            await page.evaluate(() => {
+              const modalOpen = Boolean(document.querySelector('input[name="username"], input[name="password"]'));
+              if (!modalOpen) {
+                const all = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+                const btn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 120 && el.offsetWidth > 0) ||
+                            all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
+                if (btn) btn.click();
+              }
+            });
+          } catch {}
           onProgress('🔐 Session expired or login challenge detected. Opening in-view authentication prompt...');
           const authed = await onSessionExpiry(page);
           if (!authed) throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
@@ -146,20 +178,78 @@ export async function scrapeFlipkartRateCards(config = {}, {
         }
       } else {
         onProgress('Session expired. Signing in to Seller Hub...');
-        await page.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 45000 });
-        await page.evaluate(() => {
-          Array.from(document.querySelectorAll('button, a')).find((el) => el.innerText?.trim() === 'Login')?.click();
+        await safeGoto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 45000 });
+        
+        // 1. Open login modal if not already open
+        const isModalOpen = await page.evaluate(() => {
+          const inp = document.querySelector('input[name="username"], input[name="password"]');
+          return Boolean(inp && inp.offsetWidth > 0);
         });
-        await page.waitForSelector('input[name="username"]', { visible: true, timeout: 15000 });
-        await page.type('input[name="username"]', config.email, { delay: 40 });
-        await page.evaluate(() => {
-          Array.from(document.querySelectorAll('button')).find((el) => el.innerText?.trim().toLowerCase() === 'next')?.click();
+
+        if (!isModalOpen) {
+          await page.evaluate(() => {
+            const all = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+            const headerBtn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 120 && el.offsetWidth > 0) ||
+                              all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
+            if (headerBtn) headerBtn.click();
+          });
+          await delay(1500);
+        }
+
+        // 2. Wait for login inputs
+        await page.waitForSelector('input[name="username"], input[name="password"], input[placeholder*="Username"]', { timeout: 15000 });
+
+        // 3. Handle Username step if password field is not yet visible
+        const passwordAlreadyVisible = await page.evaluate(() => {
+          const pwd = document.querySelector('input[name="password"], input[type="password"]');
+          return Boolean(pwd && pwd.offsetWidth > 0 && pwd.offsetHeight > 0);
         });
+
+        if (!passwordAlreadyVisible && config.email) {
+          await page.waitForSelector('input[name="username"], input[placeholder*="Username"]', { visible: true, timeout: 15000 });
+          await page.evaluate(() => {
+            const u = document.querySelector('input[name="username"], input[placeholder*="Username or phone number or email"]');
+            if (u) {
+              u.focus();
+              u.value = '';
+              u.dispatchEvent(new Event('input', { bubbles: true }));
+              u.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          });
+          await page.type('input[name="username"], input[placeholder*="Username or phone number or email"]', config.email, { delay: 35 });
+          
+          await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const nextBtn = btns.find((b) => b.innerText?.trim().toLowerCase() === 'next' && b.offsetWidth > 0);
+            if (nextBtn) nextBtn.click();
+          });
+          await delay(1200);
+        }
+
+        // 4. Enter Password
         await page.waitForSelector('input[name="password"], input[type="password"]', { visible: true, timeout: 15000 });
-        await page.type('input[name="password"], input[type="password"]', config.password, { delay: 40 });
         await page.evaluate(() => {
-          Array.from(document.querySelectorAll('button')).find((el) => el.innerText?.trim().toLowerCase() === 'login')?.click();
+          const pwd = document.querySelector('input[name="password"], input[type="password"]');
+          if (pwd) {
+            pwd.focus();
+            pwd.value = '';
+            pwd.dispatchEvent(new Event('input', { bubbles: true }));
+          }
         });
+        await page.type('input[name="password"], input[type="password"]', config.password, { delay: 35 });
+
+        // 5. Click the Modal Login submit button specifically (avoid clicking header login button)
+        await page.evaluate(() => {
+          const pwd = document.querySelector('input[name="password"], input[type="password"]');
+          const container = pwd?.closest('form') || pwd?.closest('div[class*="Modal"]') || pwd?.parentElement?.parentElement?.parentElement;
+          let submitBtn = container ? Array.from(container.querySelectorAll('button')).find((b) => b.innerText?.trim().toLowerCase() === 'login' && b.offsetWidth > 0) : null;
+          if (!submitBtn) {
+            const btns = Array.from(document.querySelectorAll('button')).filter((b) => b.innerText?.trim().toLowerCase() === 'login' && b.offsetWidth > 0);
+            submitBtn = btns.find((b) => b.getBoundingClientRect().top > 120 || b.offsetWidth > 150) || btns[0];
+          }
+          if (submitBtn) submitBtn.click();
+        });
+
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 }).catch(() => null);
         await delay(4000);
         if (!await checkSession()) {
@@ -194,7 +284,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
         const queryMarketplace = isShopsyVertical ? 'shopsy' : 'flipkart';
         const query = { marketplace: queryMarketplace, fulfillment: fulfilment, date: `${effectiveDate} 12:00:00`, vertical: queryVertical };
         onProgress(`Extracting ${vertical} (${fulfilment})...`);
-        await page.goto(`https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=${encodeURIComponent(JSON.stringify(query))}`, {
+        await safeGoto(`https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=${encodeURIComponent(JSON.stringify(query))}`, {
           waitUntil: 'networkidle2', timeout: 35000
         });
         await delay(config.visible ? 3000 : 2000);
