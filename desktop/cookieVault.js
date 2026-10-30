@@ -288,3 +288,22 @@ export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_A
     return null;
   }
 }
+
+/**
+ * Decrypts marketplace account credentials encrypted with AES-256-GCM (format: ivHex:authTagHex:ciphertextHex).
+ */
+export function decryptMarketplaceCredential(payload) {
+  if (!payload || typeof payload !== 'string' || !payload.includes(':')) return null;
+  const parts = payload.split(':');
+  if (parts.length !== 3) return null;
+  const [ivHex, tagHex, dataHex] = parts;
+  try {
+    const secret = process.env.CREDENTIALS_ENCRYPTION_KEY || process.env.ENCRYPTION_KEY || process.env.JWT_SECRET || 'reconcentral-credentials-master-aes256-encryption-key-secret';
+    const key = crypto.createHash('sha256').update(secret).digest();
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+    return decipher.update(dataHex, 'hex', 'utf8') + decipher.final('utf8');
+  } catch {
+    return null;
+  }
+}

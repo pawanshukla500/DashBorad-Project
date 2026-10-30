@@ -148,65 +148,88 @@ export async function scrapeFlipkartRateCards(config = {}, {
       }
     };
 
-    await safeGoto('https://seller.flipkart.com/index.html#dashboard/home-page', { waitUntil: 'load', timeout: 35000 });
+    // Step 1: Navigate to seller.flipkart.com landing page first
+    onProgress('Connecting to Flipkart Seller Hub (https://seller.flipkart.com/)...');
+    await safeGoto('https://seller.flipkart.com/', { waitUntil: 'load', timeout: 35000 });
+
+    // Wait for session restoration or landing page interactive elements to settle
+    if (typeof page.waitForFunction === 'function') {
+      await page.waitForFunction(() => {
+        const href = window.location.href.toLowerCase();
+        const body = document.body?.innerText.toLowerCase() || '';
+        const isAuth = href.includes('#dashboard') || href.includes('home-page') || 
+                       body.includes('seller dashboard') || body.includes('ethnicjunction') ||
+                       body.includes('seller hub') || body.includes('logout');
+        const hasLoginBtn = Array.from(document.querySelectorAll('button, a, div[role="button"]'))
+          .some(el => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
+        return isAuth || hasLoginBtn;
+      }, { timeout: 15000 }).catch(() => null);
+    } else {
+      await delay(1000);
+    }
+
     const checkSession = () => page.evaluate(() => {
       const href = window.location.href.toLowerCase();
       const body = document.body?.innerText.toLowerCase() || '';
       const hasPassword = Boolean(document.querySelector('input[type="password"]'));
       return !hasPassword && (
         href.includes('#dashboard') ||
+        href.includes('home-page') ||
         href.includes('listings-management') ||
         body.includes('seller dashboard') ||
+        body.includes('ethnicjunction') ||
+        body.includes('seller hub') ||
         body.includes('logout') ||
-        body.includes('sign out') ||
-        body.includes('seller hub')
+        body.includes('sign out')
       );
     });
-    if (!await checkSession()) {
-      deleteEncryptedCookies(cookiesPath);
-      deleteEncryptedCookies(fallbackCookiesPath);
+
+    const isSessionActive = await checkSession();
+    if (!isSessionActive) {
+
       if (!config.password) {
         if (typeof onSessionExpiry === 'function') {
-          // Trigger modal opening if landing page is shown
+          // Trigger login modal opening on landing page
           try {
             await page.evaluate(() => {
               const modalOpen = Boolean(document.querySelector('input[name="username"], input[name="password"]'));
               if (!modalOpen) {
                 const all = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-                const btn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 120 && el.offsetWidth > 0) ||
+                const btn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 150 && el.offsetWidth > 0) ||
                             all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
                 if (btn) btn.click();
               }
             });
           } catch {}
-          onProgress('🔐 Session expired or login challenge detected. Opening in-view authentication prompt...');
+          onProgress('🔐 Session expired or login required. Opening in-view authentication prompt...');
           const authed = await onSessionExpiry(page);
-          if (!authed) throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
+          if (!authed) {
+            throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
+          }
         } else {
           throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
         }
       } else {
-        onProgress('Session expired. Signing in to Seller Hub...');
-        await safeGoto('https://seller.flipkart.com/', { waitUntil: 'load', timeout: 35000 });
+        onProgress('Signing in to Flipkart Seller Hub...');
         
         // 1. Open login modal if not already open
-        const isModalOpen = await page.evaluate(() => {
-          const inp = document.querySelector('input[name="username"], input[name="password"]');
+        let isModalOpen = await page.evaluate(() => {
+          const inp = document.querySelector('input[name="username"], input[name="password"], input[placeholder*="Username"]');
           return Boolean(inp && inp.offsetWidth > 0);
         });
 
         if (!isModalOpen) {
           await page.evaluate(() => {
             const all = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-            const headerBtn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 120 && el.offsetWidth > 0) ||
+            const headerBtn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 150 && el.offsetWidth > 0) ||
                               all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
             if (headerBtn) headerBtn.click();
           });
-          await delay(1500);
+          await delay(2000);
         }
 
         // 2. Wait for login inputs
-        await page.waitForSelector('input[name="username"], input[name="password"], input[placeholder*="Username"]', { timeout: 15000 });
+        await page.waitForSelector('input[name="username"], input[name="password"], input[placeholder*="Username"], input[placeholder*="phone"]', { timeout: 15000 });
 
         // 3. Handle Username step if password field is not yet visible
         const passwordAlreadyVisible = await page.evaluate(() => {
@@ -214,25 +237,27 @@ export async function scrapeFlipkartRateCards(config = {}, {
           return Boolean(pwd && pwd.offsetWidth > 0 && pwd.offsetHeight > 0);
         });
 
-        if (!passwordAlreadyVisible && config.email) {
-          await page.waitForSelector('input[name="username"], input[placeholder*="Username"]', { visible: true, timeout: 15000 });
-          await page.evaluate(() => {
-            const u = document.querySelector('input[name="username"], input[placeholder*="Username or phone number or email"]');
+        const targetEmail = config.email || 'Vbexports@outlook.com';
+        if (!passwordAlreadyVisible) {
+          await page.waitForSelector('input[name="username"], input[placeholder*="Username"], input[placeholder*="phone"]', { visible: true, timeout: 15000 });
+          await page.evaluate((uEmail) => {
+            const u = document.querySelector('input[name="username"], input[placeholder*="Username"], input[placeholder*="phone"]');
             if (u) {
               u.focus();
               u.value = '';
               u.dispatchEvent(new Event('input', { bubbles: true }));
               u.dispatchEvent(new Event('change', { bubbles: true }));
             }
-          });
-          await page.type('input[name="username"], input[placeholder*="Username or phone number or email"]', config.email, { delay: 35 });
+          }, targetEmail);
+          await page.type('input[name="username"], input[placeholder*="Username"], input[placeholder*="phone"]', targetEmail, { delay: 35 });
+          await delay(800);
           
           await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button'));
+            const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
             const nextBtn = btns.find((b) => b.innerText?.trim().toLowerCase() === 'next' && b.offsetWidth > 0);
             if (nextBtn) nextBtn.click();
           });
-          await delay(1200);
+          await delay(2000);
         }
 
         // 4. Enter Password
@@ -246,32 +271,68 @@ export async function scrapeFlipkartRateCards(config = {}, {
           }
         });
         await page.type('input[name="password"], input[type="password"]', config.password, { delay: 35 });
+        await delay(800);
 
-        // 5. Click the Modal Login submit button specifically (avoid clicking header login button)
+        // 5. Click Modal Login button specifically
         await page.evaluate(() => {
-          const pwd = document.querySelector('input[name="password"], input[type="password"]');
-          const container = pwd?.closest('form') || pwd?.closest('div[class*="Modal"]') || pwd?.parentElement?.parentElement?.parentElement;
-          let submitBtn = container ? Array.from(container.querySelectorAll('button')).find((b) => b.innerText?.trim().toLowerCase() === 'login' && b.offsetWidth > 0) : null;
-          if (!submitBtn) {
-            const btns = Array.from(document.querySelectorAll('button')).filter((b) => b.innerText?.trim().toLowerCase() === 'login' && b.offsetWidth > 0);
-            submitBtn = btns.find((b) => b.getBoundingClientRect().top > 120 || b.offsetWidth > 150) || btns[0];
-          }
-          if (submitBtn) submitBtn.click();
+          const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+          const modalBtn = btns.find((b) => {
+            const text = b.innerText?.trim().toLowerCase();
+            const rect = b.getBoundingClientRect();
+            return (text === 'login' || text === 'log in') && rect.top > 120 && b.offsetWidth > 0;
+          }) || btns.find((b) => b.innerText?.trim().toLowerCase() === 'login' && b.offsetWidth > 0);
+          if (modalBtn) modalBtn.click();
         });
 
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 }).catch(() => null);
-        await delay(4000);
-        if (!await checkSession()) {
+        // 6. Wait for authentication redirect and dismiss notification popup
+        onProgress('Waiting for authentication and redirect to dashboard...');
+        const pollStart = Date.now();
+        let authenticated = false;
+        while (Date.now() - pollStart < 40000) {
+          await delay(1200);
+          authenticated = await page.evaluate(() => {
+            const href = window.location.href.toLowerCase();
+            const body = document.body ? document.body.innerText.toLowerCase() : '';
+            const hasPwd = Boolean(document.querySelector('input[type="password"]'));
+            const isAuth = !hasPwd && (
+              href.includes('#dashboard') ||
+              href.includes('home-page') ||
+              href.includes('listings-management') ||
+              body.includes('ethnicjunction') ||
+              body.includes('seller hub') ||
+              body.includes('seller dashboard') ||
+              body.includes('logout') ||
+              body.includes('sign out')
+            );
+            // Dismiss notification prompt if present
+            const notifButtons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            const dontAllow = notifButtons.find(b => b.innerText?.trim().toLowerCase() === "don't allow");
+            if (dontAllow) dontAllow.click();
+
+            return isAuth;
+          });
+          if (authenticated) break;
+        }
+
+        if (!authenticated) {
           if (typeof onSessionExpiry === 'function') {
             onProgress('🔐 2FA verification challenge required. Please complete OTP challenge in the browser viewport...');
             const authed = await onSessionExpiry(page);
-            if (!authed) throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
+            if (!authed) {
+              throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
+            }
           } else {
             throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
           }
         }
         const cookies = await page.cookies();
-        saveEncryptedCookies(cookiesPath, cookies);
+        if (cookies?.length) {
+          saveEncryptedCookies(cookiesPath, cookies);
+          if (marketplace === 'flipkart' || marketplace === 'shopsy' || marketplace === 'flipkart_shopsy') {
+            saveEncryptedCookies(fallbackCookiesPath, cookies);
+          }
+          onProgress(`✓ Logged in to Flipkart Seller Hub! Saved ${cookies.length} session cookies.`);
+        }
       }
     }
     let verticals = config.selectedVerticals?.length ? [...config.selectedVerticals] : [

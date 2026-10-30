@@ -26,6 +26,7 @@ import {
   saveEncryptedCookies,
   loadEncryptedCookies,
   deleteEncryptedCookies,
+  decryptMarketplaceCredential,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
@@ -1407,7 +1408,10 @@ const server = http.createServer(async (req, res) => {
                 const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
                 return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
               }
-              return href.includes('#dashboard') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout');
+              const notifBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+              const dontAllow = notifBtns.find(b => b.innerText?.trim().toLowerCase() === "don't allow");
+              if (dontAllow) dontAllow.click();
+              return href.includes('#dashboard') || href.includes('home-page') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
             }, { timeout: 300000 }, mpConfig.id);
 
             const cookies = await page.cookies();

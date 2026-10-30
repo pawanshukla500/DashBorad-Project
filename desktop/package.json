@@ -1,6 +1,6 @@
 {
   "name": "reconcentral-ratecard-worker",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "description": "Cross-Platform Flipkart & Marketplace Rate Card Scraper Worker and Desktop App",
   "main": "main.js",
   "type": "module",
