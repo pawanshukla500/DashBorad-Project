@@ -375,7 +375,7 @@ const serverWorker = createWorkerEngine({
       const cards = normalizeScrapedCards(result.data);
       if (authGeneration !== stagedExtraction.authGeneration) throw new Error('The account changed during extraction. Results were not submitted.');
       saveStagedObservations(db, id, cards);
-      await submitJobResults(session, job.id, cards, serverWorkerId);
+      await submitJobResults(session, job.id, cards, serverWorkerId, () => authGeneration === stagedExtraction.authGeneration);
       markStagedJobStatus(db, id, 'completed');
     } catch (error) {
       markStagedJobStatus(db, id, 'failed');

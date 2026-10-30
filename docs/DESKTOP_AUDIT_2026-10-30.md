@@ -190,3 +190,9 @@ with a constant or silently published.
 Commission comparison and the reviewed unique index now use the same trimmed,
 case-insensitive brand identity as fee lookup. This covers the observed catalog
 case aliases Here&Now/HERE&NOW and rejects duplicate effective brand records.
+
+CodeAnt identified a valid background-job logout race after awaited progress.
+Generation is rechecked after that wait and immediately before the HTTPS results
+request (including after backend URL discovery), in both desktop entry points.
+The real HTTP fixture verifies no results request reaches the server after the
+account changes during that await.

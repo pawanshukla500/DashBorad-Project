@@ -602,8 +602,9 @@ async function executeBackgroundWorkerJob(session, job) {
     markStagedJobStatus(db, `job-${job.id}`, 'staged_locally');
     await reportJobProgress(session, job.id, 80, 'Observations staged in SQLite. Submitting to ReconCentral...');
 
-    // Submit results to backend (backend runs canonical diff)
-    const submitRes = await submitJobResults(session, job.id, normalizedCards, WORKER_ID);
+    // Recheck after awaited progress and again inside the client after URL discovery.
+    if (authGeneration !== stagedExtraction.authGeneration) throw new Error('The account changed during extraction. Results were not submitted.');
+    const submitRes = await submitJobResults(session, job.id, normalizedCards, WORKER_ID, () => authGeneration === stagedExtraction.authGeneration);
     markStagedJobStatus(db, `job-${job.id}`, 'completed');
     // Keep the durable local observations available for review and recovery.
     if (mainWindow) {

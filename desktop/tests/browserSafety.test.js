@@ -103,7 +103,14 @@ test('real HTTP worker registration and initial claim complete within five secon
   const session={idToken:'fixture'};
   const engine=createWorkerEngine({getSession:async()=>session,register:s=>client.registerWorkerWithBackend(s,{id:'fixture',name:'fixture'}),
     heartbeat:async()=>{},claim:s=>client.claimNextWorkerJob(s,'fixture'),execute:async()=>{},log:()=>{}});
-  try {const start=Date.now();await engine.start();assert.ok(Date.now()-start<5000);assert.ok(calls.includes('/api/workers/register'));assert.ok(calls.includes('/api/workers/jobs/claim'));}
+  try {
+    const start=Date.now();await engine.start();assert.ok(Date.now()-start<5000);assert.ok(calls.includes('/api/workers/register'));assert.ok(calls.includes('/api/workers/jobs/claim'));
+    let current=true;
+    const submission=client.submitJobResults(session,'fixture-job',[],'fixture',()=>current);
+    current=false;
+    await assert.rejects(submission,/account changed/);
+    assert.equal(calls.some(url=>url.endsWith('/results')),false,'An account switch during the await must prevent the HTTP submission');
+  }
   finally {engine.stop();client.clearCachedActiveServer();globalThis.fetch=originalFetch;
     if(previous.node===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=previous.node;
     if(previous.api===undefined)delete process.env.API_SERVER_URL;else process.env.API_SERVER_URL=previous.api;

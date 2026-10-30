@@ -192,8 +192,9 @@ export async function reportJobFailure(session, jobId, errorMessage, errorCode =
   return await res.json();
 }
 
-export async function submitJobResults(session, jobId, results, workerId = null) {
+export async function submitJobResults(session, jobId, results, workerId = null, isCurrent = () => true) {
   const baseUrl = await getActiveBackendUrl();
+  if (!isCurrent()) throw new Error('The account changed during extraction. Results were not submitted.');
   const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/results`, {
     timeoutMs: 30000,
     method: 'POST',
