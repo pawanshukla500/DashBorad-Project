@@ -9,13 +9,13 @@
 import { getPool } from '../db/index.js';
 import { clearRateCardCache } from './rateCard.js';
 import { dayBefore } from '../routes/rateCard.js';
-import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
+import { compareScrapedRatesWithActive, roundCurrency, roundRate } from './rateCardCanonicalEngine.js';
 
 export async function publishRateCardObservations(observations, options = {}) {
   const {
     marketplace = 'flipkart',
     sellerAccount = 'default',
-    effectiveDate = new Date().toISOString().slice(0, 10),
+    effectiveDate = (Array.isArray(observations) && (observations.find(o => o.effectiveDate || o.source_effective_date)?.effectiveDate || observations.find(o => o.source_effective_date)?.source_effective_date)) || new Date().toISOString().slice(0, 10),
     publishedBy = 'system',
     jobId = null
   } = options;
@@ -70,7 +70,7 @@ export async function publishRateCardObservations(observations, options = {}) {
       const hasRevShipDiff = categoryDiffs.some(d => d.table === 'rc_reverse_shipping');
 
       // A. Commissions
-      if (hasCommissionDiff && obs.commissions?.length > 0) {
+      if (hasCommissionDiff) {
         if (!closedCommissions.has(category)) {
           await client.query(`
             UPDATE rc_commission
@@ -81,7 +81,7 @@ export async function publishRateCardObservations(observations, options = {}) {
           closedCommissions.add(category);
         }
 
-        for (const comm of obs.commissions) {
+        for (const comm of (obs.commissions || [])) {
           await client.query(`
             INSERT INTO rc_commission (category, brand_name, marketplace, seller_account, start_date, end_date, price_min, price_max, rate, updated_at)
             VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, NOW())
@@ -93,15 +93,15 @@ export async function publishRateCardObservations(observations, options = {}) {
             marketplace,
             sellerAccount,
             effectiveDate,
-            comm.price_min || 0,
-            comm.price_max || 999999,
-            comm.rate || 0
+            roundCurrency(comm.price_min || 0),
+            roundCurrency(comm.price_max || 999999),
+            roundRate(comm.rate || 0)
           ]);
         }
       }
 
       // B. Fixed Fees
-      if (hasFixedFeeDiff && obs.fixedFees?.length > 0) {
+      if (hasFixedFeeDiff) {
         if (!closedFixedFees.has(category)) {
           await client.query(`
             UPDATE rc_fixed_fee
@@ -112,7 +112,7 @@ export async function publishRateCardObservations(observations, options = {}) {
           closedFixedFees.add(category);
         }
 
-        for (const ff of obs.fixedFees) {
+        for (const ff of (obs.fixedFees || [])) {
           await client.query(`
             INSERT INTO rc_fixed_fee (category, fulfilment_type, marketplace, seller_account, start_date, end_date, price_min, price_max, rate, updated_at)
             VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, NOW())
@@ -124,15 +124,15 @@ export async function publishRateCardObservations(observations, options = {}) {
             marketplace,
             sellerAccount,
             effectiveDate,
-            ff.price_min || 0,
-            ff.price_max || 999999,
-            ff.rate || 0
+            roundCurrency(ff.price_min || 0),
+            roundCurrency(ff.price_max || 999999),
+            roundCurrency(ff.rate || 0)
           ]);
         }
       }
 
       // C. Collection Fees (includes explicit prepaid_type & postpaid_type)
-      if (hasCollFeeDiff && obs.collectionFees?.length > 0) {
+      if (hasCollFeeDiff) {
         if (!closedCollFees.has(category)) {
           await client.query(`
             UPDATE rc_collection_fee
@@ -143,7 +143,12 @@ export async function publishRateCardObservations(observations, options = {}) {
           closedCollFees.add(category);
         }
 
-        for (const cf of obs.collectionFees) {
+        for (const cf of (obs.collectionFees || [])) {
+          const prepaidType = (cf.prepaid_type || 'pct').toLowerCase() === 'pct' ? 'pct' : 'flat';
+          const postpaidType = (cf.postpaid_type || 'flat').toLowerCase() === 'pct' ? 'pct' : 'flat';
+          const prepaidVal = prepaidType === 'pct' ? roundRate(cf.prepaid) : roundCurrency(cf.prepaid);
+          const postpaidVal = postpaidType === 'pct' ? roundRate(cf.postpaid) : roundCurrency(cf.postpaid);
+
           await client.query(`
             INSERT INTO rc_collection_fee (
               category, fulfilment_type, marketplace, seller_account,
@@ -164,18 +169,18 @@ export async function publishRateCardObservations(observations, options = {}) {
             marketplace,
             sellerAccount,
             effectiveDate,
-            cf.price_min || 0,
-            cf.price_max || 999999,
-            cf.prepaid || 0,
-            cf.postpaid || 0,
-            cf.prepaid_type || 'pct',
-            cf.postpaid_type || 'pct'
+            roundCurrency(cf.price_min || 0),
+            roundCurrency(cf.price_max || 999999),
+            prepaidVal,
+            postpaidVal,
+            prepaidType,
+            postpaidType
           ]);
         }
       }
 
       // D. Reverse Shipping
-      if (hasRevShipDiff && obs.reverseShipping?.length > 0) {
+      if (hasRevShipDiff) {
         if (!closedRevShip.has(category)) {
           await client.query(`
             UPDATE rc_reverse_shipping
@@ -186,21 +191,21 @@ export async function publishRateCardObservations(observations, options = {}) {
           closedRevShip.add(category);
         }
 
-        for (const rs of obs.reverseShipping) {
+        for (const rs of (obs.reverseShipping || [])) {
           await client.query(`
             INSERT INTO rc_reverse_shipping (category, weight_slab, marketplace, seller_account, start_date, end_date, price_min, price_max, local_fee, zonal_fee, national_fee, updated_at)
             VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9, $10, NOW())
           `, [
             category,
-            rs.weight_slab || '0kg-0.5kg',
+            (rs.weight_slab || '0kg-0.5kg').toLowerCase(),
             marketplace,
             sellerAccount,
             effectiveDate,
-            rs.price_min || 0,
-            rs.price_max || 999999,
-            rs.local_fee || 0,
-            rs.zonal_fee || 0,
-            rs.national_fee || 0
+            roundCurrency(rs.price_min || 0),
+            roundCurrency(rs.price_max || 999999),
+            roundCurrency(rs.local_fee || 0),
+            roundCurrency(rs.zonal_fee || 0),
+            roundCurrency(rs.national_fee || 0)
           ]);
         }
       }

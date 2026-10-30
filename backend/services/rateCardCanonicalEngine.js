@@ -13,11 +13,11 @@ import { getPool } from '../db/index.js';
 const EPSILON_RATE = 0.0001; // For commission rates (0.15 = 15%)
 const EPSILON_FEE = 0.005;   // Half a paisa (detects any >= 1 paisa / 0.01 fee shift)
 
-function roundCurrency(val) {
+export function roundCurrency(val) {
   return Math.round((Number(val) || 0) * 100) / 100;
 }
 
-function roundRate(val) {
+export function roundRate(val) {
   return Math.round((Number(val) || 0) * 10000) / 10000;
 }
 
@@ -34,33 +34,34 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
 
   try {
     // Fetch all active published rate card records for this marketplace + seller_account
+    // Strictly filter start_date <= effectiveDate to avoid matching future-dated records.
     const [commRows, fixedRows, collRows, revRows] = await Promise.all([
       client.query(`
         SELECT category, brand_name, start_date, end_date, price_min, price_max, rate
         FROM rc_commission
         WHERE marketplace = $1 AND seller_account = $2
-          AND (end_date IS NULL OR end_date >= $3)
+          AND start_date <= $3 AND (end_date IS NULL OR end_date >= $3)
       `, [marketplace, sellerAccount, effectiveDate]),
 
       client.query(`
         SELECT category, fulfilment_type, start_date, end_date, price_min, price_max, rate
         FROM rc_fixed_fee
         WHERE marketplace = $1 AND seller_account = $2
-          AND (end_date IS NULL OR end_date >= $3)
+          AND start_date <= $3 AND (end_date IS NULL OR end_date >= $3)
       `, [marketplace, sellerAccount, effectiveDate]),
 
       client.query(`
         SELECT category, fulfilment_type, start_date, end_date, price_min, price_max, prepaid, postpaid, prepaid_type, postpaid_type
         FROM rc_collection_fee
         WHERE marketplace = $1 AND seller_account = $2
-          AND (end_date IS NULL OR end_date >= $3)
+          AND start_date <= $3 AND (end_date IS NULL OR end_date >= $3)
       `, [marketplace, sellerAccount, effectiveDate]),
 
       client.query(`
         SELECT category, weight_slab, start_date, end_date, price_min, price_max, local_fee, zonal_fee, national_fee
         FROM rc_reverse_shipping
         WHERE marketplace = $1 AND seller_account = $2
-          AND (end_date IS NULL OR end_date >= $3)
+          AND start_date <= $3 AND (end_date IS NULL OR end_date >= $3)
       `, [marketplace, sellerAccount, effectiveDate])
     ]);
 
@@ -81,6 +82,7 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
       // ── 1. Check Commission Slabs ──────────────────────────────────────────
       const scrapedComms = obs.commissions || [];
       const dbComms = activeCommissions.filter(c => c.category === category);
+      const matchedDbCommIdxs = new Set();
 
       for (const sc of scrapedComms) {
         const scMin = roundCurrency(sc.price_min || 0);
@@ -88,13 +90,13 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
         const scRate = roundRate(sc.rate);
         const scBrand = sc.brand_name || null;
 
-        const match = dbComms.find(c =>
+        const matchIdx = dbComms.findIndex(c =>
           roundCurrency(c.price_min) === scMin &&
           roundCurrency(c.price_max) === scMax &&
           (c.brand_name || null) === scBrand
         );
 
-        if (!match) {
+        if (matchIdx === -1) {
           addedCount++;
           diffs.push({
             table: 'rc_commission',
@@ -109,6 +111,8 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
             details: `New commission slab: ${(scRate * 100).toFixed(2)}%`
           });
         } else {
+          matchedDbCommIdxs.add(matchIdx);
+          const match = dbComms[matchIdx];
           const oldRate = roundRate(match.rate);
           const rateDiff = Math.abs(oldRate - scRate);
           if (rateDiff >= EPSILON_RATE) {
@@ -134,9 +138,31 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
         }
       }
 
+      // Check for removed commission slabs
+      if (scrapedComms.length > 0) {
+        dbComms.forEach((c, idx) => {
+          if (!matchedDbCommIdxs.has(idx)) {
+            modifiedCount++;
+            diffs.push({
+              table: 'rc_commission',
+              category,
+              brand_name: c.brand_name || null,
+              fulfilment_type: null,
+              slab: `₹${roundCurrency(c.price_min)} - ₹${roundCurrency(c.price_max)}`,
+              changeType: 'REMOVED',
+              oldRate: roundRate(c.rate),
+              newRate: null,
+              anomaly: false,
+              details: `Commission slab removed from rate card (previously ${(roundRate(c.rate) * 100).toFixed(2)}%)`
+            });
+          }
+        });
+      }
+
       // ── 2. Check Fixed Fee Slabs ───────────────────────────────────────────
       const scrapedFixed = obs.fixedFees || [];
       const dbFixed = activeFixedFees.filter(f => f.category === category);
+      const matchedDbFixedIdxs = new Set();
 
       for (const sf of scrapedFixed) {
         const sfMin = roundCurrency(sf.price_min || 0);
@@ -144,13 +170,13 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
         const sfRate = roundCurrency(sf.rate);
         const sfType = sf.fulfilment_type || 'All';
 
-        const match = dbFixed.find(f =>
+        const matchIdx = dbFixed.findIndex(f =>
           roundCurrency(f.price_min) === sfMin &&
           roundCurrency(f.price_max) === sfMax &&
           (f.fulfilment_type || 'All').toLowerCase() === sfType.toLowerCase()
         );
 
-        if (!match) {
+        if (matchIdx === -1) {
           addedCount++;
           diffs.push({
             table: 'rc_fixed_fee',
@@ -165,6 +191,8 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
             details: `New fixed fee slab (${sfType}): ₹${sfRate}`
           });
         } else {
+          matchedDbFixedIdxs.add(matchIdx);
+          const match = dbFixed[matchIdx];
           const oldRate = roundCurrency(match.rate);
           if (Math.abs(oldRate - sfRate) >= EPSILON_FEE) {
             modifiedCount++;
@@ -189,24 +217,48 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
         }
       }
 
+      // Check for removed fixed fee slabs
+      if (scrapedFixed.length > 0) {
+        dbFixed.forEach((f, idx) => {
+          if (!matchedDbFixedIdxs.has(idx)) {
+            modifiedCount++;
+            diffs.push({
+              table: 'rc_fixed_fee',
+              category,
+              brand_name: null,
+              fulfilment_type: f.fulfilment_type || 'All',
+              slab: `₹${roundCurrency(f.price_min)} - ₹${roundCurrency(f.price_max)}`,
+              changeType: 'REMOVED',
+              oldRate: roundCurrency(f.rate),
+              newRate: null,
+              anomaly: false,
+              details: `Fixed fee slab (${f.fulfilment_type || 'All'}) removed from rate card`
+            });
+          }
+        });
+      }
+
       // ── 3. Check Collection Fee Slabs ──────────────────────────────────────
       const scrapedColl = obs.collectionFees || [];
       const dbColl = activeCollFees.filter(c => c.category === category);
+      const matchedDbCollIdxs = new Set();
 
       for (const scf of scrapedColl) {
         const scfMin = roundCurrency(scf.price_min || 0);
         const scfMax = roundCurrency(scf.price_max || 999999);
-        const scfPrepaid = roundCurrency(scf.prepaid);
-        const scfPostpaid = roundCurrency(scf.postpaid);
         const scfType = scf.fulfilment_type || 'All';
+        const scfPrepaidType = (scf.prepaid_type || 'pct').toLowerCase() === 'pct' ? 'pct' : 'flat';
+        const scfPostpaidType = (scf.postpaid_type || 'flat').toLowerCase() === 'pct' ? 'pct' : 'flat';
+        const scfPrepaid = scfPrepaidType === 'pct' ? roundRate(scf.prepaid) : roundCurrency(scf.prepaid);
+        const scfPostpaid = scfPostpaidType === 'pct' ? roundRate(scf.postpaid) : roundCurrency(scf.postpaid);
 
-        const match = dbColl.find(c =>
+        const matchIdx = dbColl.findIndex(c =>
           roundCurrency(c.price_min) === scfMin &&
           roundCurrency(c.price_max) === scfMax &&
           (c.fulfilment_type || 'All').toLowerCase() === scfType.toLowerCase()
         );
 
-        if (!match) {
+        if (matchIdx === -1) {
           addedCount++;
           diffs.push({
             table: 'rc_collection_fee',
@@ -216,14 +268,27 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
             slab: `₹${scfMin} - ₹${scfMax}`,
             changeType: 'ADDED',
             oldRate: null,
-            newRate: `Prepaid: ${scfPrepaid}, Postpaid: ${scfPostpaid}`,
+            newRate: `Prepaid: ${scfPrepaid}${scfPrepaidType === 'pct' ? '%' : ''}, Postpaid: ${scfPostpaid}${scfPostpaidType === 'pct' ? '%' : ''}`,
             anomaly: false,
-            details: `New collection fee slab: Prepaid ₹${scfPrepaid}, Postpaid ₹${scfPostpaid}`
+            details: `New collection fee slab: Prepaid ${scfPrepaid}${scfPrepaidType === 'pct' ? '%' : ''}, Postpaid ${scfPostpaid}${scfPostpaidType === 'pct' ? '%' : ''}`
           });
         } else {
-          const oldPrepaid = roundCurrency(match.prepaid);
-          const oldPostpaid = roundCurrency(match.postpaid);
-          if (Math.abs(oldPrepaid - scfPrepaid) >= EPSILON_FEE || Math.abs(oldPostpaid - scfPostpaid) >= EPSILON_FEE) {
+          matchedDbCollIdxs.add(matchIdx);
+          const match = dbColl[matchIdx];
+          const dbPrepaidType = (match.prepaid_type || 'pct').toLowerCase() === 'pct' ? 'pct' : 'flat';
+          const dbPostpaidType = (match.postpaid_type || 'flat').toLowerCase() === 'pct' ? 'pct' : 'flat';
+          const oldPrepaid = dbPrepaidType === 'pct' ? roundRate(match.prepaid) : roundCurrency(match.prepaid);
+          const oldPostpaid = dbPostpaidType === 'pct' ? roundRate(match.postpaid) : roundCurrency(match.postpaid);
+
+          const typeChanged = (scfPrepaidType !== dbPrepaidType) || (scfPostpaidType !== dbPostpaidType);
+          const prepaidChanged = scfPrepaidType === 'pct'
+            ? Math.abs(oldPrepaid - scfPrepaid) >= EPSILON_RATE
+            : Math.abs(oldPrepaid - scfPrepaid) >= EPSILON_FEE;
+          const postpaidChanged = scfPostpaidType === 'pct'
+            ? Math.abs(oldPostpaid - scfPostpaid) >= EPSILON_RATE
+            : Math.abs(oldPostpaid - scfPostpaid) >= EPSILON_FEE;
+
+          if (typeChanged || prepaidChanged || postpaidChanged) {
             modifiedCount++;
             diffs.push({
               table: 'rc_collection_fee',
@@ -232,10 +297,10 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
               fulfilment_type: scfType || null,
               slab: `₹${scfMin} - ₹${scfMax}`,
               changeType: 'MODIFIED',
-              oldRate: `Prepaid: ${oldPrepaid}, Postpaid: ${oldPostpaid}`,
-              newRate: `Prepaid: ${scfPrepaid}, Postpaid: ${scfPostpaid}`,
+              oldRate: `Prepaid: ${oldPrepaid}${dbPrepaidType === 'pct' ? '%' : ''}, Postpaid: ${oldPostpaid}${dbPostpaidType === 'pct' ? '%' : ''}`,
+              newRate: `Prepaid: ${scfPrepaid}${scfPrepaidType === 'pct' ? '%' : ''}, Postpaid: ${scfPostpaid}${scfPostpaidType === 'pct' ? '%' : ''}`,
               anomaly: false,
-              details: `Collection fee changed from P:₹${oldPrepaid}/Po:₹${oldPostpaid} to P:₹${scfPrepaid}/Po:₹${scfPostpaid}`
+              details: `Collection fee changed from P:${oldPrepaid}${dbPrepaidType === 'pct' ? '%' : ''}/Po:${oldPostpaid}${dbPostpaidType === 'pct' ? '%' : ''} to P:${scfPrepaid}${scfPrepaidType === 'pct' ? '%' : ''}/Po:${scfPostpaid}${scfPostpaidType === 'pct' ? '%' : ''}`
             });
           } else {
             unchangedCount++;
@@ -243,9 +308,33 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
         }
       }
 
+      // Check for removed collection fee slabs
+      if (scrapedColl.length > 0) {
+        dbColl.forEach((c, idx) => {
+          if (!matchedDbCollIdxs.has(idx)) {
+            modifiedCount++;
+            const dbPrepaidType = (c.prepaid_type || 'pct').toLowerCase() === 'pct' ? 'pct' : 'flat';
+            const dbPostpaidType = (c.postpaid_type || 'flat').toLowerCase() === 'pct' ? 'pct' : 'flat';
+            diffs.push({
+              table: 'rc_collection_fee',
+              category,
+              brand_name: null,
+              fulfilment_type: c.fulfilment_type || 'All',
+              slab: `₹${roundCurrency(c.price_min)} - ₹${roundCurrency(c.price_max)}`,
+              changeType: 'REMOVED',
+              oldRate: `Prepaid: ${c.prepaid}${dbPrepaidType === 'pct' ? '%' : ''}, Postpaid: ${c.postpaid}${dbPostpaidType === 'pct' ? '%' : ''}`,
+              newRate: null,
+              anomaly: false,
+              details: `Collection fee slab removed from rate card`
+            });
+          }
+        });
+      }
+
       // ── 4. Check Reverse Shipping Slabs ────────────────────────────────────
       const scrapedRev = obs.reverseShipping || [];
       const dbRev = activeRevShipping.filter(r => r.category === category);
+      const matchedDbRevIdxs = new Set();
 
       for (const srv of scrapedRev) {
         const srvSlab = (srv.weight_slab || '0kg-0.5kg').toLowerCase();
@@ -253,11 +342,11 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
         const srvZon = roundCurrency(srv.zonal_fee);
         const srvNat = roundCurrency(srv.national_fee);
 
-        const match = dbRev.find(r =>
+        const matchIdx = dbRev.findIndex(r =>
           (r.weight_slab || '0kg-0.5kg').toLowerCase() === srvSlab
         );
 
-        if (!match) {
+        if (matchIdx === -1) {
           addedCount++;
           diffs.push({
             table: 'rc_reverse_shipping',
@@ -272,6 +361,8 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
             details: `New reverse shipping slab ${srvSlab}`
           });
         } else {
+          matchedDbRevIdxs.add(matchIdx);
+          const match = dbRev[matchIdx];
           const oldLoc = roundCurrency(match.local_fee);
           const oldZon = roundCurrency(match.zonal_fee);
           const oldNat = roundCurrency(match.national_fee);
@@ -298,6 +389,27 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
             unchangedCount++;
           }
         }
+      }
+
+      // Check for removed reverse shipping slabs
+      if (scrapedRev.length > 0) {
+        dbRev.forEach((r, idx) => {
+          if (!matchedDbRevIdxs.has(idx)) {
+            modifiedCount++;
+            diffs.push({
+              table: 'rc_reverse_shipping',
+              category,
+              brand_name: null,
+              fulfilment_type: null,
+              slab: (r.weight_slab || '0kg-0.5kg').toLowerCase(),
+              changeType: 'REMOVED',
+              oldRate: `L:₹${roundCurrency(r.local_fee)}/Z:₹${roundCurrency(r.zonal_fee)}/N:₹${roundCurrency(r.national_fee)}`,
+              newRate: null,
+              anomaly: false,
+              details: `Reverse shipping slab ${r.weight_slab} removed from rate card`
+            });
+          }
+        });
       }
     }
 

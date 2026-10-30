@@ -3301,7 +3301,7 @@ export async function ensureMarketplaceCredentialsSchema(db) {
  * and fixes unique period constraints on rc_* tables.
  */
 export async function ensureRateCardWorkerSchema(pool) {
-  return runVersionedMigration(pool, RATE_CARD_WORKER_SCHEMA_VERSION, async client => {
+  const mig1 = await runVersionedMigration(pool, RATE_CARD_WORKER_SCHEMA_VERSION, async client => {
     // 1. Workers registry table
     await client.query(`
       CREATE TABLE IF NOT EXISTS workers (
@@ -3367,7 +3367,11 @@ export async function ensureRateCardWorkerSchema(pool) {
     `);
   }, { lockTimeout: '5s' });
 
-  await runVersionedMigration(db, '2026.10.ratecard-worker-jobs-2', async (tx) => {
+  if (mig1 === false) {
+    throw new Error(`Migration ${RATE_CARD_WORKER_SCHEMA_VERSION} failed to apply`);
+  }
+
+  const mig2 = await runVersionedMigration(pool, '2026.10.ratecard-worker-jobs-2', async (tx) => {
     await tx.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS rc_fixed_fee_uniq_active 
         ON rc_fixed_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, price_min, price_max) 
@@ -3386,6 +3390,12 @@ export async function ensureRateCardWorkerSchema(pool) {
         WHERE end_date IS NULL;
     `);
   }, { lockTimeout: '5s' });
+
+  if (mig2 === false) {
+    throw new Error('Migration 2026.10.ratecard-worker-jobs-2 failed to apply');
+  }
+
+  return true;
 }
 
 /**

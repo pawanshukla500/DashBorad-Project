@@ -1922,15 +1922,40 @@ async function runTests() {
   });
 
   await runTest('workerClient strictly enforces HTTPS allowlist and refuses bearer tokens on untrusted origins', async () => {
-    const { isAllowedBackendUrl, OFFICIAL_PRODUCTION_SERVERS } = await import('../workerClient.js');
+    const {
+      isAllowedBackendUrl,
+      OFFICIAL_PRODUCTION_SERVERS,
+      ALLOWED_BACKEND_HOSTNAMES,
+      getCandidateServers,
+      getHeaders,
+      clearCachedActiveServer,
+      reportJobFailure
+    } = await import('../workerClient.js');
+
     assert(OFFICIAL_PRODUCTION_SERVERS.length >= 3, 'Must define official production servers');
+    assert(ALLOWED_BACKEND_HOSTNAMES.has('payments.youthnic.shop'), 'Allowlist must include payments domain');
     assert(isAllowedBackendUrl('https://payments.youthnic.shop'), 'Official domain must be allowed');
     assert(isAllowedBackendUrl('https://reconcentral.srv1845788.hstgr.cloud'), 'Hostinger subdomain must be allowed');
+    assert(isAllowedBackendUrl('https://recon.srv1845788.hstgr.cloud'), 'Secondary Hostinger domain must be allowed');
     
     // Insecure / unallowlisted hosts rejected
     assert(!isAllowedBackendUrl('http://insecure-host.com'), 'Plaintext HTTP must be rejected');
     assert(!isAllowedBackendUrl('https://evil-attacker.com'), 'Non-allowlisted domain must be rejected');
+    assert(!isAllowedBackendUrl('https://untrusted.youthnic.shop'), 'Non-allowlisted subdomain must be rejected');
     assert(!isAllowedBackendUrl('https://payments.youthnic.shop:8080'), 'Non-standard port must be rejected');
+
+    // Header token security
+    const secureHeaders = getHeaders('secret-token-123', 'https://payments.youthnic.shop');
+    assert.strictEqual(secureHeaders['Authorization'], 'Bearer secret-token-123', 'Must attach Authorization on allowlisted host');
+
+    const strippedHeaders = getHeaders('secret-token-123', 'https://evil-attacker.com');
+    assert.strictEqual(strippedHeaders['Authorization'], undefined, 'Must NEVER attach Authorization on untrusted host');
+
+    // Candidate server resolution and helpers
+    const candidates = getCandidateServers();
+    assert(candidates.includes('https://payments.youthnic.shop'), 'Candidates must contain primary domain');
+    assert(typeof clearCachedActiveServer === 'function', 'Must export clearCachedActiveServer');
+    assert(typeof reportJobFailure === 'function', 'Must export reportJobFailure');
   });
 
   console.log('\n=================================================================');

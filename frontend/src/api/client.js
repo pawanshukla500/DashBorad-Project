@@ -404,9 +404,9 @@ export const fetchFlipkartVerticals       = () => api.get('/rate-card/verticals'
 export const fetchUnconfiguredCategories  = () => api.get('/rate-card/unconfigured-categories').then(r => r.data);
 export const checkCategoryRateCard        = (category, sync = false) => api.post('/rate-card/check-category', { category, sync }).then(r => r.data);
 export const syncFlipkartRateCards        = (options = {}) => api.post('/rate-card/sync-flipkart', options).then(r => r.data);
-export const fetchWorkers                  = () => api.get('/workers').then(r => r.data);
-export const fetchWorkerJobs               = (params = {}) => api.get('/worker-jobs', { params }).then(r => r.data);
-export const fetchWorkerJob                = (id) => api.get(`/worker-jobs/${id}`).then(r => r.data);
+export const fetchWorkers                  = () => api.get('/workers', { cache: false }).then(r => r.data);
+export const fetchWorkerJobs               = (params = {}) => api.get('/worker-jobs', { params, cache: false }).then(r => r.data);
+export const fetchWorkerJob                = (id) => api.get(`/worker-jobs/${id}`, { cache: false }).then(r => r.data);
 export const createWorkerJob               = (data) => api.post('/worker-jobs', data).then(r => r.data);
 export const publishWorkerJob              = (id) => api.post(`/worker-jobs/${id}/publish`).then(r => r.data);
 export const cancelWorkerJob               = (id) => api.post(`/worker-jobs/${id}/cancel`).then(r => r.data);

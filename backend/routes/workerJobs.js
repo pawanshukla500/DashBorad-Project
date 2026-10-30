@@ -110,9 +110,17 @@ workersRouter.post('/jobs/claim', async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // Fail expired jobs that exceeded max_attempts so they do not loop endlessly
+    await client.query(`
+      UPDATE worker_jobs
+      SET status = 'failed', error_code = 'MAX_ATTEMPTS_EXCEEDED', error_message = 'Job failed: retry limit exceeded', updated_at = NOW()
+      WHERE status IN ('claimed', 'running') AND lease_expires_at < NOW() AND attempts >= max_attempts
+    `);
+
     const claimQuery = `
       SELECT id FROM worker_jobs
       WHERE (status = 'queued' OR (status IN ('claimed', 'running') AND lease_expires_at < NOW()))
+        AND attempts < max_attempts
       ORDER BY priority DESC, created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -247,15 +255,27 @@ workerJobsRouter.get('/:id', async (req, res) => {
  */
 workerJobsRouter.post('/:id/progress', async (req, res) => {
   const { id } = req.params;
-  const { progress_pct = 0, progress_message = '' } = req.body;
+  const { progress_pct = 0, progress_message = '', worker_id = null } = req.body;
 
   const pool = getPool();
   try {
-    await pool.query(`
+    const conditions = ['id = $1', "status IN ('claimed', 'running')"];
+    const params = [id, progress_pct, progress_message];
+    if (worker_id) {
+      conditions.push('lease_worker_id = $4');
+      params.push(worker_id);
+    }
+
+    const updateRes = await pool.query(`
       UPDATE worker_jobs
-      SET status = 'running', progress_pct = $1, progress_message = $2, lease_expires_at = NOW() + INTERVAL '5 minutes', updated_at = NOW()
-      WHERE id = $3
-    `, [progress_pct, progress_message, id]);
+      SET status = 'running', progress_pct = $2, progress_message = $3, lease_expires_at = NOW() + INTERVAL '5 minutes', updated_at = NOW()
+      WHERE ${conditions.join(' AND ')}
+      RETURNING id, status
+    `, params);
+
+    if (updateRes.rows.length === 0) {
+      return res.status(409).json({ error: 'Job is not running or no longer assigned to this worker', code: 'JOB_NOT_RUNNING' });
+    }
 
     res.json({ success: true });
   } catch (err) {
@@ -265,12 +285,47 @@ workerJobsRouter.post('/:id/progress', async (req, res) => {
 });
 
 /**
+ * Worker reports execution failure
+ * POST /api/worker-jobs/:id/fail
+ */
+workerJobsRouter.post('/:id/fail', async (req, res) => {
+  const { id } = req.params;
+  const { error_message = 'Job execution failed', error_code = 'EXECUTION_ERROR', worker_id = null } = req.body;
+
+  const pool = getPool();
+  try {
+    const conditions = ['id = $1', "status IN ('claimed', 'running')"];
+    const params = [id, error_message, error_code];
+    if (worker_id) {
+      conditions.push('lease_worker_id = $4');
+      params.push(worker_id);
+    }
+
+    const updateRes = await pool.query(`
+      UPDATE worker_jobs
+      SET status = 'failed', error_message = $2, error_code = $3, completed_at = NOW(), updated_at = NOW()
+      WHERE ${conditions.join(' AND ')}
+      RETURNING id, status
+    `, params);
+
+    if (updateRes.rows.length === 0) {
+      return res.status(409).json({ error: 'Job is not running or no longer assigned to this worker', code: 'JOB_NOT_ACTIVE' });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[Worker API] Fail job error:', err.message);
+    res.status(500).json({ error: 'Failed to record job failure' });
+  }
+});
+
+/**
  * Worker delivers completed scrape results; backend runs canonical comparison
  * POST /api/worker-jobs/:id/results
  */
 workerJobsRouter.post('/:id/results', async (req, res) => {
   const { id } = req.params;
-  const { results = [] } = req.body;
+  const { results = [], worker_id = null, effective_date = null } = req.body;
 
   if (!Array.isArray(results) || results.length === 0) {
     return res.status(400).json({ error: 'Results must be a non-empty array of rate card observations' });
@@ -278,17 +333,31 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
 
   const pool = getPool();
   try {
-    const jobRes = await pool.query(`SELECT * FROM worker_jobs WHERE id = $1`, [id]);
+    const conditions = ['id = $1', "status IN ('claimed', 'running')"];
+    const checkParams = [id];
+    if (worker_id) {
+      conditions.push('lease_worker_id = $2');
+      checkParams.push(worker_id);
+    }
+    const jobRes = await pool.query(`SELECT * FROM worker_jobs WHERE ${conditions.join(' AND ')}`, checkParams);
     if (jobRes.rows.length === 0) {
-      return res.status(404).json({ error: 'Job not found' });
+      return res.status(409).json({ error: 'Job is not running or has been reassigned/cancelled', code: 'JOB_NOT_ACTIVE' });
     }
 
     const job = jobRes.rows[0];
 
+    // Determine effectiveDate from extraction or parameters
+    const scrapeEffectiveDate = effective_date ||
+      results.find(r => r.effectiveDate || r.source_effective_date)?.effectiveDate ||
+      results.find(r => r.source_effective_date)?.source_effective_date ||
+      job.parameters?.effectiveDate ||
+      new Date().toISOString().slice(0, 10);
+
     // Run canonical diff engine against active PostgreSQL rate cards
     const diffResult = await compareScrapedRatesWithActive(results, {
       marketplace: job.marketplace,
-      sellerAccount: job.seller_account
+      sellerAccount: job.seller_account,
+      effectiveDate: scrapeEffectiveDate
     });
 
     const updateRes = await pool.query(`
@@ -320,7 +389,7 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
  * Publish approved job results to active rc_* tables
  * POST /api/worker-jobs/:id/publish
  */
-workerJobsRouter.post('/:id/publish', requireRole('operator', 'admin'), async (req, res) => {
+workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => {
   const { id } = req.params;
   const pool = getPool();
 
@@ -335,9 +404,16 @@ workerJobsRouter.post('/:id/publish', requireRole('operator', 'admin'), async (r
       return res.status(400).json({ error: 'Job does not contain valid extraction results to publish' });
     }
 
+    const effectiveDate = req.body?.effectiveDate ||
+      job.results.find(r => r.effectiveDate || r.source_effective_date)?.effectiveDate ||
+      job.results.find(r => r.source_effective_date)?.source_effective_date ||
+      job.parameters?.effectiveDate ||
+      new Date().toISOString().slice(0, 10);
+
     const publishResult = await publishRateCardObservations(job.results, {
       marketplace: job.marketplace,
       sellerAccount: job.seller_account,
+      effectiveDate,
       jobId: job.id,
       publishedBy: req.user?.email || 'admin'
     });

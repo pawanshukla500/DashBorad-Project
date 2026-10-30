@@ -11,7 +11,7 @@ import {
   publishRateCardVersion, rollbackRateCardVersion,
   fetchRateCardNotificationStatus, sendRateCardNotificationTest,
   fetchFlipkartSyncStatus, fetchUnconfiguredCategories, checkCategoryRateCard, syncFlipkartRateCards,
-  fetchWorkers, fetchWorkerJob, publishWorkerJob,
+  fetchWorkers, fetchWorkerJob, publishWorkerJob, cancelWorkerJob,
 } from '../api/client';
 
 /* ─── Date helpers ────────────────────────────────────────────────
@@ -2674,6 +2674,7 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
   // Poll active worker job if running
   useEffect(() => {
     if (!activeJob || ['completed', 'published', 'failed', 'cancelled'].includes(activeJob.status)) {
+      if (syncing) setSyncing(false);
       return;
     }
     const timer = setInterval(async () => {
@@ -2691,6 +2692,9 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
           } else if (res.job.status === 'failed') {
             setSyncing(false);
             setError(res.job.error_message || 'Worker scrape task failed');
+          } else if (res.job.status === 'cancelled') {
+            setSyncing(false);
+            setToast('Job was cancelled.');
           }
         }
       } catch (err) {
@@ -2698,7 +2702,7 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
       }
     }, 3000);
     return () => clearInterval(timer);
-  }, [activeJob]);
+  }, [activeJob, syncing]);
 
   const handleSyncAll = async () => {
     setSyncing(true);
@@ -2743,6 +2747,18 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
     }
   };
 
+  const handleCancelJob = async () => {
+    if (!activeJob?.id) return;
+    try {
+      await cancelWorkerJob(activeJob.id);
+      setActiveJob(prev => prev ? { ...prev, status: 'cancelled', progress_message: 'Cancelled by user' } : null);
+      setSyncing(false);
+      setToast('Job cancelled successfully.');
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to cancel job');
+    }
+  };
+
   const handleCheckCategory = async (categoryName, autoSync = false) => {
     const cat = (categoryName || customCat || '').trim();
     if (!cat) return;
@@ -2753,7 +2769,10 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
       const res = await checkCategoryRateCard(cat, autoSync);
       if (res.success) {
         setInspectResult(res);
-        if (autoSync) {
+        if (res.jobId) {
+          setActiveJob(res.job || { id: res.jobId, status: 'queued', progress_pct: 0, progress_message: 'Job queued' });
+          setToast(`Worker job #${res.jobId} queued for category "${cat}".`);
+        } else if (autoSync) {
           setToast(`✓ Category "${cat}" rate card successfully extracted and saved to DB!`);
           if (onSyncComplete) onSyncComplete();
           loadStatus();
@@ -2861,16 +2880,27 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
               </span>
               <span className="text-secondary">{activeJob.progress_message || 'Processing...'}</span>
             </div>
-            {activeJob.status === 'completed' && activeJob.diff_summary?.diffCount > 0 && (
-              <button
-                type="button"
-                onClick={() => handlePublishJob(activeJob.id)}
-                disabled={publishing}
-                className="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 active:scale-95 transition-all shadow-sm flex items-center gap-1 disabled:opacity-50"
-              >
-                {publishing ? 'Publishing...' : 'Approve & Publish to PostgreSQL'}
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {['queued', 'claimed', 'running'].includes(activeJob.status) && (
+                <button
+                  type="button"
+                  onClick={handleCancelJob}
+                  className="px-2.5 py-1 rounded-lg border border-rose-300 text-rose-700 font-bold text-xs hover:bg-rose-50 active:scale-95 transition-all"
+                >
+                  Cancel Job
+                </button>
+              )}
+              {activeJob.status === 'completed' && activeJob.diff_summary?.diffCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handlePublishJob(activeJob.id)}
+                  disabled={publishing}
+                  className="px-3 py-1 rounded-lg bg-emerald-600 text-white font-bold text-xs hover:bg-emerald-700 active:scale-95 transition-all shadow-sm flex items-center gap-1 disabled:opacity-50"
+                >
+                  {publishing ? 'Publishing...' : 'Approve & Publish to PostgreSQL'}
+                </button>
+              )}
+            </div>
           </div>
           {activeJob.status === 'running' && (
             <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2 overflow-hidden">

@@ -14,6 +14,12 @@ export const OFFICIAL_PRODUCTION_SERVERS = [
   'https://recon.srv1845788.hstgr.cloud'
 ];
 
+export const ALLOWED_BACKEND_HOSTNAMES = new Set([
+  'payments.youthnic.shop',
+  'reconcentral.srv1845788.hstgr.cloud',
+  'recon.srv1845788.hstgr.cloud'
+]);
+
 /**
  * Validates that an API URL targets official ReconCentral infrastructure over secure HTTPS,
  * or localhost only under explicit test / debug environment gates.
@@ -34,9 +40,7 @@ export function isAllowedBackendUrl(urlStr) {
     return (
       parsed.protocol === 'https:' &&
       !parsed.port &&
-      ['youthnic.shop', 'vbexports.co.in', 'srv1845788.hstgr.cloud'].some(
-        (domain) => parsed.hostname === domain || parsed.hostname.endsWith(`.${domain}`)
-      )
+      ALLOWED_BACKEND_HOSTNAMES.has(parsed.hostname)
     );
   } catch {
     return false;
@@ -87,7 +91,11 @@ export async function getActiveBackendUrl(forceProbe = false) {
   return OFFICIAL_PRODUCTION_SERVERS[0];
 }
 
-function getHeaders(token, targetUrl) {
+export function clearCachedActiveServer() {
+  cachedActiveServer = null;
+}
+
+export function getHeaders(token, targetUrl) {
   const headers = {
     'Accept': 'application/json',
     'Content-Type': 'application/json'
@@ -100,9 +108,22 @@ function getHeaders(token, targetUrl) {
   return headers;
 }
 
+async function safeFetch(url, options = {}) {
+  try {
+    const res = await fetch(url, options);
+    if (res.status >= 502 && res.status <= 504) {
+      clearCachedActiveServer();
+    }
+    return res;
+  } catch (err) {
+    clearCachedActiveServer();
+    throw err;
+  }
+}
+
 export async function registerWorkerWithBackend(session, workerInfo) {
   const baseUrl = await getActiveBackendUrl();
-  const res = await fetch(`${baseUrl}/api/workers/register`, {
+  const res = await safeFetch(`${baseUrl}/api/workers/register`, {
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
     body: JSON.stringify(workerInfo)
@@ -117,7 +138,7 @@ export async function registerWorkerWithBackend(session, workerInfo) {
 
 export async function sendWorkerHeartbeat(session, workerId, status = 'online') {
   const baseUrl = await getActiveBackendUrl();
-  const res = await fetch(`${baseUrl}/api/workers/heartbeat`, {
+  const res = await safeFetch(`${baseUrl}/api/workers/heartbeat`, {
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
     body: JSON.stringify({ id: workerId, status })
@@ -129,7 +150,7 @@ export async function sendWorkerHeartbeat(session, workerId, status = 'online') 
 
 export async function claimNextWorkerJob(session, workerId) {
   const baseUrl = await getActiveBackendUrl();
-  const res = await fetch(`${baseUrl}/api/workers/jobs/claim`, {
+  const res = await safeFetch(`${baseUrl}/api/workers/jobs/claim`, {
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
     body: JSON.stringify({ worker_id: workerId })
@@ -141,7 +162,7 @@ export async function claimNextWorkerJob(session, workerId) {
 
 export async function reportJobProgress(session, jobId, progressPct, progressMessage) {
   const baseUrl = await getActiveBackendUrl();
-  const res = await fetch(`${baseUrl}/api/worker-jobs/${jobId}/progress`, {
+  const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/progress`, {
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
     body: JSON.stringify({ progress_pct: progressPct, progress_message: progressMessage })
@@ -151,9 +172,24 @@ export async function reportJobProgress(session, jobId, progressPct, progressMes
   return await res.json();
 }
 
+export async function reportJobFailure(session, jobId, errorMessage, errorCode = 'SCRAPE_ERROR', workerId = null) {
+  const baseUrl = await getActiveBackendUrl();
+  const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/fail`, {
+    method: 'POST',
+    headers: getHeaders(session?.idToken, baseUrl),
+    body: JSON.stringify({ error_message: errorMessage, error_code: errorCode, worker_id: workerId })
+  });
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `Report failure failed: HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
 export async function submitJobResults(session, jobId, results) {
   const baseUrl = await getActiveBackendUrl();
-  const res = await fetch(`${baseUrl}/api/worker-jobs/${jobId}/results`, {
+  const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/results`, {
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
     body: JSON.stringify({ results })
@@ -168,7 +204,7 @@ export async function submitJobResults(session, jobId, results) {
 
 export async function fetchBrandCatalogFromApi(session) {
   const baseUrl = await getActiveBackendUrl();
-  const res = await fetch(`${baseUrl}/api/rate-card/brand-fsn-catalog`, {
+  const res = await safeFetch(`${baseUrl}/api/rate-card/brand-fsn-catalog`, {
     method: 'GET',
     headers: getHeaders(session?.idToken, baseUrl)
   });
@@ -182,7 +218,7 @@ export async function fetchBrandCatalogFromApi(session) {
 
 export async function detectRateChangesViaApi(session, scrapedObservations, marketplace = 'flipkart') {
   const baseUrl = await getActiveBackendUrl();
-  const res = await fetch(`${baseUrl}/api/rate-card/detect-changes`, {
+  const res = await safeFetch(`${baseUrl}/api/rate-card/detect-changes`, {
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl),
     body: JSON.stringify({ scrapedData: scrapedObservations, marketplace })
@@ -197,7 +233,7 @@ export async function detectRateChangesViaApi(session, scrapedObservations, mark
 
 export async function publishJobViaApi(session, jobId) {
   const baseUrl = await getActiveBackendUrl();
-  const res = await fetch(`${baseUrl}/api/worker-jobs/${jobId}/publish`, {
+  const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/publish`, {
     method: 'POST',
     headers: getHeaders(session?.idToken, baseUrl)
   });

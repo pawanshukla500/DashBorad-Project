@@ -1655,7 +1655,7 @@ router.get('/unconfigured-categories', async (req, res) => {
  */
 router.post('/check-category', async (req, res) => {
   try {
-    const { category } = req.body || {};
+    const { category, sync = false } = req.body || {};
     if (!category || typeof category !== 'string' || !category.trim()) {
       return res.status(400).json({ error: 'Valid category name is required' });
     }
@@ -1678,14 +1678,16 @@ router.post('/check-category', async (req, res) => {
         status, priority, parameters, created_by, created_at, updated_at
       ) VALUES ($1, 'flipkart', 'default', 'RATE_CARD_SCRAPE', 'queued', 10, $2, $3, NOW(), NOW())
       RETURNING *
-    `, [`check-cat-${cleanCategory}-${Date.now()}`, JSON.stringify({ verticals: [cleanCategory] }), req.user?.email || 'system']);
+    `, [`check-cat-${cleanCategory}-${Date.now()}`, JSON.stringify({ verticals: [cleanCategory], autoPublish: !!sync }), req.user?.email || 'system']);
 
     res.json({
       success: true,
       category: cleanCategory,
       isConfiguredInDb,
-      message: `Worker job queued to inspect vertical "${cleanCategory}".`,
-      jobId: result.rows[0].id
+      queued: true,
+      message: `Worker job #${result.rows[0].id} queued to inspect vertical "${cleanCategory}".`,
+      jobId: result.rows[0].id,
+      job: result.rows[0]
     });
   } catch (err) {
     console.error('[check-category] Error:', err);
