@@ -1907,14 +1907,15 @@ async function runTests() {
     assert(e2eContent.includes('E2E 8: Network drop on attempt 1'), 'e2e test must cover retry backoff');
   });
 
-  await runTest('desktop/main.js and renderer.js wire Hostinger VPS auto-healing and Live Browser 2FA dock navigation', async () => {
+  await runTest('desktop/main.js and renderer.js wire TLS database provisioning and Live Browser 2FA dock navigation', async () => {
     const mainPath = path.join(desktopDir, 'main.js');
     const mainContent = fs.readFileSync(mainPath, 'utf8');
-    assert(mainContent.includes('DEFAULT_HOSTINGER_DB_URL'), 'main.js must define DEFAULT_HOSTINGER_DB_URL');
-    assert(mainContent.includes('200.141.1.119:5433/paymentapp'), 'main.js must point to Hostinger VPS PostgreSQL port 5433');
+    assert(mainContent.includes('sanitizeSavedDbUrl'), 'main.js must sanitize saved database URLs');
+    assert(!mainContent.includes('Xchange4SQL%24'), 'main.js must never contain hardcoded database passwords');
 
     const rendererPath = path.join(desktopDir, 'ui', 'renderer.js');
     const rendererContent = fs.readFileSync(rendererPath, 'utf8');
+    assert(rendererContent.includes('function triggerInteractiveLogin('), 'renderer.js must define module-scoped triggerInteractiveLogin');
     assert(rendererContent.includes('data-tab="monitor"'), 'renderer.js must navigate to monitor tab for live view');
     assert(rendererContent.includes('syncMonitorDockBounds'), 'renderer.js must synchronize dock bounds');
     assert(rendererContent.includes("uiVersion: '1.7.0'"), 'renderer.js must send 1.7.0 uiVersion');

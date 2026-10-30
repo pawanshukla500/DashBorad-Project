@@ -362,6 +362,24 @@ function updateBrowserMonitorUI(state) {
   }
 }
 
+function triggerInteractiveLogin(marketplaceId = 'flipkart_shopsy') {
+  const selectMp = document.getElementById('select-marketplace');
+  if (selectMp && marketplaceId) {
+    selectMp.value = marketplaceId;
+    const headerMp = document.getElementById('header-select-marketplace');
+    if (headerMp) headerMp.value = marketplaceId;
+  }
+  const monitorTab = document.querySelector('.nav-item[data-tab="monitor"]');
+  if (monitorTab && !monitorTab.classList.contains('active')) {
+    monitorTab.click();
+  }
+  setTimeout(() => {
+    syncMonitorDockBounds();
+    const btn = document.getElementById('btn-interactive-login');
+    btn?.click();
+  }, 60);
+}
+
 function initBrowserMonitorListeners() {
   window.addEventListener('resize', syncMonitorDockBounds);
 
@@ -404,24 +422,6 @@ function initBrowserMonitorListeners() {
       btnScreenshot.textContent = '📸 Capture Frame';
     }
   });
-
-  function triggerInteractiveLogin(marketplaceId = 'flipkart_shopsy') {
-    const selectMp = document.getElementById('select-marketplace');
-    if (selectMp && marketplaceId) {
-      selectMp.value = marketplaceId;
-      const headerMp = document.getElementById('header-select-marketplace');
-      if (headerMp) headerMp.value = marketplaceId;
-    }
-    const monitorTab = document.querySelector('.nav-item[data-tab="monitor"]');
-    if (monitorTab && !monitorTab.classList.contains('active')) {
-      monitorTab.click();
-    }
-    setTimeout(() => {
-      syncMonitorDockBounds();
-      const btn = document.getElementById('btn-interactive-login');
-      btn?.click();
-    }, 60);
-  }
 
   const btnLogin = document.getElementById('btn-monitor-login');
   btnLogin?.addEventListener('click', () => {

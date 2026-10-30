@@ -264,17 +264,15 @@ function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
   return path.join(dir, `cookies_${safeId}.json`);
 }
 
-export const DEFAULT_HOSTINGER_DB_URL = 'postgresql://pawanshukla:Xchange4SQL%24@200.141.1.119:5433/paymentapp';
-
 const DEFAULT_CONFIG = {
   marketplace: 'flipkart_shopsy', // 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'
   email: 'Vbexports@outlook.com',
   password: '',
   apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
-  databaseUrl: process.env.DATABASE_URL || DEFAULT_HOSTINGER_DB_URL,
+  databaseUrl: process.env.DATABASE_URL || '',
   // Role that provisioned databaseUrl. An analyst-provisioned URL is bound to
   // a read-only principal and must never be reused by privileged sessions.
-  databaseUrlRole: 'admin',
+  databaseUrlRole: '',
   scheduledHour: 6, // 06:00 AM
   scheduledMinute: 0,
   notificationEmail: 'payments@youthnic.shop',
@@ -301,10 +299,8 @@ function loadConfig() {
         parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
       }
       // Drop container-internal database URLs provisioned by old server builds (e.g. postgres:5432)
-      // and auto-heal to the publicly routable Hostinger VPS PostgreSQL URL.
       if (parsed.databaseUrl) {
-        const sanitized = sanitizeSavedDbUrl(parsed.databaseUrl);
-        parsed.databaseUrl = sanitized || DEFAULT_HOSTINGER_DB_URL;
+        parsed.databaseUrl = sanitizeSavedDbUrl(parsed.databaseUrl);
       }
       // The environment-derived default is sanitized too: a container-internal
       // DATABASE_URL (postgres:5432) must never reach the pool logic, even
@@ -1264,8 +1260,7 @@ registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
       manualUrl: dbUrl,
       serverUrl: serverDatabaseUrl,
       serverAccess: serverDatabaseAccess
-    }) || (normalizedDbRole === 'analyst' ? '' : storedDatabaseUrlForRole(normalizedDbRole, config))
-       || (normalizedDbRole === 'analyst' ? '' : DEFAULT_HOSTINGER_DB_URL);
+    }) || (normalizedDbRole === 'analyst' ? '' : storedDatabaseUrlForRole(normalizedDbRole, config));
 
     // Strict invariant: Ensure the session token carries a verified role claim matching the DB user's role
     let tokenMatch = validateTokenRoleMatchesDatabase(fbResult.idToken, normalizedDbRole);
@@ -1376,13 +1371,9 @@ registerHandler('auth-get-session', async () => {
   const session = await authorizeSession();
   if (session) {
     saveAuthSession(session);
-    // Auto-provision Hostinger VPS PostgreSQL URL if databaseUrl is currently missing in config
     const config = loadConfig();
-    if (!config.databaseUrl && session.user?.role && session.user.role !== 'analyst') {
-      config.databaseUrl = DEFAULT_HOSTINGER_DB_URL;
-      config.databaseUrlRole = session.user.role;
-      saveConfig(config);
-      setDesktopDatabaseAccess(session.user.role, config.databaseUrl);
+    if (config.databaseUrl) {
+      setDesktopDatabaseAccess(session.user?.role, config.databaseUrl);
     }
   }
   return publicSession(session);

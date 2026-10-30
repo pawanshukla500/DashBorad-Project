@@ -82,7 +82,7 @@ jobs:
         env:
           APP_DOMAIN: ${{ vars.APP_DOMAIN || 'payments.youthnic.shop' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DESKTOP_DATABASE_URL: ${{ secrets.DESKTOP_DATABASE_URL || 'postgresql://pawanshukla:Xchange4SQL%24@200.141.1.119:5433/paymentapp' }}
+          DESKTOP_DATABASE_URL: ${{ secrets.DESKTOP_DATABASE_URL }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
