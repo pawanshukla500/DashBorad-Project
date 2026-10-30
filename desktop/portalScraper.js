@@ -151,7 +151,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
     // Step 1: Navigate to seller.flipkart.com landing page first
     onProgress('Connecting to Flipkart Seller Hub (https://seller.flipkart.com/)...');
     await safeGoto('https://seller.flipkart.com/', { waitUntil: 'load', timeout: 35000 });
-    await delay(1500);
+    // Allow ample time for cookie-based session verification scripts to settle before checking session state
+    await delay(3000);
 
     const checkSession = () => page.evaluate(() => {
       const href = window.location.href.toLowerCase();
@@ -169,9 +170,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
       );
     });
 
-    if (!await checkSession()) {
-      deleteEncryptedCookies(cookiesPath);
-      deleteEncryptedCookies(fallbackCookiesPath);
+    const isSessionActive = await checkSession();
+    if (!isSessionActive) {
 
       if (!config.password) {
         if (typeof onSessionExpiry === 'function') {
@@ -189,8 +189,14 @@ export async function scrapeFlipkartRateCards(config = {}, {
           } catch {}
           onProgress('🔐 Session expired or login required. Opening in-view authentication prompt...');
           const authed = await onSessionExpiry(page);
-          if (!authed) throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
+          if (!authed) {
+            deleteEncryptedCookies(cookiesPath);
+            deleteEncryptedCookies(fallbackCookiesPath);
+            throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
+          }
         } else {
+          deleteEncryptedCookies(cookiesPath);
+          deleteEncryptedCookies(fallbackCookiesPath);
           throw new Error('Seller Hub login required. Complete Human Login (2FA), then retry extraction.');
         }
       } else {
@@ -302,8 +308,14 @@ export async function scrapeFlipkartRateCards(config = {}, {
           if (typeof onSessionExpiry === 'function') {
             onProgress('🔐 2FA verification challenge required. Please complete OTP challenge in the browser viewport...');
             const authed = await onSessionExpiry(page);
-            if (!authed) throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
+            if (!authed) {
+              deleteEncryptedCookies(cookiesPath);
+              deleteEncryptedCookies(fallbackCookiesPath);
+              throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
+            }
           } else {
+            deleteEncryptedCookies(cookiesPath);
+            deleteEncryptedCookies(fallbackCookiesPath);
             throw new Error('Seller Hub login is incomplete. Complete Human Login (2FA), then retry extraction.');
           }
         }
