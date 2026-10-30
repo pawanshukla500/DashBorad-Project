@@ -198,7 +198,7 @@ workerJobsRouter.post('/', requireRole('operator', 'admin'), async (req, res) =>
  * GET /api/worker-jobs
  */
 workerJobsRouter.get('/', async (req, res) => {
-  const { status, marketplace, limit = 50 } = req.query;
+  const { status, marketplace, job_type, limit = 50 } = req.query;
   const pool = getPool();
   try {
     const conditions = [];
@@ -212,6 +212,10 @@ workerJobsRouter.get('/', async (req, res) => {
     if (marketplace) {
       conditions.push(`marketplace = $${idx++}`);
       params.push(marketplace);
+    }
+    if (job_type) {
+      conditions.push(`job_type = $${idx++}`);
+      params.push(job_type);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

@@ -34,34 +34,34 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
 
   try {
     // Fetch all active published rate card records for this marketplace + seller_account
-    // Strictly filter start_date <= effectiveDate to avoid matching future-dated records.
+    // Strictly filter (start_date IS NULL OR start_date <= effectiveDate) to avoid matching future-dated records.
     const [commRows, fixedRows, collRows, revRows] = await Promise.all([
       client.query(`
         SELECT category, brand_name, start_date, end_date, price_min, price_max, rate
         FROM rc_commission
         WHERE marketplace = $1 AND seller_account = $2
-          AND start_date <= $3 AND (end_date IS NULL OR end_date >= $3)
+          AND (start_date IS NULL OR start_date <= $3) AND (end_date IS NULL OR end_date >= $3)
       `, [marketplace, sellerAccount, effectiveDate]),
 
       client.query(`
         SELECT category, fulfilment_type, start_date, end_date, price_min, price_max, rate
         FROM rc_fixed_fee
         WHERE marketplace = $1 AND seller_account = $2
-          AND start_date <= $3 AND (end_date IS NULL OR end_date >= $3)
+          AND (start_date IS NULL OR start_date <= $3) AND (end_date IS NULL OR end_date >= $3)
       `, [marketplace, sellerAccount, effectiveDate]),
 
       client.query(`
         SELECT category, fulfilment_type, start_date, end_date, price_min, price_max, prepaid, postpaid, prepaid_type, postpaid_type
         FROM rc_collection_fee
         WHERE marketplace = $1 AND seller_account = $2
-          AND start_date <= $3 AND (end_date IS NULL OR end_date >= $3)
+          AND (start_date IS NULL OR start_date <= $3) AND (end_date IS NULL OR end_date >= $3)
       `, [marketplace, sellerAccount, effectiveDate]),
 
       client.query(`
         SELECT category, weight_slab, start_date, end_date, price_min, price_max, local_fee, zonal_fee, national_fee
         FROM rc_reverse_shipping
         WHERE marketplace = $1 AND seller_account = $2
-          AND start_date <= $3 AND (end_date IS NULL OR end_date >= $3)
+          AND (start_date IS NULL OR start_date <= $3) AND (end_date IS NULL OR end_date >= $3)
       `, [marketplace, sellerAccount, effectiveDate])
     ]);
 

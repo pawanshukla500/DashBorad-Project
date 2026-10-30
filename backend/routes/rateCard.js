@@ -1587,7 +1587,7 @@ router.post('/sync-flipkart', async (req, res) => {
         status, priority, parameters, created_by, created_at, updated_at
       ) VALUES ($1, 'flipkart', 'default', 'RATE_CARD_SCRAPE', 'queued', $2, $3, $4, NOW(), NOW())
       RETURNING *
-    `, [`sync-fk-${Date.now()}`, priority, JSON.stringify({ verticals: verticals || [] }), req.user?.email || 'system']);
+    `, [`sync-fk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, priority, JSON.stringify({ verticals: verticals || [] }), req.user?.email || 'system']);
 
     res.json({
       success: true,

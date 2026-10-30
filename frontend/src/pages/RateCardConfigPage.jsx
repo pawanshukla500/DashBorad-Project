@@ -2654,7 +2654,7 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
         fetchFlipkartSyncStatus().catch(() => null),
         fetchUnconfiguredCategories().catch(() => ({ categories: [] })),
         fetchWorkers().catch(() => ({ workers: [] })),
-        fetchWorkerJobs({ limit: 1 }).catch(() => ({ jobs: [] }))
+        fetchWorkerJobs({ marketplace: 'flipkart', job_type: 'RATE_CARD_SCRAPE', limit: 1 }).catch(() => ({ jobs: [] }))
       ]);
       setStatus(sData);
       setUnconfigured(uData?.categories || []);
@@ -2663,6 +2663,9 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
         if (current && ['queued', 'claimed', 'running'].includes(current.status)) return current;
         const latest = jData?.jobs?.[0];
         if (latest && (['queued', 'claimed', 'running'].includes(latest.status) || (latest.status === 'completed' && latest.diff_summary?.hasChanges))) {
+          if (['queued', 'claimed', 'running'].includes(latest.status)) {
+            setSyncing(true);
+          }
           return latest;
         }
         return current;

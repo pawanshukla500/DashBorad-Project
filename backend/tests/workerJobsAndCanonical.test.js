@@ -190,5 +190,41 @@ describe('Rate Card Canonical Change Detection Engine', () => {
     expect(result.summary.unchanged).toBe(1);
     expect(result.diffs.filter(d => d.changeType === 'REMOVED').length).toBe(0);
   });
+
+  it('correctly matches active rate records having NULL start_date without false additions', async () => {
+    const mockDb = {
+      query: vi.fn().mockImplementation((sql, params) => {
+        if (sql.includes('rc_commission')) {
+          expect(sql).toContain('start_date IS NULL OR start_date <=');
+          return Promise.resolve({
+            rows: [
+              { id: '1', category: 'saree', brand_name: null, start_date: null, end_date: null, price_min: '0.00', price_max: '1000.00', rate: '0.1500' }
+            ]
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      })
+    };
+
+    const observations = [
+      {
+        vertical: 'saree',
+        commissions: [
+          { brand_name: '', price_min: 0, price_max: 1000, rate: 0.15 }
+        ]
+      }
+    ];
+
+    const result = await compareScrapedRatesWithActive(observations, {
+      marketplace: 'flipkart',
+      sellerAccount: 'default',
+      effectiveDate: '2026-10-30',
+      dbClient: mockDb
+    });
+
+    expect(result.hasChanges).toBe(false);
+    expect(result.diffCount).toBe(0);
+    expect(result.summary.unchanged).toBe(1);
+  });
 });
 
