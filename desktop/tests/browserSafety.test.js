@@ -136,3 +136,9 @@ test('FSN response matching never accepts category-only or other-product fees', 
   assert.equal(capture.snapshot(context).missing.length,4);
   send({fsn:context.fsn});assert.equal(capture.snapshot(context).missing.length,0);
 });
+
+test('unexpected Shopsy commission is rejected without replacing the observed rate with zero', () => {
+  const raw={marketplace:'shopsy',vertical:'shopsy_kurta',fulfilment_type:'NON_FBF',commissions:[{price_min:0,price_max:500,rate:0.1}]};
+  assert.throws(()=>normalizeScrapedCards([raw]),/Unexpected nonzero Shopsy/);
+  assert.equal(raw.commissions[0].rate,0.1);
+});

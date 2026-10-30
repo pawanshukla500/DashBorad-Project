@@ -98,7 +98,7 @@ reviews every commit. Production migration/publication requires separate approva
   authenticated installed-worker timing remain separate acceptance checks.
 - Backend: 87 files / 611 tests passed; isolated real PostgreSQL integration
   is skipped locally without an explicit loopback fixture database and runs in CI.
-- Desktop: 4 SQLite + 68 runtime + 9 E2E + 9 safety tests passed.
+- Desktop: 4 SQLite + 68 runtime + 9 E2E + 10 safety tests passed.
 - Frontend production build passed in 6.89 seconds.
 - Installed-package acceptance is being run. Compilation and unit tests alone
   do not establish Windows/Linux installed runtime success.
@@ -182,3 +182,7 @@ desktop reports extract-zip/browser tooling and zod; frontend reports
 follow-redirects. Application test success does not resolve those advisories.
 Dependency upgrades need a compatibility and regression pass. CodeAnt review is
 pending; no merge or production action is authorized by these acceptance results.
+
+The stated Shopsy zero-commission invariant is enforced as a validation gate: a
+nonzero portal observation is rejected for review. Its value is never replaced
+with a constant or silently published.

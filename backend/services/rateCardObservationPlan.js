@@ -90,6 +90,9 @@ export function validateRateObservations(observations, { marketplace, complete =
       if (!Array.isArray(rows) || (required && !rows.length)) throw new Error(`Missing ${descriptor.field}; incomplete extractions cannot be published.`);
       for (const row of rows) {
         const normalized = normalizeObservationRow(descriptor, row, observation);
+        if (complete && marketplace === 'shopsy' && descriptor.table === 'rc_commission' && normalized.rate !== 0) {
+          throw new Error('Unexpected nonzero Shopsy commission; review the portal response before publication.');
+        }
         const identity = JSON.stringify([descriptor.table, normalized.category, ...descriptor.keys.map(k => normalized[k])]);
         if (identities.has(identity)) {
           const previous = identities.get(identity);

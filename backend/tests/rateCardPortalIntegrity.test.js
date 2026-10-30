@@ -42,6 +42,7 @@ describe('Portal observations and reviewed publication', () => {
     const complete = cards();
     expect(() => validateRateObservations([{...complete[0],reverseShipping:[]}], {marketplace:'flipkart',complete:true})).toThrow(/Missing reverseShipping/);
     expect(() => validateRateObservations(complete, {marketplace:'shopsy'})).toThrow(/Mixed marketplace/);
+    expect(() => validateRateObservations([{...complete[0],marketplace:'shopsy'}], {marketplace:'shopsy',complete:true})).toThrow(/Unexpected nonzero Shopsy/);
     expect(() => validateRateObservations([complete[0],complete[0]], {marketplace:'flipkart'})).toThrow(/Duplicate/);
     expect(() => validateRateObservations([{...complete[0],commissions:[{price_min:0,price_max:500,rate:NaN}]}], {marketplace:'flipkart'})).toThrow(/Invalid/);
     expect(() => validateRateObservations(complete, {marketplace:'flipkart',expectedVerticals:['dress']})).toThrow(/Missing configured category/);

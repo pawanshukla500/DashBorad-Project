@@ -77,6 +77,9 @@ export function normalizeScrapedCards(items) {
     if (!FEE_FIELDS.some(field => item[field]?.length)) {
       throw new Error(`No recognized fee slabs for ${item.vertical}. Nothing was staged.`);
     }
+    if (item.marketplace === 'shopsy' && (item.commissions || []).some(row => row.rate !== 0)) {
+      throw new Error('Unexpected nonzero Shopsy commission. Review the actual portal response; no rates were staged.');
+    }
     const key = JSON.stringify([item.marketplace, item.vertical, item.brand || 'General', item.sample_fsn || null]);
     if (!groups.has(key)) groups.set(key, new Map());
     const byMode = groups.get(key);
