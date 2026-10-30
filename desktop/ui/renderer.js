@@ -464,7 +464,15 @@ async function loadInitialState() {
     // Test API connection silently for dashboard status
     const dbStatusEl = document.getElementById('dash-db-status');
     const dbSubEl = document.getElementById('dash-db-sub');
-    const apiCheck = await window.ratecardAPI.testDbConnection();
+    let apiCheck = { success: false };
+    if (window.ratecardAPI?.testDbConnection) {
+      apiCheck = await window.ratecardAPI.testDbConnection().catch(() => ({ success: false }));
+    } else {
+      apiCheck = await fetch('/api/health')
+        .then(r => r.json())
+        .then(d => ({ success: d.status === 'ok', db: 'ReconCentral Cloud API' }))
+        .catch(() => ({ success: false }));
+    }
     if (apiCheck.success) {
       dbStatusEl.innerText = 'Connected';
       dbStatusEl.style.color = '#10b981';
@@ -631,11 +639,11 @@ async function loadCatalogData() {
       }
       appendTerminalLine(`✓ Loaded ${currentCatalog.length} brand catalog items from ReconCentral API.`);
     } else {
-      setBrandsKpi('8 Brands Ready', 'Ethnic Junction, VB Exports & more', '#10b981');
-      appendTerminalLine(`✓ Ready for brand-wise rate extraction across Flipkart & Shopsy.`);
+      setBrandsKpi('0 Brands Configured', 'No brand entries found in API catalog', '#94a3b8');
+      appendTerminalLine(`! No brand catalog items returned by API.`);
     }
   } catch (err) {
-    setBrandsKpi('8 Brands Ready', 'Ethnic Junction, VB Exports & more', '#10b981');
+    setBrandsKpi('API Offline', `Catalog load error: ${err.message}`, '#ef4444');
   }
 }
 

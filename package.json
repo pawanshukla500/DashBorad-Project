@@ -11,8 +11,5 @@
   },
   "devDependencies": {
     "concurrently": "^9.0.1"
-  },
-  "dependencies": {
-    "sql.js": "^1.15.2"
   }
 }

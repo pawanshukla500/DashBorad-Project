@@ -3366,6 +3366,26 @@ export async function ensureRateCardWorkerSchema(pool) {
         ON rc_pick_pack (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, end_date, price_min, price_max);
     `);
   }, { lockTimeout: '5s' });
+
+  await runVersionedMigration(db, '2026.10.ratecard-worker-jobs-2', async (tx) => {
+    await tx.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS rc_fixed_fee_uniq_active 
+        ON rc_fixed_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, price_min, price_max) 
+        WHERE end_date IS NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS rc_collection_fee_uniq_active 
+        ON rc_collection_fee (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, price_min, price_max) 
+        WHERE end_date IS NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS rc_commission_uniq_active 
+        ON rc_commission (marketplace, seller_account, category, COALESCE(brand_name, ''), start_date, price_min, price_max) 
+        WHERE end_date IS NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS rc_pick_pack_uniq_active 
+        ON rc_pick_pack (marketplace, seller_account, category, COALESCE(fulfilment_type, ''), start_date, price_min, price_max) 
+        WHERE end_date IS NULL;
+    `);
+  }, { lockTimeout: '5s' });
 }
 
 /**

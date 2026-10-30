@@ -11,7 +11,7 @@
 import { getPool } from '../db/index.js';
 
 const EPSILON_RATE = 0.0001; // For commission rates (0.15 = 15%)
-const EPSILON_FEE = 0.01;    // For currency values in INR
+const EPSILON_FEE = 0.005;   // Half a paisa (detects any >= 1 paisa / 0.01 fee shift)
 
 function roundCurrency(val) {
   return Math.round((Number(val) || 0) * 100) / 100;
@@ -29,281 +29,292 @@ export async function compareScrapedRatesWithActive(observations, options = {}) 
     dbClient = null
   } = options;
 
-  const pool = dbClient || getPool();
-  const diffs = [];
-  let totalObserved = 0;
-  let unchangedCount = 0;
-  let addedCount = 0;
-  let modifiedCount = 0;
-  let anomalyCount = 0;
+  const client = dbClient || await getPool().connect();
+  const shouldRelease = !dbClient;
 
-  for (const obs of observations) {
-    const category = obs.vertical || obs.category;
-    if (!category) continue;
+  try {
+    // Fetch all active published rate card records for this marketplace + seller_account
+    const [commRows, fixedRows, collRows, revRows] = await Promise.all([
+      client.query(`
+        SELECT category, brand_name, start_date, end_date, price_min, price_max, rate
+        FROM rc_commission
+        WHERE marketplace = $1 AND seller_account = $2
+          AND (end_date IS NULL OR end_date >= $3)
+      `, [marketplace, sellerAccount, effectiveDate]),
 
-    // 1. Commission comparison
-    const activeCommissions = await pool.query(`
-      SELECT id, category, COALESCE(brand_name, '') AS brand_name, price_min, price_max, rate
-      FROM rc_commission
-      WHERE marketplace = $1 AND seller_account = $2 AND category = $3 AND end_date IS NULL
-    `, [marketplace, sellerAccount, category]);
+      client.query(`
+        SELECT category, fulfilment_type, start_date, end_date, price_min, price_max, rate
+        FROM rc_fixed_fee
+        WHERE marketplace = $1 AND seller_account = $2
+          AND (end_date IS NULL OR end_date >= $3)
+      `, [marketplace, sellerAccount, effectiveDate]),
 
-    const scrapedComms = obs.commissions || [];
-    for (const sc of scrapedComms) {
-      totalObserved++;
-      const scBrand = String(sc.brand_name || '').trim();
-      const scMin = roundCurrency(sc.price_min);
-      const scMax = roundCurrency(sc.price_max);
-      const scRate = roundRate(sc.rate);
+      client.query(`
+        SELECT category, fulfilment_type, start_date, end_date, price_min, price_max, prepaid, postpaid, prepaid_type, postpaid_type
+        FROM rc_collection_fee
+        WHERE marketplace = $1 AND seller_account = $2
+          AND (end_date IS NULL OR end_date >= $3)
+      `, [marketplace, sellerAccount, effectiveDate]),
 
-      const match = activeCommissions.rows.find(ac =>
-        String(ac.brand_name || '').trim() === scBrand &&
-        Math.abs(roundCurrency(ac.price_min) - scMin) < EPS_SLAB(scMin) &&
-        Math.abs(roundCurrency(ac.price_max) - scMax) < 1.0
-      );
+      client.query(`
+        SELECT category, weight_slab, start_date, end_date, price_min, price_max, local_fee, zonal_fee, national_fee
+        FROM rc_reverse_shipping
+        WHERE marketplace = $1 AND seller_account = $2
+          AND (end_date IS NULL OR end_date >= $3)
+      `, [marketplace, sellerAccount, effectiveDate])
+    ]);
 
-      if (!match) {
-        addedCount++;
-        diffs.push({
-          table: 'rc_commission',
-          category,
-          brand_name: scBrand || null,
-          slab: `₹${scMin} - ₹${scMax}`,
-          fulfilment_type: null,
-          changeType: 'ADDED',
-          oldRate: null,
-          newRate: scRate,
-          anomaly: false,
-          details: `New commission slab: ${scRate * 100}%`
-        });
-      } else {
-        const oldRate = roundRate(match.rate);
-        if (Math.abs(oldRate - scRate) > EPSILON_RATE) {
-          modifiedCount++;
-          const rateChangePct = oldRate > 0 ? Math.abs((scRate - oldRate) / oldRate) * 100 : 100;
-          const isAnomaly = rateChangePct >= 50.0;
-          if (isAnomaly) anomalyCount++;
+    const activeCommissions = commRows.rows;
+    const activeFixedFees = fixedRows.rows;
+    const activeCollFees = collRows.rows;
+    const activeRevShipping = revRows.rows;
 
+    const diffs = [];
+    let addedCount = 0;
+    let modifiedCount = 0;
+    let unchangedCount = 0;
+
+    for (const obs of observations) {
+      const category = obs.vertical || obs.category;
+      if (!category) continue;
+
+      // ── 1. Check Commission Slabs ──────────────────────────────────────────
+      const scrapedComms = obs.commissions || [];
+      const dbComms = activeCommissions.filter(c => c.category === category);
+
+      for (const sc of scrapedComms) {
+        const scMin = roundCurrency(sc.price_min || 0);
+        const scMax = roundCurrency(sc.price_max || 999999);
+        const scRate = roundRate(sc.rate);
+        const scBrand = sc.brand_name || null;
+
+        const match = dbComms.find(c =>
+          roundCurrency(c.price_min) === scMin &&
+          roundCurrency(c.price_max) === scMax &&
+          (c.brand_name || null) === scBrand
+        );
+
+        if (!match) {
+          addedCount++;
           diffs.push({
             table: 'rc_commission',
             category,
-            brand_name: scBrand || null,
-            slab: `₹${scMin} - ₹${scMax}`,
+            brand_name: scBrand,
             fulfilment_type: null,
-            changeType: 'MODIFIED',
-            oldRate,
+            slab: `₹${scMin} - ₹${scMax}`,
+            changeType: 'ADDED',
+            oldRate: null,
             newRate: scRate,
-            anomaly: isAnomaly,
-            details: `Commission rate changed from ${(oldRate * 100).toFixed(2)}% to ${(scRate * 100).toFixed(2)}%`
+            anomaly: false,
+            details: `New commission slab: ${(scRate * 100).toFixed(2)}%`
           });
         } else {
-          unchangedCount++;
+          const oldRate = roundRate(match.rate);
+          const rateDiff = Math.abs(oldRate - scRate);
+          if (rateDiff >= EPSILON_RATE) {
+            modifiedCount++;
+            const pctShift = oldRate > 0 ? (rateDiff / oldRate) * 100 : 100;
+            const isAnomaly = rateDiff >= 0.05 || pctShift >= 50;
+
+            diffs.push({
+              table: 'rc_commission',
+              category,
+              brand_name: scBrand,
+              fulfilment_type: null,
+              slab: `₹${scMin} - ₹${scMax}`,
+              changeType: 'MODIFIED',
+              oldRate: oldRate,
+              newRate: scRate,
+              anomaly: isAnomaly,
+              details: `Commission changed from ${(oldRate * 100).toFixed(2)}% to ${(scRate * 100).toFixed(2)}% (shift: ${pctShift.toFixed(1)}%)`
+            });
+          } else {
+            unchangedCount++;
+          }
         }
       }
-    }
 
-    // 2. Fixed Fee comparison
-    const activeFixedFees = await pool.query(`
-      SELECT id, category, COALESCE(fulfilment_type, '') AS fulfilment_type, price_min, price_max, rate
-      FROM rc_fixed_fee
-      WHERE marketplace = $1 AND seller_account = $2 AND category = $3 AND end_date IS NULL
-    `, [marketplace, sellerAccount, category]);
+      // ── 2. Check Fixed Fee Slabs ───────────────────────────────────────────
+      const scrapedFixed = obs.fixedFees || [];
+      const dbFixed = activeFixedFees.filter(f => f.category === category);
 
-    const scrapedFixed = obs.fixedFees || [];
-    for (const sf of scrapedFixed) {
-      totalObserved++;
-      const sfType = String(sf.fulfilment_type || '').trim();
-      const sfMin = roundCurrency(sf.price_min);
-      const sfMax = roundCurrency(sf.price_max);
-      const sfRate = roundCurrency(sf.rate);
+      for (const sf of scrapedFixed) {
+        const sfMin = roundCurrency(sf.price_min || 0);
+        const sfMax = roundCurrency(sf.price_max || 999999);
+        const sfRate = roundCurrency(sf.rate);
+        const sfType = sf.fulfilment_type || 'All';
 
-      const match = activeFixedFees.rows.find(af =>
-        String(af.fulfilment_type || '').trim().toLowerCase() === sfType.toLowerCase() &&
-        Math.abs(roundCurrency(af.price_min) - sfMin) < EPS_SLAB(sfMin) &&
-        Math.abs(roundCurrency(af.price_max) - sfMax) < 1.0
-      );
+        const match = dbFixed.find(f =>
+          roundCurrency(f.price_min) === sfMin &&
+          roundCurrency(f.price_max) === sfMax &&
+          (f.fulfilment_type || 'All').toLowerCase() === sfType.toLowerCase()
+        );
 
-      if (!match) {
-        addedCount++;
-        diffs.push({
-          table: 'rc_fixed_fee',
-          category,
-          brand_name: null,
-          fulfilment_type: sfType || null,
-          slab: `₹${sfMin} - ₹${sfMax}`,
-          changeType: 'ADDED',
-          oldRate: null,
-          newRate: sfRate,
-          anomaly: false,
-          details: `New fixed fee slab (${sfType}): ₹${sfRate}`
-        });
-      } else {
-        const oldRate = roundCurrency(match.rate);
-        if (Math.abs(oldRate - sfRate) > EPSILON_FEE) {
-          modifiedCount++;
-          const feeChangePct = oldRate > 0 ? Math.abs((sfRate - oldRate) / oldRate) * 100 : 100;
-          const isAnomaly = feeChangePct >= 50.0;
-          if (isAnomaly) anomalyCount++;
-
+        if (!match) {
+          addedCount++;
           diffs.push({
             table: 'rc_fixed_fee',
             category,
             brand_name: null,
-            fulfilment_type: sfType || null,
+            fulfilment_type: sfType,
             slab: `₹${sfMin} - ₹${sfMax}`,
-            changeType: 'MODIFIED',
-            oldRate,
+            changeType: 'ADDED',
+            oldRate: null,
             newRate: sfRate,
-            anomaly: isAnomaly,
-            details: `Fixed fee changed from ₹${oldRate} to ₹${sfRate}`
+            anomaly: false,
+            details: `New fixed fee slab (${sfType}): ₹${sfRate}`
           });
         } else {
-          unchangedCount++;
+          const oldRate = roundCurrency(match.rate);
+          if (Math.abs(oldRate - sfRate) >= EPSILON_FEE) {
+            modifiedCount++;
+            const feeDiff = Math.abs(oldRate - sfRate);
+            const isAnomaly = oldRate > 0 && (feeDiff / oldRate) >= 0.5;
+
+            diffs.push({
+              table: 'rc_fixed_fee',
+              category,
+              brand_name: null,
+              fulfilment_type: sfType,
+              slab: `₹${sfMin} - ₹${sfMax}`,
+              changeType: 'MODIFIED',
+              oldRate: oldRate,
+              newRate: sfRate,
+              anomaly: isAnomaly,
+              details: `Fixed fee (${sfType}) changed from ₹${oldRate} to ₹${sfRate}`
+            });
+          } else {
+            unchangedCount++;
+          }
         }
       }
-    }
 
-    // 3. Collection Fee comparison
-    const activeCollFees = await pool.query(`
-      SELECT id, category, COALESCE(fulfilment_type, '') AS fulfilment_type, price_min, price_max, prepaid, postpaid
-      FROM rc_collection_fee
-      WHERE marketplace = $1 AND seller_account = $2 AND category = $3 AND end_date IS NULL
-    `, [marketplace, sellerAccount, category]);
+      // ── 3. Check Collection Fee Slabs ──────────────────────────────────────
+      const scrapedColl = obs.collectionFees || [];
+      const dbColl = activeCollFees.filter(c => c.category === category);
 
-    const scrapedColl = obs.collectionFees || [];
-    for (const scf of scrapedColl) {
-      totalObserved++;
-      const scfType = String(scf.fulfilment_type || '').trim();
-      const scfMin = roundCurrency(scf.price_min);
-      const scfMax = roundCurrency(scf.price_max);
-      const scfPrepaid = roundCurrency(scf.prepaid);
-      const scfPostpaid = roundCurrency(scf.postpaid);
+      for (const scf of scrapedColl) {
+        const scfMin = roundCurrency(scf.price_min || 0);
+        const scfMax = roundCurrency(scf.price_max || 999999);
+        const scfPrepaid = roundCurrency(scf.prepaid);
+        const scfPostpaid = roundCurrency(scf.postpaid);
+        const scfType = scf.fulfilment_type || 'All';
 
-      const match = activeCollFees.rows.find(acf =>
-        String(acf.fulfilment_type || '').trim().toLowerCase() === scfType.toLowerCase() &&
-        Math.abs(roundCurrency(acf.price_min) - scfMin) < EPS_SLAB(scfMin) &&
-        Math.abs(roundCurrency(acf.price_max) - scfMax) < 1.0
-      );
+        const match = dbColl.find(c =>
+          roundCurrency(c.price_min) === scfMin &&
+          roundCurrency(c.price_max) === scfMax &&
+          (c.fulfilment_type || 'All').toLowerCase() === scfType.toLowerCase()
+        );
 
-      if (!match) {
-        addedCount++;
-        diffs.push({
-          table: 'rc_collection_fee',
-          category,
-          brand_name: null,
-          fulfilment_type: scfType || null,
-          slab: `₹${scfMin} - ₹${scfMax}`,
-          changeType: 'ADDED',
-          oldRate: null,
-          newRate: `Prepaid: ${scfPrepaid}, Postpaid: ${scfPostpaid}`,
-          anomaly: false,
-          details: `New collection fee slab: Prepaid ₹${scfPrepaid}, Postpaid ₹${scfPostpaid}`
-        });
-      } else {
-        const oldPrepaid = roundCurrency(match.prepaid);
-        const oldPostpaid = roundCurrency(match.postpaid);
-        if (Math.abs(oldPrepaid - scfPrepaid) > EPSILON_FEE || Math.abs(oldPostpaid - scfPostpaid) > EPSILON_FEE) {
-          modifiedCount++;
+        if (!match) {
+          addedCount++;
           diffs.push({
             table: 'rc_collection_fee',
             category,
             brand_name: null,
             fulfilment_type: scfType || null,
             slab: `₹${scfMin} - ₹${scfMax}`,
-            changeType: 'MODIFIED',
-            oldRate: `Prepaid: ${oldPrepaid}, Postpaid: ${oldPostpaid}`,
+            changeType: 'ADDED',
+            oldRate: null,
             newRate: `Prepaid: ${scfPrepaid}, Postpaid: ${scfPostpaid}`,
             anomaly: false,
-            details: `Collection fee changed from P:₹${oldPrepaid}/Po:₹${oldPostpaid} to P:₹${scfPrepaid}/Po:₹${scfPostpaid}`
+            details: `New collection fee slab: Prepaid ₹${scfPrepaid}, Postpaid ₹${scfPostpaid}`
           });
         } else {
-          unchangedCount++;
+          const oldPrepaid = roundCurrency(match.prepaid);
+          const oldPostpaid = roundCurrency(match.postpaid);
+          if (Math.abs(oldPrepaid - scfPrepaid) >= EPSILON_FEE || Math.abs(oldPostpaid - scfPostpaid) >= EPSILON_FEE) {
+            modifiedCount++;
+            diffs.push({
+              table: 'rc_collection_fee',
+              category,
+              brand_name: null,
+              fulfilment_type: scfType || null,
+              slab: `₹${scfMin} - ₹${scfMax}`,
+              changeType: 'MODIFIED',
+              oldRate: `Prepaid: ${oldPrepaid}, Postpaid: ${oldPostpaid}`,
+              newRate: `Prepaid: ${scfPrepaid}, Postpaid: ${scfPostpaid}`,
+              anomaly: false,
+              details: `Collection fee changed from P:₹${oldPrepaid}/Po:₹${oldPostpaid} to P:₹${scfPrepaid}/Po:₹${scfPostpaid}`
+            });
+          } else {
+            unchangedCount++;
+          }
         }
       }
-    }
 
-    // 4. Reverse Shipping comparison
-    const activeRevShip = await pool.query(`
-      SELECT id, category, COALESCE(weight_slab, '') AS weight_slab, price_min, price_max, local_fee, zonal_fee, national_fee
-      FROM rc_reverse_shipping
-      WHERE marketplace = $1 AND seller_account = $2 AND category = $3 AND end_date IS NULL
-    `, [marketplace, sellerAccount, category]);
+      // ── 4. Check Reverse Shipping Slabs ────────────────────────────────────
+      const scrapedRev = obs.reverseShipping || [];
+      const dbRev = activeRevShipping.filter(r => r.category === category);
 
-    const scrapedRev = obs.reverseShipping || [];
-    for (const srv of scrapedRev) {
-      totalObserved++;
-      const srvSlab = String(srv.weight_slab || '').trim().replace(/\s+/g, '');
-      const srvMin = roundCurrency(srv.price_min);
-      const srvMax = roundCurrency(srv.price_max);
-      const srvLoc = roundCurrency(srv.local_fee);
-      const srvZon = roundCurrency(srv.zonal_fee);
-      const srvNat = roundCurrency(srv.national_fee);
+      for (const srv of scrapedRev) {
+        const srvSlab = (srv.weight_slab || '0kg-0.5kg').toLowerCase();
+        const srvLoc = roundCurrency(srv.local_fee);
+        const srvZon = roundCurrency(srv.zonal_fee);
+        const srvNat = roundCurrency(srv.national_fee);
 
-      const match = activeRevShip.rows.find(ars =>
-        String(ars.weight_slab || '').trim().replace(/\s+/g, '').toLowerCase() === srvSlab.toLowerCase() &&
-        Math.abs(roundCurrency(ars.price_min) - srvMin) < EPS_SLAB(srvMin) &&
-        Math.abs(roundCurrency(ars.price_max) - srvMax) < 1.0
-      );
+        const match = dbRev.find(r =>
+          (r.weight_slab || '0kg-0.5kg').toLowerCase() === srvSlab
+        );
 
-      if (!match) {
-        addedCount++;
-        diffs.push({
-          table: 'rc_reverse_shipping',
-          category,
-          brand_name: null,
-          fulfilment_type: null,
-          slab: `${srvSlab} (₹${srvMin} - ₹${srvMax})`,
-          changeType: 'ADDED',
-          oldRate: null,
-          newRate: `L: ₹${srvLoc}, Z: ₹${srvZon}, N: ₹${srvNat}`,
-          anomaly: false,
-          details: `New reverse shipping slab: Local ₹${srvLoc}, Zonal ₹${srvZon}, National ₹${srvNat}`
-        });
-      } else {
-        const oldLoc = roundCurrency(match.local_fee);
-        const oldZon = roundCurrency(match.zonal_fee);
-        const oldNat = roundCurrency(match.national_fee);
-        const feeChanged = Math.abs(oldLoc - srvLoc) > EPSILON_FEE ||
-                           Math.abs(oldZon - srvZon) > EPSILON_FEE ||
-                           Math.abs(oldNat - srvNat) > EPSILON_FEE;
-
-        if (feeChanged) {
-          modifiedCount++;
+        if (!match) {
+          addedCount++;
           diffs.push({
             table: 'rc_reverse_shipping',
             category,
             brand_name: null,
             fulfilment_type: null,
-            slab: `${srvSlab} (₹${srvMin} - ₹${srvMax})`,
-            changeType: 'MODIFIED',
-            oldRate: `L: ₹${oldLoc}, Z: ₹${oldZon}, N: ₹${oldNat}`,
-            newRate: `L: ₹${srvLoc}, Z: ₹${srvZon}, N: ₹${srvNat}`,
+            slab: srvSlab,
+            changeType: 'ADDED',
+            oldRate: null,
+            newRate: `L:₹${srvLoc}/Z:₹${srvZon}/N:₹${srvNat}`,
             anomaly: false,
-            details: `Reverse shipping rates changed`
+            details: `New reverse shipping slab ${srvSlab}`
           });
         } else {
-          unchangedCount++;
+          const oldLoc = roundCurrency(match.local_fee);
+          const oldZon = roundCurrency(match.zonal_fee);
+          const oldNat = roundCurrency(match.national_fee);
+
+          const feeChanged = Math.abs(oldLoc - srvLoc) >= EPSILON_FEE ||
+                             Math.abs(oldZon - srvZon) >= EPSILON_FEE ||
+                             Math.abs(oldNat - srvNat) >= EPSILON_FEE;
+
+          if (feeChanged) {
+            modifiedCount++;
+            diffs.push({
+              table: 'rc_reverse_shipping',
+              category,
+              brand_name: null,
+              fulfilment_type: null,
+              slab: srvSlab,
+              changeType: 'MODIFIED',
+              oldRate: `L:₹${oldLoc}/Z:₹${oldZon}/N:₹${oldNat}`,
+              newRate: `L:₹${srvLoc}/Z:₹${srvZon}/N:₹${srvNat}`,
+              anomaly: false,
+              details: `Reverse shipping ${srvSlab} changed from L:₹${oldLoc}/Z:₹${oldZon}/N:₹${oldNat} to L:₹${srvLoc}/Z:₹${srvZon}/N:₹${srvNat}`
+            });
+          } else {
+            unchangedCount++;
+          }
         }
       }
     }
+
+    const hasChanges = diffs.length > 0;
+    return {
+      hasChanges,
+      diffCount: diffs.length,
+      diffs,
+      summary: {
+        added: addedCount,
+        modified: modifiedCount,
+        unchanged: unchangedCount,
+        anomalies: diffs.filter(d => d.anomaly).length,
+        totalChecked: addedCount + modifiedCount + unchangedCount
+      }
+    };
+  } finally {
+    if (shouldRelease) client.release();
   }
-
-  const hasChanges = diffs.length > 0;
-  return {
-    hasChanges,
-    diffCount: diffs.length,
-    diffs,
-    summary: {
-      totalObserved,
-      unchanged: unchangedCount,
-      modified: modifiedCount,
-      added: addedCount,
-      anomalies: anomalyCount
-    }
-  };
 }
-
-function EPS_SLAB(min) {
-  return min === 0 ? 0.05 : 1.05;
-}
-

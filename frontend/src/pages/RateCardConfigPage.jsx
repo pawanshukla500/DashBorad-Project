@@ -2667,6 +2667,8 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
 
   useEffect(() => {
     loadStatus();
+    const interval = setInterval(loadStatus, 15000);
+    return () => clearInterval(interval);
   }, [loadStatus]);
 
   // Poll active worker job if running

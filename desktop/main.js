@@ -589,6 +589,8 @@ async function executeBackgroundWorkerJob(session, job) {
     // Submit results to backend (backend runs canonical diff)
     const submitRes = await submitJobResults(session, job.id, scrapeRes.data);
     markStagedJobStatus(db, `job-${job.id}`, 'completed');
+    // Prune completed observation rows to prevent unbounded disk growth
+    clearStagedJob(db, `job-${job.id}`);
     if (mainWindow) {
       mainWindow.webContents.send('scrape-progress', `✓ Remote job #${job.id} completed. Diff count: ${submitRes.diffResult?.diffCount || 0}`);
     }

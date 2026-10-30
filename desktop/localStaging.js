@@ -20,9 +20,12 @@ function persist(db, filePath) {
   if (!db || !target) return;
   try {
     const data = db.export();
-    fs.writeFileSync(target, Buffer.from(data));
+    const tmpPath = `${target}.tmp.${Date.now()}`;
+    fs.writeFileSync(tmpPath, Buffer.from(data));
+    fs.renameSync(tmpPath, target);
   } catch (err) {
-    console.warn('[Local Staging] Failed to persist SQLite db:', err.message);
+    console.error('[Local Staging] Failed to persist SQLite db:', err.message);
+    throw err;
   }
 }
 
