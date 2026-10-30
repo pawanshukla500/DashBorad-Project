@@ -11,7 +11,7 @@ import {
   publishRateCardVersion, rollbackRateCardVersion,
   fetchRateCardNotificationStatus, sendRateCardNotificationTest,
   fetchFlipkartSyncStatus, fetchUnconfiguredCategories, checkCategoryRateCard, syncFlipkartRateCards,
-  fetchWorkers, fetchWorkerJob, publishWorkerJob, cancelWorkerJob,
+  fetchWorkers, fetchWorkerJobs, fetchWorkerJob, publishWorkerJob, cancelWorkerJob,
 } from '../api/client';
 
 /* ─── Date helpers ────────────────────────────────────────────────
@@ -2650,14 +2650,23 @@ function FlipkartAutomationPanel({ onSyncComplete }) {
   const loadStatus = useCallback(async () => {
     setLoading(true);
     try {
-      const [sData, uData, wData] = await Promise.all([
+      const [sData, uData, wData, jData] = await Promise.all([
         fetchFlipkartSyncStatus().catch(() => null),
         fetchUnconfiguredCategories().catch(() => ({ categories: [] })),
-        fetchWorkers().catch(() => ({ workers: [] }))
+        fetchWorkers().catch(() => ({ workers: [] })),
+        fetchWorkerJobs({ limit: 1 }).catch(() => ({ jobs: [] }))
       ]);
       setStatus(sData);
       setUnconfigured(uData?.categories || []);
       setWorkers(wData?.workers || []);
+      setActiveJob(current => {
+        if (current && ['queued', 'claimed', 'running'].includes(current.status)) return current;
+        const latest = jData?.jobs?.[0];
+        if (latest && (['queued', 'claimed', 'running'].includes(latest.status) || (latest.status === 'completed' && latest.diff_summary?.hasChanges))) {
+          return latest;
+        }
+        return current;
+      });
     } catch (e) {
       console.warn('Status load note:', e.message);
     } finally {

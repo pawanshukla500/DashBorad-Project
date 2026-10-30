@@ -76,6 +76,7 @@ export async function publishRateCardObservations(observations, options = {}) {
             UPDATE rc_commission
             SET end_date = $1, updated_at = NOW()
             WHERE marketplace = $2 AND seller_account = $3 AND category = $4
+              AND (start_date IS NULL OR start_date <= $1)
               AND (end_date IS NULL OR end_date >= $5)
           `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
           closedCommissions.add(category);
@@ -107,6 +108,7 @@ export async function publishRateCardObservations(observations, options = {}) {
             UPDATE rc_fixed_fee
             SET end_date = $1, updated_at = NOW()
             WHERE marketplace = $2 AND seller_account = $3 AND category = $4
+              AND (start_date IS NULL OR start_date <= $1)
               AND (end_date IS NULL OR end_date >= $5)
           `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
           closedFixedFees.add(category);
@@ -138,6 +140,7 @@ export async function publishRateCardObservations(observations, options = {}) {
             UPDATE rc_collection_fee
             SET end_date = $1, updated_at = NOW()
             WHERE marketplace = $2 AND seller_account = $3 AND category = $4
+              AND (start_date IS NULL OR start_date <= $1)
               AND (end_date IS NULL OR end_date >= $5)
           `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
           closedCollFees.add(category);
@@ -186,6 +189,7 @@ export async function publishRateCardObservations(observations, options = {}) {
             UPDATE rc_reverse_shipping
             SET end_date = $1, updated_at = NOW()
             WHERE marketplace = $2 AND seller_account = $3 AND category = $4
+              AND (start_date IS NULL OR start_date <= $1)
               AND (end_date IS NULL OR end_date >= $5)
           `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
           closedRevShip.add(category);

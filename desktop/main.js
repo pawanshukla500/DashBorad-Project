@@ -598,7 +598,13 @@ async function executeBackgroundWorkerJob(session, job) {
         visible: false
       }, async (msg) => {
         if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
-        await reportJobProgress(session, job.id, 40, msg).catch(() => {});
+        try {
+          await reportJobProgress(session, job.id, 40, msg);
+        } catch (progErr) {
+          if (progErr.message?.includes('409') || progErr.message?.includes('JOB_NOT_RUNNING')) {
+            throw new Error('Job was cancelled by server');
+          }
+        }
       });
     });
 
@@ -627,7 +633,7 @@ async function executeBackgroundWorkerJob(session, job) {
     if (db) {
       try { markStagedJobStatus(db, `job-${job.id}`, 'failed'); } catch {}
     }
-    await reportJobFailure(session, job.id, err.message).catch(() => {});
+    await reportJobFailure(session, job.id, err.message, 'SCRAPE_ERROR', WORKER_ID).catch(() => {});
   } finally {
     isWorkerExecutingJob = false;
   }

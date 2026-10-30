@@ -120,6 +120,7 @@ workersRouter.post('/jobs/claim', async (req, res) => {
     const claimQuery = `
       SELECT id FROM worker_jobs
       WHERE (status = 'queued' OR (status IN ('claimed', 'running') AND lease_expires_at < NOW()))
+        AND job_type = 'RATE_CARD_SCRAPE'
         AND attempts < max_attempts
       ORDER BY priority DESC, created_at ASC
       LIMIT 1
@@ -295,19 +296,24 @@ workerJobsRouter.post('/:id/fail', async (req, res) => {
 
   const pool = getPool();
   try {
-    const conditions = ['id = $1', "status IN ('claimed', 'running')"];
-    const params = [id, error_message, error_code];
-    if (worker_id) {
-      conditions.push('lease_worker_id = $4');
-      params.push(worker_id);
+    const jobRes = await pool.query('SELECT lease_worker_id, status FROM worker_jobs WHERE id = $1', [id]);
+    if (jobRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    const currentJob = jobRes.rows[0];
+    if (!['claimed', 'running'].includes(currentJob.status)) {
+      return res.status(409).json({ error: 'Job is not running', code: 'JOB_NOT_ACTIVE' });
+    }
+    if (currentJob.lease_worker_id && (!worker_id || currentJob.lease_worker_id !== worker_id)) {
+      return res.status(409).json({ error: 'Job lease belongs to another worker or lease has expired', code: 'LEASE_MISMATCH' });
     }
 
     const updateRes = await pool.query(`
       UPDATE worker_jobs
       SET status = 'failed', error_message = $2, error_code = $3, completed_at = NOW(), updated_at = NOW()
-      WHERE ${conditions.join(' AND ')}
+      WHERE id = $1 AND status IN ('claimed', 'running')
       RETURNING id, status
-    `, params);
+    `, [id, error_message, error_code]);
 
     if (updateRes.rows.length === 0) {
       return res.status(409).json({ error: 'Job is not running or no longer assigned to this worker', code: 'JOB_NOT_ACTIVE' });
