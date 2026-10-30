@@ -11,9 +11,11 @@ export default function prepareBuild() {
   const tracked = git(['ls-files', 'desktop']).split(/\r?\n/).filter(Boolean);
   const files = {};
   for (const file of tracked) {
-    if (file.startsWith('desktop/tests/')) continue;
+    // electron-builder excludes lockfiles and rewrites package metadata. Hash
+    // every shipped source/asset; compare the packaged version separately.
+    if (file.startsWith('desktop/tests/') || ['desktop/package.json','desktop/package-lock.json'].includes(file)) continue;
     files[file.slice('desktop/'.length)] = createHash('sha256').update(fs.readFileSync(path.join(root, file))).digest('hex');
   }
-  const manifest = { commit: git(['rev-parse', 'HEAD']), dirty: Boolean(git(['status', '--porcelain', '--untracked-files=no', '--', 'desktop', 'scripts/prepare-release.js'])), files };
+  const manifest = { version: JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).version, commit: git(['rev-parse', 'HEAD']), dirty: Boolean(git(['status', '--porcelain', '--untracked-files=no', '--', 'desktop', 'scripts/prepare-release.js'])), files };
   fs.writeFileSync(path.join(directory, 'build-info.json'), JSON.stringify(manifest, null, 2));
 }

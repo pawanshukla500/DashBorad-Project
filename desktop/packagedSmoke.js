@@ -19,6 +19,7 @@ export async function runPackagedSmoke({ app, window, output, setPage, nativeIma
     }
     check(/^[0-9a-f]{40}$/.test(manifest.commit) && !manifest.dirty, 'Clean source commit recorded in installed release');
     result.commit = manifest.commit;
+    check(app.getVersion() === manifest.version, 'Installed version matches source package metadata');
     if (process.env.RECON_EXPECT_COMMIT) check(result.commit === process.env.RECON_EXPECT_COMMIT, 'Installed commit matches requested commit');
     if (window.webContents.isLoading()) await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
     check(await window.webContents.executeJavaScript('Boolean(window.ratecardAPI?.setMonitorDockBounds)'), 'Sandboxed preload bridge loaded');
