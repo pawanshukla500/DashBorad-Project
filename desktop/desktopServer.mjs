@@ -25,6 +25,7 @@ import {
   filterRateCardsByChannel, 
   saveEncryptedCookies,
   loadEncryptedCookies,
+  deleteEncryptedCookies,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
@@ -1443,6 +1444,24 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (err) {
         broadcastProgress(`❌ Failed to launch browser: ${err.message}`);
+        return sendJson(500, { success: false, error: err.message });
+      }
+    }
+
+    // POST /api/clear-session
+    if (pathname === '/api/clear-session' && req.method === 'POST') {
+      if (!(await requireDesktopAuth())) return;
+      try {
+        const body = await parseJsonBody();
+        const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        const cookiesPath = getMarketplaceCookiesPath(targetId);
+        deleteEncryptedCookies(cookiesPath);
+        if (targetId === 'flipkart_shopsy' || targetId === 'flipkart') {
+          deleteEncryptedCookies(COOKIES_PATH);
+        }
+        broadcastProgress(`✓ Purged saved cookies for ${targetId}`);
+        return sendJson(200, { success: true, message: `Session cookies cleared for ${targetId}` });
+      } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
     }

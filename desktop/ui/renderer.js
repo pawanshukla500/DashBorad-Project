@@ -20,6 +20,7 @@ if (!window.ratecardAPI) {
     openExcelFile: (path) => fetch(`${API_BASE}/api/open-excel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) }).then(r => r.json()),
     startScrape: (options) => fetch(`${API_BASE}/api/scrape/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options || {}) }).then(r => r.json()),
     runInteractiveLogin: (payload) => fetch(`${API_BASE}/api/interactive-login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload || {}) }).then(r => r.json()),
+    clearMarketplaceSession: (marketplace) => fetch(`${API_BASE}/api/clear-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ marketplace }) }).then(r => r.json()),
     getMarketplaces: () => fetch(`${API_BASE}/api/desktop/marketplaces`).then(r => r.json()),
     getMarketplaceAccounts: () => fetch(`${API_BASE}/api/desktop/marketplace-accounts`).then(r => r.json()),
     onProgress: (callback) => {
@@ -984,6 +985,7 @@ function setupEventListeners() {
   const btnDashCatalog = document.getElementById('btn-dash-catalog');
   const btnStartScrape = document.getElementById('btn-start-scrape');
   const btnInteractiveLogin = document.getElementById('btn-interactive-login');
+  const btnClearSession = document.getElementById('btn-clear-session');
   const btnClearTerminal = document.getElementById('btn-clear-terminal');
   const btnCommitDb = document.getElementById('btn-commit-db');
   const btnLoadPreview = document.getElementById('btn-load-preview');
@@ -1137,6 +1139,23 @@ function setupEventListeners() {
       }
     } catch (err) {
       appendTerminalLine(`Execution error: ${err.message}`);
+    } finally {
+      await loadSessionStatusUI();
+    }
+  });
+
+  // Reset session cookies
+  btnClearSession?.addEventListener('click', async () => {
+    const selectEl = document.getElementById('select-marketplace');
+    const selectedVal = selectEl?.value || 'flipkart_shopsy';
+    appendTerminalLine(`Purging saved session cookies for ${selectedVal}...`);
+    try {
+      if (window.ratecardAPI?.clearMarketplaceSession) {
+        await window.ratecardAPI.clearMarketplaceSession(selectedVal);
+      }
+      appendTerminalLine(`✓ Saved cookies purged. Fresh login will be used.`);
+    } catch (err) {
+      appendTerminalLine(`Reset error: ${err.message}`);
     } finally {
       await loadSessionStatusUI();
     }

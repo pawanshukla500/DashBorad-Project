@@ -11,6 +11,7 @@ import {
   filterRateCardsByChannel, 
   saveEncryptedCookies,
   loadEncryptedCookies,
+  deleteEncryptedCookies,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
@@ -152,6 +153,8 @@ function clearAuthSession() {
     if (fs.existsSync(SESSION_FILE)) {
       fs.unlinkSync(SESSION_FILE);
     }
+    deleteEncryptedCookies(COOKIES_PATH);
+    deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1647,6 +1650,17 @@ registerHandler('auth-logout', async () => {
   const cleared = clearAuthSession();
   await closeDesktopPool();
   setDesktopDatabaseAccess(null);
+  try {
+    const { session: electronSession } = require('electron');
+    if (electronSession) {
+      for (const mp of SUPPORTED_MARKETPLACES) {
+        const part = electronSession.fromPartition(`persist:marketplace-${mp.id}`);
+        if (part?.clearStorageData) {
+          await part.clearStorageData({ storages: ['cookies'] }).catch(() => {});
+        }
+      }
+    }
+  } catch {}
   // An undeleted session file keeps working tokens on disk that session
   // restoration would sign straight back in with: never claim a clean
   // deauthorization when the removal failed.
@@ -1678,6 +1692,25 @@ registerHandler('test-db-connection', async (e, customUrl) => {
 });
 registerHandler('interactive-login', async (e, marketplace) => {
   return await withBrowserTask(() => executeInteractiveLogin(marketplace));
+});
+
+registerHandler('clear-marketplace-session', async (e, marketplace) => {
+  const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
+  const cookiesPath = getMarketplaceCookiesPath(targetId);
+  deleteEncryptedCookies(cookiesPath);
+  if (targetId === 'flipkart_shopsy' || targetId === 'flipkart') {
+    deleteEncryptedCookies(COOKIES_PATH);
+  }
+  try {
+    const { session: electronSession } = require('electron');
+    if (electronSession) {
+      const part = electronSession.fromPartition(`persist:marketplace-${targetId}`);
+      if (part?.clearStorageData) {
+        await part.clearStorageData({ storages: ['cookies'] }).catch(() => {});
+      }
+    }
+  } catch {}
+  return { success: true, marketplace: targetId };
 });
 
 registerHandler('start-scrape', async (e, options) => {

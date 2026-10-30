@@ -138,23 +138,78 @@ export function getResolvedCapturesDir() {
   return path.join(userDir, 'ratecard_captures');
 }
 
+export const DEFAULT_MAX_COOKIE_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours max cookie lifetime
+
 /**
- * Saves cookies encrypted with AES-256-GCM.
+ * Deletes encrypted cookies file from disk safely.
+ */
+export function deleteEncryptedCookies(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * Checks if a cookie array or saved session has expired.
+ */
+export function areCookiesExpired(cookies, maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS, savedAt = null) {
+  if (!Array.isArray(cookies) || cookies.length === 0) return true;
+  if (savedAt && typeof savedAt === 'number' && (Date.now() - savedAt > maxAgeMs)) {
+    return true;
+  }
+  const nowSec = Date.now() / 1000;
+  const sessionCookies = cookies.filter(c => c && typeof c.expires === 'number' && c.expires > 0);
+  if (sessionCookies.length > 0) {
+    const validCookies = sessionCookies.filter(c => c.expires > nowSec);
+    if (validCookies.length === 0) return true;
+  }
+  return false;
+}
+
+function extractValidCookies(parsed, statMtimeMs, maxAgeMs) {
+  if (!parsed) return null;
+  let cookies = null;
+  let savedAt = null;
+  if (Array.isArray(parsed)) {
+    cookies = parsed;
+    savedAt = statMtimeMs;
+  } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.cookies)) {
+    cookies = parsed.cookies;
+    savedAt = typeof parsed.saved_at === 'number' ? parsed.saved_at : statMtimeMs;
+  }
+  if (!cookies || !Array.isArray(cookies) || cookies.length === 0) return null;
+  if (areCookiesExpired(cookies, maxAgeMs, savedAt)) {
+    return null;
+  }
+  return cookies;
+}
+
+/**
+ * Saves cookies encrypted with AES-256-GCM along with save timestamp.
  */
 export function saveEncryptedCookies(filePath, cookies) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const serialized = JSON.stringify(cookies, null, 2);
+  const payload = {
+    saved_at: Date.now(),
+    cookies: Array.isArray(cookies) ? cookies : []
+  };
+  const serialized = JSON.stringify(payload, null, 2);
   const encrypted = encryptVaultData(serialized);
   fs.writeFileSync(filePath, encrypted, 'utf8');
 }
 
 /**
- * Loads cookies with AES-256-GCM decryption, with legacy plaintext JSON fallback.
+ * Loads cookies with AES-256-GCM decryption, verifying expiration (default 12 hours).
+ * Stale or expired cookies are purged immediately.
  */
-export function loadEncryptedCookies(filePath) {
+export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS } = {}) {
   try {
     if (!fs.existsSync(filePath)) {
       const candidates = [
@@ -168,25 +223,30 @@ export function loadEncryptedCookies(filePath) {
       for (const cand of candidates) {
         if (cand !== filePath && fs.existsSync(cand)) {
           try {
+            const stat = fs.statSync(cand);
             const raw = fs.readFileSync(cand, 'utf8').trim();
             if (raw) {
-              let fallbackCookies = null;
+              let fallbackData = null;
               if (raw.includes(':')) {
                 try {
                   const dec = decryptVaultData(raw);
-                  if (dec) fallbackCookies = JSON.parse(dec);
+                  if (dec) fallbackData = JSON.parse(dec);
                 } catch {}
               }
-              if (!fallbackCookies) {
+              if (!fallbackData) {
                 try {
-                  fallbackCookies = JSON.parse(raw);
+                  fallbackData = JSON.parse(raw);
                 } catch {}
               }
-              if (Array.isArray(fallbackCookies) && fallbackCookies.length > 0) {
+              const validCookies = extractValidCookies(fallbackData, stat?.mtimeMs || Date.now(), maxAgeMs);
+              if (validCookies) {
                 try {
-                  saveEncryptedCookies(filePath, fallbackCookies);
+                  saveEncryptedCookies(filePath, validCookies);
                 } catch {}
-                return fallbackCookies;
+                return validCookies;
+              } else {
+                // Delete stale candidate file
+                try { fs.unlinkSync(cand); } catch {}
               }
             }
           } catch {}
@@ -194,17 +254,29 @@ export function loadEncryptedCookies(filePath) {
       }
       return null;
     }
+    const stat = fs.statSync(filePath);
     const raw = fs.readFileSync(filePath, 'utf8').trim();
     if (!raw) return null;
+    let parsed = null;
     // Check if AES-256-GCM serialized format: ivHex:authTagHex:ciphertextHex
     if (raw.includes(':')) {
       try {
         const decrypted = decryptVaultData(raw);
-        if (decrypted) return JSON.parse(decrypted);
+        if (decrypted) parsed = JSON.parse(decrypted);
       } catch {}
     }
-    // Fallback to plain JSON for existing unencrypted sessions
-    return JSON.parse(raw);
+    if (!parsed) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {}
+    }
+    const validCookies = extractValidCookies(parsed, stat?.mtimeMs || Date.now(), maxAgeMs);
+    if (!validCookies) {
+      // Stale or expired: delete cookie file so it does not persist
+      deleteEncryptedCookies(filePath);
+      return null;
+    }
+    return validCookies;
   } catch {
     return null;
   }
