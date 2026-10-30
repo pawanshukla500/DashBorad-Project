@@ -12,6 +12,7 @@ import {
   saveEncryptedCookies,
   loadEncryptedCookies,
   deleteEncryptedCookies,
+  decryptMarketplaceCredential,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
@@ -906,7 +907,10 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
                 const hasLogoutAction = body.includes('log out') || hasAuthenticatedUi;
                 return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
               }
-              return href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
+              const notifBtns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+              const dontAllow = notifBtns.find(b => b.innerText?.trim().toLowerCase() === "don't allow");
+              if (dontAllow) dontAllow.click();
+              return href.includes('#dashboard') || href.includes('home-page') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
             }, mpConfig.id);
           } catch {
             // Context destroyed during navigation or in-flight redirect; retry on next poll tick

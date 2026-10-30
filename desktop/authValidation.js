@@ -16,7 +16,8 @@ export {
   loadEncryptedCookies,
   deleteEncryptedCookies,
   areCookiesExpired,
-  DEFAULT_MAX_COOKIE_AGE_MS
+  DEFAULT_MAX_COOKIE_AGE_MS,
+  decryptMarketplaceCredential
 } from './cookieVault.js';
 
 /**
