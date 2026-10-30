@@ -14,7 +14,8 @@ export const RATE_TABLES = [
   { table: 'rc_pick_pack', field: 'pickPackFees', keys: ['fulfilment_type', 'weight_min', 'weight_max', 'price_min', 'price_max'], values: ['price_scope', 'rate', 'local_fee', 'zonal_fee', 'national_fee', 'base_weight', 'increment_weight', 'local_additional_fee', 'zonal_additional_fee', 'national_additional_fee'] }
 ];
 
-const brand = value => !value || ['general', 'all brands'].includes(String(value).toLowerCase()) ? null : String(value);
+const brand = value => !String(value || '').trim() || ['general', 'all brands'].includes(String(value).trim().toLowerCase()) ? null : String(value).trim();
+const keyValue = (key, value) => key === 'brand_name' && value ? value.toLowerCase() : value;
 const mode = value => String(value || 'ALL').toUpperCase().replace(/[ -]/g, '_');
 const decimal = (value, name, precision) => {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean' || !Number.isFinite(Number(value)) || Number(value) < 0) {
@@ -93,7 +94,7 @@ export function validateRateObservations(observations, { marketplace, complete =
         if (complete && marketplace === 'shopsy' && descriptor.table === 'rc_commission' && normalized.rate !== 0) {
           throw new Error('Unexpected nonzero Shopsy commission; review the portal response before publication.');
         }
-        const identity = JSON.stringify([descriptor.table, normalized.category, ...descriptor.keys.map(k => normalized[k])]);
+        const identity = JSON.stringify([descriptor.table, normalized.category, ...descriptor.keys.map(k => keyValue(k, normalized[k]))]);
         if (identities.has(identity)) {
           const previous = identities.get(identity);
           if (descriptor.table === 'rc_commission' || previous.owner === observation || previous.value !== JSON.stringify(normalized)) {
@@ -106,9 +107,10 @@ export function validateRateObservations(observations, { marketplace, complete =
   for (const category of expectedVerticals) if (!categories.has(category)) throw new Error(`Missing configured category: ${category}.`);
 }
 
-const identity = (descriptor, row) => JSON.stringify([row.category, ...descriptor.keys.map(k => row[k])]);
+export const rateRowIdentity = (descriptor, row) => JSON.stringify([row.category, ...descriptor.keys.map(k => keyValue(k, row[k]))]);
+const identity = rateRowIdentity;
 const value = (descriptor, row) => JSON.stringify(descriptor.values.map(k => row[k]));
-const scope = (descriptor, row) => JSON.stringify([row.category, descriptor.table === 'rc_commission' ? row.brand_name : null]);
+const scope = (descriptor, row) => JSON.stringify([row.category, descriptor.table === 'rc_commission' ? keyValue('brand_name', row.brand_name) : null]);
 const display = (descriptor, row) => !row ? null : descriptor.table === 'rc_collection_fee'
   ? `Prepaid: ${row.prepaid} ${row.prepaid_type}, Postpaid: ${row.postpaid} ${row.postpaid_type}`
   : descriptor.table === 'rc_reverse_shipping' ? `L:₹${row.local_fee}/Z:₹${row.zonal_fee}/N:₹${row.national_fee}` : row.rate;

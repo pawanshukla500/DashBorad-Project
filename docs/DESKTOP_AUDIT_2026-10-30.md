@@ -96,7 +96,7 @@ reviews every commit. Production migration/publication requires separate approva
 - Immediate worker registration/claim with bounded requests; actual loopback HTTP
   fixture registers and claims in approximately 50–60ms. Production WAN and
   authenticated installed-worker timing remain separate acceptance checks.
-- Backend: 87 files / 611 tests passed; isolated real PostgreSQL integration
+- Backend: 87 files / 612 tests passed; isolated real PostgreSQL integration
   is skipped locally without an explicit loopback fixture database and runs in CI.
 - Desktop: 4 SQLite + 68 runtime + 9 E2E + 10 safety tests passed.
 - Frontend production build passed in 6.89 seconds.
@@ -186,3 +186,7 @@ pending; no merge or production action is authorized by these acceptance results
 The stated Shopsy zero-commission invariant is enforced as a validation gate: a
 nonzero portal observation is rejected for review. Its value is never replaced
 with a constant or silently published.
+
+Commission comparison and the reviewed unique index now use the same trimmed,
+case-insensitive brand identity as fee lookup. This covers the observed catalog
+case aliases Here&Now/HERE&NOW and rejects duplicate effective brand records.

@@ -45,6 +45,9 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
       expect(Number(shipping.national_additional_fee)).toBe(4);
       expect((await client.query('SELECT * FROM rc_pick_pack')).rows).toHaveLength(1);
       await expect(client.query("INSERT INTO rc_commission(marketplace,seller_account,category,start_date,price_min,price_max,rate) SELECT marketplace,seller_account,category,start_date,price_min,price_max,rate FROM rc_commission LIMIT 1")).rejects.toThrow(/duplicate key/);
+      await client.query("INSERT INTO rc_commission(marketplace,seller_account,category,brand_name,start_date,price_min,price_max,rate) SELECT marketplace,seller_account,'case_fixture','Here&Now',start_date,price_min,price_max,rate FROM rc_commission LIMIT 1");
+      await expect(client.query("INSERT INTO rc_commission(marketplace,seller_account,category,brand_name,start_date,price_min,price_max,rate) SELECT marketplace,seller_account,'case_fixture','HERE&NOW',start_date,price_min,price_max,rate FROM rc_commission WHERE category='case_fixture' LIMIT 1")).rejects.toThrow(/duplicate key/);
+      await client.query("DELETE FROM rc_commission WHERE category='case_fixture'");
       observations[0].commissions[0].rate=0.15;
       review=await compareScrapedRatesWithActive(observations,{dbClient:client});
       await publishRateCardObservations(observations,{pool:scoped,publishedBy:'integration-fixture',reviewFingerprint:review.fingerprint});
@@ -56,4 +59,16 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
       expect((await client.query('SELECT COUNT(*)::int AS n FROM rate_card_versions')).rows[0].n).toBe(before);
     } finally {client.release();}
   });
+  it('ends the inserted period before a future record with a different brand case',async()=>{
+    const observations=cards().map(card=>({...card,category:'future_case',brand:'Here&Now'}));
+    const client=await scoped.connect();
+    try {
+      await client.query("INSERT INTO rc_commission(marketplace,seller_account,category,brand_name,start_date,price_min,price_max,rate) VALUES ('flipkart','default','future_case','HERE&NOW','2026-12-01',0,10000000,0.2)");
+      const review=await compareScrapedRatesWithActive(observations,{dbClient:client});
+      await publishRateCardObservations(observations,{pool:scoped,publishedBy:'integration-fixture',reviewFingerprint:review.fingerprint});
+      const result=await client.query("SELECT TO_CHAR(end_date,'YYYY-MM-DD') AS end_date FROM rc_commission WHERE category='future_case' AND start_date='2026-10-30'");
+      expect(result.rows[0].end_date).toBe('2026-11-30');
+    } finally {client.release();}
+  });
+
 });

@@ -128,4 +128,12 @@ describe('Portal observations and reviewed publication', () => {
     expect(calculateFees(rc,{category:'kurta',price:2000000,fulfilmentType:'FBF',orderDate:date}).pickPack).toBe(14);
   });
 
+  it('matches brand case aliases without writes and rejects duplicate effective brand identities', async () => {
+    const observed=[{...cards()[0],brand:'Here&Now'}];
+    const db=database([{...cards()[0],brand:'HERE&NOW'}]);
+    expect((await compare(db,observed)).diffCount).toBe(0);
+    db.tables.rc_commission.push({...db.tables.rc_commission[0],id:999,brand_name:'here&now'});
+    await expect(compare(db,observed)).rejects.toThrow(/Duplicate active/);
+  });
+
 });

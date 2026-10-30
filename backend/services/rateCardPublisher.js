@@ -2,7 +2,7 @@ import { getPool } from '../db/index.js';
 import { clearRateCardCache } from './rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
-import { RATE_TABLES, validateRateObservations } from './rateCardObservationPlan.js';
+import { RATE_TABLES, validateRateObservations, normalizeObservationRow, rateRowIdentity } from './rateCardObservationPlan.js';
 
 const before = date => {
   const value = new Date(`${date}T00:00:00Z`);
@@ -35,7 +35,7 @@ export async function publishRateCardObservations(observations, options = {}) {
     // active-row uniqueness has been reviewed and applied to this database.
     const readiness = await client.query(`SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()
       AND indexdef LIKE 'CREATE UNIQUE INDEX%'
-      AND indexname IN ('rc_commission_uniq_active','rc_fixed_fee_uniq_active','rc_collection_fee_uniq_active','rc_reverse_shipping_uniq_portal_active','rc_pick_pack_uniq_portal_active')`);
+      AND indexname IN ('rc_commission_uniq_portal_active','rc_fixed_fee_uniq_active','rc_collection_fee_uniq_active','rc_reverse_shipping_uniq_portal_active','rc_pick_pack_uniq_portal_active')`);
     const columns = await client.query(`SELECT table_name,column_name FROM information_schema.columns WHERE table_schema = current_schema()
       AND table_name IN ('rc_reverse_shipping','rc_pick_pack') AND column_name IN ('weight_min','weight_max','base_weight','increment_weight','local_fee','zonal_fee','national_fee','local_additional_fee','zonal_additional_fee','national_additional_fee','price_scope')`);
     if (readiness.rows.length !== 5 || columns.rows.length !== 21) throw new Error('RATE_SCHEMA_NOT_READY: dimensional fee columns or uniqueness indexes are missing. Review migrations before publishing.');
@@ -57,11 +57,13 @@ export async function publishRateCardObservations(observations, options = {}) {
       const row = diff.newRow;
       const keys = ['category', ...descriptor.keys];
       // Respect already scheduled periods for the exact same identity.
-      const future = await client.query(`SELECT MIN(start_date) AS next_start FROM ${descriptor.table}
-        WHERE marketplace = $1 AND seller_account = $2 AND start_date > $3
-        AND ${keys.map((k, i) => `${k} IS NOT DISTINCT FROM $${i + 4}`).join(' AND ')}`,
-        [marketplace, sellerAccount, effectiveDate, ...keys.map(k => row[k])]);
-      const next = iso(future.rows[0]?.next_start);
+      const future = await client.query(`SELECT * FROM ${descriptor.table}
+        WHERE marketplace = $1 AND seller_account = $2 AND start_date > $3 AND category = $4`,
+        [marketplace, sellerAccount, effectiveDate, row.category]);
+      const identity = rateRowIdentity(descriptor, row);
+      const next = future.rows.filter(raw => iso(raw.start_date) > effectiveDate &&
+        rateRowIdentity(descriptor, normalizeObservationRow(descriptor, raw)) === identity)
+        .map(raw => iso(raw.start_date)).sort()[0];
       const endDate = next ? before(next) : (iso(diff.oldRow?.end_date) || null);
       const columns = ['marketplace', 'seller_account', 'start_date', 'end_date', ...keys, ...descriptor.values];
       const values = [marketplace, sellerAccount, effectiveDate, endDate, ...keys.map(k => row[k]), ...descriptor.values.map(k => row[k])];
