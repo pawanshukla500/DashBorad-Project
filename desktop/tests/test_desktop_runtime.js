@@ -1867,7 +1867,7 @@ async function runTests() {
     assert.strictEqual(res.updated, true);
     assert.strictEqual(res.anomaliesCount, 1);
     assert(insertedSnapshot, 'rich audit snapshot must be inserted into rate_card_versions');
-    assert.strictEqual(insertedSnapshot.version, '1.6.0');
+    assert.strictEqual(insertedSnapshot.version, '1.7.0');
     assert.strictEqual(insertedSnapshot.actor, 'pawan@vbexports.co.in');
     assert.strictEqual(insertedSnapshot.stats.anomaliesCount, 1);
     assert.strictEqual(insertedSnapshot.summary.anomalies.length, 1);
@@ -1892,7 +1892,7 @@ async function runTests() {
   await runTest('desktop package.json ships test:e2e script and test_desktop_e2e.js (stage 5)', async () => {
     const pkgPath = path.join(desktopDir, 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    assert.strictEqual(pkg.version, '1.6.0', 'version must be 1.6.0');
+    assert.strictEqual(pkg.version, '1.7.0', 'version must be 1.7.0');
     assert(pkg.scripts['test:e2e'], 'package.json must define test:e2e');
     assert(pkg.scripts['test'].includes('test_desktop_e2e.js'), 'test script must include test_desktop_e2e.js');
     assert(!pkg.scripts['test'].includes('test_desktop_auth.js'), 'default test script must remain offline/CI-safe without live auth');
@@ -1905,6 +1905,20 @@ async function runTests() {
     assert(e2eContent.includes('E2E 4: Detects rate changes'), 'e2e test must cover rate anomalies');
     assert(e2eContent.includes('E2E 7: Session expiry triggers onSessionExpiry'), 'e2e test must cover session expiry');
     assert(e2eContent.includes('E2E 8: Network drop on attempt 1'), 'e2e test must cover retry backoff');
+  });
+
+  await runTest('desktop/main.js and renderer.js wire TLS database provisioning and Live Browser 2FA dock navigation', async () => {
+    const mainPath = path.join(desktopDir, 'main.js');
+    const mainContent = fs.readFileSync(mainPath, 'utf8');
+    assert(mainContent.includes('sanitizeSavedDbUrl'), 'main.js must sanitize saved database URLs');
+    assert(!mainContent.includes('Xchange4SQL%24'), 'main.js must never contain hardcoded database passwords');
+
+    const rendererPath = path.join(desktopDir, 'ui', 'renderer.js');
+    const rendererContent = fs.readFileSync(rendererPath, 'utf8');
+    assert(rendererContent.includes('function triggerInteractiveLogin('), 'renderer.js must define module-scoped triggerInteractiveLogin');
+    assert(rendererContent.includes('data-tab="monitor"'), 'renderer.js must navigate to monitor tab for live view');
+    assert(rendererContent.includes('syncMonitorDockBounds'), 'renderer.js must synchronize dock bounds');
+    assert(rendererContent.includes("uiVersion: '1.7.0'"), 'renderer.js must send 1.7.0 uiVersion');
   });
 
   console.log('\n=================================================================');

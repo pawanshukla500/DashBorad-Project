@@ -299,11 +299,15 @@ function loadConfig() {
         parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
       }
       // Drop container-internal database URLs provisioned by old server builds (e.g. postgres:5432)
-      if (parsed.databaseUrl) parsed.databaseUrl = sanitizeSavedDbUrl(parsed.databaseUrl);
+      if (parsed.databaseUrl) {
+        parsed.databaseUrl = sanitizeSavedDbUrl(parsed.databaseUrl);
+      }
       // The environment-derived default is sanitized too: a container-internal
       // DATABASE_URL (postgres:5432) must never reach the pool logic, even
       // when the config file is missing or predates the databaseUrl key.
-      const effectiveDatabaseUrl = 'databaseUrl' in parsed ? parsed.databaseUrl : sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl);
+      const effectiveDatabaseUrl = ('databaseUrl' in parsed && parsed.databaseUrl)
+        ? parsed.databaseUrl
+        : sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl);
       return {
         ...DEFAULT_CONFIG,
         ...parsed,
@@ -1513,8 +1517,9 @@ registerHandler('sync-brand-rate-cards', async (e, brandRateCards, options = {})
         source: 'desktop-worker',
         platform: process.platform,
         arch: process.arch,
-        appVersion: '1.5.0',
-        syncTime: new Date().toISOString()
+        appVersion: typeof app !== 'undefined' && app.getVersion ? app.getVersion() : '1.7.0',
+        syncTime: new Date().toISOString(),
+        ...(options?.runMetadata || {})
       }
     };
     const result = await syncBrandRateCardsToDatabase(cardsToSync, syncOptions, pool);

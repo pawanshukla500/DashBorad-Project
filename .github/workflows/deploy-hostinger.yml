@@ -82,6 +82,7 @@ jobs:
         env:
           APP_DOMAIN: ${{ vars.APP_DOMAIN || 'payments.youthnic.shop' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DESKTOP_DATABASE_URL: ${{ secrets.DESKTOP_DATABASE_URL }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -101,6 +102,7 @@ jobs:
           APP_DOMAIN=${APP_DOMAIN}
           CORS_ORIGINS=https://payments.youthnic.shop,https://reconcentral.srv1845788.hstgr.cloud,https://recon.srv1845788.hstgr.cloud
           DATABASE_URL=${DATABASE_URL}
+          DESKTOP_DATABASE_URL=${DESKTOP_DATABASE_URL}
           PG_SSL=false
           PG_POOL_MAX=20
           PG_POOL_MIN=2

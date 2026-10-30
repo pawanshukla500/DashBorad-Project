@@ -362,6 +362,24 @@ function updateBrowserMonitorUI(state) {
   }
 }
 
+function triggerInteractiveLogin(marketplaceId = 'flipkart_shopsy') {
+  const selectMp = document.getElementById('select-marketplace');
+  if (selectMp && marketplaceId) {
+    selectMp.value = marketplaceId;
+    const headerMp = document.getElementById('header-select-marketplace');
+    if (headerMp) headerMp.value = marketplaceId;
+  }
+  const monitorTab = document.querySelector('.nav-item[data-tab="monitor"]');
+  if (monitorTab && !monitorTab.classList.contains('active')) {
+    monitorTab.click();
+  }
+  setTimeout(() => {
+    syncMonitorDockBounds();
+    const btn = document.getElementById('btn-interactive-login');
+    btn?.click();
+  }, 60);
+}
+
 function initBrowserMonitorListeners() {
   window.addEventListener('resize', syncMonitorDockBounds);
 
@@ -404,17 +422,6 @@ function initBrowserMonitorListeners() {
       btnScreenshot.textContent = '📸 Capture Frame';
     }
   });
-
-  function triggerInteractiveLogin(marketplaceId = 'flipkart_shopsy') {
-    const selectMp = document.getElementById('select-marketplace');
-    if (selectMp && marketplaceId) {
-      selectMp.value = marketplaceId;
-      const headerMp = document.getElementById('header-select-marketplace');
-      if (headerMp) headerMp.value = marketplaceId;
-    }
-    const btn = document.getElementById('btn-interactive-login');
-    btn?.click();
-  }
 
   const btnLogin = document.getElementById('btn-monitor-login');
   btnLogin?.addEventListener('click', () => {
@@ -1002,14 +1009,20 @@ function setupEventListeners() {
   });
 
   btnDashRun?.addEventListener('click', () => {
-    document.querySelector('.nav-item[data-tab="scraper"]').click();
-    btnStartScrape.click();
+    document.querySelector('.nav-item[data-tab="monitor"]').click();
+    setTimeout(() => {
+      syncMonitorDockBounds();
+      btnStartScrape?.click();
+    }, 60);
   });
 
   btnDashTour?.addEventListener('click', () => {
-    document.querySelector('.nav-item[data-tab="scraper"]').click();
+    document.querySelector('.nav-item[data-tab="monitor"]').click();
     document.getElementById('select-mode').value = 'visible';
-    btnStartScrape.click();
+    setTimeout(() => {
+      syncMonitorDockBounds();
+      btnStartScrape?.click();
+    }, 60);
   });
 
   // Filter Tabs for Diff Review
@@ -1083,8 +1096,12 @@ function setupEventListeners() {
     if (!channel) return;
 
     syncMarketplaceSelection(channel);
-    document.querySelector('.nav-item[data-tab="scraper"]')?.click();
-    btnInteractiveLogin?.click();
+    // Switch to Live Browser (monitor) tab so user sees the embedded browser dock
+    document.querySelector('.nav-item[data-tab="monitor"]')?.click();
+    setTimeout(() => {
+      syncMonitorDockBounds();
+      triggerInteractiveLogin(channel);
+    }, 60);
   });
 
   // Human interactive login & 2FA
@@ -1097,7 +1114,7 @@ function setupEventListeners() {
 
     appendTerminalLine(`Opening visible browser for ${channelName}...`);
     appendTerminalLine(`Target Portal: ${portalUrl}`);
-    
+
     try {
       const result = await window.ratecardAPI.runInteractiveLogin({
         marketplace: selectedVal,
@@ -1105,12 +1122,18 @@ function setupEventListeners() {
         display_name: channelName
       });
       if (result.success) {
-        appendTerminalLine(`✓ Browser window launched successfully. Complete 2FA / Login in the window.`);
+        if (result.cookiesCount) {
+          appendTerminalLine(`✓ Browser session saved successfully (${result.cookiesCount} cookies).`);
+        } else {
+          appendTerminalLine(`✓ Browser window launched. Complete 2FA / Login in the window.`);
+        }
       } else {
         appendTerminalLine(`Launch error: ${result.error}`);
       }
     } catch (err) {
       appendTerminalLine(`Execution error: ${err.message}`);
+    } finally {
+      await loadSessionStatusUI();
     }
   });
 
@@ -1137,6 +1160,8 @@ function setupEventListeners() {
         appendTerminalLine(`✓ Scrape complete! Extracted ${result.data?.length || 0} vertical cards.`);
         appendTerminalLine(`Staged results saved to: ${result.stagingFile}`);
         await loadRateCardPreview();
+        // Switch to Review & DB Sync tab so user can inspect diffs and commit
+        document.querySelector('.nav-item[data-tab="diff"]')?.click();
       } else {
         appendTerminalLine(`Scraping failed: ${result.error}`);
       }
@@ -1177,7 +1202,7 @@ function setupEventListeners() {
       const syncOptions = {
         forceUpdate: true,
         actor: session?.user?.email || session?.user?.name || 'desktop-operator',
-        runMetadata: { source: 'desktop-worker-ui', uiVersion: '1.5.0' }
+        runMetadata: { source: 'desktop-worker-ui', uiVersion: '1.7.0' }
       };
       const res = await window.ratecardAPI.syncBrandRateCards(currentRateCards, syncOptions);
       if (res.success && res.result?.updated) {
@@ -1272,6 +1297,9 @@ function setupEventListeners() {
     if (res.success) {
       alert('Settings saved successfully!');
       appendTerminalLine('✓ Worker configuration updated.');
+      await loadInitialState();
+      await loadCatalogData();
+      await loadRateCardPreview();
     } else {
       alert(`Failed to save settings: ${res.error}`);
     }
