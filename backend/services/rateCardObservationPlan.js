@@ -38,7 +38,7 @@ export function normalizeObservationRow(descriptor, row, observation = {}) {
     if (!weights?.length) throw new Error('Invalid reverse-shipping weight slab.');
     row.weight_min ??= weights.length > 1 ? weights[0] : 0;
     row.weight_max ??= weights.at(-1);
-    result.weight_slab = `${row.weight_min}kg-${row.weight_max}kg`;
+    result.weight_slab = `${decimal(row.weight_min, 'weight_min', 3)}kg-${decimal(row.weight_max, 'weight_max', 3)}kg`;
   }
   if (descriptor.table === 'rc_pick_pack') {
     row.weight_min ??= 0; row.weight_max ??= 999999;

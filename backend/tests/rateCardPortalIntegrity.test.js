@@ -115,4 +115,10 @@ describe('Portal observations and reviewed publication', () => {
     expect(mutations(db)).toEqual([]);
   });
 
+  it('compares PostgreSQL NUMERIC weight strings with portal numbers without false replacement', async () => {
+    const db=database();
+    for(const table of ['rc_reverse_shipping','rc_pick_pack'])for(const row of db.tables[table])for(const key of Object.keys(row))if(typeof row[key]==='number'&&key!=='id')row[key]=row[key].toFixed(3);
+    expect((await compare(db)).diffCount).toBe(0);
+  });
+
 });

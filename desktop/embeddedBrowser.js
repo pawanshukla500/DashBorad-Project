@@ -163,7 +163,8 @@ export function createEmbeddedPage({
     if (next && view.setBounds) view.setBounds(next);
   };
   attach();
-  view.setVisible?.(Boolean(visible));
+  let viewVisible = Boolean(visible);
+  view.setVisible?.(viewVisible);
   layout();
   // Host-window resizes must re-layout the embedded view: stale bounds clip
   // or blank the surface after the operator resizes or maximizes the app.
@@ -649,11 +650,12 @@ export function createEmbeddedPage({
     },
 
     setVisible(next) {
-      view.setVisible?.(Boolean(next));
+      viewVisible = Boolean(next);
+      view.setVisible?.(viewVisible);
       if (next) { layout(); contents.invalidate?.(); }
     },
     getVisible() {
-      return Boolean(view.getVisible?.());
+      return typeof view.getVisible === 'function' ? Boolean(view.getVisible()) : viewVisible;
     },
     layout,
 

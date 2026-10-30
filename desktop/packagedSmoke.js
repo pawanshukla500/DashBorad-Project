@@ -34,7 +34,7 @@ export async function runPackagedSmoke({ app, window, output, setPage, nativeIma
     page = createEmbeddedPage({ window, partition: portalPartition('flipkart'), bounds: { x: 20, y: 120, width: 550, height: 380 }, visible: true });
     setPage(page);
     await page.goto(url);
-    check(page._view.getBounds().width === 550 && page._view.getVisible(), 'Real WebContentsView is attached with nonzero bounds and visible');
+    check(page._view.getBounds().width === 550 && page.getVisible() && window.contentView.children.includes(page._view), 'Real WebContentsView is attached with nonzero bounds and visible');
     page.setVisible(false);
     await page.type('#otp', '123456', { delay: 10 });
     check(await page.evaluate(() => document.querySelector('#otp').value) === '123456', 'Hidden renderer accepts real OTP editor input');
