@@ -150,3 +150,10 @@ when that contract is absent. Actual portal OTP was not triggered by this accoun
 OTP entry is exercised with real Chromium fixtures. Production WAN registration
 latency remains unverified; the real HTTP fixture registers and polls in <100ms.
 Production migration/publication and deployment still require separate approval.
+
+Installed Windows NSIS acceptance passed on commit b91d1e6, with all packaged
+source hashes and the expected commit verified. Real PostgreSQL fixture migration,
+publish, same-day replacement, duplicate rejection and unchanged replay passed on
+that commit. Linux Debian installation succeeded; its launcher selection test
+matched both a documentation directory and the executable. The workflow now uses
+the package-installed command from PATH; Linux runtime acceptance is being rerun.

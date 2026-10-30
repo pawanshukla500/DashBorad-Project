@@ -107,9 +107,8 @@ jobs:
           RECON_EXPECT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           sudo apt-get install -y ./released/build/*.deb
-          PACKAGE=$(dpkg-deb -f released/build/*.deb Package)
-          EXECUTABLE=$(dpkg -L "$PACKAGE" | sed -n '\#/reconcentral-ratecard-worker$#p')
-          test -n "$EXECUTABLE"
+          EXECUTABLE=$(command -v reconcentral-ratecard-worker)
+          test -x "$EXECUTABLE"
           timeout 90s xvfb-run -a "$EXECUTABLE" --no-sandbox --ratecard-smoke-test="$PWD/released/build/linux-smoke.json"
           node -e "const r=require('./released/build/linux-smoke.json'); if(!r.success || r.commit!==process.env.RECON_EXPECT_COMMIT) throw Error(JSON.stringify(r));"
       - name: Upload packages and runtime evidence

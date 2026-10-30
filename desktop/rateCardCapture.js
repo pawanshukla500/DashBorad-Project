@@ -62,4 +62,3 @@ export function attachRateCardCapture(page) {
   page.on?.('response', receive);
   return { capture, detach() { page.off?.('response', receive); } };
 }
-
