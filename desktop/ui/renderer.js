@@ -1114,10 +1114,6 @@ function setupEventListeners() {
 
     appendTerminalLine(`Opening visible browser for ${channelName}...`);
     appendTerminalLine(`Target Portal: ${portalUrl}`);
-    
-    // Display 2FA alert banner on Live Browser monitor view
-    const authAlert = document.getElementById('monitor-auth-alert');
-    if (authAlert) authAlert.style.display = 'flex';
 
     try {
       const result = await window.ratecardAPI.runInteractiveLogin({
@@ -1126,14 +1122,17 @@ function setupEventListeners() {
         display_name: channelName
       });
       if (result.success) {
-        appendTerminalLine(`✓ Browser session saved successfully (${result.cookiesCount || 0} cookies).`);
+        if (result.cookiesCount) {
+          appendTerminalLine(`✓ Browser session saved successfully (${result.cookiesCount} cookies).`);
+        } else {
+          appendTerminalLine(`✓ Browser window launched. Complete 2FA / Login in the window.`);
+        }
       } else {
         appendTerminalLine(`Launch error: ${result.error}`);
       }
     } catch (err) {
       appendTerminalLine(`Execution error: ${err.message}`);
     } finally {
-      if (authAlert) authAlert.style.display = 'none';
       await loadSessionStatusUI();
     }
   });

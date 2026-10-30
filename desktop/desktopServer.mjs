@@ -1165,8 +1165,9 @@ const server = http.createServer(async (req, res) => {
             source: 'desktop-server',
             platform: process.platform,
             arch: process.arch,
-            appVersion: '1.5.0',
-            syncTime: new Date().toISOString()
+            appVersion: '1.7.0',
+            syncTime: new Date().toISOString(),
+            ...(body?.options?.runMetadata || {})
           }
         };
         const result = await syncBrandRateCardsToDatabase(cardsToSync, syncOptions, pool);

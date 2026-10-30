@@ -1532,8 +1532,9 @@ registerHandler('sync-brand-rate-cards', async (e, brandRateCards, options = {})
         source: 'desktop-worker',
         platform: process.platform,
         arch: process.arch,
-        appVersion: '1.5.0',
-        syncTime: new Date().toISOString()
+        appVersion: typeof app !== 'undefined' && app.getVersion ? app.getVersion() : '1.7.0',
+        syncTime: new Date().toISOString(),
+        ...(options?.runMetadata || {})
       }
     };
     const result = await syncBrandRateCardsToDatabase(cardsToSync, syncOptions, pool);
