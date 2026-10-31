@@ -1,6 +1,9 @@
-const FEE_FIELDS = ['commissions', 'fixedFees', 'collectionFees', 'reverseShipping'];
+const FEE_FIELDS = ['commissions', 'fixedFees', 'collectionFees', 'reverseShipping', 'pickPackFees'];
 
-const sameSlabs = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const canonical = value => JSON.stringify(value, Object.keys(value).sort());
+const sameSlabs = (a, b) => Array.isArray(a) && Array.isArray(b)
+  ? JSON.stringify(a.map(canonical).sort()) === JSON.stringify(b.map(canonical).sort())
+  : canonical(a) === canonical(b);
 
 /**
  * Create process-local staging state shared by both desktop entry points.
@@ -11,6 +14,7 @@ export function createStagedExtractionState() {
   const state = { cards: [], authGeneration: 0 };
   state.resetForAuthChange = () => {
     state.cards = [];
+    state.review = null;
     state.authGeneration += 1;
   };
   return state;
@@ -19,6 +23,12 @@ export function createStagedExtractionState() {
 function dedupe(slabs) {
   const out = [];
   for (const slab of slabs || []) {
+    const numeric = ['price_min', 'price_max', ...('prepaid' in slab ? ['prepaid', 'postpaid'] : 'local_fee' in slab ? ['local_fee', 'zonal_fee', 'national_fee'] : ['rate'])];
+    if (numeric.some(k => typeof slab[k] !== 'number' || !Number.isFinite(slab[k]) || slab[k] < 0) || slab.price_max < slab.price_min) {
+      throw new Error('Invalid or missing fee value; nothing was staged.');
+    }
+    const identity = row => JSON.stringify([row.price_min, row.price_max, row.fulfilment_type, row.weight_slab, row.brand_name]);
+    if (out.some(existing => identity(existing) === identity(slab) && !sameSlabs(existing, slab))) throw new Error('Conflicting duplicate fee slabs; nothing was staged.');
     if (!out.some(existing => sameSlabs(existing, slab))) out.push(slab);
   }
   return out;
@@ -67,13 +77,20 @@ export function normalizeScrapedCards(items) {
     if (!FEE_FIELDS.some(field => item[field]?.length)) {
       throw new Error(`No recognized fee slabs for ${item.vertical}. Nothing was staged.`);
     }
-    const key = `${item.marketplace}:${item.vertical}`;
+    if (item.marketplace === 'shopsy' && (item.commissions || []).some(row => row.rate !== 0)) {
+      throw new Error('Unexpected nonzero Shopsy commission. Review the actual portal response; no rates were staged.');
+    }
+    const sellerAccount = item.seller_account || item.sellerAccount || 'default';
+    const key = JSON.stringify([item.marketplace, item.vertical, item.brand || 'General', item.sample_fsn || null, sellerAccount]);
     if (!groups.has(key)) groups.set(key, new Map());
     const byMode = groups.get(key);
     const mode = item.fulfilment_type || 'ALL';
     const slabs = byMode.get(mode) || Object.fromEntries(FEE_FIELDS.map(field => [field, []]));
     for (const field of FEE_FIELDS) {
-      const incoming = field === 'collectionFees' ? (item[field] || []).map(normalizeCollectionFee) : item[field];
+      let incoming = field === 'collectionFees' ? (item[field] || []).map(normalizeCollectionFee) : item[field];
+      if (field === 'fixedFees' && ['FBF', 'NON_FBF'].includes(mode)) {
+        incoming = (incoming || []).map(fee => ({ ...fee, fulfilment_type: mode }));
+      }
       slabs[field] = dedupe([...slabs[field], ...(incoming || [])]);
     }
     byMode.set(mode, slabs);
@@ -81,13 +98,14 @@ export function normalizeScrapedCards(items) {
 
   const cards = [];
   for (const [key, byMode] of groups) {
-    const [marketplace, vertical] = key.split(':');
+    const [marketplace, vertical, brand, fsn, sellerAccount] = JSON.parse(key);
     const modes = [...byMode.keys()];
     const [first, ...rest] = [...byMode.values()];
     // A table present in one mode but missing in another is also a disagreement:
     // syncing the partial set would close the category's existing rates.
     for (const field of FEE_FIELDS) {
-      if (rest.some(other => !sameSlabs(other[field], first[field]))) {
+      const modeSpecific = field === 'fixedFees' && modes.every(mode => ['FBF', 'NON_FBF'].includes(mode));
+      if (field !== 'pickPackFees' && rest.some(other => modeSpecific ? Boolean(other[field].length) !== Boolean(first[field].length) : !sameSlabs(other[field], first[field]))) {
         throw new Error(
           `${vertical} (${marketplace}) has different ${field} for ${modes.join(' and ')}. ` +
           'The rate tables store one rate set per category, so nothing was staged.'
@@ -101,9 +119,16 @@ export function normalizeScrapedCards(items) {
     cards.push({
       marketplace,
       category: vertical,
-      brand: 'General',
-      source: marketplace === 'shopsy' ? 'shopsy_policy' : 'seller_portal',
+      brand,
+      sample_fsn: fsn,
+      sample_sku: items.find(i => i.marketplace === marketplace && i.vertical === vertical &&
+        (i.brand || 'General') === brand && (i.sample_fsn || null) === fsn &&
+        (i.seller_account || i.sellerAccount || 'default') === sellerAccount)?.sample_sku,
+      source: 'seller_portal',
       fulfilmentModes: modes,
+      portalEvidence: items.filter(item => item.marketplace === marketplace && item.vertical === vertical &&
+        (item.brand || 'General') === brand && (item.sample_fsn || null) === fsn &&
+        (item.seller_account || item.sellerAccount || 'default') === sellerAccount).map(item => item.portalEvidence).filter(Boolean),
       effectiveDate,
       ...merged
     });

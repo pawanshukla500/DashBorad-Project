@@ -61,6 +61,10 @@ describe('rate-card save-period', () => {
     });
 
     expect(response.status).toBe(200);
+    const publishLock = statements.findIndex(statement => statement.text.includes("hashtext('rate_card_publish_lock')"));
+    const periodLock = statements.findIndex(statement => statement.params?.some(value => String(value).startsWith('rate-period:')));
+    expect(publishLock).toBeGreaterThan(0);
+    expect(publishLock).toBeLessThan(periodLock);
     const remove = statements.find(statement => statement.text.startsWith('DELETE'));
     expect(remove.text).toContain('ANY($1::bigint[])');
     expect(remove.params).toEqual([[bigId]]); // not 1200529523772653800

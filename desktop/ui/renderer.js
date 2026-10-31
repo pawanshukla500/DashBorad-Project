@@ -40,6 +40,8 @@ if (!window.ratecardAPI) {
         };
       } catch (err) {}
     },
+    writeClientLog: () => Promise.resolve({ success: false, error: 'Persistent logs are available in the installed desktop app.' }),
+    openDiagnostics: () => Promise.resolve({ success: false, error: 'Diagnostics folders are available in the installed desktop app.' }),
     // Auto-update exists only in the installed Electron app; the standalone
     // Chrome mode runs from local files, so these are honest no-ops.
     getUpdateStatus: () => Promise.resolve({ success: true, status: { status: 'unsupported' } }),
@@ -281,16 +283,21 @@ function setupNavigation() {
 }
 
 // ── Live Browser Monitor UI ──────────────────────────────────────────────────
+let lastDockBounds = '';
 function syncMonitorDockBounds() {
   const dock = document.getElementById('browser-view-dock');
   if (dock && window.ratecardAPI && typeof window.ratecardAPI.setMonitorDockBounds === 'function') {
     const rect = dock.getBoundingClientRect();
-    window.ratecardAPI.setMonitorDockBounds({
-      x: Math.round(rect.x),
-      y: Math.round(rect.y),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height)
-    });
+    const clip = document.querySelector('.views-wrapper').getBoundingClientRect();
+    const x = Math.max(0, rect.left, clip.left), y = Math.max(0, rect.top, clip.top);
+    const next = { x, y,
+      width: Math.max(0, Math.min(innerWidth, rect.right, clip.right) - x),
+      height: Math.max(0, Math.min(innerHeight, rect.bottom, clip.bottom) - y) };
+    if (!dock.getClientRects().length) next.width = next.height = 0;
+    const signature = JSON.stringify(next);
+    if (signature === lastDockBounds) return;
+    lastDockBounds = signature;
+    window.ratecardAPI.setMonitorDockBounds(next).catch(err => console.warn('Browser layout failed:', err.message));
   }
 }
 
@@ -388,7 +395,12 @@ function triggerInteractiveLogin(marketplaceId = 'flipkart_shopsy') {
 }
 
 function initBrowserMonitorListeners() {
-  window.addEventListener('resize', syncMonitorDockBounds);
+  let pending = false;
+  const syncLayout = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; syncMonitorDockBounds(); }); };
+  window.addEventListener('resize', syncLayout);
+  document.addEventListener('scroll', syncLayout, true);
+  const dock = document.getElementById('browser-view-dock');
+  if (dock) new ResizeObserver(syncLayout).observe(dock);
 
   window.ratecardAPI?.onBrowserMonitorPromptLogin?.((payload) => {
     const tabBtn = document.querySelector('[data-tab="monitor"]');
@@ -578,22 +590,27 @@ function subscribeToEvents() {
 function appendTerminalLine(text) {
   const terminal = document.getElementById('terminal-body');
   if (!terminal) return;
+  const message = String(text ?? '').slice(0, 2000);
+  const lower = message.toLowerCase();
+  const level = /error|failed|failure|exception/.test(lower) ? 'error' : /warning|retry|recover/.test(lower) ? 'warn' : 'info';
+  try { Promise.resolve(window.ratecardAPI?.writeClientLog?.({ level, message })).catch(() => {}); } catch {}
   const line = document.createElement('div');
   line.className = 'log-line';
 
-  if (text.includes('✓') || text.includes('success') || text.includes('complete')) {
+  if (window.rateCardReviewHelpers?.isSuccessfulMessage(message)) {
     line.classList.add('success');
-  } else if (text.includes('Warning') || text.includes('⏰')) {
+  } else if (level === 'warn' || message.includes('⏰')) {
     line.classList.add('warning');
-  } else if (text.includes('Error') || text.includes('failed')) {
+  } else if (level === 'error') {
     line.classList.add('error');
   } else {
     line.classList.add('info');
   }
 
   const timestamp = new Date().toLocaleTimeString();
-  line.innerText = `[${timestamp}] ${text}`;
+  line.innerText = '[' + timestamp + '] ' + message;
   terminal.appendChild(line);
+  while (terminal.children.length > 600) terminal.firstElementChild?.remove();
   terminal.scrollTop = terminal.scrollHeight;
 }
 
@@ -704,9 +721,7 @@ async function loadRateCardPreview() {
   tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Generating brand-wise rate cards and comparing with PostgreSQL database...</td></tr>';
 
   try {
-    const selectEl = document.getElementById('select-marketplace');
-    const headerSelect = document.getElementById('header-select-marketplace');
-    const selectedChannel = selectEl?.value || headerSelect?.value || 'flipkart_shopsy';
+    const selectedChannel = document.getElementById('select-review-marketplace')?.value || 'flipkart';
     // Reset BEFORE any await: while the preview request is in flight, staged cards
     // from a previous channel must not stay commit-enabled.
     currentCanSync = false;
@@ -841,12 +856,28 @@ async function loadRateCardPreview() {
   }
 }
 
+function describeRateRecord(table, row) {
+  if (!row) return '—';
+  if (table === 'rc_commission') return (Number(row.rate) * 100).toFixed(4) + '%';
+  if (table === 'rc_fixed_fee') return row.fulfilment_type + ': ₹' + row.rate;
+  if (table === 'rc_collection_fee') return 'Prepaid ' + row.prepaid + ' (' + row.prepaid_type + '), postpaid ' + row.postpaid + ' (' + row.postpaid_type + ')';
+  const base = [row.local_fee ?? row.rate, row.zonal_fee ?? row.rate, row.national_fee ?? row.rate].join('/');
+  const extra = [row.local_additional_fee ?? 0, row.zonal_additional_fee ?? 0, row.national_additional_fee ?? 0].join('/');
+  if (table === 'rc_pick_pack') {
+    return `${row.fulfilment_type || 'FBF'} ${row.weight_min ?? 0}-${row.weight_max ?? '—'}kg; base L/Z/N ₹${base}; above ${row.base_weight ?? 0}kg add L/Z/N ₹${extra} per ${row.increment_weight ?? 0}kg` +
+      (row.price_scope === 'all' ? '; all prices' : `; ₹${row.price_min}-${row.price_max}`);
+  }
+  return (row.weight_slab || (row.weight_min + '–' + row.weight_max + 'kg')) + '; L/Z/N ₹' + base +
+    '; above ' + (row.base_weight ?? 0) + 'kg add L/Z/N ₹' + extra + ' per ' + (row.increment_weight ?? 0) + 'kg' +
+    (row.price_scope === 'all' ? '; all prices' : '');
+}
+
 function renderDiffTable() {
   const tbody = document.getElementById('diff-tbody');
   const rows = [];
 
   for (const card of currentRateCards) {
-    const { marketplace, category, brand, commissions, fixedFees, reverseShipping, collectionFees = [] } = card;
+    const { marketplace, category, brand, commissions, fixedFees, reverseShipping, collectionFees = [], pickPackFees = [] } = card;
 
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission' || activeDiffFilter === 'anomalies') {
@@ -864,8 +895,8 @@ function renderDiffTable() {
           category,
           brand,
           slab: c.price_max >= 999990 ? `≥ ₹${c.price_min}` : `₹${c.price_min} - ₹${c.price_max}`,
-          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(1)}%` : (change ? '—' : 'Active / Matched'),
-          newRate: `${(c.rate * 100).toFixed(1)}%`,
+          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(4)}%` : (change ? '—' : 'Active / Matched'),
+          newRate: `${(c.rate * 100).toFixed(4)}%`,
           status: change ? (change.reason || 'Modified') : 'Active',
           anomaly: Boolean(change?.anomaly),
           anomalySeverity: change?.anomalySeverity
@@ -943,13 +974,53 @@ function renderDiffTable() {
           brand: 'Standard',
           slab: `${r.weight_slab} (₹${r.price_min} - ₹${r.price_max})`,
           oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}`),
-          newRate: `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}`,
+          newRate: `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}; above ${r.base_weight}kg add L/Z/N ₹${r.local_additional_fee}/${r.zonal_additional_fee}/${r.national_additional_fee} per ${r.increment_weight}kg`,
           status: change ? (change.reason || 'Modified') : 'Active',
           anomaly: Boolean(change?.anomaly),
           anomalySeverity: change?.anomalySeverity
         });
       }
     }
+
+    // FBF pick-and-pack is reviewed even when PostgreSQL already matches it.
+    if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed' || activeDiffFilter === 'anomalies') {
+      for (const fee of pickPackFees) {
+        const change = currentChanges.find(ch => ch.table === 'rc_pick_pack' &&
+          ch.marketplace === marketplace && ch.category === category &&
+          ch.fulfilmentType === fee.fulfilment_type &&
+          (ch.priceMin == null || (Math.abs(ch.priceMin - fee.price_min) < 0.01 && Math.abs(ch.priceMax - fee.price_max) < 1.0)) &&
+          (ch.weightMin == null || (Math.abs(ch.weightMin - fee.weight_min) < 0.001 && Math.abs(ch.weightMax - fee.weight_max) < 0.001)));
+        rows.push({
+          type: 'FBF Pick & Pack', marketplace: marketplace.toUpperCase(), category, brand: 'All',
+          slab: `${fee.fulfilment_type} · ${fee.weight_min}-${fee.weight_max}kg · ${fee.price_scope === 'all' ? 'all prices' : `₹${fee.price_min}-₹${fee.price_max}`}`,
+          oldRate: change ? (change.oldRow ? describeRateRecord('rc_pick_pack', change.oldRow) : '—') : 'Active / Matched',
+          newRate: describeRateRecord('rc_pick_pack', fee),
+          status: change ? (change.reason || 'Modified') : 'Active',
+          anomaly: Boolean(change?.anomaly), anomalySeverity: change?.anomalySeverity
+        });
+      }
+    }
+  }
+
+  // Include every changed component and removed slab in the review. The full
+  // records expose weight increments and zone values which a headline rate hides.
+  const changeFilterByTable = {
+    rc_commission: 'commission', commission: 'commission',
+    rc_fixed_fee: 'fixed', fixed_fee: 'fixed', rc_pick_pack: 'fixed', pick_pack: 'fixed',
+    rc_collection_fee: 'collection', collection_fee: 'collection',
+    rc_reverse_shipping: 'reverse', reverse_shipping: 'reverse'
+  };
+  for (const change of currentChanges) {
+    if (!window.rateCardReviewHelpers?.shouldRenderChangeDetail(change)) continue;
+    if (activeDiffFilter !== 'all' && activeDiffFilter !== 'anomalies' &&
+        changeFilterByTable[change.table] !== activeDiffFilter &&
+        changeFilterByTable[change.type] !== activeDiffFilter) continue;
+    rows.push({type: change.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : 'Change detail',
+      marketplace: change.marketplace.toUpperCase(), category: change.category,
+      brand: change.brand || 'All', slab: change.slab,
+      oldRate: describeRateRecord(change.table, change.oldRow),
+      newRate: change.newRow ? describeRateRecord(change.table, change.newRow) : 'Removed',
+      status: change.reason || change.changeType, anomaly: Boolean(change.anomaly)});
   }
 
   // Filter for anomalies only if requested
@@ -964,7 +1035,7 @@ function renderDiffTable() {
   }
 
   // Deduplicate and render up to 100 rows
-  const displayRows = filteredRows.slice(0, 100);
+  const displayRows = filteredRows;
   tbody.innerHTML = displayRows.map(r => `
     <tr class="${r.anomaly ? 'row-anomaly' : ''}" style="${r.anomaly ? 'background: rgba(245, 158, 11, 0.08);' : ''}">
       <td><span class="badge ${r.type === 'Commission' ? 'badge-portal' : 'badge-account'}">${escapeHtml(r.type)}</span></td>
@@ -993,6 +1064,7 @@ function setupEventListeners() {
   const btnInteractiveLogin = document.getElementById('btn-interactive-login');
   const btnClearSession = document.getElementById('btn-clear-session');
   const btnClearTerminal = document.getElementById('btn-clear-terminal');
+  const btnOpenDiagnostics = document.getElementById('btn-open-diagnostics');
   const btnCommitDb = document.getElementById('btn-commit-db');
   const btnLoadPreview = document.getElementById('btn-load-preview');
   const btnExportDiff = document.getElementById('btn-export-diff');
@@ -1014,6 +1086,11 @@ function setupEventListeners() {
   // Clear terminal
   btnClearTerminal?.addEventListener('click', () => {
     document.getElementById('terminal-body').innerHTML = '<div class="log-line info">[System] Terminal cleared.</div>';
+  });
+  btnOpenDiagnostics?.addEventListener('click', async () => {
+    const result = await window.ratecardAPI.openDiagnostics?.();
+    if (!result?.success) appendTerminalLine('Could not open diagnostics folder: ' + (result?.error || 'Unknown error'));
+    else appendTerminalLine('Opened diagnostics folder: ' + result.path);
   });
 
   // Navigation shortcuts
@@ -1094,12 +1171,11 @@ function setupEventListeners() {
 
   headerSelectMp?.addEventListener('change', (e) => {
     syncMarketplaceSelection(e.target.value);
-    loadRateCardPreview();
   });
   scraperSelectMp?.addEventListener('change', (e) => {
     syncMarketplaceSelection(e.target.value);
-    loadRateCardPreview();
   });
+  document.getElementById('select-review-marketplace')?.addEventListener('change', loadRateCardPreview);
 
   // Multi-Marketplace 2FA Login buttons (Dashboard & Settings)
   document.addEventListener('click', async (e) => {
@@ -1145,6 +1221,7 @@ function setupEventListeners() {
       }
     } catch (err) {
       appendTerminalLine(`Execution error: ${err.message}`);
+      await loadRateCardPreview();
     } finally {
       await loadSessionStatusUI();
     }
@@ -1196,7 +1273,9 @@ function setupEventListeners() {
         // Switch to Review & DB Sync tab so user can inspect diffs and commit
         document.querySelector('.nav-item[data-tab="diff"]')?.click();
       } else {
-        appendTerminalLine(`Scraping failed: ${result.error}`);
+        appendTerminalLine('Scraping failed' + (result.errorCode ? ' [' + result.errorCode + ']' : '') + ': ' + result.error);
+        if (result.diagnostic?.screenshot) appendTerminalLine('Failure screenshot saved: ' + result.diagnostic.screenshot);
+        await loadRateCardPreview();
       }
     } catch (err) {
       appendTerminalLine(`Execution error: ${err.message}`);
@@ -1217,7 +1296,8 @@ function setupEventListeners() {
     }
 
     const anomalies = currentChanges.filter(c => c.anomaly);
-    let confirmMsg = `Commit ${currentRateCards.length} brand-wise rate cards to the database?\n\nThis will auto-close superseded records and record a version snapshot.`;
+    const reviewMarketplace = document.getElementById('select-review-marketplace')?.value || 'flipkart';
+    let confirmMsg = 'Publish ' + currentRateCards.length + ' ' + reviewMarketplace.toUpperCase() + ' rate cards to the database?\n\nSuperseded rates will be auto-closed and the review will be recorded.';
     if (anomalies.length > 0) {
       confirmMsg = `⚠️ CAUTION: ${anomalies.length} RATE ANOMALIES DETECTED!\n\nReview flagged fee shifts (e.g. commission jump ≥5% or fee change ≥50%). Are you sure you want to commit these changes to PostgreSQL?\n\nClick OK to auto-close superseded rates and record an audit snapshot.`;
     }

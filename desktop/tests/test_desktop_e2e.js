@@ -19,6 +19,8 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const desktopDir = path.resolve(__dirname, '..');
+const { rateFixture } = await import('./fixtures/portalRateFixture.js');
+const { createRateCardCapture } = await import('../rateCardCapture.js');
 
 let passed = 0;
 let failed = 0;
@@ -48,7 +50,7 @@ assert.deepStrictEqual = function(actual, expected, message) {
 };
 
 // ── Runtime & Service Imports ────────────────────────────────────────────────
-const { parseRateCardTables, scrapeFlipkartRateCards } = await import('../portalScraper.js');
+const { scrapeFlipkartRateCards } = await import('../portalScraper.js');
 const { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } = await import('../scrapeResults.js');
 const { detectBrandRateChanges, syncBrandRateCardsToDatabase, annotateRateAnomaly } = await import('../rateCardService.js');
 
@@ -58,34 +60,41 @@ async function runE2ETests() {
   console.log('=================================================================');
 
   // ── 1. Full Extraction Pipeline Flow ───────────────────────────────────────
-  await runTest('E2E 1: Full Extraction Pipeline parses portal HTML tables and persists staged file', async () => {
+  await runTest('E2E 1: Matched GraphQL responses preserve modes and persist complete staged data', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-e2e-staging-'));
     const tempCookies = path.join(tempDir, 'test_cookies.json');
     fs.writeFileSync(tempCookies, JSON.stringify([{ name: 'test_session', value: 'valid', domain: '.flipkart.com' }]));
 
-    const mockTablesKurta = [
-      [['Price Range', 'Commission Rate'], ['0 - 500', '10.0%'], ['501 - 1000', '12.5%'], ['1001+', '15.0%']],
-      [['Fulfillment Type', 'Tier / Slabs', 'Fee'], ['Bronze', '0 - 300', '₹15.00'], ['Silver', '301 - 500', '₹20.00']],
-      [['Weight Slab', 'Local', 'Zonal', 'National'], ['0 - 0.5 kg', '₹40.00', '₹55.00', '₹70.00'], ['0.5 - 1 kg', '₹60.00', '₹75.00', '₹95.00']],
-      [['Payment Method', 'Slab', 'Fee'], ['Prepaid', 'All', '2.0%'], ['Postpaid', 'All', '₹15.00']]
-    ];
-
-    const mockTablesShopsy = [
-      [['Price Range', 'Commission Rate'], ['0 - 500', '5.0%'], ['501 - 1000', '8.0%']], // policy overrides to 0%
-      [['Fulfillment Type', 'Tier / Slabs', 'Fee'], ['Bronze', '0 - 500', '₹12.00']],
-      [['Weight Slab', 'Local', 'Zonal', 'National'], ['0 - 0.5 kg', '₹35.00', '₹50.00', '₹65.00']],
-      [['Payment Method', 'Slab', 'Fee'], ['Prepaid', 'All', '1.5%'], ['Postpaid', 'All', '₹12.00']]
-    ];
-
+    const capture = createRateCardCapture();
+    capture.observe({url:'https://seller.flipkart.com/napi/rate-card/get-complete-category-tree',status:200,body:{result:[{verticalName:'kurta'}]}});
     let navigatedUrls = [];
+    let currentQuery, pendingFsn;
     const fakePage = {
       setCookie: async () => {},
-      goto: async (url) => { navigatedUrls.push(url); },
+      rateCardCapture: capture,
+      goto: async url => {
+        navigatedUrls.push(url);
+        if (!url.includes('?query=')) return;
+        const query=JSON.parse(decodeURIComponent(url.split('?query=')[1]));
+        currentQuery=query;
+        if (!query.fsn) return;
+        const mode=query.fulfillment==='fbf'?'FBF':'NON_FBF';
+        const fixture=rateFixture(mode);
+        if(query.marketplace==='shopsy') fixture.fees.platformFee.slabs.asp[0].agreementParameters.fixedRate='0%';
+        for(const [key,fee] of Object.entries(fixture.fees)) capture.observe({url:'https://seller.flipkart.com/orchestrator/graphql',status:200,
+          postData:JSON.stringify({variables:{input:{fsn:query.fsn,partnerContext:query.marketplace,serviceProfile:mode,date:query.date,darwinTier:'fixture'}}}),body:{data:{settlement:{[key]:fee}},dataErrors:{},graphErrors:[]}});
+      },
+      reload: async () => fakePage.goto('https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query='+encodeURIComponent(JSON.stringify(currentQuery))),
+      waitForSelector: async () => {},
+      type: async (_selector, fsn) => { pendingFsn=fsn; },
+      cookies: async () => [],
       evaluate: async (fn) => {
+        if (fn.name === 'isFlipkartAuthenticated') return true;
+        if (fn.toString().includes('KeyboardEvent')) { currentQuery.fsn=pendingFsn; return true; }
+        if (fn.toString().includes('q.fsn === expected')) return Boolean(currentQuery.fsn);
         const lastUrl = navigatedUrls[navigatedUrls.length - 1] || '';
         if (lastUrl.includes('dashboard/home-page')) return true; // session valid
-        if (lastUrl.includes('shopsy')) return mockTablesShopsy;
-        return mockTablesKurta;
+        return [];
       },
       url: () => 'https://seller.flipkart.com/dashboard/home-page',
       title: () => 'Seller Dashboard'
@@ -105,7 +114,7 @@ async function runE2ETests() {
     const res = await scrapeFlipkartRateCards(
       {
         marketplace: 'both',
-        selectedVerticals: ['kurta', 'shopsy_kurta']
+        fsnCatalog: [{marketplace:'flipkart',category:'kurta',brand:'Fixture',sample_fsn:'ABCDEFGHIJKLMNOP'},{marketplace:'shopsy',category:'shopsy_kurta',brand:'Fixture',sample_fsn:'QRSTUVWXYZ123456'}]
       },
       {
         runtime: fakeRuntime,
@@ -127,6 +136,19 @@ async function runE2ETests() {
     const shopsyCard = stagedContent.find(c => c.marketplace === 'shopsy');
     assert(shopsyCard, 'Shopsy card must exist');
     assert(shopsyCard.commissions.every(c => c.rate === 0), 'All Shopsy commissions must be 0%');
+
+    // A freshly submitted FSN issues complete queries. Reloading here used to
+    // abort their bodies in real Electron; require this path to avoid reload.
+    const evaluateBefore = fakePage.evaluate;
+    fakePage.evaluate = async fn => {
+      const value = await evaluateBefore(fn);
+      if (fn.toString().includes('KeyboardEvent')) await fakePage.goto('https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=' + encodeURIComponent(JSON.stringify(currentQuery)));
+      return value;
+    };
+    fakePage.reload = async () => { throw new Error('A complete fresh search must not be reloaded'); };
+    const fresh = await scrapeFlipkartRateCards({marketplace:'flipkart',fsnCatalog:[{marketplace:'flipkart',category:'kurta',brand:'Fixture',sample_fsn:'ABCDEFGHIJKLMNOP'}]},
+      {runtime:fakeRuntime,cookiesPath:tempCookies,stagingDir:tempDir,delay:()=>{},onProgress:()=>{}});
+    assert(fresh.success, 'Fresh complete query responses must survive without reload: ' + fresh.error);
 
     // Clean up
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -152,7 +174,8 @@ async function runE2ETests() {
     const normalized = normalizeScrapedCards([rawFBF, rawNonFBF]);
     assert.strictEqual(normalized.length, 1);
     assert.strictEqual(normalized[0].commissions.length, 1);
-    assert.strictEqual(normalized[0].fixedFees.length, 1);
+    assert.strictEqual(normalized[0].fixedFees.length, 2);
+    assert.deepStrictEqual(normalized[0].fixedFees.map(f => f.fulfilment_type), ['FBF', 'NON_FBF']);
     assert.deepStrictEqual(normalized[0].fulfilmentModes, ['FBF', 'NON_FBF']);
 
     const state = createStagedExtractionState();
@@ -212,6 +235,10 @@ async function runE2ETests() {
     assert.strictEqual(syncRes.updated, false, 'Sync must be skipped when no changes exist');
     assert.strictEqual(syncRes.changesCount, 0);
     assert.strictEqual(writeExecuted, false, 'Zero write queries should be executed on unchanged data');
+
+    const forcedNoop = await syncBrandRateCardsToDatabase([card], { forceUpdate: true }, mockPoolUnchanged);
+    assert.strictEqual(forcedNoop.updated, false, 'Legacy forceUpdate cannot rewrite unchanged rate rows');
+    assert.strictEqual(writeExecuted, false, 'unchanged data creates neither rate writes nor an audit version');
   });
 
   // ── 4. Changed Rates & Multi-Tier Anomaly Detection ────────────────────────
@@ -404,16 +431,11 @@ async function runE2ETests() {
     fs.writeFileSync(tempCookies, JSON.stringify([{ name: 'old_expired', value: '000' }]));
 
     let callCount = 0;
+    let manualAuthComplete = false;
     const fakePage = {
       setCookie: async () => {},
       goto: async () => {},
-      evaluate: async () => {
-        callCount++;
-        // First check: session expired
-        if (callCount === 1) return false;
-        // Second check (after in-view auth): session restored
-        return true;
-      },
+      evaluate: async fn => fn.name === 'isFlipkartAuthenticated' ? manualAuthComplete : [],
       url: () => 'https://seller.flipkart.com/login',
       title: () => 'Seller Login Challenge',
       cookies: async () => {
@@ -443,7 +465,8 @@ async function runE2ETests() {
         onProgress: () => {},
         onSessionExpiry: async (page) => {
           sessionExpiryTriggered = true;
-          assert(page === fakePage, 'onSessionExpiry must receive current page object');
+          assert(page.url() === fakePage.url(), 'onSessionExpiry must receive the current paced page');
+          manualAuthComplete = true;
           // In the real application main.js, onSessionExpiry calls page.cookies() upon user 2FA
           const cookies = await page.cookies();
           assert(cookies.length > 0, 'Page cookies must be read upon 2FA completion');

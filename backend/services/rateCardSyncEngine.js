@@ -158,6 +158,7 @@ export async function syncRateCardsToDatabase(scrapedList, options = {}) {
 
   try {
     await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))");
 
     // Group scraped data by vertical
     for (const scraped of scrapedList) {

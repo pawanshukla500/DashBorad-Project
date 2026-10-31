@@ -177,9 +177,11 @@ describe('fee lookups on overlapping periods', () => {
 
   it('serializes concurrent saves of the same category with a transaction lock', async () => {
     await post('/config/commission/save-period', { ...newPeriod, auto_close: true });
-    const lock = statements.find(s => s.sql.includes('pg_advisory_xact_lock'));
-    expect(lock.params).toEqual(['rate-period:rc_commission:flipkart:default:kurta']);
+    const locks = statements.filter(s => s.sql.includes('pg_advisory_xact_lock'));
+    expect(locks[0].sql).toContain("hashtext('rate_card_publish_lock')");
+    expect(locks[1].params).toEqual(['rate-period:rc_commission:flipkart:default:kurta']);
     const order = statements.map(s => s.sql.split(' ')[0]);
     expect(order.indexOf('SELECT')).toBe(order.indexOf('BEGIN') + 1);
+    expect(order.indexOf('SELECT', order.indexOf('SELECT') + 1)).toBe(order.indexOf('BEGIN') + 2);
   });
 });

@@ -15,14 +15,14 @@
     "worker:myntra:ej": "node worker.js --marketplace=myntra_ej",
     "worker:meesho": "node worker.js --marketplace=meesho",
     "worker:sync": "node worker.js --marketplace=both --auto-sync",
-    "build:win": "electron-builder --win --x64",
-    "build:linux": "electron-builder --linux AppImage deb",
-    "build:all": "electron-builder -wl",
+    "build:win": "electron-builder --win nsis --x64",
+    "build:linux": "electron-builder --linux AppImage",
+    "build:all": "electron-builder --win nsis --linux AppImage --x64",
     "test:runtime": "node tests/test_desktop_runtime.js",
     "test:auth": "node tests/test_desktop_auth.js",
     "test:e2e": "node tests/test_desktop_e2e.js",
-    "test": "node tests/test_local_staging.js && node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js",
-    "test:all": "node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js && node tests/test_desktop_auth.js"
+    "test": "node tests/test_local_staging.js && node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js && node --test tests/browserSafety.test.js",
+    "test:all": "npm test && node tests/test_desktop_auth.js"
   },
   "keywords": [
     "ratecard",
@@ -57,6 +57,7 @@
     "basic-ftp": "^6.2.3"
   },
   "build": {
+    "beforePack": "./prepareBuild.js",
     "appId": "com.reconcentral.ratecardworker",
     "productName": "ReconCentral RateCard Worker",
     "publish": [
@@ -68,14 +69,13 @@
       }
     ],
     "directories": {
-      "output": "dist-release"
+      "output": "../released/build"
     },
     "win": {
       "icon": "ui/icon.png",
       "signAndEditExecutable": false,
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ]
     },
     "nsis": {
@@ -83,14 +83,15 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "ReconCentral RateCard Worker"
+      "shortcutName": "ReconCentral RateCard Worker",
+      "artifactName": "ReconCentral-RateCard-Worker-Setup-${version}.${ext}"
     },
     "linux": {
       "icon": "ui/icon.png",
       "target": [
-        "AppImage",
-        "deb"
+        "AppImage"
       ],
+      "artifactName": "ReconCentral RateCard Worker-${version}.${ext}",
       "category": "Office"
     },
     "files": [

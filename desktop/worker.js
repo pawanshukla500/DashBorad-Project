@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
  * ReconCentral RateCard CLI & Headless Worker (Cross-Platform: Windows & Linux)
- * 
+ *
  * Standalone CLI worker for Flipkart & Shopsy brand-wise rate card extraction,
  * change detection against PostgreSQL, automatic period closure, and Excel export.
- * 
+ *
  * Usage:
  *   node desktop/worker.js
- *   node desktop/worker.js --marketplace=both --auto-sync
+ *   node desktop/worker.js --marketplace=both
  *   node desktop/worker.js --marketplace=shopsy --export-excel
  *   node desktop/worker.js --brand=Sangria --interactive
  *   node desktop/worker.js --help
@@ -38,15 +38,14 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-import { 
-  getRealTimeBrandFsnSamples, 
-  buildBrandRateCardSet, 
-  detectBrandRateChanges, 
-  syncBrandRateCardsToDatabase 
+import {
+  getRealTimeBrandFsnSamples,
+  buildBrandRateCardSet,
+  detectBrandRateChanges
 } from './rateCardService.js';
-import { 
-  generateBrandwiseRateCardExcel, 
-  DEFAULT_EXCEL_PATH 
+import {
+  generateBrandwiseRateCardExcel,
+  DEFAULT_EXCEL_PATH
 } from './excelExport.js';
 import { getDesktopPool, getDesktopPool as getPool } from './db.js';
 
@@ -60,7 +59,7 @@ ReconCentral RateCard Worker CLI (Windows & Linux)
 Options:
   --marketplace=<flipkart|shopsy|both|myntra_vb|myntra_ej|meesho>   Target marketplace channel (default: both)
   --brand=<name|all>                     Filter by brand (e.g. "Sangria", default: all)
-  --auto-sync, -y                        Auto-commit changes to database with date auto-closing
+  --auto-sync, -y                        Disabled: publication requires desktop review
   --export-excel                         Generate multi-sheet Excel workbook on completion
   --excel-path=<path>                    Custom output path for Excel file
   --interactive, --visible               Launch visible Chrome browser for visual tour
@@ -71,6 +70,10 @@ Options:
 
 const isInteractive = args.includes('--interactive') || args.includes('--visible');
 const autoSync = args.includes('--auto-sync') || args.includes('-y');
+if (autoSync) {
+  console.error('Direct CLI publication is disabled. Sign in to the desktop app, extract from Seller Hub, review the authenticated API comparison, and obtain admin approval.');
+  process.exit(1);
+}
 const shouldExportExcel = args.includes('--export-excel');
 const SUPPORTED_WORKER_CHANNELS = ['both', 'flipkart', 'shopsy', 'flipkart_shopsy'];
 const rawMarketplaceArg = args.find(a => a.startsWith('--marketplace='))?.split('=')[1] || 'both';
@@ -114,7 +117,7 @@ async function runWorker() {
     console.log(`✓ Retrieved ${catalog.length} catalog items from live order history.\n`);
 
     // 2. Build Brand-Wise Rate Card Set
-    onProgress(`Generating rate card models for ${marketplaceArg.toUpperCase()}...`);
+    onProgress(`Reading published database snapshot for ${marketplaceArg.toUpperCase()}...`);
     let rateCards = await buildBrandRateCardSet(pool);
 
     // Fail-closed channel filtering
@@ -152,7 +155,7 @@ async function runWorker() {
     console.log('----------------------------------------------------------------------');
 
     if (changes.length === 0) {
-      console.log('✓ All active database rate cards match the latest fee schedules.');
+      console.log('✓ Published database snapshot loaded. This CLI does not verify current Seller Hub fees.');
     } else {
       changes.forEach((c, i) => {
         console.log(`[#${i + 1}] ${c.type.toUpperCase()} | ${c.marketplace.toUpperCase()} | ${c.category} (${c.brand})`);
@@ -160,23 +163,11 @@ async function runWorker() {
         console.log(`     Old:     ${c.oldRate ?? 'None'}  -->  New: ${c.newRate} (${c.reason})`);
       });
 
-      // 4. Database Sync if requested
-      if (autoSync) {
-        onProgress('\nAuto-sync is enabled. Committing changes to PostgreSQL database...');
-        const syncResult = await syncBrandRateCardsToDatabase(rateCards, { forceUpdate: true }, pool);
-        console.log(`\n✓ Database Synced Successfully!`);
-        console.log(`  Message:            ${syncResult.message}`);
-        console.log(`  Commissions Saved:  ${syncResult.insertedCommissions}`);
-        console.log(`  Fixed Fees Saved:   ${syncResult.insertedFixed}`);
-        console.log(`  Reverse Saved:      ${syncResult.insertedRev}`);
-        console.log(`  Version Snapshot:   ${syncResult.versionName}`);
-      } else {
-        console.log('\n💡 Tip: Run with --auto-sync to commit these rate changes directly to PostgreSQL.');
-      }
+      console.log('Review current Seller Hub extractions in the desktop app before publication.');
     }
 
     // 5. Excel Export if requested
-    if (shouldExportExcel || autoSync) {
+    if (shouldExportExcel) {
       onProgress('\nGenerating multi-sheet Excel workbook...');
       const targetPath = customExcelPath || DEFAULT_EXCEL_PATH;
       const excelRes = await generateBrandwiseRateCardExcel(targetPath, pool);

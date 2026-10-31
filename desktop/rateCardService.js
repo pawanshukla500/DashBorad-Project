@@ -44,15 +44,16 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
       SELECT 
         marketplace,
         category,
-        COALESCE(NULLIF(TRIM(brand), ''), 'General') as brand,
+        COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General') as brand,
+        COALESCE(NULLIF(TRIM(seller_account), ''), 'default') as seller_account,
         fsn,
         sku,
         ROW_NUMBER() OVER (
-          PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand), ''), 'General') 
+          PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General'), COALESCE(NULLIF(TRIM(seller_account), ''), 'default')
           ORDER BY id DESC
         ) as rn,
         COUNT(1) OVER (
-          PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand), ''), 'General')
+          PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General'), COALESCE(NULLIF(TRIM(seller_account), ''), 'default')
         ) as order_count
       FROM orders
       WHERE (marketplace ILIKE '%flipkart%' OR marketplace ILIKE '%shopsy%')
@@ -63,6 +64,7 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
       marketplace, 
       category, 
       brand, 
+      seller_account,
       fsn as sample_fsn, 
       sku as sample_sku, 
       order_count::int as order_count
@@ -75,142 +77,39 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
   return res.rows;
 }
 
-/**
- * 2. Brand-Specific Commission Rules Provider
- */
-export function resolveBrandCommissions(marketplace, category, brandName, standardVerticalRate = 0) {
-  const isShopsy = marketplace.toLowerCase().includes('shopsy') || category.toLowerCase().startsWith('shopsy_');
-
-  // SHOPSY: 0% commission across all categories and brands
-  if (isShopsy) {
-    return [
-      { price_min: 0, price_max: 999999, rate: 0.0 }
-    ];
-  }
-
-  const brand = (brandName || '').trim();
-
-  // SANGRIA: Tiered commission structure
-  if (brand.toLowerCase() === 'sangria') {
-    if (category === 'top' || category === 'apparel_set') {
-      return [
-        { price_min: 0, price_max: 300, rate: 0.0 },
-        { price_min: 301, price_max: 500, rate: 0.03 },
-        { price_min: 501, price_max: 800, rate: 0.02 },
-        { price_min: 801, price_max: 1000, rate: 0.07 },
-        { price_min: 1001, price_max: 10000, rate: 0.13 },
-        { price_min: 10001, price_max: 999999, rate: 0.0 }
-      ];
-    }
-    // Kurta, Sari, Ethnic Set, Dress
-    return [
-      { price_min: 0, price_max: 500, rate: 0.0 },
-      { price_min: 501, price_max: 800, rate: 0.02 },
-      { price_min: 801, price_max: 1000, rate: 0.04 },
-      { price_min: 1001, price_max: 10000, rate: 0.10 },
-      { price_min: 10001, price_max: 999999, rate: 0.0 }
-    ];
-  }
-
-  // DIVASTRI: Tiered low-ticket slabs
-  if (brand.toLowerCase() === 'divastri') {
-    return [
-      { price_min: 0, price_max: 300, rate: 0.0 },
-      { price_min: 301, price_max: 500, rate: 0.03 },
-      { price_min: 501, price_max: 999999, rate: 0.0 }
-    ];
-  }
-
-  // ETHNIC JUNCTION & YOUTHNIC: Same commission
-  return [
-    { price_min: 0, price_max: 999999, rate: standardVerticalRate }
-  ];
-}
-
-/**
- * 3. Reverse Shipping Slabs Provider
- */
-export function resolveReverseShippingSlabs(marketplace, category) {
-  const isShopsy = marketplace.toLowerCase().includes('shopsy') || category.toLowerCase().startsWith('shopsy_');
-
-  if (isShopsy) {
-    return [
-      { weight_slab: '0kg-0.5kg', price_min: 0, price_max: 500, local_fee: 122, zonal_fee: 142, national_fee: 182 },
-      { weight_slab: '0kg-0.5kg', price_min: 501, price_max: 1000, local_fee: 147, zonal_fee: 167, national_fee: 207 },
-      { weight_slab: '0kg-0.5kg', price_min: 1001, price_max: 999999, local_fee: 157, zonal_fee: 177, national_fee: 217 },
-      { weight_slab: '0.5kg-1kg', price_min: 0, price_max: 500, local_fee: 152, zonal_fee: 177, national_fee: 227 },
-      { weight_slab: '0.5kg-1kg', price_min: 501, price_max: 1000, local_fee: 177, zonal_fee: 202, national_fee: 252 },
-      { weight_slab: '0.5kg-1kg', price_min: 1001, price_max: 999999, local_fee: 187, zonal_fee: 212, national_fee: 262 }
-    ];
-  }
-
-  // Flipkart standard reverse shipping
-  return [
-    { weight_slab: '0kg-0.5kg', price_min: 0, price_max: 500, local_fee: 122, zonal_fee: 142, national_fee: 182 },
-    { weight_slab: '0kg-0.5kg', price_min: 501, price_max: 1000, local_fee: 147, zonal_fee: 167, national_fee: 207 },
-    { weight_slab: '0kg-0.5kg', price_min: 1001, price_max: 999999, local_fee: 157, zonal_fee: 177, national_fee: 217 },
-    { weight_slab: '0.5kg-1kg', price_min: 0, price_max: 999999, local_fee: 152, zonal_fee: 177, national_fee: 227 }
-  ];
-}
-
-/**
- * 4. Fixed Fee Slabs Provider
- */
-export function resolveFixedFees(marketplace, category) {
-  const isShopsy = marketplace.toLowerCase().includes('shopsy') || category.toLowerCase().startsWith('shopsy_');
-  const tiers = ['Bronze', 'Silver', 'Gold', 'Diamond'];
-  const fixed = [];
-
-  if (isShopsy) {
-    for (const tier of tiers) {
-      fixed.push(
-        { fulfilment_type: tier, price_min: 0, price_max: 1500, rate: 0 },
-        { fulfilment_type: tier, price_min: 1501, price_max: 999999, rate: 10 }
-      );
-    }
-    return fixed;
-  }
-
-  for (const tier of tiers) {
-    fixed.push(
-      { fulfilment_type: tier, price_min: 0, price_max: 1500, rate: 0 },
-      { fulfilment_type: tier, price_min: 1501, price_max: 999999, rate: 10 }
-    );
-  }
-  return fixed;
-}
-
-/**
- * 5. Build Complete Brand-Wise Rate Card Set from Live Catalog
- */
-export async function buildBrandRateCardSet(pool = null) {
+/** Read-only published database snapshot. It is never a scraped observation. */
+export async function buildBrandRateCardSet(pool = null, sellerAccount = 'default') {
   const p = pool || getDesktopPool();
-  const catalog = await getRealTimeBrandFsnSamples(p);
   const effectiveDate = new Date().toISOString().slice(0, 10);
-
-  const brandRateCards = [];
-
-  for (const item of catalog) {
-    const mp = item.category.startsWith('shopsy_') ? 'shopsy' : item.marketplace.toLowerCase();
-    const commissions = resolveBrandCommissions(mp, item.category, item.brand, 0.0);
-    const fixedFees = resolveFixedFees(mp, item.category);
-    const reverseShipping = resolveReverseShippingSlabs(mp, item.category);
-
-    brandRateCards.push({
-      marketplace: mp,
-      category: item.category,
-      brand: item.brand,
-      sample_fsn: item.sample_fsn,
-      sample_sku: item.sample_sku,
-      order_count: item.order_count,
-      effectiveDate,
-      commissions,
-      fixedFees,
-      reverseShipping
-    });
+  const samples = await getRealTimeBrandFsnSamples(p);
+  const normalize = value => String(value || '').trim().toLowerCase();
+  const fields = [['rc_commission','commissions'],['rc_fixed_fee','fixedFees'],['rc_collection_fee','collectionFees'],['rc_reverse_shipping','reverseShipping'],['rc_pick_pack','pickPackFees']];
+  const cards = new Map();
+  for (const [table, field] of fields) {
+    const { rows } = await p.query(`SELECT * FROM ${table} WHERE marketplace IN ('flipkart','shopsy')
+      AND ($2 = 'all' OR seller_account = $2)
+      AND (start_date IS NULL OR start_date <= $1) AND (end_date IS NULL OR end_date >= $1) ORDER BY category, id`, [effectiveDate, sellerAccount]);
+    for (const row of rows) {
+      const brand = row.brand_name || 'General';
+      const sellerAccount = row.seller_account || 'default';
+      const key = JSON.stringify([row.marketplace,sellerAccount,row.category,field === 'commissions' ? brand : 'General']);
+      if (!cards.has(key)) {
+        const sample = samples.find(item => normalize(item.marketplace).includes(normalize(row.marketplace)) &&
+          normalize(item.category) === normalize(row.category) && normalize(item.seller_account || 'default') === normalize(sellerAccount) &&
+          normalize(item.brand || 'General') === normalize(field === 'commissions' ? brand : 'General'));
+        cards.set(key, { marketplace: row.marketplace, seller_account: sellerAccount, category: row.category, brand,
+        ...(sample ? { sample_fsn: sample.sample_fsn, sample_sku: sample.sample_sku, order_count: Number(sample.order_count) } : {}),
+        source: 'published_database', effectiveDate, commissions: [], fixedFees: [], collectionFees: [], reverseShipping: [], pickPackFees: [] });
+      }
+      const slab = { ...row };
+      for (const k of ['price_min','price_max','rate','prepaid','postpaid','local_fee','zonal_fee','national_fee',
+        'weight_min','weight_max','base_weight','increment_weight','local_additional_fee','zonal_additional_fee','national_additional_fee']) {
+        if (slab[k] !== undefined && slab[k] !== null) slab[k] = Number(slab[k]);
+      }
+      cards.get(key)[field].push(slab);
+    }
   }
-
-  return brandRateCards;
+  return [...cards.values()];
 }
 
 /**
@@ -649,7 +548,6 @@ export function resolveSyncEffectiveDate(options = {}, brandRateCards = []) {
 export async function syncBrandRateCardsToDatabase(brandRateCards, options = {}, pool = null) {
   const p = pool || getDesktopPool();
   const {
-    forceUpdate = false,
     sellerAccount = 'default'
   } = options;
   // Committed under the day the rates were observed (the staged scrape date),
@@ -658,7 +556,9 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
 
   const changes = await detectBrandRateChanges(brandRateCards, p, { sellerAccount });
 
-  if (changes.length === 0 && !forceUpdate) {
+  // Rate rows are never rewritten when unchanged, even if an older caller
+  // still supplies forceUpdate. No-op publication keeps history truthful.
+  if (changes.length === 0) {
     return {
       updated: false,
       message: 'Brand rate cards are already in sync with database. No changes detected.',

@@ -27,11 +27,12 @@
  */
 
 import { createRequire } from 'node:module';
+import { createRateCardCapture, isRateRequest } from './rateCardCapture.js';
 
 const DEFAULT_EVAL_RETRIES = 3;
-const DEFAULT_EVAL_GAP_MS = 300;
+const DEFAULT_EVAL_GAP_MS = 1000;
 const POLL_RETRIES = 40;
-const POLL_GAP_MS = 700;
+const POLL_GAP_MS = 1000;
 const GOTO_SETTLE_MS = 2000;
 const NAV_POLL_SETTLE_MS = 4000;
 const DEFAULT_VIEW_BOUNDS = { x: 0, y: 0, width: 1280, height: 720 };
@@ -111,6 +112,7 @@ export function createEmbeddedPage({
   userAgent = DEFAULT_EDGE_USER_AGENT,
   visible = true,
   bounds = null,
+  onState = () => {},
   deps = {}
 } = {}) {
   const electronDeps = deps.WebContentsView && deps.session ? deps : loadElectronDeps();
@@ -134,6 +136,7 @@ export function createEmbeddedPage({
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      backgroundThrottling: false,
       webSecurity: true
     }
   });
@@ -160,7 +163,8 @@ export function createEmbeddedPage({
     if (next && view.setBounds) view.setBounds(next);
   };
   attach();
-  view.setVisible?.(Boolean(visible));
+  let viewVisible = Boolean(visible);
+  view.setVisible?.(viewVisible);
   layout();
   // Host-window resizes must re-layout the embedded view: stale bounds clip
   // or blank the surface after the operator resizes or maximizes the app.
@@ -168,6 +172,23 @@ export function createEmbeddedPage({
   if (window?.on) window.on('resize', onHostResize);
 
   const contents = view.webContents;
+  const rateCardCapture = createRateCardCapture();
+  const diagnosticListeners = [];
+  const observe = (event, handler) => {
+    contents.on?.(event, handler);
+    diagnosticListeners.push([event, handler]);
+  };
+  const notify = patch => { try { onState({ ...patch, url: page.url(), title: page.title() }); } catch {} };
+  observe('did-start-navigation', (_event, _url, _inPlace, mainFrame) => {
+    if (mainFrame !== false) notify({ status: 'navigating' });
+  });
+  observe('did-finish-load', () => notify({ status: 'ready' }));
+  observe('did-fail-load', (_event, code, description, _url, mainFrame) => {
+    if (mainFrame !== false && code !== -3) notify({ status: 'error', errorCode: code, error: description });
+  });
+  observe('render-process-gone', (_event, details) => notify({ status: 'error', errorCode: 'RENDERER_GONE', error: details.reason }));
+  observe('unresponsive', () => notify({ status: 'error', errorCode: 'RENDERER_UNRESPONSIVE', error: 'Portal renderer is unresponsive.' }));
+  contents.setWindowOpenHandler?.(() => ({ action: 'deny' }));
 
   // Navigation tracking: the scraper clicks a submit button and only then
   // calls waitForNavigation, so a fast navigation can complete before the
@@ -212,11 +233,32 @@ export function createEmbeddedPage({
       return null;
     }
     const state = { pending: 0, broken: false };
-    contents.debugger.on('message', (_event, method) => {
-      if (method === 'Network.requestWillBeSent') state.pending += 1;
-      else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
-        state.pending = Math.max(0, state.pending - 1);
+    const pendingIds = new Set();
+    const warn = error => console.warn(JSON.stringify({ event: 'rate_response_capture_failed', code: 'BODY_UNAVAILABLE', message: error.message }));
+    contents.debugger.on('message', (_event, method, params = {}, sessionId) => {
+      const requestKey = (sessionId || '') + ':' + params.requestId;
+      if (method === 'Network.requestWillBeSent') {
+        if (params.requestId) { pendingIds.add(requestKey); state.pending = pendingIds.size; }
+        else state.pending += 1;
+      } else if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+        if (params.requestId) { pendingIds.delete(requestKey); state.pending = pendingIds.size; }
+        else state.pending = Math.max(0, state.pending - 1);
       }
+      if (method !== 'Fetch.requestPaused') return;
+      // Network.getResponseBody lost real Seller Hub bodies after completion in
+      // Electron 33. Read the response while paused, then always release it.
+      const send = (command, args) => contents.debugger.sendCommand(command, args, sessionId || undefined);
+      (async () => {
+        if (!isRateRequest(params.request?.url, params.request?.postData)) return;
+        if (params.responseErrorReason) {
+          rateCardCapture.observe({ url: params.request.url, postData: params.request.postData, status: 0, body: { errors: [params.responseErrorReason] } });
+          return;
+        }
+        const response = await withTimeout(send('Fetch.getResponseBody', { requestId: params.requestId }), 10000, 'Rate response body timed out.');
+        const body = JSON.parse(response.base64Encoded ? Buffer.from(response.body, 'base64').toString('utf8') : response.body);
+        rateCardCapture.observe({ url: params.request.url, postData: params.request.postData, status: params.responseStatusCode, body });
+      })().catch(warn).finally(() => Promise.resolve()
+        .then(() => send('Fetch.continueRequest', { requestId: params.requestId })).catch(warn));
     });
     try {
       // A rejected Network.enable (debugger disconnected, etc.) must not
@@ -224,6 +266,10 @@ export function createEmbeddedPage({
       // that would falsely report busy pages quiet. Marking it broken makes
       // the quiet wait degrade to the honest fixed settle.
       Promise.resolve(contents.debugger.sendCommand('Network.enable')).catch(() => { state.broken = true; });
+      Promise.resolve(contents.debugger.sendCommand('Fetch.enable', { patterns: [
+        { urlPattern: 'https://seller.flipkart.com/orchestrator/graphql*', requestStage: 'Response' },
+        { urlPattern: 'https://seller.flipkart.com/napi/rate-card/get-complete-category-tree*', requestStage: 'Response' }
+      ] })).catch(warn);
     } catch {
       return null;
     }
@@ -251,7 +297,7 @@ export function createEmbeddedPage({
         stableSince = null;
       }
       if (Date.now() >= deadline) return 'quiet-timeout';
-      await delay(Math.min(150, Math.max(0, deadline - Date.now())));
+      await delay(Math.min(1000, Math.max(0, deadline - Date.now())));
     }
   };
 
@@ -288,6 +334,7 @@ export function createEmbeddedPage({
   const page = {
     _view: view,
     _contents: contents,
+    rateCardCapture,
 
     url() {
       return contents.getURL ? contents.getURL() : '';
@@ -341,8 +388,12 @@ export function createEmbeddedPage({
         }
       }
       if (waitUntil === 'networkidle2' || waitUntil === 'load') {
-        const ready = evaluateRaw(`document.readyState === 'complete' || document.readyState === 'interactive'`, { retries: 20, gapMs: 500, deadlineMs: deadline });
-        await withTimeout(ready, slice(), 'Page never reached an interactive state.');
+        for (;;) {
+          const ready = await evaluateRaw(`document.readyState === 'complete' || document.readyState === 'interactive'`, { retries: 20, gapMs: 1000, deadlineMs: deadline });
+          if (ready === true && page.url() && page.url() !== 'about:blank') break;
+          if (remaining() <= 0) throw timeoutError('Page never reached an interactive state.');
+          await delay(Math.min(1000, slice()));
+        }
       }
       if (waitUntil === 'networkidle2') {
         const networkWait = await waitForNetworkQuiet(slice());
@@ -352,6 +403,22 @@ export function createEmbeddedPage({
         return { ok: true, url: page.url(), networkWait };
       }
       return { ok: true, url: page.url(), networkWait: null };
+    },
+
+    async reload({ timeout = 35000 } = {}) {
+      let cleanup = () => {};
+      const loaded = new Promise((resolve, reject) => {
+        const done = () => resolve({ ok: true, url: page.url() });
+        const failed = (_event, code, description, _url, mainFrame) => {
+          if (mainFrame !== false && code !== -3) reject(new Error(description));
+        };
+        contents.on('did-finish-load', done);
+        contents.on('did-fail-load', failed);
+        cleanup = () => { contents.removeListener('did-finish-load', done); contents.removeListener('did-fail-load', failed); };
+        contents.reload();
+      });
+      try { return await withTimeout(loaded, timeout, 'Portal reload timed out.'); }
+      finally { cleanup(); }
     },
 
     /**
@@ -388,7 +455,7 @@ export function createEmbeddedPage({
         if (Date.now() >= deadline) {
           throw timeoutError(`Waiting for selector ${selector} failed: timeout ${timeout}ms exceeded`);
         }
-        await delay(Math.min(400, Math.max(deadline - Date.now(), 1)));
+        await delay(Math.min(1000, Math.max(deadline - Date.now(), 1)));
       }
     },
 
@@ -509,9 +576,13 @@ export function createEmbeddedPage({
         throw new Error(`Cannot type into ${selector}: the field is ${focusState}.`);
       }
       contents.focus?.();
-      await delay(200);
+      await delay(1000);
       for (const ch of String(text)) {
-        contents.sendInputEvent({ type: 'char', keyCode: ch });
+        // insertText is delivered to this renderer's focused editor even when
+        // the native view is hidden. OS keyboard focus cannot be assumed for
+        // background extraction or an occluded Windows/Linux window.
+        if (contents.insertText) await contents.insertText(ch);
+        else contents.sendInputEvent({ type: 'char', keyCode: ch });
         await delay(perKeyMs);
       }
       if (!verify) return true;
@@ -556,11 +627,14 @@ export function createEmbeddedPage({
         const url = toCookieUrl(cookie);
         const path = cookie.path || '/';
         const incomingExpiry = (Number.isFinite(cookie.expires) && cookie.expires > 0) ? cookie.expires : undefined;
+        if (incomingExpiry && incomingExpiry <= Date.now() / 1000) continue;
         const existing = await embedSession.cookies.get({ url, name: String(cookie.name || '') });
         // Same name AND same domain AND same path only: a different path's
         // later expiry must never suppress the import for this path.
-        const liveExpiry = existing.find((c) => c.domain === cookie.domain && c.path === path)?.expirationDate ?? null;
-        if (liveExpiry && (!incomingExpiry || incomingExpiry < liveExpiry)) continue;
+        const live = existing.find((c) => c.domain === cookie.domain && c.path === path);
+        const liveExpiry = live?.expirationDate;
+        if (live && (!liveExpiry || liveExpiry > Date.now() / 1000) &&
+            (!liveExpiry || !incomingExpiry || incomingExpiry <= liveExpiry)) continue;
         await embedSession.cookies.set({
           url,
           name: String(cookie.name || ''),
@@ -577,19 +651,29 @@ export function createEmbeddedPage({
 
     /** Screenshot of the live page (monitoring + debugging aid). */
     async screenshot() {
-      const image = await contents.capturePage();
-      return image.toPNG();
+      // Let Electron temporarily reveal hidden contents for capture. Keeping a
+      // just-created WebContentsView hidden can return an empty NativeImage on
+      // Windows even after its host window becomes visible.
+      await contents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))').catch(() => {});
+      const image = await contents.capturePage(undefined, { stayAwake: true });
+      const png = image.toPNG();
+      if (!png.length) throw new Error('Chromium has no rendered frame to capture.');
+      return png;
     },
 
     setVisible(next) {
-      view.setVisible?.(Boolean(next));
+      viewVisible = Boolean(next);
+      view.setVisible?.(viewVisible);
+      if (next) { layout(); contents.invalidate?.(); }
     },
     getVisible() {
-      return Boolean(view.getVisible?.());
+      return typeof view.getVisible === 'function' ? Boolean(view.getVisible()) : viewVisible;
     },
     layout,
 
     async close() {
+      await embedSession.cookies.flushStore?.().catch(() => {});
+      for (const [event, handler] of diagnosticListeners) contents.removeListener?.(event, handler);
       if (contents.removeListener && onAnyNav) {
         contents.removeListener('did-navigate', onAnyNav);
         contents.removeListener('did-navigate-in-page', onAnyInPage);
@@ -625,7 +709,7 @@ export function createEmbeddedPage({
  * window the visible view renders into, UA policy, bounds) is bound when the
  * runtime is CREATED, and launch() only flips visibility with headless.
  */
-export function createEmbeddedRuntime({ partition, window, userAgent, bounds, deps = {} } = {}) {
+export function createEmbeddedRuntime({ partition, window, userAgent, bounds, onState, deps = {} } = {}) {
   if (!partition || typeof partition !== 'string' || !partition.startsWith('persist:')) {
     throw new Error('createEmbeddedRuntime requires a persistent per-marketplace session partition (persist:<marketplace-id>).');
   }
@@ -657,6 +741,7 @@ export function createEmbeddedRuntime({ partition, window, userAgent, bounds, de
         userAgent: userAgentOverride || userAgent,
         visible: !headless,
         bounds,
+        onState,
         deps: injectable
       });
       let open = true;

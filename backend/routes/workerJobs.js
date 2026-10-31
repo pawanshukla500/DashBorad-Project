@@ -3,6 +3,7 @@ import { getPool } from '../db/index.js';
 import { requireRole } from '../utils/authMiddleware.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { publishRateCardObservations } from '../services/rateCardPublisher.js';
+import { validateRateObservations } from '../services/rateCardObservationPlan.js';
 
 export const workersRouter = express.Router();
 export const workerJobsRouter = express.Router();
@@ -154,6 +155,30 @@ workersRouter.post('/jobs/claim', async (req, res) => {
     res.status(500).json({ error: 'Failed to claim job' });
   } finally {
     client.release();
+  }
+});
+
+/**
+ * Return a claim that arrived after the desktop worker was stopped.
+ * POST /api/workers/jobs/release
+ */
+workersRouter.post('/jobs/release', async (req, res) => {
+  const { job_id, worker_id } = req.body;
+  if (!job_id || !worker_id) return res.status(400).json({ error: 'Job id and worker id are required' });
+  try {
+    const result = await getPool().query(`
+      UPDATE worker_jobs
+      SET status = 'queued', lease_worker_id = NULL, lease_expires_at = NULL,
+          attempts = GREATEST(attempts - 1, 0), progress_pct = 0,
+          progress_message = 'Queued after worker stopped before extraction', updated_at = NOW()
+      WHERE id = $1 AND lease_worker_id = $2 AND status = 'claimed'
+      RETURNING id, status
+    `, [job_id, worker_id]);
+    if (result.rows.length === 0) return res.status(409).json({ error: 'Claim is no longer held by this worker', code: 'LEASE_MISMATCH' });
+    res.json({ success: true, job: result.rows[0] });
+  } catch (err) {
+    console.error('[Worker API] Release claim error:', err.message);
+    res.status(500).json({ error: 'Failed to release worker claim' });
   }
 });
 
@@ -354,6 +379,11 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
 
     const job = jobRes.rows[0];
 
+    try {
+      validateRateObservations(results, { marketplace: job.marketplace, complete: true,
+        expectedVerticals: job.parameters?.verticals || [] });
+    } catch (err) { return res.status(400).json({ error: err.message, code: 'INCOMPLETE_EXTRACTION' }); }
+
     // If assigned to a worker lease, strictly enforce lease ownership and expiry
     if (job.lease_worker_id) {
       if (!worker_id || job.lease_worker_id !== worker_id) {
@@ -377,6 +407,9 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
       sellerAccount: job.seller_account,
       effectiveDate: scrapeEffectiveDate
     });
+    if (job.parameters?.reviewFingerprint && job.parameters.reviewFingerprint !== diffResult.fingerprint) {
+      return res.status(409).json({ error: 'Rates changed since desktop review. Refresh and review again.', code: 'REVIEW_STALE' });
+    }
 
     const updateRes = await pool.query(`
       UPDATE worker_jobs
@@ -410,6 +443,42 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
 });
 
 /**
+ * Discard extraction results after the desktop account changes or delivery
+ * fails. This also cancels queued sync jobs so they cannot remain stranded.
+ * POST /api/worker-jobs/:id/discard-results
+ */
+workerJobsRouter.post('/:id/discard-results', async (req, res) => {
+  const { id } = req.params;
+  const { worker_id = null, reason = 'Desktop session changed before review' } = req.body || {};
+  const pool = getPool();
+  try {
+    const result = await pool.query(`
+      UPDATE worker_jobs
+      SET status = 'cancelled', results = NULL, diff_summary = NULL,
+          progress_pct = 0, progress_message = 'Extraction results discarded',
+          error_code = 'RESULTS_DISCARDED', error_message = $4,
+          completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+      WHERE id = $1 AND job_type IN ('RATE_CARD_SCRAPE', 'RATE_CARD_SYNC')
+        AND status IN ('queued', 'claimed', 'running', 'completed')
+        AND ((lease_worker_id IS NOT NULL AND lease_worker_id = $2)
+          OR (lease_worker_id IS NULL AND created_by = $3))
+      RETURNING id, status
+    `, [id, worker_id, req.user?.email || null, String(reason).slice(0, 500)]);
+    if (result.rows.length) return res.json({ success: true, discarded: true, job: result.rows[0] });
+
+    const existing = await pool.query(`SELECT id, status, lease_worker_id, created_by FROM worker_jobs WHERE id = $1`, [id]);
+    const job = existing.rows[0];
+    const ownsCancelledJob = job?.status === 'cancelled' &&
+      (job.lease_worker_id ? job.lease_worker_id === worker_id : job.created_by === req.user?.email);
+    if (ownsCancelledJob) return res.json({ success: true, discarded: true, alreadyDiscarded: true, job });
+    return res.status(409).json({ error: 'Job is no longer discardable by this desktop session', code: 'JOB_NOT_OWNED_OR_ACTIVE' });
+  } catch (err) {
+    console.error('[Worker API] Discard results error:', err.message);
+    return res.status(500).json({ error: 'Failed to discard worker job results' });
+  }
+});
+
+/**
  * Publish approved job results to active rc_* tables
  * POST /api/worker-jobs/:id/publish
  */
@@ -424,6 +493,7 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
     }
 
     const job = jobRes.rows[0];
+    if (job.status !== 'completed') return res.status(409).json({ error: 'Only completed, reviewed extractions can be published.' });
     if (!job.results || !Array.isArray(job.results)) {
       return res.status(400).json({ error: 'Job does not contain valid extraction results to publish' });
     }
@@ -442,7 +512,9 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
       sellerAccount: job.seller_account,
       effectiveDate,
       jobId: job.id,
-      publishedBy: req.user?.email || 'admin'
+      publishedBy: req.user?.email,
+      expectedVerticals: job.parameters?.verticals || [],
+      reviewFingerprint: job.diff_summary?.fingerprint
     });
 
     res.json({

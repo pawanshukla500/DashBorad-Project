@@ -22,19 +22,27 @@ import { createSessionAccess, publicSession } from './sessionAccess.js';
 import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
+import { createStructuredLogger } from './structuredLogger.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { createWorkerEngine } from './workerEngine.js';
+import { portalPartition, isFlipkartAuthenticated } from './portalSession.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
+import { resolveScrapeVerticals } from './fsnPlan.js';
 import {
   getActiveBackendUrl,
+  getCandidateServers,
+  fetchConfiguredVerticals,
   registerWorkerWithBackend,
   sendWorkerHeartbeat,
   claimNextWorkerJob,
+  releaseClaimedWorkerJob,
   reportJobProgress,
   reportJobFailure,
   submitJobResults,
   fetchBrandCatalogFromApi,
   detectRateChangesViaApi,
-  publishJobViaApi
+  publishJobViaApi,
+  reviewRatesViaApi, publishReviewedRatesViaApi
 } from './workerClient.js';
 import {
   getStagingDb,
@@ -42,7 +50,8 @@ import {
   saveStagedObservations,
   getStagedObservations,
   markStagedJobStatus,
-  clearStagedJob
+  clearStagedJob,
+  stageReview, recoverReview, supersedeReviews
 } from './localStaging.js';
 
 const require = createRequire(import.meta.url);
@@ -55,6 +64,12 @@ const fsp = require('fs').promises;
 const { Pool } = require('pg');
 
 let mainWindow = null;
+const smokeOutput = process.argv.find(arg => arg.startsWith('--ratecard-smoke-test='))?.slice('--ratecard-smoke-test='.length);
+if (smokeOutput) {
+  const profile = path.resolve(`${smokeOutput}.profile`);
+  fs.mkdirSync(profile, { recursive: true });
+  app.setPath('userData', profile);
+}
 const stagedExtraction = createStagedExtractionState();
 const USER_DATA_DIR = app.getPath('userData');
 process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
@@ -63,6 +78,17 @@ const SESSION_FILE = path.join(USER_DATA_DIR, 'auth-session.json');
 const COOKIES_PATH = path.join(USER_DATA_DIR, 'cookies.json');
 process.env.RECON_COOKIES_PATH = COOKIES_PATH;
 const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
+const DIAGNOSTICS_DIR = path.join(STAGING_DIR, 'diagnostics');
+const desktopLogger = createStructuredLogger(DIAGNOSTICS_DIR);
+desktopLogger.installConsoleBridge();
+desktopLogger.info('app.started', 'Desktop worker started.', { version: app.getVersion(), platform: process.platform });
+
+function persistReview(cards, session) {
+  const id = `review-${Date.now()}-${require('crypto').randomUUID()}`;
+  stageReview(getStagingDb(USER_DATA_DIR), id, session.user.firebase_uid, cards[0].marketplace, cards);
+  stagedExtraction.cards = cards;
+  stagedExtraction.review = null;
+}
 
 const FIREBASE_API_KEY = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
 
@@ -171,13 +197,7 @@ function clearAuthSession() {
 // Default Configuration with Flipkart & Shopsy Verticals and Brands
 // NOTE: Database credentials are never hardcoded in the installer bundle.
 // They are securely provisioned over TLS upon successful Firebase authentication & role verification.
-const CANDIDATE_API_SERVERS = [
-  process.env.API_SERVER_URL,
-  'https://payments.youthnic.shop',
-  'https://reconcentral.srv1845788.hstgr.cloud',
-  'https://recon.srv1845788.hstgr.cloud',
-  'http://localhost:3001'
-].filter(Boolean);
+const CANDIDATE_API_SERVERS = getCandidateServers();
 
 const SUPPORTED_MARKETPLACES = [
   {
@@ -288,6 +308,7 @@ const SUPPORTED_MARKETPLACES = [
 ];
 
 function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
+  if (['flipkart','shopsy','both','flipkart_shopsy'].includes(marketplace)) marketplace = 'flipkart_shopsy';
   const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
   const dir = path.join(USER_DATA_DIR, 'cookies');
   fs.mkdirSync(dir, { recursive: true });
@@ -476,6 +497,12 @@ app.setAppUserModelId('com.reconcentral.ratecardworker');
 
 app.whenReady().then(async () => {
   createWindow();
+  if (smokeOutput) {
+    const { runPackagedSmoke } = await import('./packagedSmoke.js');
+    await runPackagedSmoke({ app, window: mainWindow, output: path.resolve(smokeOutput), nativeImage: require('electron').nativeImage,
+      getBounds: getMonitorViewBounds, setPage: page => { activeEmbeddedPage = page; } });
+    return;
+  }
   setupAutoUpdate();
   fs.mkdirSync(STAGING_DIR, { recursive: true });
   try {
@@ -511,94 +538,30 @@ app.on('window-all-closed', () => {
 });
 
 // ── Distributed Worker Engine & Background Job Consumer ─────────────────────
-let workerHeartbeatInterval = null;
-let workerPollingInterval = null;
 let isWorkerExecutingJob = false;
-let isClaimingJob = false;
-let osModule = null;
-try { osModule = require('os'); } catch {}
-const WORKER_ID = `worker-${process.platform}-${(osModule?.hostname() || 'host').replace(/[^a-zA-Z0-9-]/g, '')}`;
-
-async function ensureWorkerRegistered(session, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const workerInfo = {
-        id: WORKER_ID,
-        name: `${session.user?.name || session.user?.email || 'Desktop Operator'} (${osModule?.hostname() || 'desktop'})`,
-        version: typeof app !== 'undefined' && app.getVersion ? app.getVersion() : '2.0.0',
-        platform: process.platform,
-        capabilities: ['flipkart', 'shopsy'],
-        metadata: { os: process.platform, arch: process.arch }
-      };
-
-      await registerWorkerWithBackend(session, workerInfo);
-      console.log('[Worker Engine] Registered with ReconCentral Cloud Backend as:', WORKER_ID);
-      return true;
-    } catch (err) {
-      console.warn(`[Worker Engine] Worker registration attempt ${attempt}/${maxRetries} failed:`, err.message);
-      if (attempt < maxRetries) {
-        await new Promise(r => setTimeout(r, 1500 * attempt));
-      }
-    }
-  }
-  return false;
-}
-
-async function startWorkerEngine(session) {
-  if (!session || !session.authenticated) return;
-  stopWorkerEngine();
-
-  try {
-    const registered = await ensureWorkerRegistered(session);
-    if (!registered) {
-      console.warn('[Worker Engine] Initial registration deferred; heartbeat and polling will retry.');
-    }
-
-    // Heartbeat every 25 seconds
-    workerHeartbeatInterval = setInterval(async () => {
-      try {
-        const curSession = loadAuthSession();
-        if (curSession?.idToken) {
-          await sendWorkerHeartbeat(curSession, WORKER_ID, isWorkerExecutingJob ? 'busy' : 'online');
-        }
-      } catch (err) {
-        console.warn('[Worker Engine] Heartbeat ping deferred:', err.message);
-      }
-    }, 25000);
-
-    // Job Polling every 10 seconds
-    workerPollingInterval = setInterval(async () => {
-      if (isWorkerExecutingJob || isClaimingJob || withBrowserTask.busy) return;
-      const curSession = loadAuthSession();
-      if (!curSession?.idToken) return;
-
-      isClaimingJob = true;
-      try {
-        const claimRes = await claimNextWorkerJob(curSession, WORKER_ID);
-        if (claimRes?.success && claimRes.job) {
-          const job = claimRes.job;
-          console.log('[Worker Engine] Claimed background job:', job.id, job.marketplace, job.job_type);
-          executeBackgroundWorkerJob(curSession, job).catch(e => console.error('[Worker Engine] Job error:', e.message));
-        }
-      } catch (err) {
-        // Silent retry
-      } finally {
-        isClaimingJob = false;
-      }
-    }, 10000);
-
-  } catch (err) {
-    console.warn('[Worker Engine] Worker engine start error:', err.message);
-  }
-}
-
-function stopWorkerEngine() {
-  if (workerHeartbeatInterval) { clearInterval(workerHeartbeatInterval); workerHeartbeatInterval = null; }
-  if (workerPollingInterval) { clearInterval(workerPollingInterval); workerPollingInterval = null; }
-}
+const WORKER_ID = `worker-${process.platform}-${require('os').hostname().replace(/[^a-zA-Z0-9-]/g, '')}`;
+const workerEngine = createWorkerEngine({
+  getSession: async () => {
+    const session = loadAuthSession();
+    const payload = decodeJwtPayload(session?.idToken);
+    return payload?.exp * 1000 > Date.now() + 30000 ? session : await authorizeSession();
+  },
+  register: session => registerWorkerWithBackend(session, { id: WORKER_ID,
+    name: `${session.user?.name || 'Desktop'} (${require('os').hostname()})`, version: app.getVersion(),
+    platform: process.platform, capabilities: ['flipkart','shopsy'], metadata: { arch: process.arch } }),
+  heartbeat: (session, status) => sendWorkerHeartbeat(session, WORKER_ID, status),
+  claim: session => claimNextWorkerJob(session, WORKER_ID),
+  releaseClaim: (session, job) => releaseClaimedWorkerJob(session, job, WORKER_ID),
+  execute: executeBackgroundWorkerJob,
+  isBusy: () => withBrowserTask.busy || isWorkerExecutingJob,
+  log: event => console.log(JSON.stringify({ ...event, worker: WORKER_ID }))
+});
+const startWorkerEngine = session => session?.authenticated ? workerEngine.start() : Promise.resolve();
+const stopWorkerEngine = () => workerEngine.stop();
 
 async function executeBackgroundWorkerJob(session, job) {
   let db = null;
+  const authGeneration = stagedExtraction.authGeneration;
 
   try {
     isWorkerExecutingJob = true;
@@ -620,7 +583,8 @@ async function executeBackgroundWorkerJob(session, job) {
     const scrapeRes = await withBrowserTask(async () => {
       return await executeScrapeProcess({
         marketplace: job.marketplace,
-        selectedVerticals: job.parameters?.verticals,
+        scopeVerticals: job.parameters?.verticals,
+        brand: job.parameters?.brand,
         visible: false
       }, async (msg) => {
         if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
@@ -639,17 +603,18 @@ async function executeBackgroundWorkerJob(session, job) {
     }
 
     const normalizedCards = normalizeScrapedCards(scrapeRes.data);
+    if (authGeneration !== stagedExtraction.authGeneration) throw new Error('The account changed during extraction. Results were not submitted.');
 
     // Stage in local SQLite
     saveStagedObservations(db, `job-${job.id}`, normalizedCards);
     markStagedJobStatus(db, `job-${job.id}`, 'staged_locally');
     await reportJobProgress(session, job.id, 80, 'Observations staged in SQLite. Submitting to ReconCentral...');
 
-    // Submit results to backend (backend runs canonical diff)
-    const submitRes = await submitJobResults(session, job.id, normalizedCards, WORKER_ID);
+    // Recheck after awaited progress and again inside the client after URL discovery.
+    if (authGeneration !== stagedExtraction.authGeneration) throw new Error('The account changed during extraction. Results were not submitted.');
+    const submitRes = await submitJobResults(session, job.id, normalizedCards, WORKER_ID, () => authGeneration === stagedExtraction.authGeneration);
     markStagedJobStatus(db, `job-${job.id}`, 'completed');
-    // Prune completed observation rows to prevent unbounded disk growth
-    clearStagedJob(db, `job-${job.id}`);
+    // Keep the durable local observations available for review and recovery.
     if (mainWindow) {
       mainWindow.webContents.send('scrape-progress', `✓ Remote job #${job.id} completed. Diff count: ${submitRes.diffResult?.diffCount || 0}`);
     }
@@ -700,6 +665,8 @@ async function checkDailySchedule() {
       }
       // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
       stagedExtraction.cards = [];
+      stagedExtraction.review = null;
+      supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
       const jobAuthGeneration = stagedExtraction.authGeneration;
       const result = await withBrowserTask(() => executeScrapeProcess(config, (msg) => {
         if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
@@ -709,7 +676,7 @@ async function checkDailySchedule() {
       // generation: an account switch during that await must discard the results.
       const sessionStillValid = result.success && result.data?.length > 0 ? await authorizeSession() : false;
       if (sessionStillValid && jobAuthGeneration === stagedExtraction.authGeneration) {
-        stagedExtraction.cards = normalizeScrapedCards(result.data);
+        persistReview(normalizeScrapedCards(result.data), sessionStillValid);
         if (mainWindow) mainWindow.webContents.send('scrape-progress', 'Scheduled extraction staged. Review the results before database sync.');
       } else if (result.success && mainWindow) {
         mainWindow.webContents.send('scrape-progress', 'Scheduled extraction discarded: the account changed or the session ended during the run. Nothing was staged.');
@@ -752,61 +719,8 @@ function broadcastMonitorState(patch = {}) {
 
 let currentDockBounds = null;
 function getMonitorViewBounds() {
-  if (currentDockBounds && currentDockBounds.width > 100 && currentDockBounds.height > 100) {
-    return currentDockBounds;
-  }
-  if (!mainWindow || mainWindow.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
-  const size = mainWindow.getContentSize();
-  const width = Array.isArray(size) ? size[0] : (size?.width || 1360);
-  const height = Array.isArray(size) ? size[1] : (size?.height || 900);
-  const marginX = 260;
-  const marginTop = 260;
-  const viewWidth = Math.max(400, width - marginX - 40);
-  const viewHeight = Math.max(300, height - marginTop - 40);
-  return { x: marginX, y: marginTop, width: viewWidth, height: viewHeight };
+  return currentDockBounds || { x: 0, y: 0, width: 0, height: 0 };
 }
-
-async function fetchVaultCredential(session, marketplace = 'flipkart_shopsy', targetEmail = '') {
-  if (!session?.idToken) return null;
-  const targetChannel = (marketplace === 'flipkart_shopsy' || marketplace === 'shopsy') ? 'flipkart' : marketplace;
-  for (const serverBase of CANDIDATE_API_SERVERS) {
-    const normalizedBase = serverBase.replace(/\/+$/, '').replace('payment.youthnic.shop', 'payments.youthnic.shop');
-    try {
-      const listRes = await fetch(`${normalizedBase}/api/marketplace-accounts`, {
-        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(8000)
-      });
-      if (!listRes.ok) continue;
-      const body = await listRes.json();
-      const accounts = Array.isArray(body) ? body : (body.accounts || []);
-      const channelAccounts = accounts.filter(a => 
-        (a.marketplace && a.marketplace.toLowerCase() === targetChannel.toLowerCase()) || 
-        (a.account_id && a.account_id.toLowerCase() === targetChannel.toLowerCase())
-      );
-      if (!channelAccounts.length) continue;
-      const matched = (targetEmail && channelAccounts.find(a => 
-        (a.login_id && a.login_id.toLowerCase() === String(targetEmail).toLowerCase()) ||
-        (a.account_id && a.account_id.toLowerCase() === String(targetEmail).toLowerCase())
-      )) || channelAccounts[0];
-      if (!matched || !matched.id) continue;
-
-      const revealRes = await fetch(`${normalizedBase}/api/marketplace-accounts/${matched.id}/reveal`, {
-        headers: { 'Authorization': `Bearer ${session.idToken}`, 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(8000)
-      });
-      if (revealRes.ok) {
-        const revealed = await revealRes.json();
-        if (revealed && (revealed.password || revealed.login_id)) {
-          return { email: revealed.login_id || matched.login_id, password: revealed.password || '' };
-        }
-      }
-    } catch (err) {
-      console.warn(`[VaultCredential] Could not fetch credential from ${serverBase}:`, err.message);
-    }
-  }
-  return null;
-}
-
 // ── Interactive Human Login Flow (Multi-Marketplace) ─────────────────────────
 async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
@@ -819,11 +733,12 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
 
   if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
     broadcastMonitorState({ active: true, status: 'navigating', marketplace: mpConfig.id, url: mpConfig.loginUrl });
-    const partition = `persist:marketplace-${mpConfig.id}`;
+    const partition = portalPartition(mpConfig.id);
     const page = createEmbeddedPage({
       window: mainWindow,
       partition,
       bounds: () => getMonitorViewBounds(),
+      onState: state => broadcastMonitorState(state),
       visible: true
     });
     activeEmbeddedPage = page;
@@ -867,7 +782,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
         while (Date.now() < deadline) {
           let authState = false;
           try {
-            authState = await page.evaluate((id) => {
+            authState = mpConfig.id === 'flipkart_shopsy' ? await page.evaluate(isFlipkartAuthenticated) : await page.evaluate((id) => {
               const href = window.location.href.toLowerCase();
               const body = document.body ? document.body.innerText.toLowerCase() : '';
               const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
@@ -996,7 +911,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     }
 
     console.log(`[InteractiveLogin] Waiting for ${mpConfig.name} authenticated navigation...`);
-    await page.waitForFunction((id) => {
+    await page.waitForFunction(mpConfig.id === 'flipkart_shopsy' ? isFlipkartAuthenticated : (id) => {
       const href = window.location.href.toLowerCase();
       const body = document.body ? document.body.innerText.toLowerCase() : '';
       const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
@@ -1078,21 +993,8 @@ function isPermanentScrapeError(err) {
 }
 
 async function executeScrapeProcess(config, onProgress) {
-  let effectiveConfig = { ...config };
+  let effectiveConfig = { ...loadConfig(), ...config };
   const session = loadAuthSession();
-  if (!effectiveConfig.password && session?.idToken) {
-    try {
-      const vaultCred = await fetchVaultCredential(session, effectiveConfig.marketplace, effectiveConfig.email);
-      if (vaultCred) {
-        effectiveConfig.email = vaultCred.email || effectiveConfig.email;
-        effectiveConfig.password = vaultCred.password;
-        onProgress('🔒 Vault credentials successfully loaded from ReconCentral Admin Center.');
-      }
-    } catch (vaultErr) {
-      console.warn('[Scrape] Vault credential retrieval skipped:', vaultErr.message);
-    }
-  }
-
   const MAX_ATTEMPTS = 2;
   let lastErr;
 
@@ -1104,6 +1006,28 @@ async function executeScrapeProcess(config, onProgress) {
     }
 
     try {
+      // Keep API dataset discovery inside the retry boundary so transient
+      // backend failures can use the configured second attempt.
+      const verticalSelection = resolveScrapeVerticals({
+        requestedVerticals: effectiveConfig.scopeVerticals,
+        savedVerticals: effectiveConfig.selectedVerticals,
+        brand: effectiveConfig.brand || 'all'
+      });
+      const selectedVerticals = verticalSelection.scopeVerticals;
+      const requiredVerticalsPromise = Array.isArray(effectiveConfig.requiredVerticals)
+        ? Promise.resolve(effectiveConfig.requiredVerticals)
+        : selectedVerticals.length
+          ? Promise.resolve(verticalSelection.requiredVerticals)
+          : effectiveConfig.brand && effectiveConfig.brand !== 'all'
+            ? Promise.resolve([])
+            : fetchConfiguredVerticals(session, effectiveConfig.marketplace);
+      const [catalogResult, requiredVerticals] = await Promise.all([
+        fetchBrandCatalogFromApi(session), requiredVerticalsPromise
+      ]);
+      effectiveConfig.fsnCatalog = catalogResult.catalog;
+      effectiveConfig.requiredVerticals = requiredVerticals;
+      effectiveConfig.scopeVerticals = selectedVerticals;
+
       if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
         broadcastMonitorState({
           active: true,
@@ -1111,11 +1035,12 @@ async function executeScrapeProcess(config, onProgress) {
           marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
           url: 'https://seller.flipkart.com'
         });
-        const partition = `persist:marketplace-${effectiveConfig.marketplace || 'flipkart_shopsy'}`;
+        const partition = portalPartition(effectiveConfig.marketplace || 'flipkart_shopsy');
         const baseRuntime = createEmbeddedRuntime({
           partition,
           window: mainWindow,
-          bounds: () => getMonitorViewBounds()
+          bounds: () => getMonitorViewBounds(),
+      onState: state => broadcastMonitorState(state)
         });
         const runtime = {
           ...baseRuntime,
@@ -1131,8 +1056,8 @@ async function executeScrapeProcess(config, onProgress) {
           }
         };
 
-        const wrappedProgress = (msg) => {
-          onProgress(msg);
+        const wrappedProgress = async (msg) => {
+          await onProgress(msg);
           broadcastMonitorState({
             status: 'extracting',
             progressMessage: msg,
@@ -1155,16 +1080,13 @@ async function executeScrapeProcess(config, onProgress) {
             });
           }
           const startTime = Date.now();
-          const timeoutMs = 90000;
+          page.setVisible(true);
+          page.layout?.();
+          const timeoutMs = 300000;
           while (Date.now() - startTime < timeoutMs) {
             await new Promise((r) => setTimeout(r, 1000));
             try {
-              const authed = await page.evaluate(() => {
-                const href = window.location.href.toLowerCase();
-                const body = document.body?.innerText.toLowerCase() || '';
-                return !document.querySelector('input[type="password"]') &&
-                  (href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out') || body.includes('seller hub'));
-              });
+              const authed = await page.evaluate(isFlipkartAuthenticated);
               if (authed) {
                 const cookies = await page.cookies();
                 saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
@@ -1196,6 +1118,7 @@ async function executeScrapeProcess(config, onProgress) {
           });
           activeEmbeddedPage = null;
           broadcastMonitorState({ active: false, status: scrapeRes.success ? 'completed' : 'error' });
+          if (!scrapeRes.success && /HTTP 5\d\d|ERR_|timed? out|renderer|Missing rate responses/i.test(scrapeRes.error)) throw new Error(scrapeRes.error);
           return scrapeRes;
         } catch (err) {
           activeEmbeddedPage = null;
@@ -1207,16 +1130,11 @@ async function executeScrapeProcess(config, onProgress) {
       const externalSessionExpiry = async (page) => {
         onProgress('🔐 2FA / Session authentication required. Please complete login in the opened browser window...');
         const startTime = Date.now();
-        const timeoutMs = 90000;
+        const timeoutMs = 300000;
         while (Date.now() - startTime < timeoutMs) {
           await new Promise((r) => setTimeout(r, 1000));
           try {
-            const authed = await page.evaluate(() => {
-              const href = window.location.href.toLowerCase();
-              const body = document.body?.innerText.toLowerCase() || '';
-              return !document.querySelector('input[type="password"]') &&
-                (href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('logout') || body.includes('sign out') || body.includes('seller hub'));
-            });
+            const authed = await page.evaluate(isFlipkartAuthenticated);
             if (authed) {
               const cookies = await page.cookies();
               saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
@@ -1229,13 +1147,15 @@ async function executeScrapeProcess(config, onProgress) {
         return false;
       };
 
-      return await scrapeFlipkartRateCards(effectiveConfig, {
+      const externalResult = await scrapeFlipkartRateCards(effectiveConfig, {
         onProgress,
         cookiesPath: getMarketplaceCookiesPath('flipkart_shopsy'),
         fallbackCookiesPath: COOKIES_PATH,
         stagingDir: STAGING_DIR,
         onSessionExpiry: externalSessionExpiry
       });
+      if (!externalResult.success && /HTTP 5\d\d|ERR_|timed? out|renderer|Missing rate responses/i.test(externalResult.error)) throw new Error(externalResult.error);
+      return externalResult;
     } catch (err) {
       lastErr = err;
       if (attempt === MAX_ATTEMPTS || isPermanentScrapeError(err)) {
@@ -1252,6 +1172,8 @@ const authorizeSession = createSessionAccess({
 });
 const PUBLIC_CHANNELS = new Set([
   'auth-login', 'auth-get-session', 'auth-logout',
+  'browser-monitor-set-dock-bounds', 'browser-monitor-set-visibility',
+  'write-client-log', 'open-diagnostics',
   // Update lifecycle is app-level, not session/data-level: checking for a new
   // release and applying it must work before sign-in and can never touch
   // database or session data.
@@ -1271,12 +1193,25 @@ function registerHandler(channel, handler) {
       }
       return await handler(event, ...args);
     } catch (err) {
+      desktopLogger.error('ipc.handler.failed', err, { channel });
       return { success: false, error: err.message };
     }
   });
 }
 
 // ── IPC Handlers ─────────────────────────────────────────────────────────────
+registerHandler('write-client-log', (e, entry = {}) => {
+  const message = typeof entry.message === 'string' ? entry.message.slice(0, 2000) : '';
+  if (!message) return { success: false, error: 'A short diagnostic message is required.' };
+  const level = ['debug', 'info', 'warn', 'error'].includes(entry.level) ? entry.level : 'info';
+  desktopLogger.write(level, 'renderer.' + level, message, { source: 'desktop-ui' });
+  return { success: true };
+});
+registerHandler('open-diagnostics', async () => {
+  fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true, mode: 0o700 });
+  const error = await shell.openPath(DIAGNOSTICS_DIR);
+  return error ? { success: false, error } : { success: true, path: DIAGNOSTICS_DIR };
+});
 registerHandler('get-config', () => loadConfig());
 registerHandler('save-config', (e, config) => {
   const stored = loadConfig();
@@ -1352,12 +1287,15 @@ registerHandler('browser-monitor-set-engine', (e, engine) => {
 });
 
 registerHandler('browser-monitor-set-dock-bounds', (e, rect) => {
-  if (rect && typeof rect === 'object' && Number.isFinite(rect.width) && Number.isFinite(rect.height)) {
+  if (rect && ['x', 'y', 'width', 'height'].every(k => Number.isFinite(rect[k]))) {
+    const zoom = e.sender.getZoomFactor();
+    const [width, height] = mainWindow.getContentSize();
+    const x = Math.max(0, Math.min(width, Math.round(rect.x * zoom)));
+    const y = Math.max(0, Math.min(height, Math.round(rect.y * zoom)));
     currentDockBounds = {
-      x: Math.round(rect.x || 0),
-      y: Math.round(rect.y || 0),
-      width: Math.round(rect.width || 0),
-      height: Math.round(rect.height || 0)
+      x, y,
+      width: Math.max(0, Math.min(width - x, Math.round(rect.width * zoom))),
+      height: Math.max(0, Math.min(height - y, Math.round(rect.height * zoom)))
     };
     if (activeEmbeddedPage && typeof activeEmbeddedPage.layout === 'function') {
       activeEmbeddedPage.layout();
@@ -1596,6 +1534,7 @@ registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
 
     return { success: true, session: publicSession(session), databaseConfigured: true };
   } catch (err) {
+    desktopLogger.error('auth.login_failed', err);
     return { success: false, error: err.message };
   }
 });
@@ -1649,7 +1588,7 @@ registerHandler('auth-get-session', async () => {
   const session = await authorizeSession();
   if (session) {
     saveAuthSession(session);
-    if (!workerPollingInterval && session.authenticated) {
+    if (!workerEngine.active && session.authenticated) {
       startWorkerEngine(session).catch(e => console.warn('[Worker Engine] Session restore start error:', e.message));
     }
   }
@@ -1712,14 +1651,14 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
     const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
     const cookiesPath = getMarketplaceCookiesPath(targetId);
     deleteEncryptedCookies(cookiesPath);
-    if (targetId === 'flipkart_shopsy' || targetId === 'flipkart') {
+    if (['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId)) {
       deleteEncryptedCookies(COOKIES_PATH);
     }
     let partitionErr = null;
     try {
       const { session: electronSession } = require('electron');
       if (electronSession) {
-        const part = electronSession.fromPartition(`persist:marketplace-${targetId}`);
+        const part = electronSession.fromPartition(portalPartition(targetId));
         if (part?.clearStorageData) {
           await part.clearStorageData({ storages: ['cookies'] });
         }
@@ -1736,8 +1675,26 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
 
 registerHandler('start-scrape', async (e, options) => {
   if (withBrowserTask.busy) return { success: false, error: 'A browser task is already running.' };
+  const startedAt = Date.now();
   const config = loadConfig();
-  const mergedOptions = { ...config, marketplace: options?.marketplace || config.marketplace, visible: options?.visible === true };
+  const selectedBrand = options?.brand || 'all';
+  const verticalSelection = resolveScrapeVerticals({
+    requestedVerticals: options?.verticals,
+    savedVerticals: config.selectedVerticals,
+    brand: selectedBrand
+  });
+  const mergedOptions = {
+    ...config,
+    marketplace: options?.marketplace || config.marketplace,
+    visible: options?.visible === true,
+    brand: selectedBrand,
+    scopeVerticals: verticalSelection.scopeVerticals,
+    requiredVerticals: verticalSelection.requiredVerticals
+  };
+  desktopLogger.info('scrape.started', 'Seller Hub extraction started.', {
+    marketplace: mergedOptions.marketplace, brand: mergedOptions.brand,
+    mode: mergedOptions.visible ? 'visible' : 'background'
+  });
   const targetChannel = String(mergedOptions.marketplace || '').toLowerCase().trim();
   const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetChannel || m.marketplace === targetChannel);
   if (mpConfig && !mpConfig.hasScraper) {
@@ -1748,25 +1705,44 @@ registerHandler('start-scrape', async (e, options) => {
   }
   // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
   stagedExtraction.cards = [];
+  stagedExtraction.review = null;
+  supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
   const jobAuthGeneration = stagedExtraction.authGeneration;
   const result = await withBrowserTask(() => executeScrapeProcess(mergedOptions, (msg) => {
+    desktopLogger.info('scrape.progress', msg, { marketplace: mergedOptions.marketplace });
     if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
   }));
-  if (!result.success) return result;
+  if (!result.success) {
+    desktopLogger.error('scrape.failed', result.error || 'Extraction failed.', {
+      marketplace: mergedOptions.marketplace, errorCode: result.errorCode || null, durationMs: Date.now() - startedAt
+    });
+    return result;
+  }
   // Re-verify the signed-in account AFTER the long browser run, then re-check the
   // generation: an account switch during that await must discard the results.
   const sessionStillValid = await authorizeSession();
   if (!sessionStillValid || jobAuthGeneration !== stagedExtraction.authGeneration) {
+    desktopLogger.warn('scrape.results_discarded', 'Account changed before extracted results could be staged.', {
+      marketplace: mergedOptions.marketplace, durationMs: Date.now() - startedAt
+    });
     return {
       success: false,
       error: 'The account changed or the session ended while the extraction was running. Results were discarded; run the extraction again.'
     };
   }
   try {
-    stagedExtraction.cards = normalizeScrapedCards(result.data);
+    persistReview(normalizeScrapedCards(result.data), sessionStillValid);
   } catch (stageErr) {
+    desktopLogger.error('scrape.staging_failed', stageErr, {
+      marketplace: mergedOptions.marketplace, observationCount: result.data?.length || 0,
+      durationMs: Date.now() - startedAt
+    });
     return { success: false, error: `Extraction review staging failed: ${stageErr.message}` };
   }
+  desktopLogger.info('scrape.staged', 'Extraction passed validation and was saved for review.', {
+    marketplace: mergedOptions.marketplace, observationCount: result.data?.length || 0,
+    cardCount: stagedExtraction.cards.length, durationMs: Date.now() - startedAt
+  });
   return { ...result, rateCards: stagedExtraction.cards };
 });
 
@@ -1787,95 +1763,81 @@ registerHandler('get-brand-fsn-catalog', async () => {
 
 // Full Brand-Wise Preview (Flipkart & Shopsy)
 registerHandler('get-ratecard-preview', async (e, options = {}) => {
+  if (!stagedExtraction.cards.length) {
+    const session = loadAuthSession();
+    const review = recoverReview(getStagingDb(USER_DATA_DIR), session.user.firebase_uid);
+    if (review) stagedExtraction.cards = review.cards;
+  }
   const config = loadConfig();
   if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
   try {
     const { buildBrandRateCardSet } = await import('./rateCardService.js');
     const { getDesktopPool } = await import('./db.js');
+    const sellerAccount = String(options.seller_account || 'default').trim() || 'default';
+    if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
+      return { success: false, error: 'Choose one valid seller account for the rate review.' };
+    }
     // Staged extractions are reviewable without a database; templates need one.
     const rateCards = stagedExtraction.cards.length
       ? stagedExtraction.cards
-      : await buildBrandRateCardSet(getDesktopPool(config.databaseUrl));
-    const targetMp = options.marketplace || options.channel || '';
+      : await buildBrandRateCardSet(getDesktopPool(config.databaseUrl), sellerAccount);
+    const targetMp = String(options.marketplace || options.channel || 'flipkart').toLowerCase().trim();
+    if (!['flipkart', 'shopsy'].includes(targetMp)) {
+      return { success: false, error: 'Choose Flipkart or Shopsy for a separate rate review.' };
+    }
     const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
     return { success: true, rateCards: filteredRateCards, canSync: stagedExtraction.cards.length > 0 };
   } catch (err) {
+    desktopLogger.error('rate-review.preview_failed', err, {
+      marketplace: options.marketplace || options.channel || 'flipkart'
+    });
     return { success: false, error: err.message };
   }
 });
 
 // Change Detection against ReconCentral Cloud Backend API
-registerHandler('detect-brand-rate-changes', async (e, brandRateCards, options = {}) => {
-  const session = loadAuthSession();
+registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) => {
+  const cards = selectStagedCards(stagedExtraction.cards, submitted);
+  if (!cards) return { success: false, error: 'Review a successful staged extraction first.' };
+  if (new Set(cards.map(card => card.marketplace)).size !== 1) {
+    return { success: false, error: 'Review Flipkart and Shopsy separately.' };
+  }
   try {
-    const targetMp = options?.marketplace || options?.channel || (brandRateCards?.[0]?.marketplace) || (stagedExtraction.cards[0]?.marketplace) || 'flipkart';
-    let cards = brandRateCards && brandRateCards.length ? brandRateCards : stagedExtraction.cards;
-    if (targetMp && targetMp !== 'all' && cards.length) {
-      cards = filterRateCardsByChannel(targetMp, cards);
-    }
-    if (!cards || cards.length === 0) {
-      return { success: true, changes: [], changesCount: 0, anomaliesCount: 0 };
-    }
-    const diffRes = await detectRateChangesViaApi(session, cards, targetMp);
-    return {
-      success: true,
-      changes: diffRes.diffs || [],
-      changesCount: diffRes.diffCount || 0,
-      anomaliesCount: diffRes.summary?.anomalies || 0,
-      summary: diffRes.summary
-    };
+    const sellerAccount = options.seller_account || 'default';
+    const result = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
+    stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: result.fingerprints };
+    desktopLogger.info('rate-review.compared', 'PostgreSQL comparison completed.', {
+      marketplace: cards[0].marketplace, cardCount: cards.length,
+      changeCount: result.changesCount, anomalyCount: result.anomaliesCount
+    });
+    return { success: true, ...result };
   } catch (err) {
+    stagedExtraction.review = null;
+    desktopLogger.error('rate-review.comparison_failed', err);
     return { success: false, error: err.message };
   }
 });
 
-// Synchronize to Database via ReconCentral Backend API
-registerHandler('sync-brand-rate-cards', async (e, brandRateCards, options = {}) => {
-  const cardsToSync = selectStagedCards(stagedExtraction.cards, brandRateCards);
-  if (!cardsToSync) {
-    return { success: false, error: 'Run a successful extraction and review its staged results before committing. Generated templates cannot be synced as live rates.' };
+registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
+  const authGeneration = stagedExtraction.authGeneration;
+  const isCurrent = () => authGeneration === stagedExtraction.authGeneration;
+  const cards = selectStagedCards(stagedExtraction.cards, submitted);
+  const review = stagedExtraction.review;
+  if (!cards || new Set(cards.map(card => card.marketplace)).size !== 1 ||
+      !review || review.payload !== JSON.stringify(cards) || review.sellerAccount !== (options.seller_account || 'default')) {
+    return { success: false, error: 'Review the selected staged cards against PostgreSQL before committing.' };
   }
-  const session = loadAuthSession();
-  if (!session || !session.authenticated || !isAuthorizedMutationRole(session?.user?.role)) {
-    return { success: false, error: 'Unauthorized: Active ReconCentral operator or admin session required for database sync.' };
-  }
-
   try {
-    const targetMarketplace = options?.marketplace || options?.channel || (cardsToSync[0]?.marketplace) || 'flipkart';
-    const baseUrl = await getActiveBackendUrl();
-    const jobRes = await fetch(`${baseUrl}/api/worker-jobs`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${session.idToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        marketplace: targetMarketplace,
-        seller_account: options?.seller_account || 'default',
-        job_type: 'RATE_CARD_SYNC',
-        parameters: { count: cardsToSync.length }
-      })
-    });
-
-    const jobData = await jobRes.json();
-    if (!jobRes.ok || !jobData.job) {
-      throw new Error(jobData.error || 'Failed to create backend sync job');
-    }
-
-    const jobId = jobData.job.id;
-    await submitJobResults(session, jobId, cardsToSync, WORKER_ID);
-    const pubRes = await publishJobViaApi(session, jobId);
-
-    return {
-      success: true,
-      result: {
-        updated: pubRes.publishResult?.published ?? true,
-        versionName: pubRes.publishResult?.versionName || `rc-${targetMarketplace}-${Date.now()}`,
-        changesCount: pubRes.publishResult?.changesCount ?? 0,
-        changes: pubRes.publishResult?.diffs || []
-      }
-    };
+    const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount, isCurrent);
+    stagedExtraction.review = null;
+    desktopLogger.info(result.updated ? 'rate-review.published' : 'rate-review.unchanged',
+      result.message || 'Reviewed rates are unchanged.', {
+        marketplace: cards[0].marketplace, cardCount: cards.length,
+        changeCount: result.changesCount || 0, version: result.versionName || null
+      });
+    return { success: true, result };
   } catch (err) {
+    desktopLogger.error('rate-review.publish_failed', err, { marketplace: cards[0].marketplace });
     return { success: false, error: err.message };
   }
 });

@@ -166,6 +166,7 @@ export async function verifyFirebaseTokenWithDetails(token, checkRevoked = true,
     const apiKey = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
     const verifyUrl = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`;
     const res = await fetchFn(verifyUrl, {
+      signal: AbortSignal.timeout(2500),
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ idToken: token })

@@ -332,6 +332,7 @@
                 <span class="dot green"></span>
               </div>
               <span class="terminal-title">Worker Console Logs</span>
+              <button class="btn-terminal-clear" id="btn-open-diagnostics" title="Open saved logs and failure screenshots">Open diagnostics</button>
               <button class="btn-terminal-clear" id="btn-clear-terminal">Clear</button>
             </div>
             <div class="terminal-body" id="terminal-body">
@@ -345,12 +346,17 @@
           <div class="card diff-header-card">
             <div class="diff-summary">
               <h3>Rate Card Change Review & Database Sync</h3>
-              <p>Compare extracted Flipkart & Shopsy rate cards against active PostgreSQL database records (rc_commission, rc_fixed_fee, rc_reverse_shipping).</p>
+              <p>Review Flipkart and Shopsy separately. Each review compares one marketplace against PostgreSQL and keeps its own approval.</p>
             </div>
             <div class="diff-actions">
+              <label for="select-review-marketplace">Marketplace</label>
+              <select id="select-review-marketplace" class="form-input" aria-label="Marketplace to review">
+                <option value="flipkart" selected>Flipkart</option>
+                <option value="shopsy">Shopsy</option>
+              </select>
               <button class="btn btn-secondary" id="btn-load-preview">Load Active Rates</button>
               <button class="btn btn-secondary" id="btn-export-diff">Export JSON</button>
-              <button class="btn btn-success" id="btn-commit-db">✓ Commit & Auto-Close in Database</button>
+              <button class="btn btn-success" id="btn-commit-db">✓ Publish Reviewed Rates</button>
             </div>
           </div>
 
@@ -669,6 +675,7 @@
     </div>
   </div>
 
+  <script src="reviewHelpers.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

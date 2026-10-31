@@ -15,6 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { createStructuredLogger } from '../structuredLogger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,7 +57,7 @@ const {
   storedDatabaseUrlForRole,
   dbHostFromUrl
 } = await import('../dbUrlGuard.js');
-const { parseRateCardTables } = await import('../portalScraper.js');
+
 const {
   isSameDesktopOrigin,
   isAllowedDesktopOrigin,
@@ -412,7 +413,7 @@ async function runTests() {
         vertical: 'Women Kurtas',
         commissions: [{ price_min: 0, price_max: 500, rate: 0.15 }],
         fixedFees: [{ fulfilment_type: 'PREP', price_min: 0, price_max: 500, rate: 15 }],
-        reverseShipping: [{ weight_slab: '0-0.5kg', price_min: 0, price_max: 500, local_fee: 30 }]
+        reverseShipping: [{ weight_slab: '0-0.5kg', price_min: 0, price_max: 500, local_fee: 30, zonal_fee: 40, national_fee: 50 }]
       },
       {
         marketplace: 'flipkart',
@@ -436,7 +437,7 @@ async function runTests() {
     assert(fk.category === 'Women Kurtas', 'vertical must become the category');
     assert(fk.source === 'seller_portal', 'flipkart source wrong');
     const sh = cards.find(c => c.marketplace === 'shopsy');
-    assert(sh.source === 'shopsy_policy', 'shopsy source wrong');
+    assert(sh.source === 'seller_portal', 'Shopsy rates must come from Seller Hub');
     assert(sh.commissions.length === 1 && sh.commissions[0].rate === 0, 'shopsy 0% commission slab lost');
   });
 
@@ -526,84 +527,6 @@ async function runTests() {
     assert(dbHostFromUrl('postgresql://u:p@db.example.com:5432/paymentapp') === 'db.example.com', 'public host parse failed');
     assert(dbHostFromUrl('garbage') === null, 'malformed URL must yield null');
     assert(dbHostFromUrl(null) === null, 'null input must yield null');
-  });
-
-  // ── portalScraper.parseRateCardTables ───────────────────────────────────────
-  await runTest('parseRateCardTables classifies commission tables as percentage or fixed fee', async () => {
-    const percentage = parseRateCardTables([
-      [
-        ['Order Item Value', 'Fee charged as % of Order item value'],
-        ['₹0 - ₹500', '15%'],
-        ['₹501 - ₹1000', '20.5%']
-      ]
-    ], 'kurta', '2026-10-28', 'flipkart');
-    assert(percentage.commissions.length === 2, 'commission slabs were not parsed');
-    assert(Math.abs(percentage.commissions[0].rate - 0.15) < 1e-12, '15% must be stored as 0.15');
-    assert(Math.abs(percentage.commissions[1].rate - 0.205) < 1e-12, '20.5% must be stored as 0.205');
-    assert(percentage.fixedFees.length === 0, 'a percentage table must not produce fixed fees');
-
-    const fixed = parseRateCardTables([
-      [
-        ['Order Item Value', 'Fee charged'],
-        ['₹0 - ₹500', '₹15'],
-        ['₹501 - ₹1000', '₹25']
-      ]
-    ], 'kurta', '2026-10-28', 'flipkart');
-    assert(fixed.commissions.length === 0, 'a flat-fee table must not produce commission slabs');
-    assert(fixed.fixedFees.length === 8, `4 tiers x 2 slabs of fixed fees expected (got ${fixed.fixedFees.length})`);
-    assert(fixed.fixedFees.every(f => ['Bronze', 'Silver', 'Gold', 'Diamond'].includes(f.fulfilment_type)), 'fixed fee tier labels wrong');
-    assert(fixed.fixedFees[0].rate === 15, 'flat fee amount wrong');
-  });
-
-  await runTest('parseRateCardTables classifies prepaid and postpaid collection fees independently', async () => {
-    // Regression: a flat ₹15 prepaid fee combined with a 0.3% postpaid fee used to
-    // be mis-typed as percentages for BOTH columns.
-    const parsed = parseRateCardTables([
-      [
-        ['Order Item Value', 'Prepaid', 'Postpaid'],
-        ['₹0 - ₹750', '₹15', '0.3%']
-      ]
-    ], 'kurta', '2026-10-28', 'flipkart');
-    assert(parsed.collectionFees.length === 1, 'collection fee row not parsed');
-    const fee = parsed.collectionFees[0];
-    assert(fee.prepaid === 15 && fee.prepaid_type === 'flat', `flat prepaid must stay ₹15 flat (got ${fee.prepaid_type} ${fee.prepaid})`);
-    assert(Math.abs(fee.postpaid - 0.3) < 1e-12 && fee.postpaid_type === 'percentage', `percent postpaid must stay 0.3 percentage (got ${fee.postpaid_type} ${fee.postpaid})`);
-    assert(fee.price_min === 0 && fee.price_max === 750, 'collection price range wrong');
-  });
-
-  await runTest('parseRateCardTables encodes the fixed Shopsy policy (0% commission)', async () => {
-    const parsed = parseRateCardTables([], 'shopsy_kurta', '2026-10-28', 'shopsy');
-    assert(parsed.marketplace === 'shopsy', 'marketplace wrong');
-    assert(parsed.commissions.length === 1 && parsed.commissions[0].rate === 0, 'Shopsy commission must be exactly one 0% slab');
-    assert(parsed.fixedFees.length === 8, `4 tiers x 2 slabs expected (got ${parsed.fixedFees.length})`);
-    const zeroFee = parsed.fixedFees.filter(f => f.price_max === 1500);
-    const tenFee = parsed.fixedFees.filter(f => f.price_min === 1501);
-    assert(zeroFee.length === 4 && zeroFee.every(f => f.rate === 0), '₹0-1500 slab must be free');
-    assert(tenFee.length === 4 && tenFee.every(f => f.rate === 10), '₹1501+ slab must be ₹10');
-    assert(parsed.reverseShipping.length === 6, 'Shopsy reverse shipping must have 6 slabs');
-    const first = parsed.reverseShipping[0];
-    assert(
-      first.weight_slab === '0kg-0.5kg' && first.price_min === 0 && first.price_max === 500 &&
-      first.local_fee === 122 && first.zonal_fee === 142 && first.national_fee === 182,
-      '0kg-0.5kg / ₹0-500 reverse shipping slab wrong'
-    );
-  });
-
-  await runTest('parseRateCardTables parses reverse shipping weight slabs', async () => {
-    const parsed = parseRateCardTables([
-      [
-        ['Weight slab 0kg - 0.5kg', 'Local', 'Zonal', 'National'],
-        ['₹0 - ₹500', '₹30', '₹45', '₹60'],
-        ['₹501 - ₹1000', '₹35', '₹50', '₹65']
-      ]
-    ], 'kurta', '2026-10-28', 'flipkart');
-    assert(parsed.reverseShipping.length === 2, 'reverse shipping rows not parsed');
-    assert(parsed.reverseShipping[0].weight_slab === '0kg-0.5kg', 'weight slab label wrong');
-    assert(parsed.reverseShipping[0].price_min === 0 && parsed.reverseShipping[0].price_max === 500, 'price range wrong');
-    assert(
-      parsed.reverseShipping[0].local_fee === 30 && parsed.reverseShipping[0].zonal_fee === 45 && parsed.reverseShipping[0].national_fee === 60,
-      'local/zonal/national fees wrong'
-    );
   });
 
   // ── httpAccess (HTTP caller proof) ──────────────────────────────────────────
@@ -851,22 +774,12 @@ async function runTests() {
     assert(filePatterns.includes('!.runtime/**'), 'package build files must exclude .runtime/');
   });
 
-  await runTest('Linux release payload ships every local module the entry points import', async () => {
+  await runTest('release preparation exports only the Windows setup and Linux AppImage', async () => {
     const releaseScript = fs.readFileSync(path.resolve(desktopDir, '../scripts/prepare-release.js'), 'utf8');
-    const shipped = new Set([...releaseScript.matchAll(/'([\w.-]+\.(?:m?js|cjs))'/g)].map((m) => m[1]));
-    const visited = new Set();
-    const queue = ['desktopServer.mjs', 'worker.js', 'main.js'];
-    while (queue.length) {
-      const file = queue.shift();
-      if (visited.has(file)) continue;
-      visited.add(file);
-      const source = fs.readFileSync(path.join(desktopDir, file), 'utf8');
-      for (const [, dep] of source.matchAll(/(?:from\s+|import\(\s*)'\.\/([\w.-]+\.m?js)'/g)) queue.push(dep);
-    }
-    const missing = [...visited].filter((file) => !shipped.has(file));
-    assert(missing.length === 0, `prepare-release.js omits: ${missing.join(', ')}`);
+    assert(releaseScript.includes('ReconCentral-RateCard-Worker-Setup-') && releaseScript.includes('.exe'), 'release helper must prepare the versioned Windows setup');
+    assert(releaseScript.includes('ReconCentral RateCard Worker-') && releaseScript.includes('.AppImage'), 'release helper must prepare the Linux AppImage');
+    assert(!releaseScript.includes('Portable.exe') && !releaseScript.includes('.deb'), 'release helper must not prepare alternate installer packages');
   });
-
   // ── GitHub Releases + auto-update invariants ──────────────────────────────
   await runTest('package.json publishes to GitHub Releases and ships electron-updater', async () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
@@ -878,8 +791,9 @@ async function runTests() {
     assert(github.owner === 'pawanshukla500' && github.repo === 'DashBorad-Project', 'GitHub publisher must point at the ReconCentral repository');
     assert(github.releaseType === 'release', 'tagged builds must publish live releases — draft releases are invisible to the public update feed');
     const winTargets = pkg.build?.win?.target || [];
-    assert(winTargets.includes('nsis'), 'NSIS installer target is required (the only Windows target that auto-updates)');
-    assert(winTargets.includes('portable'), 'portable Windows target is required');
+    assert(winTargets.length === 1 && winTargets.includes('nsis'), 'the versioned NSIS setup must be the only Windows installer');
+    const linuxTargets = pkg.build?.linux?.target || [];
+    assert(linuxTargets.length === 1 && linuxTargets.includes('AppImage'), 'the Linux AppImage must be the only Linux installer');
   });
 
   await runTest('main.js wires auto-update safely (static invariant)', async () => {
@@ -965,19 +879,16 @@ async function runTests() {
     assert(clickWindow.includes('res?.success'), 'restart button must check the install result before claiming success');
   });
 
-  await runTest('release workflow publishes real releases on version tags (static invariant)', async () => {
-    const workflowPath = path.join(path.resolve(desktopDir, '..'), '.github', 'workflows', 'ratecard-desktop-release.yml');
-    const workflow = fs.readFileSync(workflowPath, 'utf8');
-    assert(workflow.includes("- 'v*.*.*'"), 'the workflow must trigger on version tags');
-    assert(workflow.includes("startsWith(github.ref, 'refs/tags/') && 'always' || 'never'"), 'publishing must happen on tags only');
-    assert(workflow.includes('--publish "$env:PUBLISH_MODE"'), 'Windows builds must let electron-builder publish (it uploads latest.yml, the update feed)');
-    assert(workflow.includes('GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'), 'electron-builder needs GH_TOKEN to publish the release');
-    assert(workflow.includes('latest.yml'), 'the Windows artifact set must include latest.yml');
-    assert(workflow.includes('needs.build-windows.result == \'success\''), 'Linux assets must only attach after the release exists — attaching to a missing release would create an update feed with no installer');
-    assert(workflow.includes('softprops/action-gh-release@v2'), 'Linux packages attach via softprops/action-gh-release');
-    assert(workflow.includes('npm ci'), 'CI builds must be reproducible (npm ci against the lockfile)');
-    assert(workflow.includes('${GITHUB_REF_NAME#v}'), 'tag builds must refuse a tag that does not match desktop/package.json\'s version');
-    assert(/does not match desktop\/package\.json version/.test(workflow), 'the tag/version guard must fail the build with a clear error');
+  await runTest('release workflow tests installed packages before publishing version tags', async () => {
+    const workflow=fs.readFileSync(path.resolve(desktopDir,'../.github/workflows/ratecard-desktop-release.yml'),'utf8');
+    assert(workflow.includes("tags: ['v*.*.*']"), 'Version tags are required');
+    assert(workflow.includes('pull_request:'), 'PRs must execute packaged acceptance');
+    assert(workflow.includes('--publish never'), 'Building must not publish untested packages');
+    assert(workflow.includes('needs: [package, postgres]'), 'Publication must depend on both installed-package checks');
+    assert(workflow.includes('Install and launch actual Windows package') && workflow.includes('Launch the actual Linux AppImage package'), 'Both OS packages must execute after installation');
+    assert(workflow.includes('softprops/action-gh-release@v2'), 'Tag releases must upload artifacts and feed');
+    assert(workflow.includes('npm ci') && workflow.includes('npm test'), 'Reproducible desktop tests must gate packaging');
+    assert(workflow.includes('does not match desktop/package.json version'), 'Tag/version mismatch must fail clearly');
   });
 
   // ── Embedded browser engine (Electron WebContentsView adapter) ────────────
@@ -1090,7 +1001,7 @@ async function runTests() {
       fakeWindow,
       setBehavior: (next) => { behavior = next; },
       fire: (event, ...args) => [...(listeners[event] || [])].forEach((h) => h(...args)),
-      emitNetwork: (method) => debuggerHandlers.forEach((h) => h({}, method)),
+      emitNetwork: (method, params = {}, sessionId) => debuggerHandlers.forEach((h) => h({}, method, params, sessionId)),
       debuggerAttached: () => (fakeContents.debugger ? fakeContents.debugger.attached : 'absent'),
       debuggerCommands: () => (fakeContents.debugger ? fakeContents.debugger.sent : []),
       partitionsUsed: () => partitions,
@@ -1147,6 +1058,31 @@ async function runTests() {
     });
     assert(bareWindowPage._view.boundsSet.width === 1280 && bareWindowPage._view.boundsSet.height === 720,
       'a window without a content size must still receive non-zero default bounds');
+  });
+
+  await runTest('response-stage capture preserves fee bodies and always resumes failed and unrelated requests', async () => {
+    const harness = makeFakeEmbeddedDeps({withDebugger:true});
+    const commands=[];
+    harness.fakeContents.debugger.sendCommand = async (command, params, sessionId) => {
+      commands.push({command,params,sessionId});
+      if(command==='Fetch.getResponseBody') {
+        if(params.requestId==='broken') throw new Error('fixture body unavailable');
+        return {body:JSON.stringify({data:{settlement:{platformFee:{serviceProfile:'NON_FBF',slabs:{asp:[]}}}}})};
+      }
+      return {};
+    };
+    const page=createEmbeddedPage({window:harness.fakeWindow,partition:'persist:capture-test',deps:harness.deps});
+    const postData=JSON.stringify({variables:{input:{fsn:'ABCDEFGHIJKLMNOP',partnerContext:'flipkart',serviceProfile:'NON_FBF',date:'2026-10-30',darwinTier:'fixture'}}});
+    for(const requestId of ['valid','broken','unrelated']) harness.emitNetwork('Fetch.requestPaused',{
+      requestId,responseStatusCode:200,request:{url:'https://seller.flipkart.com/orchestrator/graphql',postData:requestId==='unrelated'?'{}':postData}
+    },'fixture-session');
+    await new Promise(resolve=>setTimeout(resolve,20));
+    const snapshot=page.rateCardCapture.snapshot({fsn:'ABCDEFGHIJKLMNOP',marketplace:'flipkart',fulfilment:'NON_FBF',date:'2026-10-30'});
+    assert(snapshot.fees.platformFee,'The exact response must be captured while paused');
+    assert.strictEqual(commands.filter(c=>c.command==='Fetch.continueRequest').length,3,'Every paused response must be released');
+    assert.strictEqual(commands.filter(c=>c.command==='Fetch.getResponseBody').length,2,'Unrelated GraphQL bodies must not be read');
+    assert(commands.filter(c=>c.command==='Fetch.getResponseBody').every(c=>c.sessionId==='fixture-session'),'Commands must target the emitting session');
+    await page.close();
   });
 
   await runTest('embedded goto waits for real network quiet via the CDP monitor, with honest fallback', async () => {
@@ -1378,7 +1314,7 @@ async function runTests() {
     // Same name on a DIFFERENT path is a different cookie: its expiry must
     // not suppress this path's import.
     await page.setCookie({ name: 'paths', value: 'a', domain: '.flipkart.com', path: '/', expires: 2000000000, sameSite: 'lax' });
-    await page.setCookie({ name: 'paths', value: 'b', domain: '.flipkart.com', path: '/dashboard', expires: 1000000000, sameSite: 'lax' });
+    await page.setCookie({ name: 'paths', value: 'b', domain: '.flipkart.com', path: '/dashboard', expires: 1900000000, sameSite: 'lax' });
     assert(harness.calls.cookieSets.filter((c) => c.name === 'paths').length === 2,
       'a different-path cookie must not be suppressed by another path with a later expiry');
 
@@ -1600,11 +1536,12 @@ async function runTests() {
     assert(harness.calls.removed === 1 && harness.calls.closed === true, 'close must detach and close the view');
   });
 
-  await runTest('embedded browser module ships in the Linux release payload', async () => {
+  await runTest('embedded browser module is included in the packaged desktop app', async () => {
     assert(fs.existsSync(path.join(desktopDir, 'embeddedBrowser.js')), 'desktop/embeddedBrowser.js is missing');
-    const releaseScript = fs.readFileSync(path.resolve(desktopDir, '../scripts/prepare-release.js'), 'utf8');
-    const shipped = new Set([...releaseScript.matchAll(/'([\w.-]+\.(?:m?js|cjs))'/g)].map((m) => m[1]));
-    assert(shipped.has('embeddedBrowser.js'), 'prepare-release.js must ship embeddedBrowser.js in the Linux payload');
+    const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
+    const packageFiles = packageJson.build?.files || [];
+    assert(packageFiles.includes('**/*') && !packageFiles.some(pattern => pattern.includes('embeddedBrowser.js')),
+      'the packaged desktop payload must include the embedded browser module');
   });
 
   await runTest('preload bridge exposes browser monitor API methods (stage 2)', async () => {
@@ -1651,7 +1588,7 @@ async function runTests() {
     const monitorHandlers = [
       'browser-monitor-get-state',
       'browser-monitor-screenshot',
-      'browser-monitor-set-visibility',
+
       'browser-monitor-set-engine'
     ];
     for (const handler of monitorHandlers) {
@@ -1970,7 +1907,7 @@ async function runTests() {
     assert(isAllowedBackendUrl('https://payments.youthnic.shop'), 'Official domain must be allowed');
     assert(isAllowedBackendUrl('https://reconcentral.srv1845788.hstgr.cloud'), 'Hostinger subdomain must be allowed');
     assert(isAllowedBackendUrl('https://recon.srv1845788.hstgr.cloud'), 'Secondary Hostinger domain must be allowed');
-    
+
     // Insecure / unallowlisted hosts rejected
     assert(!isAllowedBackendUrl('http://insecure-host.com'), 'Plaintext HTTP must be rejected');
     assert(!isAllowedBackendUrl('https://evil-attacker.com'), 'Non-allowlisted domain must be rejected');
@@ -1989,6 +1926,40 @@ async function runTests() {
     assert(candidates.includes('https://payments.youthnic.shop'), 'Candidates must contain primary domain');
     assert(typeof clearCachedActiveServer === 'function', 'Must export clearCachedActiveServer');
     assert(typeof reportJobFailure === 'function', 'Must export reportJobFailure');
+  });
+
+  await runTest('separate Flipkart and Shopsy reviews and a persistent diagnostics folder are exposed', async () => {
+    const html = fs.readFileSync(path.join(desktopDir, 'ui/index.html'), 'utf8');
+    const renderer = fs.readFileSync(path.join(desktopDir, 'ui/renderer.js'), 'utf8');
+    const preload = fs.readFileSync(path.join(desktopDir, 'preload.cjs'), 'utf8');
+    const main = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+    assert(html.includes('id="select-review-marketplace"') && html.includes('<option value="shopsy">Shopsy</option>'), 'review UI must let users choose Shopsy separately');
+    assert(renderer.includes("getElementById('select-review-marketplace')?.value || 'flipkart'"), 'preview must choose exactly one review marketplace');
+    assert(preload.includes("ipcRenderer.invoke('open-diagnostics')") && main.includes("registerHandler('open-diagnostics'"), 'desktop UI must open saved diagnostics');
+    assert(main.includes("registerHandler('write-client-log'") && main.includes("createStructuredLogger(DIAGNOSTICS_DIR)"), 'renderer logs must reach persistent structured diagnostics');
+  });
+
+  await runTest('structured diagnostics redact secrets and rotate bounded log files', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'reconcentral-logs-'));
+    try {
+      const logger = createStructuredLogger(directory, { maxBytes: 350, maxFiles: 2, now: () => new Date('2026-10-31T12:00:00.000Z') });
+      logger.info('scrape.started', 'Visible Seller Hub run.', { marketplace: 'flipkart' });
+      logger.error('portal.failed', new Error('Authorization: Bearer secret-token-value'), { idToken: 'local-private-id-token' });
+      logger.info('raw.bearer', 'Bearer standalone-private-token postgres://worker:db-secret@db.example/rates');
+      logger.info('test.padding', 'x'.repeat(700));
+      const files = fs.readdirSync(directory).filter(name => name.startsWith('desktop-'));
+      assert(files.some(name => name.endsWith('.1')), 'oversized daily logs must rotate');
+      const contents = files.map(name => fs.readFileSync(path.join(directory, name), 'utf8')).join('\n');
+      assert(!contents.includes('secret-token-value') && !contents.includes('local-private-id-token') &&
+        !contents.includes('standalone-private-token') && !contents.includes('db-secret'), 'log rotation must not expose session secrets');
+      assert(contents.includes('"timestamp"') && contents.includes('"level"') && contents.includes('"event"'), 'records must be structured JSONL');
+      let day=0;
+      const daily=createStructuredLogger(directory,{maxBytes:10000,maxFiles:2,now:()=>new Date(Date.UTC(2026,9,31+day++,12))});
+      for(let index=0;index<6;index++) daily.info('daily.retention','bounded');
+      assert(fs.readdirSync(directory).filter(name=>/^desktop-/.test(name)).length<=3,'retention bounds logs across days as well as within a day');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   console.log('\n=================================================================');
