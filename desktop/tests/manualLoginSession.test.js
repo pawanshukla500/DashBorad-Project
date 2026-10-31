@@ -117,9 +117,9 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(standaloneSource, /version: DESKTOP_VERSION/);
   assert(!monitorHtml.includes('value="embedded"'), 'the monitor must not let users select a separate embedded session');
   assert(monitorLoginHandler.includes("triggerInteractiveLogin('flipkart_shopsy')"), 'the live-browser sign-in button must always open Flipkart Seller Hub');
-  assert(sellerHubLoginHandler.includes("const selectedVal = 'flipkart_shopsy'"), 'the Seller Hub sign-in action must ignore unrelated marketplace selection');
-  assert(sellerHubLoginHandler.includes("const portalUrl = 'https://seller.flipkart.com/'"), 'the Seller Hub sign-in action must open only the Seller Hub root');
-  assert(!sellerHubLoginHandler.includes('getAttribute(\'data-portal\')'), 'the Seller Hub sign-in action must not inherit another marketplace portal URL');
+  assert(sellerHubLoginHandler.includes("const selectedVal = selectEl?.value || 'flipkart_shopsy'"), 'the selected-portal sign-in action must retain its requested marketplace');
+  assert(sellerHubLoginHandler.includes("getAttribute('data-portal')"), 'the selected-portal sign-in action must use the selected channel URL');
+  assert(monitorHtml.includes('Open Selected Portal Sign-in') && monitorHtml.includes('selected marketplace portal'), 'the generic sign-in action must be labeled for all supported portal channels');
   assert(clearSessionRoute.indexOf('await parseJsonBody()') < clearSessionRoute.indexOf('if (withBrowserTask.busy)'),
     'the session clear route must recheck browser activity after parsing the request body');
   assert(clearSessionRoute.includes('const cleared = await withBrowserTask(async () =>'),
