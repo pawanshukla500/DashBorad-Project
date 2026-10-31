@@ -63,13 +63,13 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
 
   const pages = new Set();
   const postBaselinePages = new Set();
+  const returnCandidatePages = new Set([initialPage]);
+  const returnCandidateTargets = new Set();
   const reportedStates = new Map();
   const loginFlowPages = new Set();
   const flowOriginTargets = new Set();
-  const flowAncestorTargets = new Set();
   const flowDescendantPages = new Set();
   const flowDescendantTargets = new Set();
-  const flowAncestorPages = new Set();
   const initialLineagePages = new Set([initialPage]);
   const initialLineageTargets = new Set();
   const pageByTarget = new Map();
@@ -115,7 +115,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
     } while (changed);
   };
 
-  const rememberRelatedPages = () => {
+  const rememberReturnCandidates = () => {
     let changed;
     do {
       changed = false;
@@ -124,13 +124,14 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
         const target = targetOf(page);
         let opener;
         try { opener = target?.opener?.(); } catch {}
-        if (!target || !opener || !initialLineageTargets.has(opener)) continue;
-        if (!initialLineagePages.has(page)) {
-          initialLineagePages.add(page);
+        if (!target || !opener ||
+            (!initialLineageTargets.has(opener) && !returnCandidateTargets.has(opener))) continue;
+        if (!returnCandidatePages.has(page)) {
+          returnCandidatePages.add(page);
           changed = true;
         }
-        if (!initialLineageTargets.has(target)) {
-          initialLineageTargets.add(target);
+        if (!returnCandidateTargets.has(target)) {
+          returnCandidateTargets.add(target);
           changed = true;
         }
       }
@@ -139,19 +140,8 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
 
   const rememberFlowPage = page => {
     loginFlowPages.add(page);
-    let target = targetOf(page);
+    const target = targetOf(page);
     if (target) flowOriginTargets.add(target);
-    const visited = new Set(target ? [target] : []);
-    while (target) {
-      let opener;
-      try { opener = target.opener?.(); } catch {}
-      if (!opener || visited.has(opener)) break;
-      visited.add(opener);
-      flowAncestorTargets.add(opener);
-      const openerPage = pageByTarget.get(opener);
-      if (openerPage) flowAncestorPages.add(openerPage);
-      target = opener;
-    }
   };
 
   const rememberFlowDescendants = () => {
@@ -164,7 +154,11 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
         if (!target || flowOriginTargets.has(target) || flowDescendantTargets.has(target)) continue;
         let opener;
         try { opener = target.opener?.(); } catch {}
-        if (opener && (flowOriginTargets.has(opener) || flowAncestorTargets.has(opener) || flowDescendantTargets.has(opener))) {
+        // Only tabs opened by an observed login/challenge page (or one of its
+        // descendants) are active parts of the flow. A sibling opened by the
+        // same original page may be considered as a return candidate, but its
+        // stale login form must not keep sign-in active.
+        if (opener && (flowOriginTargets.has(opener) || flowDescendantTargets.has(opener))) {
           flowDescendantTargets.add(target);
           flowDescendantPages.add(page);
           changed = true;
@@ -190,7 +184,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
         for (const page of await browser.pages()) addPage(page);
         baselineCaptured = true;
         rememberInitialLineage();
-        rememberRelatedPages();
+        rememberReturnCandidates();
       } catch {
         // Chrome may be replacing targets during the Seller Hub login redirect.
         throwIfAborted();
@@ -213,11 +207,13 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
           const authenticated = typeof inspection === 'boolean'
             ? inspection
             : Boolean(inspection?.authenticated);
-          if (authenticated) return page;
+          const authenticationCandidate = page === initialPage || returnCandidatePages.has(page) ||
+            loginFlowPages.has(page) || flowDescendantPages.has(page);
+          if (authenticated && authenticationCandidate) return page;
           if (inspection && typeof inspection === 'object') pageStates.push({ page, state: inspection });
           if (!authenticated && (isAuthenticated !== isFlipkartAuthenticated || inspectState !== inspectFlipkartLoginState)) {
             const fallback = await page.evaluate(isAuthenticated);
-            if (fallback) return page;
+            if (fallback && authenticationCandidate) return page;
           }
         } catch {
           // A renderer can navigate between discovery and evaluation; retry next tick.
@@ -226,14 +222,24 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       }
 
       const relevantStates = pageStates.filter(item => item.state.surface === 'flipkart');
-      const activeLoginFlow = relevantStates.some(({ page, state }) => initialLineagePages.has(page) &&
+      const loginStageStates = relevantStates.filter(({ page, state }) => returnCandidatePages.has(page) &&
         (state.loginFormVisible || state.challengeVisible));
-      for (const { page, state } of relevantStates) {
-        if (initialLineagePages.has(page) && (state.loginFormVisible || state.challengeVisible)) rememberFlowPage(page);
+      if (loginFlowPages.size === 0) {
+        // The initial Seller Hub page wins when it contains the form. Otherwise,
+        // use the first related popup that exposes a login/challenge stage.
+        const firstFlowState = loginStageStates.find(({ page }) => initialLineagePages.has(page)) || loginStageStates[0];
+        if (firstFlowState) rememberFlowPage(firstFlowState.page);
+      }
+      for (const { page, state } of loginStageStates) {
+        if (loginFlowPages.has(page) || flowDescendantPages.has(page)) rememberFlowPage(page);
       }
       rememberFlowDescendants();
 
-      const flowTransitionPending = relevantStates.some(({ page, state }) => loginFlowPages.has(page) &&
+      const activeFlowPages = new Set([...loginFlowPages, ...flowDescendantPages]);
+      const activeLoginFlow = relevantStates.some(({ page, state }) => activeFlowPages.has(page) &&
+        (state.loginFormVisible || state.challengeVisible));
+
+      const flowTransitionPending = relevantStates.some(({ page, state }) => activeFlowPages.has(page) &&
         !state.publicLanding && !state.authenticated && !state.loginFormVisible && !state.challengeVisible);
 
       // Ignore pre-existing unrelated public tabs, but follow popup tabs and
@@ -241,10 +247,8 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       // returns that land in a new tab after the form tab closes.
       const returnedPages = new Set(!activeLoginFlow
         ? relevantStates
-          .filter(({ page, state }) => state.publicLanding && (
-            loginFlowPages.has(page) || flowDescendantPages.has(page) ||
-            (flowAncestorPages.has(page) && !flowTransitionPending)
-          ))
+          .filter(({ page, state }) => loginFlowPages.size > 0 && state.publicLanding &&
+            returnCandidatePages.has(page) && !flowTransitionPending)
           .map(({ page }) => page)
         : []);
       for (const page of publicReturnSince.keys()) {
@@ -257,7 +261,8 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       const stableReturnPages = new Set([...returnedPages].filter(page =>
         now() - publicReturnSince.get(page) >= publicReturnGraceMs));
       for (const { page, state } of pageStates) {
-        if (!initialLineagePages.has(page)) continue;
+        if (!initialLineagePages.has(page) && !loginFlowPages.has(page) && !flowDescendantPages.has(page) &&
+            !returnedPages.has(page)) continue;
         const confirmedReturn = stableReturnPages.has(page);
         const stage = confirmedReturn ? 'public_return' : returnedPages.has(page) ? 'public_return_pending' : state.stage;
         const stateForUi = { ...state, stage, ...(confirmedReturn ? { returnConfirmed: true } : {}) };

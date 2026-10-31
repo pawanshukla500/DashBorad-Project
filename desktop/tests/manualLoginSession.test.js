@@ -240,12 +240,16 @@ test('Seller Hub login watcher follows authentication into another tab in the sa
   let now = 0;
   let pageReads = 0;
   const observed = [];
+  const publicTarget = { opener: () => undefined };
+  const authenticatedTarget = { opener: () => publicTarget };
   const publicPage = {
+    target: () => publicTarget,
     isClosed: () => false,
     evaluate: async () => false,
     url: () => FLIPKART_MANUAL_LOGIN_URL
   };
   const authenticatedPage = {
+    target: () => authenticatedTarget,
     isClosed: () => false,
     evaluate: async () => true,
     url: () => FLIPKART_DASHBOARD_URL
@@ -325,6 +329,33 @@ test('Seller Hub login watcher recognizes a public return opened from the login 
   assert(returnStages.includes('public_return'));
   assert.equal(stagesByPage.get(returnPage).find(state => state.stage === 'public_return')?.returnConfirmed, true,
     'the caller receives an explicit confirmation only after the stable-return grace period');
+});
+
+test('a baseline authenticated tab cannot satisfy sign-in for the initial login page', async () => {
+  let now = 0;
+  const loginPage = {
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false }
+      : false
+  };
+  const staleDashboardTab = {
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'dashboard', authenticated:true, loginFormVisible:false, challengeVisible:false, publicLanding:false }
+      : true
+  };
+
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => [loginPage, staleDashboardTab] }, {
+      initialPage: loginPage,
+      timeoutMs: 2000,
+      pollMs: 1000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; }
+    }),
+    /timed out/
+  );
 });
 
 test('Seller Hub login watcher preserves caller-supplied authentication probes', async () => {
@@ -453,6 +484,60 @@ test('an unrelated stale login form does not block a stable return in the linked
   assert(states.some(item => item.page === flowPage && item.state.returnConfirmed === true),
     'an unrelated stale form must not keep the actual flow from confirming its stable return');
   assert.equal(states.some(item => item.page === staleLoginPage && item.state.stage === 'public_return'), false);
+});
+
+test('a stale login sibling with the same opener cannot keep the active login flow pending', async () => {
+  let now = 0;
+  let flowReads = 0;
+  const initialTarget = { opener: () => undefined };
+  const initialPage = {
+    target: () => initialTarget,
+    isClosed: () => false,
+    evaluate: async () => ({ surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true })
+  };
+  const flowTarget = { opener: () => initialTarget };
+  const flowStates = [
+    { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false },
+    { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true }
+  ];
+  const flowPage = {
+    target: () => flowTarget,
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? flowStates[Math.min(flowReads++, flowStates.length - 1)]
+      : false
+  };
+  const staleSiblingTarget = { opener: () => initialTarget };
+  const staleSiblingPage = {
+    target: () => staleSiblingTarget,
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false }
+      : false
+  };
+  const states = [];
+  let pageReads = 0;
+
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => {
+      pageReads++;
+      return pageReads === 1 ? [initialPage] : [initialPage, flowPage, staleSiblingPage];
+    } }, {
+      initialPage,
+      timeoutMs: 12000,
+      pollMs: 1000,
+      publicReturnGraceMs: 2000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; },
+      onState: (page, state) => states.push({ page, state })
+    }),
+    /returned to its public landing page.*Nothing was staged/
+  );
+
+  assert(states.some(item => item.page === flowPage && item.state.returnConfirmed === true),
+    'the real flow must confirm its public return even while the sibling keeps showing a login form');
+  assert.equal(states.some(item => item.page === staleSiblingPage), false,
+    'a sibling login form must not be reported as the active flow state');
 });
 
 test('progress reporting contains rejected callbacks without an unhandled rejection', async () => {
