@@ -248,7 +248,13 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       const returnedPages = new Set(!activeLoginFlow
         ? relevantStates
           .filter(({ page, state }) => loginFlowPages.size > 0 && state.publicLanding &&
-            returnCandidatePages.has(page) && !flowTransitionPending)
+            returnCandidatePages.has(page) && !flowTransitionPending &&
+            // The initial page may remain public while a login popup is in
+            // progress. It can confirm a return only if it hosted the flow;
+            // a newly opened related tab is eligible because it appeared
+            // after monitoring began and is linked to the Seller Hub flow.
+            (loginFlowPages.has(page) || flowDescendantPages.has(page) ||
+              (page !== initialPage && postBaselinePages.has(page))))
           .map(({ page }) => page)
         : []);
       for (const page of publicReturnSince.keys()) {

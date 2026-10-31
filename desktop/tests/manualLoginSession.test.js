@@ -358,6 +358,60 @@ test('a baseline authenticated tab cannot satisfy sign-in for the initial login 
   );
 });
 
+test('an unchanged public opener cannot confirm sign-out before a delayed dashboard tab appears', async () => {
+  let now = 0;
+  let pageReads = 0;
+  let loginReads = 0;
+  let loginPopupClosed = false;
+  const initialTarget = { opener: () => undefined };
+  const initialPage = {
+    target: () => initialTarget,
+    isClosed: () => false,
+    evaluate: async () => ({ surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true })
+  };
+  const loginTarget = { opener: () => initialTarget };
+  const loginStates = [
+    { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false },
+    { surface:'flipkart', stage:'portal', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:false }
+  ];
+  const loginPopup = {
+    target: () => loginTarget,
+    isClosed: () => loginPopupClosed,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? loginStates[Math.min(loginReads++, loginStates.length - 1)]
+      : false
+  };
+  const dashboardTarget = { opener: () => initialTarget };
+  const dashboardPage = {
+    target: () => dashboardTarget,
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'dashboard', authenticated:true, loginFormVisible:false, challengeVisible:false, publicLanding:false }
+      : true
+  };
+
+  const result = await waitForFlipkartAuthenticatedPage({ pages: async () => {
+    pageReads++;
+    if (pageReads === 1) return [initialPage];
+    if (pageReads <= 3) return [initialPage, loginPopup];
+    if (pageReads <= 5) {
+      loginPopupClosed = true;
+      return [initialPage];
+    }
+    return [initialPage, dashboardPage];
+  } }, {
+    initialPage,
+    timeoutMs: 20000,
+    pollMs: 1000,
+    publicReturnGraceMs: 2000,
+    now: () => now,
+    wait: async milliseconds => { now += milliseconds; }
+  });
+
+  assert.equal(result, dashboardPage, 'the delayed dashboard should win over the unchanged public opener');
+  assert(now >= 5000, 'the watcher should keep waiting beyond the public-return grace interval');
+});
+
 test('Seller Hub login watcher preserves caller-supplied authentication probes', async () => {
   let legacyChecks = 0;
   const page = {
