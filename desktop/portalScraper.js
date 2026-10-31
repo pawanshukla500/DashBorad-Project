@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL, isFlipkartAuthenticated } from './portalSession.js';
+import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL, inspectFlipkartLoginState, isFlipkartAuthenticated } from './portalSession.js';
 import { attachRateCardCapture } from './rateCardCapture.js';
 import { parsePortalRateSnapshot } from './portalRates.js';
 import { captureScrapeFailure } from './scrapeDiagnostics.js';
@@ -10,6 +10,29 @@ import { getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, del
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const SESSION_AUTH_CHECK_ATTEMPTS = 15;
+
+async function waitForSellerHubDashboard(page, delay) {
+  let inspection = null;
+  for (let attempt = 0; attempt < SESSION_AUTH_CHECK_ATTEMPTS; attempt++) {
+    let authenticated = false;
+    try {
+      const current = await page.evaluate(inspectFlipkartLoginState);
+      if (current && typeof current === 'object' && current.surface === 'flipkart') {
+        inspection = current;
+        authenticated = current.authenticated === true;
+      } else {
+        authenticated = await page.evaluate(isFlipkartAuthenticated) === true;
+      }
+    } catch {
+      // A renderer may be changing routes while Seller Hub redirects.
+    }
+    if (authenticated) return { authenticated: true, inspection };
+    if (attempt + 1 < SESSION_AUTH_CHECK_ATTEMPTS) await delay(1000);
+  }
+  return { authenticated: false, inspection };
+}
+
 /**
  * Self-contained portal extraction for both Electron and the Linux server.
  * Runtime injection keeps the full extraction lifecycle testable offline.
@@ -111,22 +134,19 @@ export async function scrapeFlipkartRateCards(config = {}, {
     await onProgress('Checking the saved Seller Hub session...');
     await safeGoto(FLIPKART_DASHBOARD_URL, { waitUntil: 'load', timeout: 35000 });
 
-    let authenticated = false;
-    // A restored Chromium session can redirect asynchronously. Never delete a
-    // cookie jar just because the first public-page check is not authenticated.
-    for (let attempt = 0; attempt < 5; attempt++) {
-      if (await page.evaluate(isFlipkartAuthenticated) === true) { authenticated = true; break; }
-      await delay(1000);
-    }
+    // Seller Hub can take several seconds to hydrate or finish a redirect.
+    // Retry for about 30 seconds (including the one-second page interaction
+    // pause), and preserve the saved session unless sign-in is visibly required.
+    let { authenticated, inspection: sessionInspection } = await waitForSellerHubDashboard(page, delay);
     if (!runtime?.partition && profileDir) {
       if (authenticated) {
         writeSellerHubProfileState(profileDir, 'authenticated');
-      } else if (profileSessionState === 'authenticated' || snapshotImported) {
-        // The prior verified session or imported snapshot no longer opens the
-        // dashboard. Stop replaying it so an operator must sign in again.
+      } else if ((profileSessionState === 'authenticated' || snapshotImported) &&
+          sessionInspection?.surface === 'flipkart' && !sessionInspection.challengeVisible &&
+          (sessionInspection.publicLanding || sessionInspection.loginFormVisible)) {
+        // The visible login page is positive evidence of sign-out. Keep the
+        // encrypted snapshot for recovery, but stop replaying it automatically.
         writeSellerHubProfileState(profileDir, 'signed_out');
-        deleteEncryptedCookies(cookiesPath);
-        deleteEncryptedCookies(fallbackCookiesPath);
       }
     }
     if (!authenticated) {
@@ -153,11 +173,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
       const refreshedCookies = loadEncryptedCookies(cookiesPath) || loadEncryptedCookies(fallbackCookiesPath);
       if (refreshedCookies?.length) await page.setCookie(...refreshedCookies);
       await safeGoto(FLIPKART_DASHBOARD_URL, { waitUntil: 'load', timeout: 35000 });
-      authenticated = false;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        if (await page.evaluate(isFlipkartAuthenticated) === true) { authenticated = true; break; }
-        await delay(1000);
-      }
+      ({ authenticated, inspection: sessionInspection } = await waitForSellerHubDashboard(page, delay));
       if (!authenticated) throw new Error('Seller Hub sign-in did not establish an authenticated dashboard session. Nothing was staged.');
       if (!runtime?.partition && profileDir) writeSellerHubProfileState(profileDir, 'authenticated');
     }

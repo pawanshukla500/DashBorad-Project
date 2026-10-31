@@ -320,6 +320,39 @@ test('Seller Hub login watcher ignores unrelated non-landing tabs after login re
   );
 });
 
+test('a retained public tab cannot fail a cross-tab sign-in that is still in progress', async () => {
+  let now = 0;
+  let loginReads = 0;
+  const loginStates = [
+    { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false },
+    { surface:'flipkart', stage:'portal', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:false }
+  ];
+  const loginPage = {
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? loginStates[Math.min(loginReads++, loginStates.length - 1)]
+      : false
+  };
+  const retainedPublicPage = {
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true }
+      : false
+  };
+
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => [loginPage, retainedPublicPage] }, {
+      initialPage: loginPage,
+      timeoutMs: 3000,
+      pollMs: 1000,
+      publicReturnGraceMs: 1000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; }
+    }),
+    error => /timed out/.test(error.message) && !/returned to its public landing page/.test(error.message)
+  );
+});
+
 test('progress reporting contains rejected callbacks without an unhandled rejection', async () => {
   const failures = [];
   const completed = await invokeProgressSafely(
@@ -722,6 +755,58 @@ test('scraping opens Seller Hub root, verifies dashboard session, and requires a
   }
 });
 
+test('a slowly hydrating Seller Hub dashboard is accepted before manual sign-in is requested', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-slow-dashboard-'));
+  let currentUrl = '';
+  let authChecks = 0;
+  let reauthenticationPrompts = 0;
+  const page = {
+    on() {}, off() {},
+    goto: async url => { currentUrl = url; },
+    reload: async () => {},
+    waitForSelector: async () => {},
+    type: async () => {},
+    cookies: async () => [],
+    url: () => currentUrl,
+    title: () => 'Seller Hub',
+    screenshot: async () => Buffer.from('test screenshot'),
+    evaluate: async (fn) => {
+      if (fn.name === 'inspectFlipkartLoginState') {
+        authChecks++;
+        const authenticated = authChecks >= 8;
+        return { surface:'flipkart', stage:authenticated ? 'authenticated' : 'portal', authenticated, loginFormVisible:false, challengeVisible:false, publicLanding:false };
+      }
+      if (fn.toString().includes('KeyboardEvent')) return true;
+      if (fn.toString().includes('q.fsn === expected')) return true;
+      return [];
+    }
+  };
+  const runtime = { partition: 'persist:test', launch: async () => ({ pages: async () => [page], newPage: async () => page, close: async () => {} }) };
+  try {
+    const result = await scrapeFlipkartRateCards({
+      marketplace: 'flipkart',
+      fsnCatalog: [{ marketplace:'flipkart', category:'kurta', brand:'Fixture', sample_fsn:'ABCDEFGHIJKLMNOP' }],
+      scopeVerticals: ['kurta'],
+      requiredVerticals: ['kurta']
+    }, {
+      runtime,
+      cookiesPath: path.join(tempDir, 'cookies.json'),
+      fallbackCookiesPath: path.join(tempDir, 'fallback.json'),
+      stagingDir: path.join(tempDir, 'staging'),
+      delay: async () => {},
+      onProgress: () => {},
+      onSessionExpiry: async () => { reauthenticationPrompts++; return false; }
+    });
+
+    assert.equal(authChecks, 8, 'the session check should continue beyond five transient misses');
+    assert.equal(reauthenticationPrompts, 0, 'slow dashboard hydration must not trigger a false sign-in prompt');
+    assert.equal(result.success, false, 'the fixture provides no actual rate-card responses');
+    assert.match(result.error, /Missing rate responses/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('visible external scraping activates its Seller Hub tab before navigating', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-visible-tab-'));
   const actions = [];
@@ -870,7 +955,9 @@ test('an initialized legacy profile with no verified state still imports encrypt
     on() {}, off() {},
     goto: async url => { currentUrl = url; },
     setCookie: async () => { setCookieCalls++; },
-    evaluate: async fn => fn.name === 'isFlipkartAuthenticated' ? false : [],
+    evaluate: async fn => fn.name === 'inspectFlipkartLoginState'
+      ? { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true }
+      : false,
     url: () => currentUrl,
     title: () => 'Signed out',
     screenshot: async () => Buffer.from('test screenshot')
@@ -894,7 +981,59 @@ test('an initialized legacy profile with no verified state still imports encrypt
     assert.equal(result.success, false);
     assert.match(result.error, /login required/i);
     assert.equal(readSellerHubProfileState(profileDir), 'signed_out',
-      'a snapshot rejected by Seller Hub must not be replayed on every subsequent run');
+      'a visible public login landing must suppress automatic replay of an expired snapshot');
+    assert.equal(fs.existsSync(cookiePath), true,
+      'confirmed sign-out must retain the encrypted cookie snapshot for recovery');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('an ambiguous dashboard redirect preserves the verified profile and encrypted cookies', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-transient-session-'));
+  const profileDir = path.join(tempDir, 'profile');
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  fs.mkdirSync(profileDir, { recursive: true });
+  writeSellerHubProfileState(profileDir, 'authenticated');
+  saveEncryptedCookies(cookiePath, [{ name: 'session', value: 'fixture', domain: '.flipkart.com' }]);
+  let currentUrl = '';
+  let inspections = 0;
+  const page = {
+    on() {}, off() {},
+    goto: async url => { currentUrl = url; },
+    setCookie: async () => {},
+    evaluate: async fn => {
+      if (fn.name === 'inspectFlipkartLoginState') {
+        inspections++;
+        return { surface:'flipkart', stage:'portal', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:false };
+      }
+      return false;
+    },
+    url: () => currentUrl,
+    title: () => 'Seller Hub loading',
+    screenshot: async () => Buffer.from('test screenshot')
+  };
+  const browser = { pages: async () => [page], newPage: async () => page, close: async () => {} };
+  const runtime = { launch: async () => browser };
+  try {
+    const result = await scrapeFlipkartRateCards({ marketplace: 'flipkart', browserProfileDir: profileDir }, {
+      runtime,
+      executablePath: 'test-chrome',
+      browserProfileDir: profileDir,
+      cookiesPath: cookiePath,
+      fallbackCookiesPath: path.join(tempDir, 'fallback.json'),
+      stagingDir: path.join(tempDir, 'staging'),
+      delay: async () => {},
+      onProgress: () => {}
+    });
+
+    assert.equal(result.success, false);
+    assert.match(result.error, /login required/i);
+    assert.equal(inspections, 15, 'session validation should allow an approximately 30-second hydration window');
+    assert.equal(readSellerHubProfileState(profileDir), 'authenticated',
+      'an unrecognized redirect must not overwrite the last verified session state');
+    assert.equal(fs.existsSync(cookiePath), true,
+      'a transient redirect must not delete the encrypted cookie snapshot');
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

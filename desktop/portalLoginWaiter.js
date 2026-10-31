@@ -63,8 +63,8 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
 
   const pages = new Set();
   const reportedStates = new Map();
-  let loginFormObserved = false;
-  let publicReturnSince = null;
+  const loginFlowPages = new Set();
+  const publicReturnSince = new Map();
   const addPage = page => {
     if (!page || page.isClosed?.() || pages.has(page)) return;
     pages.add(page);
@@ -124,17 +124,27 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
 
       const relevantStates = pageStates.filter(item => item.state.surface === 'flipkart');
       const activeLoginFlow = relevantStates.some(({ state }) => state.loginFormVisible || state.challengeVisible);
-      if (activeLoginFlow) loginFormObserved = true;
-      const returnedToPublicLanding = loginFormObserved && relevantStates.length > 0 &&
-        relevantStates.some(({ state }) => state.publicLanding) && !activeLoginFlow;
-      if (returnedToPublicLanding) {
-        if (publicReturnSince === null) publicReturnSince = now();
-      } else {
-        publicReturnSince = null;
+      for (const { page, state } of relevantStates) {
+        if (state.loginFormVisible || state.challengeVisible) loginFlowPages.add(page);
+      }
+
+      // A retained public tab is common during Seller Hub's cross-tab login.
+      // Only treat a public page as a failed return if that same page hosted
+      // the observed login flow, and no other tab still shows an active step.
+      const returnedPages = new Set(!activeLoginFlow
+        ? relevantStates
+          .filter(({ page, state }) => loginFlowPages.has(page) && state.publicLanding)
+          .map(({ page }) => page)
+        : []);
+      for (const page of publicReturnSince.keys()) {
+        if (!returnedPages.has(page)) publicReturnSince.delete(page);
+      }
+      for (const page of returnedPages) {
+        if (!publicReturnSince.has(page)) publicReturnSince.set(page, now());
       }
 
       for (const { page, state } of pageStates) {
-        const stage = state.publicLanding && returnedToPublicLanding ? 'public_return' : state.stage;
+        const stage = returnedPages.has(page) ? 'public_return' : state.stage;
         const stateForUi = { ...state, stage };
         const signature = JSON.stringify(stateForUi);
         if (reportedStates.get(page) === signature) continue;
@@ -142,7 +152,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
         try { onState(page, stateForUi); } catch {}
       }
 
-      if (publicReturnSince !== null && now() - publicReturnSince >= publicReturnGraceMs) {
+      if ([...publicReturnSince.values()].some(since => now() - since >= publicReturnGraceMs)) {
         throw new Error('Seller Hub returned to its public landing page after the sign-in form closed. No authenticated dashboard was detected; review the login result in Chrome. Nothing was staged.');
       }
 
