@@ -390,8 +390,13 @@ const serverWorker = createWorkerEngine({
             if (cookies.length) {
               saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
               saveEncryptedCookies(COOKIES_PATH, cookies);
+            } else {
+              deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
+              deleteEncryptedCookies(COOKIES_PATH);
             }
-            broadcastProgress(`Seller Hub login verified. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile will be reused.`);
+            broadcastProgress(cookies.length
+              ? `Seller Hub login verified. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile will be reused.`
+              : 'Seller Hub login verified without cookies. Removed stale cookie snapshots; the persistent Chrome profile will be reused.');
             return true;
           } catch (loginError) {
             broadcastProgress(`Manual Seller Hub sign-in did not complete: ${loginError.message}`);

@@ -108,12 +108,16 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'manual-login failures must use the redacted, bounded diagnostic screenshot path');
   assert.match(externalExpiryHandler, /if \(!effectiveConfig\.visible\)[\s\S]*?openManualFlipkartLogin\(\{ onProgress, waitMs: timeoutMs \}\)/,
     'background session expiry must open a visible manual sign-in window instead of waiting on headless Chrome');
+  assert.match(externalExpiryHandler, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\)\)/,
+    'visible reauthentication must remove stale cookie snapshots when the authenticated browser has no cookies');
   assert.match(workerEntry, /visible: true/);
   assert.match(standaloneSource, /userDataDir: profileDir/);
   assert.match(standaloneSource, /mpConfig\.id === 'flipkart_shopsy'[\s\S]*?FLIPKART_MANUAL_LOGIN_URL/);
   assert.match(standaloneWorker, /visible: true/);
   assert.match(standaloneWorker, /onSessionExpiry: async page/);
   assert.match(standaloneWorker, /page\.waitForFunction\(isFlipkartAuthenticated, \{ timeout: 30 \* 60 \* 1000/);
+  assert.match(standaloneWorker, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\)\)/,
+    'standalone reauthentication must remove stale snapshots when the authenticated browser has no cookies');
   assert.match(standaloneSource, /version: DESKTOP_VERSION/);
   assert(!monitorHtml.includes('value="embedded"'), 'the monitor must not let users select a separate embedded session');
   assert(monitorLoginHandler.includes("triggerInteractiveLogin('flipkart_shopsy')"), 'the live-browser sign-in button must always open Flipkart Seller Hub');

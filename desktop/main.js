@@ -1219,9 +1219,15 @@ async function executeScrapeProcess(config, onProgress) {
             const authed = await page.evaluate(isFlipkartAuthenticated);
             if (authed) {
               const cookies = await page.cookies();
-              saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
-              saveEncryptedCookies(COOKIES_PATH, cookies);
-              onProgress('✓ In-browser authentication complete. Session cookies encrypted and saved.');
+              if (cookies.length) {
+                saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
+                saveEncryptedCookies(COOKIES_PATH, cookies);
+                onProgress('✓ In-browser authentication complete. Session cookies encrypted and saved.');
+              } else {
+                deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
+                deleteEncryptedCookies(COOKIES_PATH);
+                onProgress('✓ Seller Hub authentication verified without cookies. Removed stale cookie snapshots; the active browser session will continue.');
+              }
               return true;
             }
           } catch {}
