@@ -93,7 +93,7 @@ import {
 } from './excelExport.js';
 import { getChromeExecutablePath } from './chromeFinder.js';
 import { getDesktopPool, closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
-import { resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
+import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 
 function getPool() {
   return getDesktopPool(loadConfig().databaseUrl);
@@ -102,7 +102,7 @@ function getPool() {
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');
 const userDataOverride = process.env.RECONCENTRAL_USER_DATA || process.env.RECON_USER_DATA_DIR;
-const USER_DATA_DIR = resolveDesktopUserDataDir();
+const USER_DATA_DIR = persistDesktopUserDataDirChoice();
 process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
 const FLIPKART_BROWSER_PROFILE_DIR = resolveFlipkartBrowserProfileDir({
   userDataDir: USER_DATA_DIR,
