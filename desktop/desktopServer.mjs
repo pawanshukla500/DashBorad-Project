@@ -42,7 +42,8 @@ import {
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { resolveScrapeVerticals } from './fsnPlan.js';
-import { FLIPKART_MANUAL_LOGIN_URL, isFlipkartAuthenticated } from './portalSession.js';
+import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
+import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, markStagedJobStatus } from './localStaging.js';
 import { registerWorkerWithBackend, sendWorkerHeartbeat, claimNextWorkerJob, releaseClaimedWorkerJob, reportJobFailure, submitJobResults,
@@ -92,6 +93,7 @@ import {
 } from './excelExport.js';
 import { getChromeExecutablePath } from './chromeFinder.js';
 import { getDesktopPool, closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
+import { resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 
 function getPool() {
   return getDesktopPool(loadConfig().databaseUrl);
@@ -99,24 +101,14 @@ function getPool() {
 
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');
-
-function resolveUserDataDir() {
-  if (process.env.RECONCENTRAL_USER_DATA) return process.env.RECONCENTRAL_USER_DATA;
-  if (process.env.RECON_USER_DATA_DIR) return process.env.RECON_USER_DATA_DIR;
-  if (process.platform === 'win32' && process.env.APPDATA) {
-    return path.join(process.env.APPDATA, 'ReconCentral RateCard Worker');
-  }
-  if (process.platform === 'linux' && process.env.XDG_CONFIG_HOME) {
-    return path.join(process.env.XDG_CONFIG_HOME, 'reconcentral-ratecard-worker');
-  }
-  if (process.platform === 'linux' && process.env.HOME) {
-    return path.join(process.env.HOME, '.config', 'reconcentral-ratecard-worker');
-  }
-  return path.join(__dirname, '.runtime');
-}
-
-const USER_DATA_DIR = resolveUserDataDir();
+const userDataOverride = process.env.RECONCENTRAL_USER_DATA || process.env.RECON_USER_DATA_DIR;
+const USER_DATA_DIR = resolveDesktopUserDataDir();
 process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
+const FLIPKART_BROWSER_PROFILE_DIR = resolveFlipkartBrowserProfileDir({
+  userDataDir: USER_DATA_DIR,
+  allowLegacyProfile: !userDataOverride
+});
+process.env.RECON_FLIPKART_PROFILE_DIR = FLIPKART_BROWSER_PROFILE_DIR;
 fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
 const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
@@ -137,6 +129,7 @@ function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
 function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
   if (['flipkart','shopsy','both','flipkart_shopsy'].includes(marketplace)) marketplace = 'flipkart_shopsy';
   const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  if (safeId === 'flipkart_shopsy') return FLIPKART_BROWSER_PROFILE_DIR;
   return path.join(USER_DATA_DIR, 'browser-profiles', safeId);
 }
 
@@ -393,8 +386,13 @@ const serverWorker = createWorkerEngine({
           if (!canOpenVisibleBrowser()) return false;
           broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible Chrome window at seller.flipkart.com.');
           try {
-            await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
-            const cookies = await page.cookies();
+            const authPage = await waitForFlipkartAuthenticatedPage(page.browser(), {
+              initialPage: page,
+              timeoutMs: 30 * 60 * 1000,
+              pollMs: 1000,
+              onPage: () => broadcastProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.')
+            });
+            const cookies = await authPage.cookies();
             if (cookies.length) {
               saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
               saveEncryptedCookies(COOKIES_PATH, cookies);
@@ -1357,8 +1355,13 @@ const server = http.createServer(async (req, res) => {
                 }
                 broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible browser at seller.flipkart.com.');
                 try {
-                  await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
-                  const cookies = await page.cookies();
+                  const authPage = await waitForFlipkartAuthenticatedPage(page.browser(), {
+                    initialPage: page,
+                    timeoutMs: 30 * 60 * 1000,
+                    pollMs: 1000,
+                    onPage: () => broadcastProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.')
+                  });
+                  const cookies = await authPage.cookies();
                   saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
                   saveEncryptedCookies(COOKIES_PATH, cookies);
                   broadcastProgress(`Seller Hub login verified. Saved ${cookies.length} encrypted cookies and retained the persistent browser profile.`);
@@ -1496,8 +1499,16 @@ const server = http.createServer(async (req, res) => {
 
             broadcastProgress(`✓ External Chrome opened at ${portalUrl}. Sign in manually. Its persistent profile will be reused by the worker.`);
 
+            let authPage = page;
             if (mpConfig.id === 'flipkart_shopsy') {
-              await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
+              authPage = await waitForFlipkartAuthenticatedPage(browser, {
+                initialPage: page,
+                timeoutMs: 30 * 60 * 1000,
+                pollMs: 1000,
+                onPage: candidate => broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external',
+                  marketplace: mpConfig.id, url: candidate.url(), title: 'Seller Hub sign-in tab' })
+              });
+              if (authPage !== page) await focusBrowserPage(authPage);
             } else await page.waitForFunction((id) => {
               const href = window.location.href.toLowerCase();
               const body = document.body ? document.body.innerText.toLowerCase() : '';
@@ -1546,7 +1557,7 @@ const server = http.createServer(async (req, res) => {
               return href.includes('#dashboard') || href.includes('home-page') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
             }, { timeout: 300000, polling: 1000 }, mpConfig.id);
 
-            const cookies = await page.cookies();
+            const cookies = await authPage.cookies();
             saveEncryptedCookies(cookiesPath, cookies);
             if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
               saveEncryptedCookies(COOKIES_PATH, cookies);

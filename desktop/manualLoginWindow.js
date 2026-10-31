@@ -232,7 +232,7 @@ export function createManualLoginWindowManager({
     safeNotify(onState, currentState(window, {
       active: true,
       status: 'login_prompt',
-      progressMessage: 'Sign in manually in the separate Seller Hub window. The app saves this persistent session for the worker.'
+      progressMessage: 'Seller Hub opens on its public page. Click Login, complete sign-in manually, and leave the window open until the dashboard is verified.'
     }));
     const authentication = startWatcher(window);
     let timeoutHandle;

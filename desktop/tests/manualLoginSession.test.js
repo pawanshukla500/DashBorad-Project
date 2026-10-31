@@ -1,12 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from '../manualLoginWindow.js';
 import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL } from '../portalSession.js';
+import { waitForFlipkartAuthenticatedPage } from '../portalLoginWaiter.js';
 import { scrapeFlipkartRateCards } from '../portalScraper.js';
 import { clearEncryptedCookieSnapshot, saveEncryptedCookies } from '../cookieVault.js';
+import { resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from '../userDataPaths.js';
+
+test('desktop app and standalone login helper share one Windows Seller Hub profile', () => {
+  const appData = path.join(os.tmpdir(), 'shared-seller-hub-roaming');
+  const legacyProfile = path.join(appData, 'reconcentral-ratecard-worker', 'browser-profiles', 'flipkart_shopsy');
+  const legacyCookieStore = path.join(legacyProfile, 'Default', 'Network', 'Cookies');
+  const canonicalProfile = path.join(appData, 'ReconCentral RateCard Worker', 'browser-profiles', 'flipkart_shopsy');
+  const existing = new Set([legacyCookieStore]);
+  const env = { APPDATA: appData };
+  const userDataDir = resolveDesktopUserDataDir({ env, platform: 'win32' });
+  const desktopProfile = resolveFlipkartBrowserProfileDir({ userDataDir, env, platform: 'win32', allowLegacyProfile: true, existsSync: value => existing.has(value) });
+  const helperProfile = resolveFlipkartBrowserProfileDir({ env, platform: 'win32', existsSync: value => existing.has(value) });
+
+  assert.equal(userDataDir, path.join(appData, 'ReconCentral RateCard Worker'));
+  assert.equal(desktopProfile, legacyProfile);
+  assert.equal(helperProfile, desktopProfile);
+  existing.add(path.join(canonicalProfile, 'Default', 'Cookies'));
+  assert.equal(resolveFlipkartBrowserProfileDir({ userDataDir, env, platform: 'win32', allowLegacyProfile: true, existsSync: value => existing.has(value) }), canonicalProfile);
+});
+
+test('external browser viewport only asks for sign-in when the portal state requires it', () => {
+  const renderer = fs.readFileSync(new URL('../ui/renderer.js', import.meta.url), 'utf8');
+  assert.match(renderer, /const loginRequired = state\.status === 'login_prompt'/);
+  assert.match(renderer, /const working = state\.status === 'extracting' \|\| state\.status === 'navigating'/);
+});
 
 class FakeWindow {
   constructor(options) {
@@ -56,6 +83,84 @@ function manualLoginHarness({ authenticated = false } = {}) {
     timeout: () => timeout?.()
   };
 }
+
+test('Seller Hub login watcher follows authentication into another tab in the same profile', async () => {
+  let now = 0;
+  let pageReads = 0;
+  const observed = [];
+  const publicPage = {
+    isClosed: () => false,
+    evaluate: async () => false,
+    url: () => FLIPKART_MANUAL_LOGIN_URL
+  };
+  const authenticatedPage = {
+    isClosed: () => false,
+    evaluate: async () => true,
+    url: () => FLIPKART_DASHBOARD_URL
+  };
+  const browser = {
+    pages: async () => (++pageReads < 2 ? [publicPage] : [publicPage, authenticatedPage])
+  };
+
+  const result = await waitForFlipkartAuthenticatedPage(browser, {
+    initialPage: publicPage,
+    timeoutMs: 3000,
+    pollMs: 1000,
+    now: () => now,
+    wait: async milliseconds => { now += milliseconds; },
+    onPage: page => observed.push(page)
+  });
+
+  assert.equal(result, authenticatedPage, 'the authenticated Seller Hub tab must be returned');
+  assert.deepEqual(observed, [authenticatedPage], 'new tabs in the persistent profile must be observed');
+  assert.equal(pageReads, 2, 'all open Chrome pages must be polled after the one-second interval');
+});
+
+test('Seller Hub login watcher explains when no authenticated dashboard appears', async () => {
+  let now = 0;
+  const publicPage = { isClosed: () => false, evaluate: async () => false };
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => [publicPage] }, {
+      initialPage: publicPage,
+      timeoutMs: 1000,
+      pollMs: 1000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; }
+    }),
+    /No authenticated dashboard was detected in any open Chrome tab/
+  );
+});
+
+test('Seller Hub login watcher cancels its one-second readiness wait when Chrome closes', async () => {
+  const controller = new AbortController();
+  const publicPage = { isClosed: () => false, evaluate: async () => false };
+  const monitoring = waitForFlipkartAuthenticatedPage({ pages: async () => [publicPage] }, {
+    initialPage: publicPage,
+    timeoutMs: 30 * 60 * 1000,
+    pollMs: 1000,
+    signal: controller.signal
+  });
+
+  controller.abort();
+  await assert.rejects(monitoring, error => error.name === 'AbortError');
+});
+
+test('Seller Hub login watcher rejects promptly when its Chromium browser disconnects', async () => {
+  const browser = new EventEmitter();
+  const publicPage = { isClosed: () => false, evaluate: async () => false };
+  browser.pages = async () => [publicPage];
+
+  const monitoring = waitForFlipkartAuthenticatedPage(browser, {
+    initialPage: publicPage,
+    timeoutMs: 30 * 60 * 1000,
+    pollMs: 1000
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  browser.emit('disconnected');
+
+  await assert.rejects(monitoring, /Chrome was closed while waiting for Seller Hub sign-in/);
+  assert.equal(browser.listenerCount('disconnected'), 0, 'disconnect listeners must be removed after cancellation');
+});
 
 test('manual Seller Hub window opens only at the root and saves cookies after manual authentication', async () => {
   const harness = manualLoginHarness();
@@ -133,7 +238,8 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'standalone manual sign-in must foreground the selected restored tab before navigation');
   assert.match(browserRuntimeSource, /await delay\(1000\);\s*await page\.bringToFront\(\);[\s\S]*?await delay\(1000\)/,
     'foregrounding must keep one-second interaction gaps around the selected page activation');
-  assert.match(mainSource, /const timeoutMs = 30 \* 60 \* 1000/);
+  assert.match(mainSource, /timeoutMs: 30 \* 60 \* 1000/,
+    'manual login and visible reauthentication must allow time for the operator to sign in');
   assert.match(mainSource, /async function openManualFlipkartLogin\(\{ onProgress = \(\) => \{\}, waitMs \} = \{\}\)/);
   assert.match(mainSource, /manager\.open\(\{ waitMs \}\)/);
   assert.match(mainSource, /captureScrapeFailure\(page, DIAGNOSTICS_DIR,[\s\S]*?operation: 'manual_login'/,
@@ -148,7 +254,7 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(standaloneSource, /mpConfig\.id === 'flipkart_shopsy'[\s\S]*?FLIPKART_MANUAL_LOGIN_URL/);
   assert.match(standaloneWorker, /visible: canOpenVisibleBrowser\(\)/);
   assert.match(standaloneWorker, /onSessionExpiry: async page/);
-  assert.match(standaloneWorker, /page\.waitForFunction\(isFlipkartAuthenticated, \{ timeout: 30 \* 60 \* 1000/);
+  assert.match(standaloneWorker, /waitForFlipkartAuthenticatedPage\(page\.browser\(\), \{[\s\S]*?pollMs: 1000/);
   assert.match(standaloneWorker, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\)\)/,
     'standalone reauthentication must remove stale snapshots when the authenticated browser has no cookies');
   assert.match(standaloneSource, /version: DESKTOP_VERSION/);

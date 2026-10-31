@@ -1,32 +1,9 @@
 /**
- * Flipkart Rate Card Extractor Service
- * 
- * Automates rate card extraction for Flipkart & Shopsy seller hub.
- * Reuses saved cookies from .runtime/cookies.json or performs 2-step login.
- * Extracts: Commission, Fixed Fee, Collection Fee, Reverse Shipping Slabs.
+ * Legacy Flipkart table parser and category reader.
+ * Live authentication and extraction run only in the reviewed desktop worker.
  */
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import path from 'path';
-import fs from 'fs/promises';
-import { fileURLToPath } from 'url';
 import { getPool } from '../db/index.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-puppeteer.use(StealthPlugin());
-
-import { 
-  getResolvedCookiesPath, 
-  getResolvedCapturesDir, 
-  saveEncryptedCookies, 
-  loadEncryptedCookies 
-} from '../utils/cookieVault.js';
-
-const COOKIES_PATH = getResolvedCookiesPath('flipkart_shopsy');
-const CAPTURES_DIR = getResolvedCapturesDir();
-
 import fsSync from 'fs';
 
 // Chrome executable discovery (Cross-Platform: Windows and Linux)
@@ -61,26 +38,6 @@ export function getChromeExecutablePath() {
 
   if (found) return found;
   return isWin ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' : '/usr/bin/google-chrome';
-}
-
-export async function saveCookies(page) {
-  const cookies = await page.cookies();
-  const cookiesPath = getResolvedCookiesPath('flipkart_shopsy');
-  saveEncryptedCookies(cookiesPath, cookies);
-}
-
-export async function loadCookies(page) {
-  try {
-    const cookiesPath = getResolvedCookiesPath('flipkart_shopsy');
-    const cookies = loadEncryptedCookies(cookiesPath);
-    if (cookies && Array.isArray(cookies) && cookies.length > 0) {
-      await page.setCookie(...cookies);
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -227,8 +184,7 @@ export function parseRateCardTables(tables, vertical, effectiveDate) {
 /**
  * Get distinct Flipkart verticals present in the orders table
  */
-export async function getFlipkartVerticals() {
-  const pool = getPool();
+export async function getFlipkartVerticals(pool = getPool()) {
   try {
     const res = await pool.query(`
       SELECT DISTINCT category 
@@ -238,170 +194,8 @@ export async function getFlipkartVerticals() {
         AND category != ''
       ORDER BY category
     `);
-    const categories = res.rows.map(r => r.category);
-    return categories.length > 0 ? categories : ['ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric'];
-  } catch {
-    return ['ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric'];
-  }
-}
-
-/**
- * Main Scraper Worker Function
- */
-export async function scrapeFlipkartRateCards(options = {}) {
-  const {
-    email = process.env.FLIPKART_EMAIL || 'Vbexports@outlook.com',
-    password = process.env.FK_PASSWORD,
-    headless = 'new',
-    verticals = null,
-    onProgress = null
-  } = options;
-
-  const log = (msg) => {
-    console.log(`[FlipkartRateCard] ${msg}`);
-    if (typeof onProgress === 'function') onProgress(msg);
-  };
-
-  await fs.mkdir(CAPTURES_DIR, { recursive: true });
-
-  log('Launching browser with stealth capabilities...');
-  const browser = await puppeteer.launch({
-    executablePath: getChromeExecutablePath(),
-    headless: headless,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-zygote',
-      '--window-size=1500,1000'
-    ]
-  });
-
-  const allScrapedData = [];
-
-  try {
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1500, height: 1000 });
-
-    log('Checking for active session cookies...');
-    await loadCookies(page);
-
-    await page.goto('https://seller.flipkart.com/index.html#dashboard/home-page', {
-      waitUntil: 'networkidle2',
-      timeout: 45000
-    });
-
-    const isLoggedIn = await page.evaluate(() => {
-      return document.body.innerText.includes('EthnicJunction') || 
-             document.body.innerText.includes('Seller Dashboard') ||
-             document.body.innerText.includes('Logout');
-    });
-
-    if (!isLoggedIn) {
-      log('No active session. Executing 2-step Flipkart login...');
-      await page.goto('https://seller.flipkart.com/', { waitUntil: 'networkidle2', timeout: 45000 });
-      
-      // Click Login button
-      await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button, a'));
-        const l = btns.find(b => b.innerText && b.innerText.trim() === 'Login');
-        if (l) l.click();
-      });
-
-      await page.waitForSelector('input[name="username"]', { visible: true, timeout: 15000 });
-      await page.type('input[name="username"]', email, { delay: 40 });
-
-      // Click Next
-      await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const next = btns.find(b => b.innerText && b.innerText.trim().toLowerCase() === 'next');
-        if (next) next.click();
-      });
-
-      // Wait for password field
-      await page.waitForSelector('input[name="password"], input[type="password"]', { visible: true, timeout: 15000 });
-      await page.type('input[name="password"], input[type="password"]', password, { delay: 40 });
-
-      // Click Login
-      await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const login = btns.find(b => b.innerText && b.innerText.trim().toLowerCase() === 'login');
-        if (login) login.click();
-      });
-
-      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 }).catch(() => null);
-      await new Promise(r => setTimeout(r, 4000));
-      await saveCookies(page);
-      log('Authentication successful. Session cookies saved.');
-    } else {
-      log('Authenticated via active session cookies.');
-      await saveCookies(page);
-    }
-
-    // Determine target verticals
-    const targetVerticals = verticals || await getFlipkartVerticals();
-    log(`Starting extraction for ${targetVerticals.length} verticals: ${targetVerticals.join(', ')}`);
-
-    const effectiveDate = new Date().toISOString().slice(0, 10);
-
-    for (let i = 0; i < targetVerticals.length; i++) {
-      const vert = targetVerticals[i];
-      log(`[${i + 1}/${targetVerticals.length}] Extracting rate card for vertical: "${vert}"...`);
-
-      // We extract both Seller Fulfillment (non-fbf) and Flipkart Fulfillment (fbf)
-      for (const fulfillment of ['non-fbf', 'fbf']) {
-        const queryObj = {
-          marketplace: 'flipkart',
-          fulfillment: fulfillment,
-          date: `${effectiveDate} 12:00:00`,
-          vertical: vert
-        };
-
-        const targetUrl = `https://seller.flipkart.com/index.html#dashboard/payments/rate-card?query=${encodeURIComponent(JSON.stringify(queryObj))}`;
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 35000 });
-        await new Promise(r => setTimeout(r, 4500));
-
-        const docData = await page.evaluate(() => {
-          const tables = Array.from(document.querySelectorAll('table')).map(t => 
-            Array.from(t.querySelectorAll('tr')).map(r => 
-              Array.from(r.querySelectorAll('th, td')).map(c => c.innerText.trim())
-            )
-          );
-          return { tables, rawText: document.body.innerText };
-        });
-
-        if (docData.tables.length > 2) {
-          const parsed = parseRateCardTables(docData.tables, vert, effectiveDate);
-          parsed.fulfilment_type = fulfillment === 'fbf' ? 'FBF' : 'NON_FBF';
-          allScrapedData.push(parsed);
-          log(`  Extracted: ${parsed.commissions.length} comm, ${parsed.fixedFees.length} fixed, ${parsed.reverseShipping.length} rev shipping slabs (${fulfillment})`);
-        } else {
-          log(`  Warning: No rate tables returned for ${vert} (${fulfillment})`);
-        }
-      }
-    }
-
-    // Save full staging capture to disk
-    const captureFile = path.join(CAPTURES_DIR, `flipkart_ratecards_${Date.now()}.json`);
-    await fs.writeFile(captureFile, JSON.stringify(allScrapedData, null, 2));
-    log(`Saved complete staging rate cards to ${captureFile}`);
-
-    return {
-      success: true,
-      count: allScrapedData.length,
-      data: allScrapedData,
-      captureFile
-    };
-
+    return [...new Set(res.rows.map(row => String(row.category || '').trim()).filter(Boolean))];
   } catch (error) {
-    log(`Extraction failed: ${error.message}`);
-    return {
-      success: false,
-      error: error.message
-    };
-  } finally {
-    await browser.close();
-    log('Browser closed cleanly.');
+    throw new Error(`Unable to read configured Flipkart categories from orders: ${error.message}`);
   }
 }

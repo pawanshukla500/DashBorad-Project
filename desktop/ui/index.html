@@ -584,7 +584,7 @@
             <div id="monitor-auth-alert" style="display: none; margin-top: 14px; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--warning); padding: 10px 14px; border-radius: 8px; align-items: center; justify-content: space-between; font-size: 12px; color: #fde68a;">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-size: 16px;">🔐</span>
-                <span><strong>Manual Seller Hub sign-in required:</strong> Sign in yourself in the separate Chrome window opened at <code>https://seller.flipkart.com/</code>. The worker saves the session and reuses it until Seller Hub logs out.</span>
+                <span><strong>Manual Seller Hub sign-in required:</strong> In the Chrome window opened at <code>https://seller.flipkart.com/</code>, click Flipkart’s Login button and finish sign-in. The worker saves the persistent profile after it verifies the dashboard and reuses it until Seller Hub logs out.</span>
               </div>
             </div>
           </div>
@@ -609,7 +609,7 @@
                 <div style="font-size: 42px; margin-bottom: 14px; opacity: 0.7;">🌐</div>
                 <h4 style="font-size: 16px; font-weight: 600; color: #cbd5e1;">External Chrome is ready</h4>
                 <p style="font-size: 13px; max-width: 440px; margin: 8px auto 20px; line-height: 1.5;">
-                  Manual sign-in opens only https://seller.flipkart.com/ in the worker’s persistent Chrome profile. The same profile is reused for future rate-card runs until Seller Hub signs out.
+                  Manual sign-in opens only https://seller.flipkart.com/ in the worker’s persistent Chrome profile. Click Login there; the verified profile is reused for future rate-card runs until Seller Hub signs out.
                 </p>
                 <div style="display: flex; gap: 10px; justify-content: center;">
                   <button class="btn btn-secondary btn-sm" id="btn-monitor-test-open">Launch Flipkart Portal</button>

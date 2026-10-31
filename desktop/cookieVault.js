@@ -237,50 +237,75 @@ export function saveEncryptedCookies(filePath, cookies) {
   fs.chmodSync(filePath, 0o600);
 }
 
+function isPlaintextCookieSnapshot(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    const cookies = Array.isArray(parsed) ? parsed : parsed?.cookies;
+    return Array.isArray(cookies) && cookies.length > 0 && cookies.every(cookie =>
+      cookie && typeof cookie.name === 'string' && typeof cookie.value === 'string' && typeof cookie.domain === 'string'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isEncryptedVaultPayload(raw) {
+  return /^[a-f0-9]{24}:[a-f0-9]{32}:[a-f0-9]+$/i.test(raw);
+}
+
+function legacyCookieCandidates(filePath) {
+  return [...new Set([
+    path.join(path.dirname(filePath), 'cookies.json'),
+    path.join(path.dirname(filePath), '..', 'cookies.json'),
+    path.join(process.cwd(), '.runtime', path.basename(filePath)),
+    path.join(process.cwd(), '.runtime', 'cookies.json'),
+    path.join(__dirname, '..', '.runtime', 'cookies.json'),
+    path.join(__dirname, '.runtime', 'cookies.json')
+  ].map(candidate => path.resolve(candidate)))];
+}
+
+function removePlaintextCookieFallbacks(filePath, candidates) {
+  const target = path.resolve(filePath);
+  for (const candidate of candidates) {
+    if (candidate === target || !fs.existsSync(candidate)) continue;
+    try {
+      const raw = fs.readFileSync(candidate, 'utf8').trim();
+      if (!isEncryptedVaultPayload(raw) && isPlaintextCookieSnapshot(raw)) fs.unlinkSync(candidate);
+    } catch {}
+  }
+}
+
 /**
  * Loads cookies with AES-256-GCM decryption, verifying expiration (30-day vault retention; portal expiry still applies).
  * Stale or expired cookies are purged immediately.
  */
 export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS } = {}) {
   try {
+    const candidates = legacyCookieCandidates(filePath);
+    // Purge plaintext legacy files even if the requested encrypted target
+    // exists; a valid target must not leave an unused plaintext copy behind.
+    removePlaintextCookieFallbacks(filePath, candidates);
     if (!fs.existsSync(filePath)) {
-      const candidates = [
-        path.join(path.dirname(filePath), 'cookies.json'),
-        path.join(path.dirname(filePath), '..', 'cookies.json'),
-        path.join(process.cwd(), '.runtime', path.basename(filePath)),
-        path.join(process.cwd(), '.runtime', 'cookies.json'),
-        path.join(__dirname, '..', '.runtime', 'cookies.json'),
-        path.join(__dirname, '.runtime', 'cookies.json')
-      ];
       for (const cand of candidates) {
-        if (cand !== filePath && fs.existsSync(cand)) {
+        if (cand !== path.resolve(filePath) && fs.existsSync(cand)) {
           try {
             const stat = fs.statSync(cand);
             const raw = fs.readFileSync(cand, 'utf8').trim();
-            if (raw) {
-              let fallbackData = null;
-              if (raw.includes(':')) {
-                try {
-                  const dec = decryptVaultData(raw);
-                  if (dec) fallbackData = JSON.parse(dec);
-                } catch {}
-              }
-              if (!fallbackData) {
-                try {
-                  fallbackData = JSON.parse(raw);
-                } catch {}
-              }
-              const validCookies = extractValidCookies(fallbackData, stat?.mtimeMs || Date.now(), maxAgeMs);
-              if (validCookies) {
-                try {
-                  saveEncryptedCookies(filePath, validCookies);
-                } catch {}
-                return validCookies;
-              } else {
-                // Delete stale candidate file
+            if (!isEncryptedVaultPayload(raw)) {
+              if (isPlaintextCookieSnapshot(raw)) {
                 try { fs.unlinkSync(cand); } catch {}
               }
+              continue;
             }
+            let fallbackData = null;
+            try {
+              const dec = decryptVaultData(raw);
+              if (dec) fallbackData = JSON.parse(dec);
+            } catch {}
+            const validCookies = extractValidCookies(fallbackData, stat?.mtimeMs || Date.now(), maxAgeMs);
+            if (!validCookies) continue;
+            try { saveEncryptedCookies(filePath, validCookies); } catch {}
+            return validCookies;
           } catch {}
         }
       }
@@ -291,16 +316,17 @@ export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_A
     if (!raw) return null;
     let parsed = null;
     // Check if AES-256-GCM serialized format: ivHex:authTagHex:ciphertextHex
-    if (raw.includes(':')) {
+    if (isEncryptedVaultPayload(raw)) {
       try {
         const decrypted = decryptVaultData(raw);
         if (decrypted) parsed = JSON.parse(decrypted);
       } catch {}
     }
     if (!parsed) {
-      try {
-        parsed = JSON.parse(raw);
-      } catch {}
+      // Refuse unencrypted cookie JSON. The Chromium profile is the persistent
+      // session source of truth; a plaintext snapshot must not be replayed.
+      deleteEncryptedCookies(filePath);
+      return null;
     }
     const validCookies = extractValidCookies(parsed, stat?.mtimeMs || Date.now(), maxAgeMs);
     if (!validCookies) {
