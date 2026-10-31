@@ -1509,7 +1509,7 @@ const server = http.createServer(async (req, res) => {
                 onPage: candidate => broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external',
                   marketplace: mpConfig.id, url: candidate.url(), title: 'Seller Hub sign-in tab' }),
                 onState: (_candidate, state) => {
-                  if (state.stage === 'public_return') {
+                  if (state.stage === 'public_return' && state.returnConfirmed === true) {
                     try { writeSellerHubProfileState(profileDir, 'signed_out'); } catch {}
                   }
                   broadcastProgress(`Seller Hub login state: ${state.stage}.`);

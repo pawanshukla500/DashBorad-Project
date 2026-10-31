@@ -64,13 +64,56 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
   const pages = new Set();
   const reportedStates = new Map();
   const loginFlowPages = new Set();
+  const flowOriginTargets = new Set();
+  const flowDescendantPages = new Set();
+  const flowAncestorPages = new Set();
+  const pageByTarget = new Map();
   const publicReturnSince = new Map();
+  const targetOf = page => {
+    try { return page.target?.() || null; } catch { return null; }
+  };
   const addPage = page => {
     if (!page || page.isClosed?.() || pages.has(page)) return;
     pages.add(page);
+    const target = targetOf(page);
+    if (target) pageByTarget.set(target, page);
     if (page !== initialPage) {
       try { onPage(page); } catch {}
     }
+  };
+
+  const rememberFlowPage = page => {
+    loginFlowPages.add(page);
+    let target = targetOf(page);
+    if (target) flowOriginTargets.add(target);
+    const visited = new Set(target ? [target] : []);
+    while (target) {
+      let opener;
+      try { opener = target.opener?.(); } catch {}
+      if (!opener || visited.has(opener)) break;
+      visited.add(opener);
+      const openerPage = pageByTarget.get(opener);
+      if (openerPage) flowAncestorPages.add(openerPage);
+      target = opener;
+    }
+  };
+
+  const rememberFlowDescendants = () => {
+    let changed;
+    do {
+      changed = false;
+      for (const page of pages) {
+        const target = targetOf(page);
+        if (!target || flowOriginTargets.has(target)) continue;
+        let opener;
+        try { opener = target.opener?.(); } catch {}
+        if (opener && flowOriginTargets.has(opener)) {
+          flowOriginTargets.add(target);
+          flowDescendantPages.add(page);
+          changed = true;
+        }
+      }
+    } while (changed);
   };
   addPage(initialPage);
 
@@ -125,15 +168,22 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       const relevantStates = pageStates.filter(item => item.state.surface === 'flipkart');
       const activeLoginFlow = relevantStates.some(({ state }) => state.loginFormVisible || state.challengeVisible);
       for (const { page, state } of relevantStates) {
-        if (state.loginFormVisible || state.challengeVisible) loginFlowPages.add(page);
+        if (state.loginFormVisible || state.challengeVisible) rememberFlowPage(page);
       }
+      rememberFlowDescendants();
 
-      // A retained public tab is common during Seller Hub's cross-tab login.
-      // Only treat a public page as a failed return if that same page hosted
-      // the observed login flow, and no other tab still shows an active step.
+      const flowTransitionPending = relevantStates.some(({ page, state }) => loginFlowPages.has(page) &&
+        !state.publicLanding && !state.authenticated && !state.loginFormVisible && !state.challengeVisible);
+
+      // Ignore pre-existing unrelated public tabs, but follow popup tabs and
+      // opener pages linked to the observed login flow. This covers Seller Hub
+      // returns that land in a new tab after the form tab closes.
       const returnedPages = new Set(!activeLoginFlow
         ? relevantStates
-          .filter(({ page, state }) => loginFlowPages.has(page) && state.publicLanding)
+          .filter(({ page, state }) => state.publicLanding && (
+            loginFlowPages.has(page) || flowDescendantPages.has(page) ||
+            (flowAncestorPages.has(page) && !flowTransitionPending)
+          ))
           .map(({ page }) => page)
         : []);
       for (const page of publicReturnSince.keys()) {
@@ -143,16 +193,19 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
         if (!publicReturnSince.has(page)) publicReturnSince.set(page, now());
       }
 
+      const stableReturnPages = new Set([...returnedPages].filter(page =>
+        now() - publicReturnSince.get(page) >= publicReturnGraceMs));
       for (const { page, state } of pageStates) {
-        const stage = returnedPages.has(page) ? 'public_return' : state.stage;
-        const stateForUi = { ...state, stage };
+        const confirmedReturn = stableReturnPages.has(page);
+        const stage = confirmedReturn ? 'public_return' : returnedPages.has(page) ? 'public_return_pending' : state.stage;
+        const stateForUi = { ...state, stage, ...(confirmedReturn ? { returnConfirmed: true } : {}) };
         const signature = JSON.stringify(stateForUi);
         if (reportedStates.get(page) === signature) continue;
         reportedStates.set(page, signature);
         try { onState(page, stateForUi); } catch {}
       }
 
-      if ([...publicReturnSince.values()].some(since => now() - since >= publicReturnGraceMs)) {
+      if (stableReturnPages.size > 0) {
         throw new Error('Seller Hub returned to its public landing page after the sign-in form closed. No authenticated dashboard was detected; review the login result in Chrome. Nothing was staged.');
       }
 

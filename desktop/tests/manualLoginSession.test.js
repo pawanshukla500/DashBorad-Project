@@ -268,6 +268,62 @@ test('Seller Hub login watcher follows authentication into another tab in the sa
   assert.equal(pageReads, 2, 'all open Chrome pages must be polled after the one-second interval');
 });
 
+test('Seller Hub login watcher recognizes a public return opened from the login tab', async () => {
+  let now = 0;
+  let loginClosed = false;
+  const rootTarget = { opener: () => undefined };
+  const loginTarget = { opener: () => rootTarget };
+  const returnTarget = { opener: () => loginTarget };
+  const rootPage = {
+    target: () => rootTarget,
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true }
+      : false
+  };
+  const loginPage = {
+    target: () => loginTarget,
+    isClosed: () => loginClosed,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false }
+      : false
+  };
+  const returnPage = {
+    target: () => returnTarget,
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true }
+      : false
+  };
+  let pageReads = 0;
+  const stagesByPage = new Map();
+
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => {
+      if (++pageReads > 1) loginClosed = true;
+      return pageReads === 1 ? [rootPage, loginPage] : [rootPage, loginPage, returnPage];
+    } }, {
+      initialPage: rootPage,
+      timeoutMs: 12000,
+      pollMs: 1000,
+      publicReturnGraceMs: 2000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; },
+      onState: (page, state) => {
+        if (!stagesByPage.has(page)) stagesByPage.set(page, []);
+        stagesByPage.get(page).push(state);
+      }
+    }),
+    /returned to its public landing page.*Nothing was staged/
+  );
+
+  const returnStages = stagesByPage.get(returnPage).map(state => state.stage);
+  assert(returnStages.includes('public_return_pending'));
+  assert(returnStages.includes('public_return'));
+  assert.equal(stagesByPage.get(returnPage).find(state => state.stage === 'public_return')?.returnConfirmed, true,
+    'the caller receives an explicit confirmation only after the stable-return grace period');
+});
+
 test('Seller Hub login watcher preserves caller-supplied authentication probes', async () => {
   let legacyChecks = 0;
   const page = {
@@ -400,6 +456,7 @@ test('Seller Hub login watcher reports a stable return to the public page after 
   };
   const intervals = [];
   const progress = [];
+  const observations = [];
 
   await assert.rejects(
     waitForFlipkartAuthenticatedPage({ pages: async () => [publicPage] }, {
@@ -409,16 +466,54 @@ test('Seller Hub login watcher reports a stable return to the public page after 
       publicReturnGraceMs: 2000,
       now: () => now,
       wait: async milliseconds => { intervals.push(milliseconds); now += milliseconds; },
-      onState: (_page, state) => progress.push(state.stage)
+      onState: (page, state) => { progress.push(state.stage); observations.push({ page, state }); }
     }),
     /returned to its public landing page.*Nothing was staged/
   );
 
   assert.ok(progress.includes('username'));
   assert.ok(progress.includes('password'));
+  assert.ok(progress.includes('public_return_pending'));
   assert.ok(progress.includes('public_return'));
+  assert.ok(progress.indexOf('public_return_pending') < progress.indexOf('public_return'),
+    'the profile must not be marked signed out until the return remains stable');
+  assert.equal(observations.find(item => item.state.stage === 'public_return')?.state.returnConfirmed, true);
   assert.ok(intervals.length > 0 && intervals.every(milliseconds => milliseconds >= 1000),
     'login state checks must remain at least one second apart');
+});
+
+test('a verification challenge cancels an unconfirmed public-return timer', async () => {
+  let now = 0;
+  let reads = 0;
+  const states = [
+    { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false },
+    { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true },
+    { surface:'flipkart', stage:'challenge', authenticated:false, loginFormVisible:false, challengeVisible:true, publicLanding:false }
+  ];
+  const page = {
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? states[Math.min(reads++, states.length - 1)]
+      : false
+  };
+  const reported = [];
+
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => [page] }, {
+      initialPage: page,
+      timeoutMs: 5000,
+      pollMs: 1000,
+      publicReturnGraceMs: 2000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; },
+      onState: (_page, state) => reported.push(state)
+    }),
+    error => /No authenticated dashboard was detected/.test(error.message) && !/returned to its public landing page/.test(error.message)
+  );
+
+  assert(reported.some(state => state.stage === 'public_return_pending'));
+  assert.equal(reported.some(state => state.stage === 'public_return' && state.returnConfirmed === true), false,
+    'the signed-out marker must not be emitted once a verification challenge resumes');
 });
 
 test('Seller Hub login watcher keeps waiting when a verification prompt is visible', async () => {
@@ -553,6 +648,10 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'the public landing page must be followed by a same-origin dashboard session check');
   assert.match(mainSource, /invokeProgressSafely\(onProgress, message/,
     'async progress callbacks must be observed without creating unhandled rejections');
+  assert.match(mainSource, /state\.stage === 'public_return' && state\.returnConfirmed === true[\s\S]*?writeSellerHubProfileState/,
+    'the desktop must record sign-out only after the public return remains stable');
+  assert.match(standaloneSource, /state\.stage === 'public_return' && state\.returnConfirmed === true[\s\S]*?writeSellerHubProfileState/,
+    'the standalone worker must record sign-out only after the public return remains stable');
   assert.match(mainSource, /userDataDir: profileDir/);
   assert.match(mainSource, /page\.goto\(manualLoginUrl, \{ waitUntil: 'domcontentloaded'/);
   const externalLoginStart = mainSource.indexOf('const browserLease = await externalBrowserSession.acquire');

@@ -783,11 +783,12 @@ function reportFlipkartLoginState(state, { marketplace = 'flipkart_shopsy', oper
     username: 'Seller Hub is waiting for the seller account ID, email, or phone number. Enter it and click Next.',
     password: 'Seller Hub is waiting for the account password. Submit using Login in the sign-in modal.',
     challenge: 'Seller Hub requested an extra verification step. Complete it manually in Chrome; extraction continues only after dashboard verification.',
+    public_return_pending: 'Seller Hub returned to its public page. Checking whether sign-in is still completing in another tab...',
     public_return: 'Seller Hub returned to its public landing page after the sign-in form closed. No authenticated session was detected; nothing was staged.'
   };
   const message = messages[state?.stage];
   if (!message) return;
-  if (state.stage === 'public_return' && profileDir) {
+  if (state.stage === 'public_return' && state.returnConfirmed === true && profileDir) {
     try { writeSellerHubProfileState(profileDir, 'signed_out'); } catch (error) {
       desktopLogger.warn('portal.login.profile_state_write_failed', 'Could not record the Seller Hub signed-out state.', {
         marketplace, operation, errorName: error?.name || 'Error'
