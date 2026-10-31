@@ -91,6 +91,9 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   const sellerHubLoginStart = rendererSource.indexOf("btnInteractiveLogin?.addEventListener('click'");
   const sellerHubLoginEnd = rendererSource.indexOf('// Reset session cookies', sellerHubLoginStart);
   const sellerHubLoginHandler = rendererSource.slice(sellerHubLoginStart, sellerHubLoginEnd);
+  const externalExpiryStart = mainSource.indexOf('const externalSessionExpiry = async (page)');
+  const externalRuntimeStart = mainSource.indexOf('const baseExternalRuntime', externalExpiryStart);
+  const externalExpiryHandler = mainSource.slice(externalExpiryStart, externalRuntimeStart);
   const clearSessionStart = standaloneSource.indexOf("if (pathname === '/api/clear-session'");
   const clearSessionEnd = standaloneSource.indexOf('// POST /api/open-excel', clearSessionStart);
   const clearSessionRoute = standaloneSource.slice(clearSessionStart, clearSessionEnd);
@@ -103,6 +106,8 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(mainSource, /manager\.open\(\{ waitMs \}\)/);
   assert.match(mainSource, /captureScrapeFailure\(page, DIAGNOSTICS_DIR,[\s\S]*?operation: 'manual_login'/,
     'manual-login failures must use the redacted, bounded diagnostic screenshot path');
+  assert.match(externalExpiryHandler, /if \(!effectiveConfig\.visible\)[\s\S]*?openManualFlipkartLogin\(\{ onProgress, waitMs: timeoutMs \}\)/,
+    'background session expiry must open a visible manual sign-in window instead of waiting on headless Chrome');
   assert.match(workerEntry, /visible: true/);
   assert.match(standaloneSource, /userDataDir: profileDir/);
   assert.match(standaloneSource, /mpConfig\.id === 'flipkart_shopsy'[\s\S]*?FLIPKART_MANUAL_LOGIN_URL/);

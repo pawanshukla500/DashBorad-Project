@@ -1205,9 +1205,14 @@ async function executeScrapeProcess(config, onProgress) {
       }
 
       const externalSessionExpiry = async (page) => {
-        onProgress('🔐 Seller Hub sign-in is required. Complete it manually in the visible Seller Hub browser window.');
         const startTime = Date.now();
         const timeoutMs = 30 * 60 * 1000;
+        if (!effectiveConfig.visible) {
+          onProgress(`🔐 Seller Hub sign-in is required. Opening the separate manual sign-in window at ${FLIPKART_MANUAL_LOGIN_URL}.`);
+          const login = await openManualFlipkartLogin({ onProgress, waitMs: timeoutMs });
+          return login.success === true && login.waitingForManualLogin !== true;
+        }
+        onProgress('🔐 Seller Hub sign-in is required. Complete it manually in the visible Seller Hub browser window.');
         while (Date.now() - startTime < timeoutMs) {
           await new Promise((r) => setTimeout(r, 1000));
           try {
