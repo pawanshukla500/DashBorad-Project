@@ -5,7 +5,7 @@ import { parsePortalRateSnapshot } from './portalRates.js';
 import { captureScrapeFailure } from './scrapeDiagnostics.js';
 import path from 'node:path';
 import { buildFsnPlan } from './fsnPlan.js';
-import { getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js';
+import { canOpenVisibleBrowser, getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js';
 import { getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, deleteEncryptedCookies } from './cookieVault.js';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,7 +40,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
   executablePath,
   browserProfileDir = config.browserProfileDir,
   delay = wait,
-  onSessionExpiry
+  onSessionExpiry,
+  canShowBrowser = canOpenVisibleBrowser
 } = {}) {
   const marketplace = config.marketplace || 'both';
   if (!['both', 'flipkart_shopsy', 'flipkart', 'shopsy'].includes(marketplace)) {
@@ -49,6 +50,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
   let browser;
   let currentPage;
   let captureHandle;
+  let page;
+  let safeGoto;
   const context = { marketplace, stage: 'launch' };
   try {
     const profileDir = browserProfileDir;
@@ -57,26 +60,43 @@ export async function scrapeFlipkartRateCards(config = {}, {
     // truth, so that directory cannot suppress a valid encrypted cookie import.
     const hasPersistentProfile = hasPersistentProfileSession(profileDir);
     if (profileDir && !runtime?.partition) fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-    browser = await runtime.launch({
-      executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
-      headless: config.visible ? false : 'new',
-      defaultViewport: config.visible ? null : { width: 1500, height: 1000 },
-      ...(!runtime?.partition && profileDir ? { userDataDir: profileDir } : {}),
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        ...(config.visible ? ['--start-maximized'] : ['--window-size=1500,1000'])
-      ]
-    });
-    const rawPage = (await browser.pages())[0] || await browser.newPage();
-    currentPage = rawPage;
-    captureHandle = attachRateCardCapture(rawPage);
-    const page = new Proxy(rawPage, { get(target, key) {
-      const value = target[key];
-      if (typeof value !== 'function') return value;
-      if (!['goto', 'reload', 'evaluate', 'waitForSelector', 'type', 'setCookie'].includes(key)) return value.bind(target);
-      return async (...args) => { await delay(1000); return value.apply(target, args); };
-    }});
+    const launchBrowser = async visible => {
+      browser = await runtime.launch({
+        executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
+        headless: visible ? false : 'new',
+        defaultViewport: visible ? null : { width: 1500, height: 1000 },
+        ...(!runtime?.partition && profileDir ? { userDataDir: profileDir } : {}),
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          ...(visible ? ['--start-maximized'] : ['--window-size=1500,1000'])
+        ]
+      });
+      const rawPage = (await browser.pages())[0] || await browser.newPage();
+      currentPage = rawPage;
+      captureHandle = attachRateCardCapture(rawPage);
+      page = new Proxy(rawPage, { get(target, key) {
+        const value = target[key];
+        if (typeof value !== 'function') return value;
+        if (!['goto', 'reload', 'evaluate', 'waitForSelector', 'type', 'setCookie'].includes(key)) return value.bind(target);
+        return async (...args) => { await delay(1000); return value.apply(target, args); };
+      }});
+      safeGoto = async (targetUrl, options = {}) => {
+        try {
+          return await page.goto(targetUrl, { waitUntil: 'load', timeout: 35000, ...options });
+        } catch (navErr) {
+          const msg = String(navErr?.message || navErr);
+          if (msg.includes('ERR_ABORTED') || navErr?.code === 'ERR_ABORTED' || navErr?.errno === -3) {
+            return { ok: true, redirected: true };
+          }
+          if (msg.includes('quiet network state')) {
+            return { ok: true, quietTimeout: true };
+          }
+          throw navErr;
+        }
+      };
+    };
+    await launchBrowser(Boolean(config.visible));
     const cookieFile = fs.existsSync(cookiesPath) ? cookiesPath : fallbackCookiesPath;
     // A persistent Chromium profile is the session source of truth. Replaying
     // an old cookie snapshot after a Seller Hub logout could silently undo it.
@@ -89,21 +109,6 @@ export async function scrapeFlipkartRateCards(config = {}, {
         deleteEncryptedCookies(cookieFile);
       }
     }
-    const safeGoto = async (targetUrl, options = {}) => {
-      try {
-        return await page.goto(targetUrl, { waitUntil: 'load', timeout: 35000, ...options });
-      } catch (navErr) {
-        const msg = String(navErr?.message || navErr);
-        if (msg.includes('ERR_ABORTED') || navErr?.code === 'ERR_ABORTED' || navErr?.errno === -3) {
-          return { ok: true, redirected: true };
-        }
-        if (msg.includes('quiet network state')) {
-          return { ok: true, quietTimeout: true };
-        }
-        throw navErr;
-      }
-    };
-
     // Always begin on the public Seller Hub landing page. The operator signs
     // in manually; only after verified authentication do we enter the portal.
     await onProgress('Connecting to Flipkart Seller Hub...');
@@ -119,7 +124,22 @@ export async function scrapeFlipkartRateCards(config = {}, {
     }
     if (!authenticated) {
       if (typeof onSessionExpiry !== 'function') throw new Error('Seller Hub login required. Open the manual sign-in window at seller.flipkart.com and retry.');
-      const resumed = await onSessionExpiry(page);
+      let visibleForLogin = Boolean(config.visible || runtime?.partition);
+      if (!visibleForLogin) {
+        if (!canShowBrowser()) {
+          throw new Error('Seller Hub login required. This worker has no desktop display for manual sign-in; start it in the desktop session and retry. Nothing was staged.');
+        }
+        captureHandle?.detach();
+        captureHandle = null;
+        await browser.close();
+        browser = null;
+        currentPage = null;
+        await launchBrowser(true);
+        visibleForLogin = true;
+        await onProgress('Seller Hub session expired. Reopened the same persistent Chrome profile visibly for manual sign-in.');
+        await safeGoto(FLIPKART_MANUAL_LOGIN_URL, { waitUntil: 'load', timeout: 35000 });
+      }
+      const resumed = await onSessionExpiry(page, { visible: visibleForLogin });
       if (!resumed) throw new Error('Manual Seller Hub login is incomplete. Nothing was staged.');
       const refreshedCookies = loadEncryptedCookies(cookiesPath) || loadEncryptedCookies(fallbackCookiesPath);
       if (refreshedCookies?.length) await page.setCookie(...refreshedCookies);
@@ -135,6 +155,9 @@ export async function scrapeFlipkartRateCards(config = {}, {
     if (sessionCookies?.length) {
       saveEncryptedCookies(cookiesPath, sessionCookies);
       saveEncryptedCookies(fallbackCookiesPath, sessionCookies);
+    } else {
+      deleteEncryptedCookies(cookiesPath);
+      deleteEncryptedCookies(fallbackCookiesPath);
     }
     const plan = buildFsnPlan(config.fsnCatalog, { marketplace, brand: config.brand, verticals: config.scopeVerticals, requiredVerticals: config.requiredVerticals });
     const effectiveDate = new Date().toISOString().slice(0, 10);

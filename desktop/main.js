@@ -12,6 +12,7 @@ import {
   saveEncryptedCookies,
   loadEncryptedCookies,
   deleteEncryptedCookies,
+  clearEncryptedCookieSnapshot,
   decryptMarketplaceCredential,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
@@ -1204,14 +1205,10 @@ async function executeScrapeProcess(config, onProgress) {
         }
       }
 
-      const externalSessionExpiry = async (page) => {
+      const externalSessionExpiry = async (page, { visible = false } = {}) => {
+        if (!visible) return false;
         const startTime = Date.now();
         const timeoutMs = 30 * 60 * 1000;
-        if (!effectiveConfig.visible) {
-          onProgress(`🔐 Seller Hub sign-in is required. Opening the separate manual sign-in window at ${FLIPKART_MANUAL_LOGIN_URL}.`);
-          const login = await openManualFlipkartLogin({ onProgress, waitMs: timeoutMs });
-          return login.success === true && login.waitingForManualLogin !== true;
-        }
         onProgress('🔐 Seller Hub sign-in is required. Complete it manually in the visible Seller Hub browser window.');
         while (Date.now() - startTime < timeoutMs) {
           await new Promise((r) => setTimeout(r, 1000));
@@ -1784,9 +1781,9 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
     const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
     const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
     const cookiesPath = getMarketplaceCookiesPath(targetId);
-    deleteEncryptedCookies(cookiesPath);
+    clearEncryptedCookieSnapshot(cookiesPath);
     if (isFlipkart) {
-      deleteEncryptedCookies(COOKIES_PATH);
+      clearEncryptedCookieSnapshot(COOKIES_PATH);
     }
     let partitionErr = null;
     try {
@@ -1802,7 +1799,11 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
       partitionErr = err.message;
     }
     if (isFlipkart) {
-      try { fs.rmSync(getMarketplaceBrowserProfilePath(targetId), { recursive: true, force: true }); }
+      try {
+        const profilePath = getMarketplaceBrowserProfilePath(targetId);
+        fs.rmSync(profilePath, { recursive: true, force: true });
+        if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent Seller Hub browser profile.');
+      }
       catch (err) { partitionErr = partitionErr || err.message; }
     }
     if (partitionErr) {

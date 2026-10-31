@@ -189,29 +189,32 @@ export function createManualLoginWindowManager({
     };
     watcher = currentWatcher;
 
+    const isCurrent = () => !settled && watcher === currentWatcher && isAlive(window);
     const check = async () => {
       if (checking || settled) return;
       checking = true;
       try {
-        if (!isAlive(window)) {
+        if (!isCurrent()) {
           currentWatcher.finish({ success: false, error: 'Seller Hub sign-in window is no longer available.' });
           return;
         }
-        if (await isAuthenticated(window.webContents)) {
-          const cookies = await readCookies(portalSession);
-          await saveCookies(Array.isArray(cookies) ? cookies : []);
-          const result = { success: true, cookiesCount: Array.isArray(cookies) ? cookies.length : 0, persistentSession: true };
-          safeLog(log, 'info', 'portal.login_window.authenticated', { cookieCount: result.cookiesCount });
-          safeNotify(onState, currentState(window, {
-            active: false,
-            status: 'completed',
-            sessionSaved: true,
-            cookiesCount: result.cookiesCount,
-            progressMessage: 'Seller Hub session saved. You can close this window; the worker will reuse the persistent session.'
-          }));
-          currentWatcher.finish(result);
-          return;
-        }
+        const authenticated = await isAuthenticated(window.webContents);
+        if (!authenticated || !isCurrent()) return;
+        const cookies = await readCookies(portalSession);
+        if (!isCurrent()) return;
+        await saveCookies(Array.isArray(cookies) ? cookies : []);
+        if (!isCurrent()) return;
+        const result = { success: true, cookiesCount: Array.isArray(cookies) ? cookies.length : 0, persistentSession: true };
+        safeLog(log, 'info', 'portal.login_window.authenticated', { cookieCount: result.cookiesCount });
+        safeNotify(onState, currentState(window, {
+          active: false,
+          status: 'completed',
+          sessionSaved: true,
+          cookiesCount: result.cookiesCount,
+          progressMessage: 'Seller Hub session saved. You can close this window; the worker will reuse the persistent session.'
+        }));
+        currentWatcher.finish(result);
+        return;
       } catch (error) {
         safeLog(log, 'warn', 'portal.login_window.auth_check_retry', { message: error?.message || String(error) });
       } finally {
@@ -248,6 +251,9 @@ export function createManualLoginWindowManager({
   return {
     open,
     getWindow: () => isAlive(loginWindow) ? loginWindow : null,
-    close: () => { if (isAlive(loginWindow)) loginWindow.close(); }
+    close: () => {
+      watcher?.finish({ success: false, error: 'Seller Hub sign-in was cancelled.' });
+      if (isAlive(loginWindow)) loginWindow.close();
+    }
   };
 }

@@ -11,7 +11,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
-import { getBrowserRuntime, withBrowserTask } from './browserRuntime.js';
+import { canOpenVisibleBrowser, getBrowserRuntime, withBrowserTask } from './browserRuntime.js';
 const puppeteer = getBrowserRuntime();
 
 import { 
@@ -26,6 +26,7 @@ import {
   saveEncryptedCookies,
   loadEncryptedCookies,
   deleteEncryptedCookies,
+  clearEncryptedCookieSnapshot,
   decryptMarketplaceCredential,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
@@ -379,10 +380,11 @@ const serverWorker = createWorkerEngine({
     try {
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, parameters: job.parameters });
       const fsnCatalog = (await fetchBrandCatalogFromApi(session)).catalog;
-      const result = await withBrowserTask(async () => scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace), visible: true, browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace) }, {
+      const result = await withBrowserTask(async () => scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace), visible: canOpenVisibleBrowser(), browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace) }, {
         onProgress: broadcastProgress,
         browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace),
         onSessionExpiry: async page => {
+          if (!canOpenVisibleBrowser()) return false;
           broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible Chrome window at seller.flipkart.com.');
           try {
             await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
@@ -1575,11 +1577,13 @@ const server = http.createServer(async (req, res) => {
           return sendJson(409, { success: false, error: 'A browser task is running. Finish login or extraction before clearing its Seller Hub session.' });
         }
         const cleared = await withBrowserTask(async () => {
-          deleteEncryptedCookies(getMarketplaceCookiesPath(targetId));
+          clearEncryptedCookieSnapshot(getMarketplaceCookiesPath(targetId));
           const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
           if (isFlipkart) {
-            deleteEncryptedCookies(COOKIES_PATH);
-            fs.rmSync(getMarketplaceBrowserProfilePath(targetId), { recursive: true, force: true });
+            clearEncryptedCookieSnapshot(COOKIES_PATH);
+            const profilePath = getMarketplaceBrowserProfilePath(targetId);
+            fs.rmSync(profilePath, { recursive: true, force: true });
+            if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent Seller Hub browser profile.');
           }
           return { success: true, message: `Session data cleared for ${targetId}` };
         });

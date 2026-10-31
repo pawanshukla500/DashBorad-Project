@@ -24,6 +24,11 @@ export function requireChromeExecutable() {
   return executable;
 }
 
+export function canOpenVisibleBrowser() {
+  if (process.platform !== 'linux') return true;
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
 export async function withBrowserTask(task) {
   if (withBrowserTask.busy) {
     return { success: false, error: 'A browser task is already running. Finish login or extraction before starting another.' };

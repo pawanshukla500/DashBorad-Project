@@ -154,6 +154,30 @@ export function deleteEncryptedCookies(filePath) {
 }
 
 /**
+ * Removes a saved cookie snapshot and fails closed if an existing file remains.
+ * Reset-session flows use this before deleting a browser profile so a stale
+ * encrypted snapshot can never be silently restored on the next launch.
+ */
+export function clearEncryptedCookieSnapshot(filePath, { fsModule = fs, remove = deleteEncryptedCookies } = {}) {
+  if (!filePath) throw new Error('Cookie snapshot path is required.');
+  const exists = () => {
+    try {
+      fsModule.lstatSync(filePath);
+      return true;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  };
+  if (!exists()) return true;
+  remove(filePath);
+  if (exists()) {
+    throw new Error(`Could not remove the saved cookie snapshot ${path.basename(filePath)}.`);
+  }
+  return true;
+}
+
+/**
  * Checks if a cookie array or saved session has expired.
  */
 export function areCookiesExpired(cookies, maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS, savedAt = null) {

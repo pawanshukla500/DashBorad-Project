@@ -15,6 +15,7 @@ export {
   saveEncryptedCookies, 
   loadEncryptedCookies,
   deleteEncryptedCookies,
+  clearEncryptedCookieSnapshot,
   areCookiesExpired,
   DEFAULT_MAX_COOKIE_AGE_MS,
   decryptMarketplaceCredential
