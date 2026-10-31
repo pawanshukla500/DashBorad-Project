@@ -1,6 +1,26 @@
 import { isFlipkartAuthenticated } from './portalSession.js';
 
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const delay = (ms, signal) => new Promise((resolve, reject) => {
+  if (signal?.aborted) {
+    const error = new Error('Seller Hub sign-in monitoring was cancelled.');
+    error.name = 'AbortError';
+    reject(error);
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    signal?.removeEventListener('abort', abort);
+    resolve();
+  }, ms);
+  const abort = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+    const error = new Error('Seller Hub sign-in monitoring was cancelled.');
+    error.name = 'AbortError';
+    reject(error);
+  };
+  signal?.addEventListener('abort', abort, { once: true });
+});
 
 /**
  * A Seller Hub sign-in may leave the public landing page open while the
@@ -15,7 +35,8 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
   isAuthenticated = isFlipkartAuthenticated,
   wait = delay,
   now = Date.now,
-  onPage = () => {}
+  onPage = () => {},
+  signal
 } = {}) {
   if (!browser || typeof browser.pages !== 'function' || !initialPage || typeof initialPage.evaluate !== 'function') {
     throw new Error('Seller Hub sign-in monitoring requires the active browser and its initial page.');
@@ -36,6 +57,11 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
 
   const deadline = now() + timeoutMs;
   do {
+    if (signal?.aborted) {
+      const error = new Error('Seller Hub sign-in monitoring was cancelled.');
+      error.name = 'AbortError';
+      throw error;
+    }
     try {
       for (const page of await browser.pages()) addPage(page);
     } catch {
@@ -45,7 +71,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
     let checkedPage = false;
     for (const page of pages) {
       if (page.isClosed?.()) continue;
-      if (checkedPage) await wait(pollMs);
+      if (checkedPage) await wait(pollMs, signal);
       if (now() >= deadline) break;
       checkedPage = true;
       try {
@@ -56,7 +82,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
     }
 
     if (now() >= deadline) break;
-    await wait(pollMs);
+    await wait(pollMs, signal);
   } while (now() <= deadline);
 
   throw new Error('Manual Seller Hub sign-in timed out. No authenticated dashboard was detected in any open Chrome tab. Complete sign-in in the worker Chrome window and try again.');

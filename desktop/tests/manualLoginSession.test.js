@@ -130,6 +130,20 @@ test('Seller Hub login watcher explains when no authenticated dashboard appears'
   );
 });
 
+test('Seller Hub login watcher cancels its one-second readiness wait when Chrome closes', async () => {
+  const controller = new AbortController();
+  const publicPage = { isClosed: () => false, evaluate: async () => false };
+  const monitoring = waitForFlipkartAuthenticatedPage({ pages: async () => [publicPage] }, {
+    initialPage: publicPage,
+    timeoutMs: 30 * 60 * 1000,
+    pollMs: 1000,
+    signal: controller.signal
+  });
+
+  controller.abort();
+  await assert.rejects(monitoring, error => error.name === 'AbortError');
+});
+
 test('manual Seller Hub window opens only at the root and saves cookies after manual authentication', async () => {
   const harness = manualLoginHarness();
   const completion = harness.manager.open({ waitMs: 5000 });

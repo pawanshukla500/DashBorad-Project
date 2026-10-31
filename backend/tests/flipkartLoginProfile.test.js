@@ -80,7 +80,9 @@ describe('Flipkart persistent Seller Hub login', () => {
     expect(helper).toContain('FLIPKART_MANUAL_LOGIN_URL');
     expect(helper).toContain('userDataDir: profileDir');
     expect(helper).toContain('Click Login');
-    expect(helper).toContain('isFlipkartAuthenticated');
+    expect(helper).toContain('waitForFlipkartAuthenticatedPage(browser');
+    expect(helper).toContain('onPage: observePage');
+    expect(helper).toContain('loginMonitorAbort.abort()');
     expect(helper).not.toMatch(/FK_ID|FK_PASSWORD|cookies\.json|page\.setCookie|referral_url/);
   });
 
