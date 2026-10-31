@@ -16,11 +16,12 @@ export function isFlipkartAuthenticated() {
   const visible = el => el.getClientRects().length > 0 &&
     getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none';
   const visibleInputs = Array.from(document.querySelectorAll('input')).filter(visible);
+  const inputHints = el => [el.name, el.id, el.placeholder, el.getAttribute?.('aria-label')].join(' ');
   if (visibleInputs.some(el => String(el.type || '').toLowerCase() === 'password' ||
       String(el.name || '').toLowerCase() === 'username' ||
       String(el.autocomplete || '').toLowerCase() === 'one-time-code' ||
       /(?:^|[_\s-])otp(?:$|[_\s-])/i.test(String(el.name || '') + ' ' + String(el.id || '')) ||
-      /captcha/i.test(String(el.name || '') + ' ' + String(el.id || '')))) return false;
+      /captcha|recaptcha/i.test(inputHints(el)))) return false;
   if (Array.from(document.querySelectorAll('iframe')).some(el => visible(el) && /captcha|recaptcha/i.test(String(el.src || el.getAttribute('src') || '')))) return false;
   const controls = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(visible);
   if (controls.some(el => /^(log\s*in|sign\s*in)$/i.test(el.innerText.trim()))) return false;
@@ -47,7 +48,7 @@ export function inspectFlipkartLoginState() {
   if (!flipkartHost) {
     return {
       surface: 'other', host, path: location.pathname, stage: 'other',
-      authenticated: false, loginFormVisible: false, challengeVisible: false, publicLanding: false
+      authenticated: false, loginFormVisible: false, challengeVisible: false, captchaInputVisible: false, publicLanding: false
     };
   }
 
@@ -57,12 +58,14 @@ export function inspectFlipkartLoginState() {
     String(el.autocomplete || '').toLowerCase() === 'username');
   const otpVisible = inputs.some(el => String(el.autocomplete || '').toLowerCase() === 'one-time-code' ||
     /(?:^|[_\s-])otp(?:$|[_\s-])/i.test(String(el.name || '') + ' ' + String(el.id || '')));
+  const captchaInputVisible = inputs.some(el =>
+    /captcha|recaptcha/i.test([el.name, el.id, el.placeholder, el.getAttribute?.('aria-label')].join(' ')));
   const captchaWidgetVisible = Array.from(document.querySelectorAll('iframe')).some(el =>
     visible(el) && /captcha|recaptcha/i.test(String(el.src || el.getAttribute('src') || '')));
   const modalText = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], .form-modal'))
     .filter(visible).map(el => String(el.innerText || '').toLowerCase()).join(' ');
   const challengeCopyVisible = /verify you are human|one[ -]?time password|verification code|captcha/i.test(modalText);
-  const challengeVisible = otpVisible || captchaWidgetVisible || challengeCopyVisible;
+  const challengeVisible = otpVisible || captchaInputVisible || captchaWidgetVisible || challengeCopyVisible;
   const controls = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(visible);
   const hasLoginControl = controls.some(el => /^(log\s*in|sign\s*in)$/i.test(String(el.innerText || '').trim()));
   const dashboard = host === 'seller.flipkart.com' && location.pathname === '/index.html' &&
@@ -82,6 +85,6 @@ export function inspectFlipkartLoginState() {
 
   return {
     surface: 'flipkart', host, path: location.pathname, stage, authenticated,
-    loginFormVisible, usernameVisible, passwordVisible, challengeVisible, publicLanding
+    loginFormVisible, usernameVisible, passwordVisible, captchaInputVisible, challengeVisible, publicLanding
   };
 }

@@ -32,6 +32,7 @@ test('public Seller Hub, visible login and OTP challenges never count as authent
   assert.equal(check({...route,controls:[element('Home','#dashboard/home-page'),element('Advertising','#dashboard/ads/home'),element('Help','#dashboard/assistance/node/landing')]}),true);
   assert.equal(check({...route,controls:[element('Home','#dashboard/home-page')]}),false);
   assert.equal(check({...route,inputs:[element('OTP','',{name:'otp'})]}),false);
+  assert.equal(check({...route,inputs:[element('CAPTCHA','',{id:'captchaResponse'})]}),false);
   assert.equal(check({...route,controls:[...route.controls,element('Login')]}),false);
   assert.equal(portalPartition('flipkart'),portalPartition('shopsy'));
 });
@@ -44,9 +45,11 @@ test('Seller Hub login inspection follows the username, password, challenge and 
     name: fields.name || '',
     id: fields.id || '',
     autocomplete: fields.autocomplete || '',
+    placeholder: fields.placeholder || '',
     src: fields.src || '',
     getClientRects: () => [{}],
-    getAttribute: name => name === 'href' ? href : name === 'src' ? (fields.src || '') : ''
+    getAttribute: name => name === 'href' ? href : name === 'src' ? (fields.src || '') :
+      name === 'aria-label' ? (fields.ariaLabel || '') : ''
   });
   const inspect = ({ pathname='/',hash='',inputs=[],controls=[],iframes=[] }={}) => vm.runInNewContext(
     `(${inspectFlipkartLoginState.toString()})()`,
@@ -66,6 +69,8 @@ test('Seller Hub login inspection follows the username, password, challenge and 
   assert.equal(inspect({inputs:[element('', '', {name:'username'})],controls:[loginControl]}).stage,'username');
   assert.equal(inspect({inputs:[element('', '', {type:'password',name:'password'})],controls:[loginControl]}).stage,'password');
   assert.equal(inspect({inputs:[element('', '', {name:'otp',autocomplete:'one-time-code'})],controls:[loginControl]}).stage,'challenge');
+  assert.equal(inspect({inputs:[element('', '', {id:'captchaResponse'})],controls:[loginControl]}).stage,'challenge');
+  assert.equal(inspect({inputs:[element('', '', {placeholder:'Enter captcha'})],controls:[loginControl]}).captchaInputVisible,true);
   const dashboard = inspect({
     pathname:'/index.html',hash:'#dashboard/home-page',
     controls:[element('Home','#dashboard/home-page'),element('Advertising','#dashboard/ads/home'),element('Help','#dashboard/assistance/')]
