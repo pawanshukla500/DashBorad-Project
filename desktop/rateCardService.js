@@ -548,7 +548,6 @@ export function resolveSyncEffectiveDate(options = {}, brandRateCards = []) {
 export async function syncBrandRateCardsToDatabase(brandRateCards, options = {}, pool = null) {
   const p = pool || getDesktopPool();
   const {
-    forceUpdate = false,
     sellerAccount = 'default'
   } = options;
   // Committed under the day the rates were observed (the staged scrape date),
@@ -557,6 +556,8 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
 
   const changes = await detectBrandRateChanges(brandRateCards, p, { sellerAccount });
 
+  // Rate rows are never rewritten when unchanged, even if an older caller
+  // still supplies forceUpdate. No-op publication keeps history truthful.
   if (changes.length === 0) {
     return {
       updated: false,

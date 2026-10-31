@@ -1,7 +1,17 @@
 // Discovery data comes from the authenticated backend's real orders catalog.
 // There is no static category list, invented FSN or fee-policy fallback.
-export function buildFsnPlan(catalog, { marketplace = 'both', brand = 'all', verticals, requiredVerticals = verticals } = {}) {
+export function resolveScrapeVerticals({ requestedVerticals, savedVerticals = [], brand = 'all' } = {}) {
+  const hasExplicitVerticals = Array.isArray(requestedVerticals) && requestedVerticals.length > 0;
+  const scopeVerticals = hasExplicitVerticals ? requestedVerticals : (Array.isArray(savedVerticals) ? savedVerticals : []);
+  return {
+    scopeVerticals,
+    requiredVerticals: hasExplicitVerticals ? requestedVerticals : (brand && brand !== 'all' ? [] : scopeVerticals)
+  };
+}
+
+export function buildFsnPlan(catalog, { marketplace = 'both', brand = 'all', verticals, requiredVerticals } = {}) {
   if (!Array.isArray(catalog) || !catalog.length) throw new Error('No database FSNs are available for extraction.');
+  const required = requiredVerticals ?? (brand && brand !== 'all' ? [] : verticals);
   const targets = new Map();
   for (const item of catalog) {
     const channel = item.marketplace === 'shopsy' || item.category?.startsWith('shopsy_') ? 'shopsy' : item.marketplace;
@@ -16,7 +26,7 @@ export function buildFsnPlan(catalog, { marketplace = 'both', brand = 'all', ver
     const key = JSON.stringify([channel,category,item.brand.toLowerCase()]);
     if (!targets.has(key)) targets.set(key, {...item,category,marketplace:channel});
   }
-  const missing = (requiredVerticals || []).filter(category => ![...targets.values()].some(t=>t.category === category));
+  const missing = (required || []).filter(category => ![...targets.values()].some(t=>t.category === category));
   if (missing.length) throw new Error(`No database FSN for configured categories: ${missing.join(', ')}. Nothing was staged.`);
   if (!targets.size) throw new Error('No database FSNs match the selected marketplace and brand.');
   return [...targets.values()];

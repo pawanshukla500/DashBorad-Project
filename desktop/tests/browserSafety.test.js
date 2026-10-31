@@ -1,4 +1,4 @@
-import { buildFsnPlan } from '../fsnPlan.js';
+import { buildFsnPlan, resolveScrapeVerticals } from '../fsnPlan.js';
 import { normalizeScrapedCards } from '../scrapeResults.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -154,6 +154,14 @@ test('database FSN plan covers every brand/category/channel without static verti
     {marketplace:'shopsy',requiredVerticals:['shopsy_kurta']});
   assert.equal(plainShopsy[0].category,'shopsy_kurta','Shopsy order categories map to the configured Shopsy vertical');
   assert.equal(buildFsnPlan(catalog,{brand:'sangria'}).length,1);
+  assert.equal(buildFsnPlan(catalog,{brand:'sangria',verticals:['kurta','dress']}).length,1,
+    'selecting a brand does not require it to have an FSN in every configured category');
+  assert.deepEqual(resolveScrapeVerticals({savedVerticals:['kurta','dress'],brand:'all'}),
+    {scopeVerticals:['kurta','dress'],requiredVerticals:['kurta','dress']});
+  assert.deepEqual(resolveScrapeVerticals({savedVerticals:['kurta','dress'],brand:'sangria'}),
+    {scopeVerticals:['kurta','dress'],requiredVerticals:[]});
+  assert.deepEqual(resolveScrapeVerticals({requestedVerticals:['kurta'],savedVerticals:['dress'],brand:'sangria'}),
+    {scopeVerticals:['kurta'],requiredVerticals:['kurta']});
   assert.throws(()=>buildFsnPlan(catalog,{verticals:['missing']}),/No database FSN/);
   assert.throws(()=>buildFsnPlan([{...catalog[0],sample_fsn:''}]),/invalid real FSN/);
   const raw=catalog.slice(0,2).flatMap(t=>['FBF','NON_FBF'].map(fulfilment_type=>({...t,vertical:t.category,fulfilment_type,commissions:[{price_min:0,price_max:500,rate:t.brand==='Sangria'?0.12:0.15}]})));

@@ -27,6 +27,7 @@ import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { portalPartition, isFlipkartAuthenticated } from './portalSession.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
+import { resolveScrapeVerticals } from './fsnPlan.js';
 import {
   getActiveBackendUrl,
   getCandidateServers,
@@ -1007,14 +1008,25 @@ async function executeScrapeProcess(config, onProgress) {
     try {
       // Keep API dataset discovery inside the retry boundary so transient
       // backend failures can use the configured second attempt.
+      const verticalSelection = resolveScrapeVerticals({
+        requestedVerticals: effectiveConfig.scopeVerticals,
+        savedVerticals: effectiveConfig.selectedVerticals,
+        brand: effectiveConfig.brand || 'all'
+      });
+      const selectedVerticals = verticalSelection.scopeVerticals;
+      const requiredVerticalsPromise = Array.isArray(effectiveConfig.requiredVerticals)
+        ? Promise.resolve(effectiveConfig.requiredVerticals)
+        : selectedVerticals.length
+          ? Promise.resolve(verticalSelection.requiredVerticals)
+          : effectiveConfig.brand && effectiveConfig.brand !== 'all'
+            ? Promise.resolve([])
+            : fetchConfiguredVerticals(session, effectiveConfig.marketplace);
       const [catalogResult, requiredVerticals] = await Promise.all([
-        fetchBrandCatalogFromApi(session),
-        effectiveConfig.scopeVerticals?.length || (effectiveConfig.brand && effectiveConfig.brand !== 'all')
-          ? Promise.resolve(effectiveConfig.scopeVerticals || [])
-          : fetchConfiguredVerticals(session, effectiveConfig.marketplace)
+        fetchBrandCatalogFromApi(session), requiredVerticalsPromise
       ]);
       effectiveConfig.fsnCatalog = catalogResult.catalog;
       effectiveConfig.requiredVerticals = requiredVerticals;
+      effectiveConfig.scopeVerticals = selectedVerticals;
 
       if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
         broadcastMonitorState({
@@ -1665,7 +1677,20 @@ registerHandler('start-scrape', async (e, options) => {
   if (withBrowserTask.busy) return { success: false, error: 'A browser task is already running.' };
   const startedAt = Date.now();
   const config = loadConfig();
-  const mergedOptions = { ...config, marketplace: options?.marketplace || config.marketplace, visible: options?.visible === true, brand: options?.brand || 'all', scopeVerticals: options?.verticals };
+  const selectedBrand = options?.brand || 'all';
+  const verticalSelection = resolveScrapeVerticals({
+    requestedVerticals: options?.verticals,
+    savedVerticals: config.selectedVerticals,
+    brand: selectedBrand
+  });
+  const mergedOptions = {
+    ...config,
+    marketplace: options?.marketplace || config.marketplace,
+    visible: options?.visible === true,
+    brand: selectedBrand,
+    scopeVerticals: verticalSelection.scopeVerticals,
+    requiredVerticals: verticalSelection.requiredVerticals
+  };
   desktopLogger.info('scrape.started', 'Seller Hub extraction started.', {
     marketplace: mergedOptions.marketplace, brand: mergedOptions.brand,
     mode: mergedOptions.visible ? 'visible' : 'background'

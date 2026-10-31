@@ -38,6 +38,7 @@ import {
   isAllowedDesktopOrigin, isSameDesktopOrigin
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { resolveScrapeVerticals } from './fsnPlan.js';
 import { isFlipkartAuthenticated } from './portalSession.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, markStagedJobStatus } from './localStaging.js';
@@ -1255,7 +1256,14 @@ const server = http.createServer(async (req, res) => {
       }
       const isVisible = body.mode === 'visible' || body.visible === true;
       const targetBrands = body.brands || config.selectedBrands;
-      const targetVerticals = body.verticals || config.selectedVerticals;
+      const selectedBrand = body.brand || 'all';
+      const verticalSelection = resolveScrapeVerticals({
+        requestedVerticals: body.verticals,
+        savedVerticals: config.selectedVerticals,
+        brand: selectedBrand
+      });
+      const targetVerticals = verticalSelection.scopeVerticals;
+      const requiredVerticals = verticalSelection.requiredVerticals;
 
       // Re-check after the body await: a request that raced past the earlier
       // checks while this body was parsing must not overwrite the running job.
@@ -1291,8 +1299,8 @@ const server = http.createServer(async (req, res) => {
               visible: isVisible,
               fsnCatalog: (await fetchBrandCatalogFromApi(loadAuthSession())).catalog,
               scopeVerticals: targetVerticals,
-              brand: body.brand || 'all',
-              requiredVerticals: body.verticals?.length ? body.verticals : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel)
+              brand: selectedBrand,
+              requiredVerticals
             },
             { onProgress: broadcastProgress }
           ));

@@ -294,3 +294,13 @@ browser-safety checks passed**; the desktop auth suite passed **8 checks**; the 
 installed-package acceptance and Linux AppImage acceptance are still required
 for this final source commit and will be checked through the PR workflows before
 merge.
+
+The incremental CodeAnt review also surfaced two category-selection gaps: the
+Electron start path could drop saved verticals when the renderer omitted an
+override, and a brand-specific run could be required to cover categories where
+that brand has no database FSN. Both desktop entry points now use the same
+selection rule: saved verticals scope the search; all-brand runs require the
+selected categories, while brand-specific runs only require explicitly chosen
+categories. `forceUpdate` remains a no-op for identical rates by design, because
+rewriting unchanged rows would violate the publication invariant. The desktop
+E2E suite now asserts this behavior for legacy `forceUpdate: true` callers.

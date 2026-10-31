@@ -235,6 +235,10 @@ async function runE2ETests() {
     assert.strictEqual(syncRes.updated, false, 'Sync must be skipped when no changes exist');
     assert.strictEqual(syncRes.changesCount, 0);
     assert.strictEqual(writeExecuted, false, 'Zero write queries should be executed on unchanged data');
+
+    const forcedNoop = await syncBrandRateCardsToDatabase([card], { forceUpdate: true }, mockPoolUnchanged);
+    assert.strictEqual(forcedNoop.updated, false, 'Legacy forceUpdate cannot rewrite unchanged rate rows');
+    assert.strictEqual(writeExecuted, false, 'unchanged data creates neither rate writes nor an audit version');
   });
 
   // ── 4. Changed Rates & Multi-Tier Anomaly Detection ────────────────────────
