@@ -15,6 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { createStructuredLogger } from '../structuredLogger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -773,22 +774,12 @@ async function runTests() {
     assert(filePatterns.includes('!.runtime/**'), 'package build files must exclude .runtime/');
   });
 
-  await runTest('Linux release payload ships every local module the entry points import', async () => {
+  await runTest('release preparation exports only the Windows setup and Linux AppImage', async () => {
     const releaseScript = fs.readFileSync(path.resolve(desktopDir, '../scripts/prepare-release.js'), 'utf8');
-    const shipped = new Set([...releaseScript.matchAll(/'([\w.-]+\.(?:m?js|cjs))'/g)].map((m) => m[1]));
-    const visited = new Set();
-    const queue = ['desktopServer.mjs', 'worker.js', 'main.js'];
-    while (queue.length) {
-      const file = queue.shift();
-      if (visited.has(file)) continue;
-      visited.add(file);
-      const source = fs.readFileSync(path.join(desktopDir, file), 'utf8');
-      for (const [, dep] of source.matchAll(/(?:from\s+|import\(\s*)'\.\/([\w.-]+\.m?js)'/g)) queue.push(dep);
-    }
-    const missing = [...visited].filter((file) => !shipped.has(file));
-    assert(missing.length === 0, `prepare-release.js omits: ${missing.join(', ')}`);
+    assert(releaseScript.includes('ReconCentral-RateCard-Worker-Setup-') && releaseScript.includes('.exe'), 'release helper must prepare the versioned Windows setup');
+    assert(releaseScript.includes('ReconCentral RateCard Worker-') && releaseScript.includes('.AppImage'), 'release helper must prepare the Linux AppImage');
+    assert(!releaseScript.includes('Portable.exe') && !releaseScript.includes('.deb'), 'release helper must not prepare alternate installer packages');
   });
-
   // ── GitHub Releases + auto-update invariants ──────────────────────────────
   await runTest('package.json publishes to GitHub Releases and ships electron-updater', async () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
@@ -800,8 +791,9 @@ async function runTests() {
     assert(github.owner === 'pawanshukla500' && github.repo === 'DashBorad-Project', 'GitHub publisher must point at the ReconCentral repository');
     assert(github.releaseType === 'release', 'tagged builds must publish live releases — draft releases are invisible to the public update feed');
     const winTargets = pkg.build?.win?.target || [];
-    assert(winTargets.includes('nsis'), 'NSIS installer target is required (the only Windows target that auto-updates)');
-    assert(winTargets.includes('portable'), 'portable Windows target is required');
+    assert(winTargets.length === 1 && winTargets.includes('nsis'), 'the versioned NSIS setup must be the only Windows installer');
+    const linuxTargets = pkg.build?.linux?.target || [];
+    assert(linuxTargets.length === 1 && linuxTargets.includes('AppImage'), 'the Linux AppImage must be the only Linux installer');
   });
 
   await runTest('main.js wires auto-update safely (static invariant)', async () => {
@@ -893,7 +885,7 @@ async function runTests() {
     assert(workflow.includes('pull_request:'), 'PRs must execute packaged acceptance');
     assert(workflow.includes('--publish never'), 'Building must not publish untested packages');
     assert(workflow.includes('needs: [package, postgres]'), 'Publication must depend on both installed-package checks');
-    assert(workflow.includes('Install and launch actual Windows package') && workflow.includes('Install and launch actual Linux package'), 'Both OS packages must execute after installation');
+    assert(workflow.includes('Install and launch actual Windows package') && workflow.includes('Launch the actual Linux AppImage package'), 'Both OS packages must execute after installation');
     assert(workflow.includes('softprops/action-gh-release@v2'), 'Tag releases must upload artifacts and feed');
     assert(workflow.includes('npm ci') && workflow.includes('npm test'), 'Reproducible desktop tests must gate packaging');
     assert(workflow.includes('does not match desktop/package.json version'), 'Tag/version mismatch must fail clearly');
@@ -1544,11 +1536,12 @@ async function runTests() {
     assert(harness.calls.removed === 1 && harness.calls.closed === true, 'close must detach and close the view');
   });
 
-  await runTest('embedded browser module ships in the Linux release payload', async () => {
+  await runTest('embedded browser module is included in the packaged desktop app', async () => {
     assert(fs.existsSync(path.join(desktopDir, 'embeddedBrowser.js')), 'desktop/embeddedBrowser.js is missing');
-    const releaseScript = fs.readFileSync(path.resolve(desktopDir, '../scripts/prepare-release.js'), 'utf8');
-    const shipped = new Set([...releaseScript.matchAll(/'([\w.-]+\.(?:m?js|cjs))'/g)].map((m) => m[1]));
-    assert(shipped.has('embeddedBrowser.js'), 'prepare-release.js must ship embeddedBrowser.js in the Linux payload');
+    const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));
+    const packageFiles = packageJson.build?.files || [];
+    assert(packageFiles.includes('**/*') && !packageFiles.some(pattern => pattern.includes('embeddedBrowser.js')),
+      'the packaged desktop payload must include the embedded browser module');
   });
 
   await runTest('preload bridge exposes browser monitor API methods (stage 2)', async () => {
@@ -1933,6 +1926,40 @@ async function runTests() {
     assert(candidates.includes('https://payments.youthnic.shop'), 'Candidates must contain primary domain');
     assert(typeof clearCachedActiveServer === 'function', 'Must export clearCachedActiveServer');
     assert(typeof reportJobFailure === 'function', 'Must export reportJobFailure');
+  });
+
+  await runTest('separate Flipkart and Shopsy reviews and a persistent diagnostics folder are exposed', async () => {
+    const html = fs.readFileSync(path.join(desktopDir, 'ui/index.html'), 'utf8');
+    const renderer = fs.readFileSync(path.join(desktopDir, 'ui/renderer.js'), 'utf8');
+    const preload = fs.readFileSync(path.join(desktopDir, 'preload.cjs'), 'utf8');
+    const main = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+    assert(html.includes('id="select-review-marketplace"') && html.includes('<option value="shopsy">Shopsy</option>'), 'review UI must let users choose Shopsy separately');
+    assert(renderer.includes("getElementById('select-review-marketplace')?.value || 'flipkart'"), 'preview must choose exactly one review marketplace');
+    assert(preload.includes("ipcRenderer.invoke('open-diagnostics')") && main.includes("registerHandler('open-diagnostics'"), 'desktop UI must open saved diagnostics');
+    assert(main.includes("registerHandler('write-client-log'") && main.includes("createStructuredLogger(DIAGNOSTICS_DIR)"), 'renderer logs must reach persistent structured diagnostics');
+  });
+
+  await runTest('structured diagnostics redact secrets and rotate bounded log files', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'reconcentral-logs-'));
+    try {
+      const logger = createStructuredLogger(directory, { maxBytes: 350, maxFiles: 2, now: () => new Date('2026-10-31T12:00:00.000Z') });
+      logger.info('scrape.started', 'Visible Seller Hub run.', { marketplace: 'flipkart' });
+      logger.error('portal.failed', new Error('Authorization: Bearer secret-token-value'), { idToken: 'local-private-id-token' });
+      logger.info('raw.bearer', 'Bearer standalone-private-token postgres://worker:db-secret@db.example/rates');
+      logger.info('test.padding', 'x'.repeat(700));
+      const files = fs.readdirSync(directory).filter(name => name.startsWith('desktop-'));
+      assert(files.some(name => name.endsWith('.1')), 'oversized daily logs must rotate');
+      const contents = files.map(name => fs.readFileSync(path.join(directory, name), 'utf8')).join('\n');
+      assert(!contents.includes('secret-token-value') && !contents.includes('local-private-id-token') &&
+        !contents.includes('standalone-private-token') && !contents.includes('db-secret'), 'log rotation must not expose session secrets');
+      assert(contents.includes('"timestamp"') && contents.includes('"level"') && contents.includes('"event"'), 'records must be structured JSONL');
+      let day=0;
+      const daily=createStructuredLogger(directory,{maxBytes:10000,maxFiles:2,now:()=>new Date(Date.UTC(2026,9,31+day++,12))});
+      for(let index=0;index<6;index++) daily.info('daily.retention','bounded');
+      assert(fs.readdirSync(directory).filter(name=>/^desktop-/.test(name)).length<=3,'retention bounds logs across days as well as within a day');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   console.log('\n=================================================================');

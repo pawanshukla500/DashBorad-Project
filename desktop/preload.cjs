@@ -50,6 +50,11 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
   },
   
   // Real-time Event Listeners
+  writeClientLog: (entry = {}) => ipcRenderer.invoke('write-client-log', {
+    level: ['debug', 'info', 'warn', 'error'].includes(entry.level) ? entry.level : 'info',
+    message: typeof entry.message === 'string' ? entry.message.slice(0, 2000) : ''
+  }),
+  openDiagnostics: () => ipcRenderer.invoke('open-diagnostics'),
   onProgress: (callback) => {
     const subscription = (event, msg) => callback(msg);
     ipcRenderer.on('scrape-progress', subscription);

@@ -4,7 +4,7 @@ Scope: merged PRs #73–#77, Electron and standalone desktop entry points,
 browser adapter, sessions, scraper, staging, publisher, PostgreSQL schemas,
 Linux service installer, release preparation and all three Actions workflows.
 Baseline commit: `cf7d49a8663b581237e3f1f47d25f5e663af9547`.
-No deployment, merge, schema migration or production rate-card writes are authorized.
+Production deployment, production schema changes and production rate-card writes remain gated. On 31 October the user authorized merging PR #78 after CodeAnt and required checks pass.
 
 ## Findings before fixes
 
@@ -76,9 +76,9 @@ No deployment, merge, schema migration or production rate-card writes are author
 Fix confirmed session, view lifecycle, pacing, startup, coverage and publication
 integrity faults first. Preserve exact evidence, reject incomplete extractions and
 unknown layouts. Never fill missing fees with policy defaults. Change extraction
-selectors only against authenticated captures. Keep PR draft until required checks
-and actual packaged Windows/Linux evidence pass; do not merge before CodeAnt
-reviews every commit. Production migration/publication requires separate approval.
+selectors only against authenticated captures. Merge only after required checks,
+actual packaged Windows/Linux evidence and CodeAnt review of every commit pass.
+Production migration/publication requires separate approval.
 
 ## Implemented safeguards and current verification
 
@@ -103,8 +103,9 @@ reviews every commit. Production migration/publication requires separate approva
 - Installed-package acceptance is being run. Compilation and unit tests alone
   do not establish Windows/Linux installed runtime success.
 
-No release tag, deployment, production migration, merge, or production rate
-publication was performed.
+At the initial report cutoff, no release tag, deployment, production migration,
+merge or production rate publication had been performed. The user later
+authorized merging PR #78 after its review gates; production actions remain gated.
 
 ## Authenticated live extraction evidence
 
@@ -180,8 +181,8 @@ findings (5 high), frontend 3 findings (1 high). Backend reports body-parser,
 multer, undici and zod/transitive browser tooling among its high findings;
 desktop reports extract-zip/browser tooling and zod; frontend reports
 follow-redirects. Application test success does not resolve those advisories.
-Dependency upgrades need a compatibility and regression pass. CodeAnt review is
-pending; no merge or production action is authorized by these acceptance results.
+Dependency upgrades need a compatibility and regression pass. CodeAnt review was
+pending at this acceptance cutoff; the 31 October follow-up is recorded below.
 
 The stated Shopsy zero-commission invariant is enforced as a validation gate: a
 nonzero portal observation is rejected for review. Its value is never replaced
@@ -196,3 +197,37 @@ Generation is rechecked after that wait and immediately before the HTTPS results
 request (including after backend URL discovery), in both desktop entry points.
 The real HTTP fixture verifies no results request reaches the server after the
 account changes during that await.
+
+## PR #78 follow-up — 31 October 2026
+
+The new CodeAnt review of `d946ef2` found additional correctness gaps: missing
+brand/weight inputs to fee calculation, mixed-marketplace previews,
+effective-date-independent review fingerprints, optional or missing portal
+evidence, unbounded failure screenshots/logs, unrelated NULL `price_max` rows
+blocking comparison, ignored saved vertical selections, Shopsy category aliases,
+mixed seller accounts, incomplete SQLite staging recovery, transient catalog
+lookup outside the retry loop, and unchanged FBF pick-and-pack rows hidden from
+review. These findings were checked against the affected query, normalization,
+staging and rendering paths.
+
+The fixes select brand and weight on both fee-bearing endpoints; bind review
+fingerprints to the effective date; require both FBF/NON_FBF evidence and FBF
+pick-and-pack responses; skip malformed rows only when outside the active review
+scope; canonicalize plain Shopsy order categories; scope rate snapshots to one
+seller account; recover complete SQLite stages and supersede them before a new
+scrape; retry API data discovery; render unchanged pick-and-pack fees; and cap
+and redact local logs/screenshots. Review and publication are one marketplace at
+a time. Release builds produce only the versioned Windows Setup and Linux
+AppImage installers. `latest.yml` and the matching blockmap remain as Windows
+updater metadata and are labeled as such in release notes.
+
+The Hostinger workflow still runs its test job on master pushes, but deployment
+now requires an explicit `workflow_dispatch`. A merge therefore cannot deploy
+production. No production rate-card write, production migration or deployment
+has been performed.
+
+Working-tree validation: backend full suite **617 passed, 2 skipped**; frontend
+production build **passed**; desktop suite **4 staging + 70 runtime + 9 E2E + 13
+browser-safety checks passed**; focused rate-card/fee tests **22 passed**.
+Windows installed-package and Linux AppImage acceptance must still pass on the
+final pushed commit.

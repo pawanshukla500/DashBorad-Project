@@ -179,15 +179,20 @@ export function stageReview(db, jobId, owner, marketplace, cards) {
 
 export function supersedeReviews(db, owner) {
   if (!owner) throw new Error('Verified review owner is required.');
-  db.run("UPDATE staged_jobs SET status = 'superseded', updated_at = datetime('now') WHERE status = 'review' AND json_extract(parameters, '$.owner') = ?", [owner]);
+  db.run("UPDATE staged_jobs SET status = 'superseded', updated_at = datetime('now') WHERE status IN ('review', 'staging') AND json_extract(parameters, '$.owner') = ?", [owner]);
   persist(db, currentDbPath);
 }
 
 export function recoverReview(db, owner) {
-  const rows = db.exec("SELECT id, parameters FROM staged_jobs WHERE status = 'review' ORDER BY created_at DESC, rowid DESC");
-  for (const [id, parameters] of rows[0]?.values || []) {
+  // A crash after the observation transaction but before the final status
+  // write leaves a complete recoverable job in `staging`.
+  const rows = db.exec("SELECT id, parameters, status FROM staged_jobs WHERE status IN ('review', 'staging') ORDER BY created_at DESC, rowid DESC");
+  for (const [id, parameters, status] of rows[0]?.values || []) {
     if (JSON.parse(parameters || '{}').owner !== owner) continue;
-    return { id, cards: getStagedObservations(db, id).map(({ _staged_id, _created_at, ...card }) => card) };
+    const cards = getStagedObservations(db, id).map(({ _staged_id, _created_at, ...card }) => card);
+    if (!cards.length) continue;
+    if (status === 'staging') markStagedJobStatus(db, id, 'review');
+    return { id, cards };
   }
   return null;
 }

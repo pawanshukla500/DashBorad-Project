@@ -70,10 +70,10 @@ jobs:
             echo "Tag does not match desktop/package.json version"
             exit 1
           fi
-      - name: Build Windows installer and portable app
+      - name: Build Windows setup installer
         if: runner.os == 'Windows'
         working-directory: desktop
-        run: npx electron-builder --win --x64 --publish never
+        run: npx electron-builder --win nsis --x64 --publish never
       - name: Install and launch actual Windows package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -82,7 +82,7 @@ jobs:
         run: |
           $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
           $installDir = Join-Path $env:RUNNER_TEMP 'ratecard-installed'
-          $setup = Join-Path $pwd "released/build/ReconCentral RateCard Worker Setup $version.exe"
+          $setup = Join-Path $pwd "released/build/ReconCentral-RateCard-Worker-Setup-$version.exe"
           $installer = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$installDir" -WindowStyle Hidden -PassThru
           if (-not $installer.WaitForExit(120000)) { throw 'Installer timeout' }
           if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
@@ -97,19 +97,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 libfuse2
-      - name: Build Linux AppImage and Debian package
+      - name: Build Linux AppImage
         if: runner.os == 'Linux'
         working-directory: desktop
-        run: npx electron-builder --linux AppImage deb --publish never
-      - name: Install and launch actual Linux package
+        run: npx electron-builder --linux AppImage --publish never
+      - name: Launch the actual Linux AppImage package
         if: runner.os == 'Linux'
         env:
           RECON_EXPECT_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          sudo apt-get install -y ./released/build/*.deb
-          EXECUTABLE=$(command -v reconcentral-ratecard-worker)
-          test -x "$EXECUTABLE"
-          timeout 90s xvfb-run -a "$EXECUTABLE" --no-sandbox --ratecard-smoke-test="$PWD/released/build/linux-smoke.json"
+          APPIMAGE=$(find released/build -maxdepth 1 -type f -name 'ReconCentral RateCard Worker-*.AppImage' -print -quit)
+          test -n "$APPIMAGE"
+          chmod +x "$APPIMAGE"
+          timeout 90s xvfb-run -a env APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE" --appimage-extract-and-run --no-sandbox --ratecard-smoke-test="$PWD/released/build/linux-smoke.json"
           node -e "const r=require('./released/build/linux-smoke.json'); if(!r.success || r.commit!==process.env.RECON_EXPECT_COMMIT) throw Error(JSON.stringify(r));"
       - name: Upload packages and runtime evidence
         if: always()
@@ -117,11 +117,10 @@ jobs:
         with:
           name: ratecard-desktop-${{ runner.os }}
           path: |
-            released/build/*.exe
-            released/build/*.blockmap
-            released/build/*.yml
-            released/build/*.deb
-            released/build/*.AppImage
+            released/build/ReconCentral-RateCard-Worker-Setup-*.exe
+            released/build/ReconCentral-RateCard-Worker-Setup-*.exe.blockmap
+            released/build/latest.yml
+            released/build/ReconCentral RateCard Worker-*.AppImage
             released/build/*-smoke.json
             released/build/*-smoke.json.png
           if-no-files-found: warn
@@ -141,9 +140,15 @@ jobs:
           path: artifacts
       - uses: softprops/action-gh-release@v2
         with:
+          body: |
+            ## Installers
+
+            - Windows: versioned ReconCentral-RateCard-Worker-Setup EXE
+            - Linux: versioned ReconCentral RateCard Worker AppImage
+
+            latest.yml and its matching blockmap are required Windows auto-update metadata, not installers. GitHub also generates source-code archives automatically; those are not installers.
           files: |
-            artifacts/*.exe
-            artifacts/*.blockmap
-            artifacts/*.yml
-            artifacts/*.deb
-            artifacts/*.AppImage
+            artifacts/ReconCentral-RateCard-Worker-Setup-*.exe
+            artifacts/ReconCentral-RateCard-Worker-Setup-*.exe.blockmap
+            artifacts/latest.yml
+            artifacts/ReconCentral RateCard Worker-*.AppImage

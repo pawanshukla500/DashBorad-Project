@@ -25,7 +25,7 @@ function database(observations = cards(), { ready = true } = {}) {
   }) };
   return { client, tables, pool: { connect: async () => client } };
 }
-const compare = (db, observations = cards()) => compareScrapedRatesWithActive(observations, { marketplace:'flipkart',sellerAccount:'default',effectiveDate:date,dbClient:db.client });
+const compare = (db, observations = cards(), effectiveDate = date) => compareScrapedRatesWithActive(observations, { marketplace:'flipkart',sellerAccount:'default',effectiveDate,dbClient:db.client });
 const mutations = db => db.client.query.mock.calls.filter(([sql]) => /^(UPDATE|INSERT|DELETE)/.test(sql));
 
 describe('Portal observations and reviewed publication', () => {
@@ -46,6 +46,21 @@ describe('Portal observations and reviewed publication', () => {
     expect(() => validateRateObservations([complete[0],complete[0]], {marketplace:'flipkart'})).toThrow(/Duplicate/);
     expect(() => validateRateObservations([{...complete[0],commissions:[{price_min:0,price_max:500,rate:NaN}]}], {marketplace:'flipkart'})).toThrow(/Invalid/);
     expect(() => validateRateObservations(complete, {marketplace:'flipkart',expectedVerticals:['dress']})).toThrow(/Missing configured category/);
+  });
+  it('rejects missing mode evidence and missing FBF pick-and-pack evidence before publication', () => {
+    const [complete] = cards();
+    expect(() => validateRateObservations([{...complete,portalEvidence:[]}], {marketplace:'flipkart',complete:true}))
+      .toThrow(/Missing FBF Seller Hub response evidence/);
+    const withoutFbf = structuredClone(complete);
+    withoutFbf.portalEvidence = withoutFbf.portalEvidence.filter(item => item.fulfilment !== 'FBF');
+    expect(() => validateRateObservations([withoutFbf], {marketplace:'flipkart',complete:true}))
+      .toThrow(/Missing FBF Seller Hub response evidence/);
+    const withoutPickEvidence = structuredClone(complete);
+    withoutPickEvidence.portalEvidence.find(item => item.fulfilment === 'FBF').fees.pickAndPackFee.slabs.shippingSlab = [];
+    expect(() => validateRateObservations([withoutPickEvidence], {marketplace:'flipkart',complete:true}))
+      .toThrow(/Missing FBF pick-and-pack response evidence/);
+    expect(() => validateRateObservations([{...complete,pickPackFees:[]}], {marketplace:'flipkart',complete:true}))
+      .toThrow(/Missing pickPackFees/);
   });
   it('performs zero rate or version writes for unchanged observations, even on the legacy schema', async () => {
     const db = database(cards(), {ready:false});
@@ -74,6 +89,15 @@ describe('Portal observations and reviewed publication', () => {
     const fresh = await compare(db);
     await expect(publishRateCardObservations(cards(), {pool:db.pool,publishedBy:'fixture',reviewFingerprint:fresh.fingerprint})).rejects.toThrow(/RATE_SCHEMA_NOT_READY/);
     expect(mutations(db)).toEqual([]);
+  });
+  it('binds reviewed rate differences to the effective extraction date', async () => {
+    const db=database();
+    const changed=cards();
+    changed[0].commissions[0].rate += 0.01;
+    const sameDay=await compare(db,changed,'2026-10-30');
+    const nextDay=await compare(db,changed,'2026-10-31');
+    expect(nextDay.diffs).toEqual(sameDay.diffs);
+    expect(nextDay.fingerprint).not.toBe(sameDay.fingerprint);
   });
   it('closes and replaces only the genuinely changed row, preserving unchanged slabs and tables', async () => {
     const db = database(); db.tables.rc_commission[0].rate = 0.25;
@@ -119,6 +143,13 @@ describe('Portal observations and reviewed publication', () => {
   it('compares PostgreSQL NUMERIC weight strings with portal numbers without false replacement', async () => {
     const db=database();
     for(const table of ['rc_reverse_shipping','rc_pick_pack'])for(const row of db.tables[table])for(const key of Object.keys(row))if(typeof row[key]==='number'&&key!=='id')row[key]=row[key].toFixed(3);
+    expect((await compare(db)).diffCount).toBe(0);
+  });
+
+  it('ignores malformed legacy rows outside the category and brand scopes being reviewed', async () => {
+    const db=database();
+    db.tables.rc_fixed_fee.push({id:999,category:'unrelated_category',marketplace:'flipkart',seller_account:'default',
+      fulfilment_type:'FBF',price_min:0,price_max:null,rate:12,start_date:'2026-10-01',end_date:null});
     expect((await compare(db)).diffCount).toBe(0);
   });
 

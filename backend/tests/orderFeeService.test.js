@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
 import { attachRcFees } from '../services/orderFeeService.js';
 import * as rateCardService from '../services/rateCard.js';
 
@@ -36,6 +37,8 @@ describe('orderFeeService - attachRcFees', () => {
         id: 1,
         marketplace: 'flipkart',
         sellerAccount: 'test_account',
+        brandName: 'Sangria',
+        weightSlab: '2kg-3kg',
         finalInvoiceAmount: '100',
         cogs: '50'
       }
@@ -53,7 +56,21 @@ describe('orderFeeService - attachRcFees', () => {
     expect(result[0].rcMarginPct).toBe(28.76);
     
     expect(rateCardService.getRateCard).toHaveBeenCalledWith('flipkart', 'test_account');
-    expect(rateCardService.calculateFees).toHaveBeenCalled();
+    expect(rateCardService.calculateFees).toHaveBeenCalledWith(
+      { id: 'dummy_rc' },
+      expect.objectContaining({ brandName: 'Sangria', weight: '2kg-3kg' })
+    );
+  });
+
+  it('selects the stored brand and weight for both order-fee endpoints', () => {
+    const source = fs.readFileSync(new URL('../routes/data.js', import.meta.url), 'utf8');
+    const normalOrders = source.slice(source.indexOf("router.get('/orders'"), source.indexOf("router.get('/sku-orders'"));
+    const settlementOrders = source.slice(source.indexOf("router.get('/settlement/orders'"), source.indexOf("router.get('/order/:orderItemId'"));
+    for (const [name, route] of [['/orders', normalOrders], ['/settlement/orders', settlementOrders]]) {
+      expect(route, name + ' must select brand for brand-specific rates').toMatch(/o\.brand\s+AS "brandName"/);
+      expect(route, name + ' must select weight for dimensional rates').toMatch(/o\.weight_slab\s+AS "weightSlab"/);
+      expect(route).toContain('attachRcFees(data.rows)');
+    }
   });
 
   it('should handle orders where rate card is missing', async () => {

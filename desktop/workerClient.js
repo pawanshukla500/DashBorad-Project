@@ -241,6 +241,10 @@ export async function detectRateChangesViaApi(session, scrapedObservations, mark
 }
 
 export async function reviewRatesViaApi(session, cards, sellerAccount = 'default') {
+  const cardAccounts = [...new Set(cards.map(card => card.seller_account).filter(Boolean))];
+  if (cardAccounts.length > 1 || (cardAccounts.length === 1 && cardAccounts[0] !== sellerAccount)) {
+    throw new Error('Review one seller account at a time, matching the account on the rate cards.');
+  }
   const changes = [], fingerprints = {};
   const types = { rc_commission: 'commission', rc_fixed_fee: 'fixed_fee', rc_collection_fee: 'collection_fee', rc_reverse_shipping: 'reverse_shipping', rc_pick_pack: 'pick_pack' };
   for (const marketplace of [...new Set(cards.map(c => c.marketplace))]) {
@@ -249,7 +253,8 @@ export async function reviewRatesViaApi(session, cards, sellerAccount = 'default
     fingerprints[marketplace] = result.fingerprint;
     for (const diff of result.diffs) changes.push({ ...diff, marketplace, brand: diff.brand_name || 'General', type: types[diff.table], reason: diff.details,
       fulfilmentType: diff.fulfilment_type, weightSlab: (diff.newRow || diff.oldRow)?.weight_slab,
-      priceMin: (diff.newRow || diff.oldRow)?.price_min, priceMax: (diff.newRow || diff.oldRow)?.price_max });
+      priceMin: (diff.newRow || diff.oldRow)?.price_min, priceMax: (diff.newRow || diff.oldRow)?.price_max,
+      weightMin: (diff.newRow || diff.oldRow)?.weight_min, weightMax: (diff.newRow || diff.oldRow)?.weight_max });
   }
   return { changes, fingerprints, changesCount: changes.length, anomaliesCount: changes.filter(c => c.anomaly).length };
 }

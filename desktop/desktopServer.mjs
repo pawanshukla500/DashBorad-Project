@@ -647,8 +647,15 @@ const server = http.createServer(async (req, res) => {
           const review = recoverReview(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
           if (review) stagedExtraction.cards = review.cards;
         }
-        const rateCards = stagedExtraction.cards.length ? stagedExtraction.cards : await buildBrandRateCardSet(getPool());
-        const targetMp = urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || '';
+        const sellerAccount = String(urlObj.searchParams.get('seller_account') || 'default').trim() || 'default';
+        if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
+          return sendJson(400, { success: false, error: 'Choose one valid seller account for the rate review.' });
+        }
+        const rateCards = stagedExtraction.cards.length ? stagedExtraction.cards : await buildBrandRateCardSet(getPool(), sellerAccount);
+        const targetMp = (urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || 'flipkart').toLowerCase().trim();
+        if (!['flipkart', 'shopsy'].includes(targetMp)) {
+          return sendJson(400, { success: false, error: 'Choose Flipkart or Shopsy for a separate rate review.' });
+        }
         const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
         return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards, canSync: stagedExtraction.cards.length > 0 });
       } catch (err) {
@@ -1160,6 +1167,9 @@ const server = http.createServer(async (req, res) => {
         body = await parseJsonBody();
         const cards = selectStagedCards(stagedExtraction.cards, body.rateCards);
         if (!cards) return sendJson(409, { success: false, error: 'Review a successful staged extraction first.' });
+        if (new Set(cards.map(card => card.marketplace)).size !== 1) {
+          return sendJson(400, { success: false, error: 'Review Flipkart and Shopsy separately.' });
+        }
         const sellerAccount = body.options?.seller_account || 'default';
         const review = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
         stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: review.fingerprints };
@@ -1190,6 +1200,9 @@ const server = http.createServer(async (req, res) => {
         const cardsToSync = body.rateCards?.length ? selectStagedCards(stagedExtraction.cards, body.rateCards) : null;
         if (!cardsToSync) {
           return sendJson(409, { success: false, error: 'Payload does not match the reviewed staged extraction. Review the staged results and commit the selected cards explicitly.' });
+        }
+        if (new Set(cardsToSync.map(card => card.marketplace)).size !== 1) {
+          return sendJson(400, { success: false, error: 'Review Flipkart and Shopsy separately.' });
         }
         const review = stagedExtraction.review;
         if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== (body.options?.seller_account || 'default')) {
@@ -1274,7 +1287,7 @@ const server = http.createServer(async (req, res) => {
               marketplace: normalizedChannel,
               visible: isVisible,
               fsnCatalog: (await fetchBrandCatalogFromApi(loadAuthSession())).catalog,
-              scopeVerticals: body.verticals,
+              scopeVerticals: targetVerticals,
               brand: body.brand || 'all',
               requiredVerticals: body.verticals?.length ? body.verticals : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel)
             },

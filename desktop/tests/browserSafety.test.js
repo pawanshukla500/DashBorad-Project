@@ -11,7 +11,9 @@ import { isFlipkartAuthenticated, portalPartition } from '../portalSession.js';
 import { createRateCardCapture } from '../rateCardCapture.js';
 import { parsePortalRateSnapshot } from '../portalRates.js';
 import { createWorkerEngine } from '../workerEngine.js';
-import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
+import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
+import { buildBrandRateCardSet } from '../rateCardService.js';
+import { captureScrapeFailure } from '../scrapeDiagnostics.js';
 import { rateFixture } from './fixtures/portalRateFixture.js';
 
 test('public Seller Hub, visible login and OTP challenges never count as authentication', () => {
@@ -60,12 +62,19 @@ test('unrecognized layouts and missing fees cannot be substituted with Shopsy co
 test('SQLite review survives restart, rejects a different owner and rolls back a failed replacement', () => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rate-review-'));
   try {
-    let db=getStagingDb(dir);stageReview(db,'review','owner','flipkart',[{category:'kurta',commissions:[{rate:0.1}]}]);
+    let db=getStagingDb(dir);
+    saveStagedJob(db,{id:'interrupted',marketplace:'flipkart',status:'staging',parameters:{owner:'recovery-owner'}});
+    saveStagedObservations(db,'interrupted',[{category:'shopsy_kurta',commissions:[{rate:0}]}]);
+    closeStagingDb();db=getStagingDb(dir);
+    assert.equal(recoverReview(db,'recovery-owner').cards[0].category,'shopsy_kurta','complete observations survive a crash before the final review status write');
+    stageReview(db,'review','owner','flipkart',[{category:'kurta',commissions:[{rate:0.1}]}]);
     assert.throws(()=>saveStagedObservations(db,'review',[{category:'dress'},null]));
     assert.equal(getStagedObservations(db,'review')[0].category,'kurta');
     closeStagingDb();db=getStagingDb(dir);
     assert.equal(recoverReview(db,'owner').cards[0].category,'kurta');
     assert.equal(recoverReview(db,'another-owner'),null);
+    saveStagedJob(db,{id:'stale-staging',marketplace:'flipkart',status:'staging',parameters:{owner:'owner'}});
+    saveStagedObservations(db,'stale-staging',[{category:'dress',commissions:[{rate:0.2}]}]);
     supersedeReviews(db,'owner');
     closeStagingDb();db=getStagingDb(dir);
     assert.equal(recoverReview(db,'owner'),null,'A superseded review must not return after a failed new extraction');
@@ -125,6 +134,9 @@ test('database FSN plan covers every brand/category/channel without static verti
   ];
   assert.equal(buildFsnPlan(catalog).length,3);
   assert.equal(buildFsnPlan(catalog,{marketplace:'shopsy'})[0].marketplace,'shopsy');
+  const plainShopsy=buildFsnPlan([{marketplace:'shopsy',category:'kurta',brand:'Youthnic',sample_fsn:'1234567890ABCDEF'}],
+    {marketplace:'shopsy',requiredVerticals:['shopsy_kurta']});
+  assert.equal(plainShopsy[0].category,'shopsy_kurta','Shopsy order categories map to the configured Shopsy vertical');
   assert.equal(buildFsnPlan(catalog,{brand:'sangria'}).length,1);
   assert.throws(()=>buildFsnPlan(catalog,{verticals:['missing']}),/No database FSN/);
   assert.throws(()=>buildFsnPlan([{...catalog[0],sample_fsn:''}]),/invalid real FSN/);
@@ -132,6 +144,43 @@ test('database FSN plan covers every brand/category/channel without static verti
   const cards=normalizeScrapedCards(raw);
   assert.equal(cards.length,2);
   assert.notEqual(cards[0].commissions[0].rate,cards[1].commissions[0].rate);
+});
+
+test('rate-card snapshot keeps seller accounts in separate cards', async () => {
+  const rows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'Youthnic',price_min:0,price_max:500,rate:0.1},
+    {marketplace:'flipkart',seller_account:'seller-b',category:'kurta',brand_name:'Youthnic',price_min:0,price_max:500,rate:0.2}
+  ];
+  const pool={query:async (sql,params)=>({rows:sql.includes('FROM rc_commission')?rows.filter(row=>params[1]==='all'||row.seller_account===params[1]):[]})};
+  const cards=await buildBrandRateCardSet(pool,'all');
+  assert.equal(cards.length,2);
+  assert.deepEqual(cards.map(card=>card.seller_account).sort(),['default','seller-b']);
+  assert.equal((await buildBrandRateCardSet(pool)).length,1,'the visible review defaults to the same seller account used by publication');
+});
+
+test('scrape diagnostics rotate screenshots and bound error logs', async () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rate-diagnostics-'));
+  try {
+    const page={url:()=> 'https://seller.flipkart.com/index.html#dashboard/rate-card',screenshot:async()=>Buffer.from('fixture-png')};
+    for(let index=0;index<24;index++) await captureScrapeFailure(page,dir,{stage:'test'},Object.assign(new Error('Authorization: Bearer supersecret'),{code:'FIXTURE'}));
+    const files=fs.readdirSync(dir);
+    assert.equal(files.filter(name=>name.endsWith('.png')).length,20,'only the most recent 20 screenshots are retained');
+    const log=fs.readFileSync(path.join(dir,'errors.jsonl'),'utf8');
+    assert.ok(Buffer.byteLength(log)<=1024*1024,'the diagnostic log stays within its size bound');
+    assert.ok(!log.includes('supersecret'),'authorization values are redacted');
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('desktop fixes retry backend discovery and render unchanged pick-pack rows', () => {
+  const main=fs.readFileSync(new URL('../main.js',import.meta.url),'utf8');
+  const start=main.indexOf('async function executeScrapeProcess');
+  const loop=main.indexOf('for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)',start);
+  const catalog=main.indexOf('fetchBrandCatalogFromApi(session)',loop);
+  assert.ok(start>=0 && loop>start && catalog>loop,'catalog lookup is inside the extraction retry loop');
+  const server=fs.readFileSync(new URL('../desktopServer.mjs',import.meta.url),'utf8');
+  assert.match(server,/scopeVerticals:\s*targetVerticals/,'the standalone scrape route passes its selected verticals to the scraper');
+  const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
+  assert.match(renderer,/for\s*\(const fee of pickPackFees\)/,'unchanged observed FBF pick-and-pack fees are visible in review');
 });
 
 test('FSN response matching never accepts category-only or other-product fees', () => {

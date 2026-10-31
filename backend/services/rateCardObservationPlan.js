@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
 // Explicit rc_* contract. Identifiers below are constants, never request data.
-export const rateDiffFingerprint = diffs => createHash('sha256').update(JSON.stringify(diffs.map(d => {
+export const rateDiffFingerprint = (diffs, effectiveDate) => createHash('sha256').update(JSON.stringify({
+  effectiveDate: effectiveDate || null,
+  diffs: diffs.map(d => {
   const descriptor = RATE_TABLES.find(t => t.table === d.table);
   return [d.table, d.category, d.changeType,
     d.oldRow ? [d.oldRow.id, String(d.oldRow.start_date), String(d.oldRow.end_date), normalizeObservationRow(descriptor, d.oldRow)] : null,
     d.newRow ? normalizeObservationRow(descriptor, d.newRow) : null];
-}).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))))).digest('hex');
+  }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+})).digest('hex');
 export const RATE_TABLES = [
   { table: 'rc_commission', field: 'commissions', keys: ['brand_name', 'price_min', 'price_max'], values: ['rate'] },
   { table: 'rc_fixed_fee', field: 'fixedFees', keys: ['fulfilment_type', 'price_min', 'price_max'], values: ['rate'] },
@@ -85,9 +88,25 @@ export function validateRateObservations(observations, { marketplace, complete =
         !['FBF', 'NON_FBF'].every(m => observation.fulfilmentModes?.includes(m)))) {
       throw new Error('A complete Seller Hub extraction for both fulfilment modes is required.');
     }
+    if (complete) {
+      const evidence = Array.isArray(observation.portalEvidence) ? observation.portalEvidence : [];
+      const responseHasRows = family => Boolean(family?.slabs?.asp?.length || family?.slabs?.shippingSlab?.length);
+      for (const fulfilment of ['FBF', 'NON_FBF']) {
+        const response = evidence.find(item => item?.fulfilment === fulfilment);
+        if (!response) throw new Error('Missing ' + fulfilment + ' Seller Hub response evidence; extraction is incomplete.');
+        for (const family of ['platformFee', 'closingFee', 'collectionFee', 'reverseShippingFee']) {
+          if (!responseHasRows(response.fees?.[family])) {
+            throw new Error('Missing ' + family + ' response evidence for ' + fulfilment + '; extraction is incomplete.');
+          }
+        }
+        if (fulfilment === 'FBF' && !responseHasRows(response.fees?.pickAndPackFee)) {
+          throw new Error('Missing FBF pick-and-pack response evidence; extraction is incomplete.');
+        }
+      }
+    }
     for (const descriptor of RATE_TABLES) {
       const rows = observation[descriptor.field] || [];
-      const required = complete && (descriptor.field !== 'pickPackFees' || observation.portalEvidence?.some(e => e.fulfilment === 'FBF'));
+      const required = complete;
       if (!Array.isArray(rows) || (required && !rows.length)) throw new Error(`Missing ${descriptor.field}; incomplete extractions cannot be published.`);
       for (const row of rows) {
         const normalized = normalizeObservationRow(descriptor, row, observation);
@@ -111,6 +130,10 @@ export const rateRowIdentity = (descriptor, row) => JSON.stringify([row.category
 const identity = rateRowIdentity;
 const value = (descriptor, row) => JSON.stringify(descriptor.values.map(k => row[k]));
 const scope = (descriptor, row) => JSON.stringify([row.category, descriptor.table === 'rc_commission' ? keyValue('brand_name', row.brand_name) : null]);
+const rawScope = (descriptor, row) => JSON.stringify([
+  row.category,
+  descriptor.table === 'rc_commission' ? keyValue('brand_name', brand(row.brand_name)) : null
+]);
 const display = (descriptor, row) => !row ? null : descriptor.table === 'rc_collection_fee'
   ? `Prepaid: ${row.prepaid} ${row.prepaid_type}, Postpaid: ${row.postpaid} ${row.postpaid_type}`
   : descriptor.table === 'rc_reverse_shipping' ? `L:₹${row.local_fee}/Z:₹${row.zonal_fee}/N:₹${row.national_fee}` : row.rate;
@@ -128,8 +151,10 @@ export async function planRateCardChanges(client, observations, { marketplace, s
         AND (start_date IS NULL OR start_date <= $3) AND (end_date IS NULL OR end_date >= $3)`, [marketplace, sellerAccount, effectiveDate]);
     const existing = new Map();
     for (const raw of result.rows) {
+      // Filter irrelevant legacy records before normalizing fields that may be
+      // absent on an unrelated category or brand.
+      if (!scopes.has(rawScope(descriptor, raw))) continue;
       const row = normalizeObservationRow(descriptor, raw);
-      if (!scopes.has(scope(descriptor, row))) continue;
       const key = identity(descriptor, row);
       if (existing.has(key)) throw new Error(`Duplicate active ${descriptor.table} rows for ${row.category}. Publication requires database review.`);
       existing.set(key, { raw, row });
@@ -153,7 +178,7 @@ export async function planRateCardChanges(client, observations, { marketplace, s
     }
     for (const previous of existing.values()) push('REMOVED', previous, null);
   }
-  return { hasChanges: diffs.length > 0, diffCount: diffs.length, diffs, fingerprint: rateDiffFingerprint(diffs),
+  return { hasChanges: diffs.length > 0, diffCount: diffs.length, diffs, fingerprint: rateDiffFingerprint(diffs, effectiveDate),
     summary: { added: diffs.filter(d => d.changeType === 'ADDED').length,
       modified: diffs.filter(d => d.changeType !== 'ADDED').length, unchanged,
       anomalies: diffs.filter(d => d.anomaly).length, totalChecked: diffs.length + unchanged } };

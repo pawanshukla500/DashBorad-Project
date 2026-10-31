@@ -22,6 +22,7 @@ import { createSessionAccess, publicSession } from './sessionAccess.js';
 import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
+import { createStructuredLogger } from './structuredLogger.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { portalPartition, isFlipkartAuthenticated } from './portalSession.js';
@@ -75,6 +76,10 @@ const SESSION_FILE = path.join(USER_DATA_DIR, 'auth-session.json');
 const COOKIES_PATH = path.join(USER_DATA_DIR, 'cookies.json');
 process.env.RECON_COOKIES_PATH = COOKIES_PATH;
 const STAGING_DIR = path.join(USER_DATA_DIR, 'staging');
+const DIAGNOSTICS_DIR = path.join(STAGING_DIR, 'diagnostics');
+const desktopLogger = createStructuredLogger(DIAGNOSTICS_DIR);
+desktopLogger.installConsoleBridge();
+desktopLogger.info('app.started', 'Desktop worker started.', { version: app.getVersion(), platform: process.platform });
 
 function persistReview(cards, session) {
   const id = `review-${Date.now()}-${require('crypto').randomUUID()}`;
@@ -987,14 +992,6 @@ function isPermanentScrapeError(err) {
 async function executeScrapeProcess(config, onProgress) {
   let effectiveConfig = { ...loadConfig(), ...config };
   const session = loadAuthSession();
-  const [catalogResult, requiredVerticals] = await Promise.all([
-    fetchBrandCatalogFromApi(session),
-    effectiveConfig.scopeVerticals?.length || (effectiveConfig.brand && effectiveConfig.brand !== 'all')
-      ? Promise.resolve(effectiveConfig.scopeVerticals || [])
-      : fetchConfiguredVerticals(session, effectiveConfig.marketplace)
-  ]);
-  effectiveConfig.fsnCatalog = catalogResult.catalog;
-  effectiveConfig.requiredVerticals = requiredVerticals;
   const MAX_ATTEMPTS = 2;
   let lastErr;
 
@@ -1006,6 +1003,17 @@ async function executeScrapeProcess(config, onProgress) {
     }
 
     try {
+      // Keep API dataset discovery inside the retry boundary so transient
+      // backend failures can use the configured second attempt.
+      const [catalogResult, requiredVerticals] = await Promise.all([
+        fetchBrandCatalogFromApi(session),
+        effectiveConfig.scopeVerticals?.length || (effectiveConfig.brand && effectiveConfig.brand !== 'all')
+          ? Promise.resolve(effectiveConfig.scopeVerticals || [])
+          : fetchConfiguredVerticals(session, effectiveConfig.marketplace)
+      ]);
+      effectiveConfig.fsnCatalog = catalogResult.catalog;
+      effectiveConfig.requiredVerticals = requiredVerticals;
+
       if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
         broadcastMonitorState({
           active: true,
@@ -1151,6 +1159,7 @@ const authorizeSession = createSessionAccess({
 const PUBLIC_CHANNELS = new Set([
   'auth-login', 'auth-get-session', 'auth-logout',
   'browser-monitor-set-dock-bounds', 'browser-monitor-set-visibility',
+  'write-client-log', 'open-diagnostics',
   // Update lifecycle is app-level, not session/data-level: checking for a new
   // release and applying it must work before sign-in and can never touch
   // database or session data.
@@ -1170,12 +1179,25 @@ function registerHandler(channel, handler) {
       }
       return await handler(event, ...args);
     } catch (err) {
+      desktopLogger.error('ipc.handler.failed', err, { channel });
       return { success: false, error: err.message };
     }
   });
 }
 
 // ── IPC Handlers ─────────────────────────────────────────────────────────────
+registerHandler('write-client-log', (e, entry = {}) => {
+  const message = typeof entry.message === 'string' ? entry.message.slice(0, 2000) : '';
+  if (!message) return { success: false, error: 'A short diagnostic message is required.' };
+  const level = ['debug', 'info', 'warn', 'error'].includes(entry.level) ? entry.level : 'info';
+  desktopLogger.write(level, 'renderer.' + level, message, { source: 'desktop-ui' });
+  return { success: true };
+});
+registerHandler('open-diagnostics', async () => {
+  fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true, mode: 0o700 });
+  const error = await shell.openPath(DIAGNOSTICS_DIR);
+  return error ? { success: false, error } : { success: true, path: DIAGNOSTICS_DIR };
+});
 registerHandler('get-config', () => loadConfig());
 registerHandler('save-config', (e, config) => {
   const stored = loadConfig();
@@ -1498,6 +1520,7 @@ registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
 
     return { success: true, session: publicSession(session), databaseConfigured: true };
   } catch (err) {
+    desktopLogger.error('auth.login_failed', err);
     return { success: false, error: err.message };
   }
 });
@@ -1638,8 +1661,13 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
 
 registerHandler('start-scrape', async (e, options) => {
   if (withBrowserTask.busy) return { success: false, error: 'A browser task is already running.' };
+  const startedAt = Date.now();
   const config = loadConfig();
   const mergedOptions = { ...config, marketplace: options?.marketplace || config.marketplace, visible: options?.visible === true, brand: options?.brand || 'all', scopeVerticals: options?.verticals };
+  desktopLogger.info('scrape.started', 'Seller Hub extraction started.', {
+    marketplace: mergedOptions.marketplace, brand: mergedOptions.brand,
+    mode: mergedOptions.visible ? 'visible' : 'background'
+  });
   const targetChannel = String(mergedOptions.marketplace || '').toLowerCase().trim();
   const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetChannel || m.marketplace === targetChannel);
   if (mpConfig && !mpConfig.hasScraper) {
@@ -1654,13 +1682,22 @@ registerHandler('start-scrape', async (e, options) => {
   supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
   const jobAuthGeneration = stagedExtraction.authGeneration;
   const result = await withBrowserTask(() => executeScrapeProcess(mergedOptions, (msg) => {
+    desktopLogger.info('scrape.progress', msg, { marketplace: mergedOptions.marketplace });
     if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
   }));
-  if (!result.success) return result;
+  if (!result.success) {
+    desktopLogger.error('scrape.failed', result.error || 'Extraction failed.', {
+      marketplace: mergedOptions.marketplace, errorCode: result.errorCode || null, durationMs: Date.now() - startedAt
+    });
+    return result;
+  }
   // Re-verify the signed-in account AFTER the long browser run, then re-check the
   // generation: an account switch during that await must discard the results.
   const sessionStillValid = await authorizeSession();
   if (!sessionStillValid || jobAuthGeneration !== stagedExtraction.authGeneration) {
+    desktopLogger.warn('scrape.results_discarded', 'Account changed before extracted results could be staged.', {
+      marketplace: mergedOptions.marketplace, durationMs: Date.now() - startedAt
+    });
     return {
       success: false,
       error: 'The account changed or the session ended while the extraction was running. Results were discarded; run the extraction again.'
@@ -1669,8 +1706,16 @@ registerHandler('start-scrape', async (e, options) => {
   try {
     persistReview(normalizeScrapedCards(result.data), sessionStillValid);
   } catch (stageErr) {
+    desktopLogger.error('scrape.staging_failed', stageErr, {
+      marketplace: mergedOptions.marketplace, observationCount: result.data?.length || 0,
+      durationMs: Date.now() - startedAt
+    });
     return { success: false, error: `Extraction review staging failed: ${stageErr.message}` };
   }
+  desktopLogger.info('scrape.staged', 'Extraction passed validation and was saved for review.', {
+    marketplace: mergedOptions.marketplace, observationCount: result.data?.length || 0,
+    cardCount: stagedExtraction.cards.length, durationMs: Date.now() - startedAt
+  });
   return { ...result, rateCards: stagedExtraction.cards };
 });
 
@@ -1701,14 +1746,24 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
   try {
     const { buildBrandRateCardSet } = await import('./rateCardService.js');
     const { getDesktopPool } = await import('./db.js');
+    const sellerAccount = String(options.seller_account || 'default').trim() || 'default';
+    if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
+      return { success: false, error: 'Choose one valid seller account for the rate review.' };
+    }
     // Staged extractions are reviewable without a database; templates need one.
     const rateCards = stagedExtraction.cards.length
       ? stagedExtraction.cards
-      : await buildBrandRateCardSet(getDesktopPool(config.databaseUrl));
-    const targetMp = options.marketplace || options.channel || '';
+      : await buildBrandRateCardSet(getDesktopPool(config.databaseUrl), sellerAccount);
+    const targetMp = String(options.marketplace || options.channel || 'flipkart').toLowerCase().trim();
+    if (!['flipkart', 'shopsy'].includes(targetMp)) {
+      return { success: false, error: 'Choose Flipkart or Shopsy for a separate rate review.' };
+    }
     const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
     return { success: true, rateCards: filteredRateCards, canSync: stagedExtraction.cards.length > 0 };
   } catch (err) {
+    desktopLogger.error('rate-review.preview_failed', err, {
+      marketplace: options.marketplace || options.channel || 'flipkart'
+    });
     return { success: false, error: err.message };
   }
 });
@@ -1717,25 +1772,45 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
 registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) => {
   const cards = selectStagedCards(stagedExtraction.cards, submitted);
   if (!cards) return { success: false, error: 'Review a successful staged extraction first.' };
+  if (new Set(cards.map(card => card.marketplace)).size !== 1) {
+    return { success: false, error: 'Review Flipkart and Shopsy separately.' };
+  }
   try {
     const sellerAccount = options.seller_account || 'default';
     const result = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
     stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: result.fingerprints };
+    desktopLogger.info('rate-review.compared', 'PostgreSQL comparison completed.', {
+      marketplace: cards[0].marketplace, cardCount: cards.length,
+      changeCount: result.changesCount, anomalyCount: result.anomaliesCount
+    });
     return { success: true, ...result };
-  } catch (err) { stagedExtraction.review = null; return { success: false, error: err.message }; }
+  } catch (err) {
+    stagedExtraction.review = null;
+    desktopLogger.error('rate-review.comparison_failed', err);
+    return { success: false, error: err.message };
+  }
 });
 
 registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   const cards = selectStagedCards(stagedExtraction.cards, submitted);
   const review = stagedExtraction.review;
-  if (!cards || !review || review.payload !== JSON.stringify(cards) || review.sellerAccount !== (options.seller_account || 'default')) {
+  if (!cards || new Set(cards.map(card => card.marketplace)).size !== 1 ||
+      !review || review.payload !== JSON.stringify(cards) || review.sellerAccount !== (options.seller_account || 'default')) {
     return { success: false, error: 'Review the selected staged cards against PostgreSQL before committing.' };
   }
   try {
     const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount);
     stagedExtraction.review = null;
+    desktopLogger.info(result.updated ? 'rate-review.published' : 'rate-review.unchanged',
+      result.message || 'Reviewed rates are unchanged.', {
+        marketplace: cards[0].marketplace, cardCount: cards.length,
+        changeCount: result.changesCount || 0, version: result.versionName || null
+      });
     return { success: true, result };
-  } catch (err) { return { success: false, error: err.message }; }
+  } catch (err) {
+    desktopLogger.error('rate-review.publish_failed', err, { marketplace: cards[0].marketplace });
+    return { success: false, error: err.message };
+  }
 });
 
 // Export 6-Sheet Desktop Excel (.xlsx)

@@ -76,18 +76,20 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
 }
 
 /** Read-only published database snapshot. It is never a scraped observation. */
-export async function buildBrandRateCardSet(pool = null) {
+export async function buildBrandRateCardSet(pool = null, sellerAccount = 'default') {
   const p = pool || getDesktopPool();
   const effectiveDate = new Date().toISOString().slice(0, 10);
   const fields = [['rc_commission','commissions'],['rc_fixed_fee','fixedFees'],['rc_collection_fee','collectionFees'],['rc_reverse_shipping','reverseShipping']];
   const cards = new Map();
   for (const [table, field] of fields) {
     const { rows } = await p.query(`SELECT * FROM ${table} WHERE marketplace IN ('flipkart','shopsy')
-      AND (start_date IS NULL OR start_date <= $1) AND (end_date IS NULL OR end_date >= $1) ORDER BY category, id`, [effectiveDate]);
+      AND ($2 = 'all' OR seller_account = $2)
+      AND (start_date IS NULL OR start_date <= $1) AND (end_date IS NULL OR end_date >= $1) ORDER BY category, id`, [effectiveDate, sellerAccount]);
     for (const row of rows) {
       const brand = row.brand_name || 'General';
-      const key = JSON.stringify([row.marketplace,row.category,field === 'commissions' ? brand : 'General']);
-      if (!cards.has(key)) cards.set(key, { marketplace: row.marketplace, category: row.category, brand,
+      const sellerAccount = row.seller_account || 'default';
+      const key = JSON.stringify([row.marketplace,sellerAccount,row.category,field === 'commissions' ? brand : 'General']);
+      if (!cards.has(key)) cards.set(key, { marketplace: row.marketplace, seller_account: sellerAccount, category: row.category, brand,
         source: 'published_database', effectiveDate, commissions: [], fixedFees: [], collectionFees: [], reverseShipping: [] });
       const slab = { ...row };
       for (const k of ['price_min','price_max','rate','prepaid','postpaid','local_fee','zonal_fee','national_fee']) {
