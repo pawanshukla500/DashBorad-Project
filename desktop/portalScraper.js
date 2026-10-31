@@ -82,6 +82,10 @@ export async function scrapeFlipkartRateCards(config = {}, {
         if (!['goto', 'reload', 'evaluate', 'waitForSelector', 'type', 'setCookie'].includes(key)) return value.bind(target);
         return async (...args) => { await delay(1000); return value.apply(target, args); };
       }});
+      if (visible && typeof rawPage.bringToFront === 'function') {
+        await delay(1000);
+        await rawPage.bringToFront();
+      }
       safeGoto = async (targetUrl, options = {}) => {
         try {
           return await page.goto(targetUrl, { waitUntil: 'load', timeout: 35000, ...options });

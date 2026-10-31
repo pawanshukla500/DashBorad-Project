@@ -298,6 +298,46 @@ test('scraping starts at the Seller Hub root, then enters the dashboard only aft
   }
 });
 
+test('visible external scraping activates its Seller Hub tab before navigating', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-visible-tab-'));
+  const actions = [];
+  let currentUrl = 'about:blank';
+  const page = {
+    on() {}, off() {},
+    bringToFront: async () => actions.push('bring-to-front'),
+    goto: async url => { actions.push('navigate'); currentUrl = url; },
+    setCookie: async () => {},
+    evaluate: async fn => fn.name === 'isFlipkartAuthenticated' ? false : [],
+    cookies: async () => [],
+    url: () => currentUrl,
+    title: () => 'Seller Hub',
+    screenshot: async () => Buffer.from('test screenshot')
+  };
+  const browser = { pages: async () => [page], close: async () => {} };
+  const runtime = { launch: async () => browser };
+  try {
+    const result = await scrapeFlipkartRateCards({ marketplace: 'flipkart', visible: true }, {
+      runtime,
+      executablePath: 'test-chrome',
+      browserProfileDir: path.join(tempDir, 'profile'),
+      cookiesPath: path.join(tempDir, 'cookies.json'),
+      fallbackCookiesPath: path.join(tempDir, 'fallback.json'),
+      stagingDir: path.join(tempDir, 'staging'),
+      delay: async ms => actions.push(`wait:${ms}`),
+      onProgress: () => {},
+      onSessionExpiry: async () => false
+    });
+
+    assert.equal(result.success, false, 'the fixture remains logged out and must stop before extraction');
+    assert.equal(actions[0], 'wait:1000', 'visible Chromium waits before its first page interaction');
+    assert.equal(actions[1], 'bring-to-front', 'the selected Seller Hub page is made the visible Chrome tab');
+    assert(actions.indexOf('bring-to-front') < actions.indexOf('navigate'));
+    assert.equal(actions[2], 'wait:1000', 'navigation retains the sequential interaction delay');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('headless session expiry reopens the same persistent Chrome profile visibly before manual sign-in', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-visible-reauth-'));
   const profileDir = path.join(tempDir, 'profile');
