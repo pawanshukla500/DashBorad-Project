@@ -28,6 +28,7 @@ import { captureScrapeFailure } from './scrapeDiagnostics.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { portalPartition, isFlipkartAuthenticated, FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
+import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { createExternalBrowserSession } from './externalBrowserSession.js';
@@ -1024,7 +1025,20 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     }
 
     console.log(`[InteractiveLogin] Waiting for ${mpConfig.name} authenticated navigation...`);
-    await page.waitForFunction(mpConfig.id === 'flipkart_shopsy' ? isFlipkartAuthenticated : (id) => {
+    let authenticatedPage = page;
+    if (mpConfig.id === 'flipkart_shopsy') {
+      authenticatedPage = await waitForFlipkartAuthenticatedPage(browser, {
+        initialPage: page,
+        timeoutMs: 30 * 60 * 1000,
+        pollMs: 1000,
+        onPage: candidate => {
+          desktopLogger.info('portal.login.tab_observed', 'Seller Hub opened another Chrome tab during manual sign-in.', { marketplace: mpConfig.id });
+          broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external', marketplace: mpConfig.id,
+            url: candidate.url(), title: 'Seller Hub sign-in tab' });
+        }
+      });
+      if (authenticatedPage !== page) await focusBrowserPage(authenticatedPage);
+    } else await page.waitForFunction((id) => {
       const href = window.location.href.toLowerCase();
       const body = document.body ? document.body.innerText.toLowerCase() : '';
       const hasPasswordInput = Boolean(document.querySelector('input[type="password"]'));
@@ -1079,14 +1093,14 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       return href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
     }, { timeout: 30 * 60 * 1000, polling: 1000 }, mpConfig.id);
 
-    const cookies = await page.cookies();
+    const cookies = await authenticatedPage.cookies();
     saveEncryptedCookies(cookiesPath, cookies);
     if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
       saveEncryptedCookies(COOKIES_PATH, cookies);
     }
     console.log(`[InteractiveLogin] Logged in to ${mpConfig.name} successfully! Saved and encrypted ${cookies.length} session cookies; authenticated browser remains open for the worker.`);
 
-    broadcastMonitorState({ active: false, status: 'completed', engine: 'external', marketplace: mpConfig.id, url: page.url(), title: page.title() });
+    broadcastMonitorState({ active: false, status: 'completed', engine: 'external', marketplace: mpConfig.id, url: authenticatedPage.url(), title: await authenticatedPage.title().catch(() => '') });
     desktopLogger.info('portal.login.authenticated', 'Manual Seller Hub sign-in verified; authenticated browser remains open for extraction.', { marketplace: mpConfig.id, cookieCount: cookies.length, profileRetained: true });
     return { success: true, marketplace: mpConfig.id, cookiesCount: cookies.length };
   } catch (err) {
@@ -1232,29 +1246,29 @@ async function executeScrapeProcess(config, onProgress) {
 
       const externalSessionExpiry = async (page, { visible = false } = {}) => {
         if (!visible) return false;
-        const startTime = Date.now();
-        const timeoutMs = 30 * 60 * 1000;
         onProgress('🔐 Seller Hub sign-in is required. Complete it manually in the visible Seller Hub browser window.');
-        while (Date.now() - startTime < timeoutMs) {
-          await new Promise((r) => setTimeout(r, 1000));
-          try {
-            const authed = await page.evaluate(isFlipkartAuthenticated);
-            if (authed) {
-              const cookies = await page.cookies();
-              if (cookies.length) {
-                saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
-                saveEncryptedCookies(COOKIES_PATH, cookies);
-                onProgress('✓ In-browser authentication complete. Session cookies encrypted and saved.');
-              } else {
-                deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
-                deleteEncryptedCookies(COOKIES_PATH);
-                onProgress('✓ Seller Hub authentication verified without cookies. Removed stale cookie snapshots; the active browser session will continue.');
-              }
-              return true;
-            }
-          } catch {}
+        try {
+          const authPage = await waitForFlipkartAuthenticatedPage(page.browser(), {
+            initialPage: page,
+            timeoutMs: 30 * 60 * 1000,
+            pollMs: 1000,
+            onPage: () => onProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.')
+          });
+          const cookies = await authPage.cookies();
+          if (cookies.length) {
+            saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
+            saveEncryptedCookies(COOKIES_PATH, cookies);
+            onProgress('✓ In-browser authentication complete. Session cookies encrypted and saved.');
+          } else {
+            deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
+            deleteEncryptedCookies(COOKIES_PATH);
+            onProgress('✓ Seller Hub authentication verified without cookies. Removed stale cookie snapshots; the active browser session will continue.');
+          }
+          return true;
+        } catch (loginError) {
+          onProgress(`Manual Seller Hub sign-in did not complete: ${loginError.message}`);
+          return false;
         }
-        return false;
       };
 
       const baseExternalRuntime = getBrowserRuntime();

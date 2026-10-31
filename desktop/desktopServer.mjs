@@ -42,7 +42,8 @@ import {
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { resolveScrapeVerticals } from './fsnPlan.js';
-import { FLIPKART_MANUAL_LOGIN_URL, isFlipkartAuthenticated } from './portalSession.js';
+import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
+import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, markStagedJobStatus } from './localStaging.js';
 import { registerWorkerWithBackend, sendWorkerHeartbeat, claimNextWorkerJob, releaseClaimedWorkerJob, reportJobFailure, submitJobResults,
@@ -393,8 +394,13 @@ const serverWorker = createWorkerEngine({
           if (!canOpenVisibleBrowser()) return false;
           broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible Chrome window at seller.flipkart.com.');
           try {
-            await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
-            const cookies = await page.cookies();
+            const authPage = await waitForFlipkartAuthenticatedPage(page.browser(), {
+              initialPage: page,
+              timeoutMs: 30 * 60 * 1000,
+              pollMs: 1000,
+              onPage: () => broadcastProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.')
+            });
+            const cookies = await authPage.cookies();
             if (cookies.length) {
               saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
               saveEncryptedCookies(COOKIES_PATH, cookies);
@@ -1357,8 +1363,13 @@ const server = http.createServer(async (req, res) => {
                 }
                 broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible browser at seller.flipkart.com.');
                 try {
-                  await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
-                  const cookies = await page.cookies();
+                  const authPage = await waitForFlipkartAuthenticatedPage(page.browser(), {
+                    initialPage: page,
+                    timeoutMs: 30 * 60 * 1000,
+                    pollMs: 1000,
+                    onPage: () => broadcastProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.')
+                  });
+                  const cookies = await authPage.cookies();
                   saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
                   saveEncryptedCookies(COOKIES_PATH, cookies);
                   broadcastProgress(`Seller Hub login verified. Saved ${cookies.length} encrypted cookies and retained the persistent browser profile.`);
@@ -1496,8 +1507,16 @@ const server = http.createServer(async (req, res) => {
 
             broadcastProgress(`✓ External Chrome opened at ${portalUrl}. Sign in manually. Its persistent profile will be reused by the worker.`);
 
+            let authPage = page;
             if (mpConfig.id === 'flipkart_shopsy') {
-              await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
+              authPage = await waitForFlipkartAuthenticatedPage(browser, {
+                initialPage: page,
+                timeoutMs: 30 * 60 * 1000,
+                pollMs: 1000,
+                onPage: candidate => broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external',
+                  marketplace: mpConfig.id, url: candidate.url(), title: 'Seller Hub sign-in tab' })
+              });
+              if (authPage !== page) await focusBrowserPage(authPage);
             } else await page.waitForFunction((id) => {
               const href = window.location.href.toLowerCase();
               const body = document.body ? document.body.innerText.toLowerCase() : '';
@@ -1546,7 +1565,7 @@ const server = http.createServer(async (req, res) => {
               return href.includes('#dashboard') || href.includes('home-page') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
             }, { timeout: 300000, polling: 1000 }, mpConfig.id);
 
-            const cookies = await page.cookies();
+            const cookies = await authPage.cookies();
             saveEncryptedCookies(cookiesPath, cookies);
             if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
               saveEncryptedCookies(COOKIES_PATH, cookies);

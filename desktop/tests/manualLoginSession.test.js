@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from '../manualLoginWindow.js';
 import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL } from '../portalSession.js';
+import { waitForFlipkartAuthenticatedPage } from '../portalLoginWaiter.js';
 import { scrapeFlipkartRateCards } from '../portalScraper.js';
 import { clearEncryptedCookieSnapshot, saveEncryptedCookies } from '../cookieVault.js';
 
@@ -56,6 +57,53 @@ function manualLoginHarness({ authenticated = false } = {}) {
     timeout: () => timeout?.()
   };
 }
+
+test('Seller Hub login watcher follows authentication into another tab in the same profile', async () => {
+  let now = 0;
+  let pageReads = 0;
+  const observed = [];
+  const publicPage = {
+    isClosed: () => false,
+    evaluate: async () => false,
+    url: () => FLIPKART_MANUAL_LOGIN_URL
+  };
+  const authenticatedPage = {
+    isClosed: () => false,
+    evaluate: async () => true,
+    url: () => FLIPKART_DASHBOARD_URL
+  };
+  const browser = {
+    pages: async () => (++pageReads < 2 ? [publicPage] : [publicPage, authenticatedPage])
+  };
+
+  const result = await waitForFlipkartAuthenticatedPage(browser, {
+    initialPage: publicPage,
+    timeoutMs: 3000,
+    pollMs: 1000,
+    now: () => now,
+    wait: async milliseconds => { now += milliseconds; },
+    onPage: page => observed.push(page)
+  });
+
+  assert.equal(result, authenticatedPage, 'the authenticated Seller Hub tab must be returned');
+  assert.deepEqual(observed, [authenticatedPage], 'new tabs in the persistent profile must be observed');
+  assert.equal(pageReads, 2, 'all open Chrome pages must be polled after the one-second interval');
+});
+
+test('Seller Hub login watcher explains when no authenticated dashboard appears', async () => {
+  let now = 0;
+  const publicPage = { isClosed: () => false, evaluate: async () => false };
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => [publicPage] }, {
+      initialPage: publicPage,
+      timeoutMs: 1000,
+      pollMs: 1000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; }
+    }),
+    /No authenticated dashboard was detected in any open Chrome tab/
+  );
+});
 
 test('manual Seller Hub window opens only at the root and saves cookies after manual authentication', async () => {
   const harness = manualLoginHarness();
@@ -133,7 +181,8 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'standalone manual sign-in must foreground the selected restored tab before navigation');
   assert.match(browserRuntimeSource, /await delay\(1000\);\s*await page\.bringToFront\(\);[\s\S]*?await delay\(1000\)/,
     'foregrounding must keep one-second interaction gaps around the selected page activation');
-  assert.match(mainSource, /const timeoutMs = 30 \* 60 \* 1000/);
+  assert.match(mainSource, /timeoutMs: 30 \* 60 \* 1000/,
+    'manual login and visible reauthentication must allow time for the operator to sign in');
   assert.match(mainSource, /async function openManualFlipkartLogin\(\{ onProgress = \(\) => \{\}, waitMs \} = \{\}\)/);
   assert.match(mainSource, /manager\.open\(\{ waitMs \}\)/);
   assert.match(mainSource, /captureScrapeFailure\(page, DIAGNOSTICS_DIR,[\s\S]*?operation: 'manual_login'/,
@@ -148,7 +197,7 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(standaloneSource, /mpConfig\.id === 'flipkart_shopsy'[\s\S]*?FLIPKART_MANUAL_LOGIN_URL/);
   assert.match(standaloneWorker, /visible: canOpenVisibleBrowser\(\)/);
   assert.match(standaloneWorker, /onSessionExpiry: async page/);
-  assert.match(standaloneWorker, /page\.waitForFunction\(isFlipkartAuthenticated, \{ timeout: 30 \* 60 \* 1000/);
+  assert.match(standaloneWorker, /waitForFlipkartAuthenticatedPage\(page\.browser\(\), \{[\s\S]*?pollMs: 1000/);
   assert.match(standaloneWorker, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\)\)/,
     'standalone reauthentication must remove stale snapshots when the authenticated browser has no cookies');
   assert.match(standaloneSource, /version: DESKTOP_VERSION/);
