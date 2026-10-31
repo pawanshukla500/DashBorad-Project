@@ -253,23 +253,41 @@ function isEncryptedVaultPayload(raw) {
   return /^[a-f0-9]{24}:[a-f0-9]{32}:[a-f0-9]+$/i.test(raw);
 }
 
+function legacyCookieCandidates(filePath) {
+  return [...new Set([
+    path.join(path.dirname(filePath), 'cookies.json'),
+    path.join(path.dirname(filePath), '..', 'cookies.json'),
+    path.join(process.cwd(), '.runtime', path.basename(filePath)),
+    path.join(process.cwd(), '.runtime', 'cookies.json'),
+    path.join(__dirname, '..', '.runtime', 'cookies.json'),
+    path.join(__dirname, '.runtime', 'cookies.json')
+  ].map(candidate => path.resolve(candidate)))];
+}
+
+function removePlaintextCookieFallbacks(filePath, candidates) {
+  const target = path.resolve(filePath);
+  for (const candidate of candidates) {
+    if (candidate === target || !fs.existsSync(candidate)) continue;
+    try {
+      const raw = fs.readFileSync(candidate, 'utf8').trim();
+      if (!isEncryptedVaultPayload(raw) && isPlaintextCookieSnapshot(raw)) fs.unlinkSync(candidate);
+    } catch {}
+  }
+}
+
 /**
  * Loads cookies with AES-256-GCM decryption, verifying expiration (30-day vault retention; portal expiry still applies).
  * Stale or expired cookies are purged immediately.
  */
 export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS } = {}) {
   try {
+    const candidates = legacyCookieCandidates(filePath);
+    // Purge plaintext legacy files even if the requested encrypted target
+    // exists; a valid target must not leave an unused plaintext copy behind.
+    removePlaintextCookieFallbacks(filePath, candidates);
     if (!fs.existsSync(filePath)) {
-      const candidates = [
-        path.join(path.dirname(filePath), 'cookies.json'),
-        path.join(path.dirname(filePath), '..', 'cookies.json'),
-        path.join(process.cwd(), '.runtime', path.basename(filePath)),
-        path.join(process.cwd(), '.runtime', 'cookies.json'),
-        path.join(__dirname, '..', '.runtime', 'cookies.json'),
-        path.join(__dirname, '.runtime', 'cookies.json')
-      ];
       for (const cand of candidates) {
-        if (cand !== filePath && fs.existsSync(cand)) {
+        if (cand !== path.resolve(filePath) && fs.existsSync(cand)) {
           try {
             const stat = fs.statSync(cand);
             const raw = fs.readFileSync(cand, 'utf8').trim();

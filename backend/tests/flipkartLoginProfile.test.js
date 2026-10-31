@@ -6,8 +6,8 @@ import { getFlipkartBrowserProfileDir } from '../services/flipkartBrowserProfile
 import { resolveDesktopUserDataDir } from '../../desktop/userDataPaths.js';
 import { getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
 import { scrapeRateCard } from '../services/rateCardScraper.js';
-import { loadEncryptedCookies as loadBackendCookies } from '../utils/cookieVault.js';
-import { loadEncryptedCookies as loadDesktopCookies } from '../../desktop/cookieVault.js';
+import { loadEncryptedCookies as loadBackendCookies, saveEncryptedCookies as saveBackendCookies } from '../utils/cookieVault.js';
+import { loadEncryptedCookies as loadDesktopCookies, saveEncryptedCookies as saveDesktopCookies } from '../../desktop/cookieVault.js';
 
 describe('Flipkart persistent Seller Hub login', () => {
   it('uses the desktop app profile on Windows', () => {
@@ -102,6 +102,36 @@ describe('Flipkart persistent Seller Hub login', () => {
       }
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes plaintext fallback files even when an encrypted target already exists', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flipkart-cookie-fallback-cleanup-'));
+    const fixtureCookies = [{ name: 'fixture-session', value: 'encrypted-fixture', domain: '.flipkart.com' }];
+    try {
+      for (const [index, [loader, saver]] of [[loadBackendCookies, saveBackendCookies], [loadDesktopCookies, saveDesktopCookies]].entries()) {
+        const channelDir = path.join(tempDir, `runtime-${index}`);
+        fs.mkdirSync(channelDir, { recursive: true });
+        const encryptedTarget = path.join(channelDir, 'cookies_flipkart.json');
+        const plaintextFallback = path.join(channelDir, 'cookies.json');
+        saver(encryptedTarget, fixtureCookies);
+        const encryptedBefore = fs.readFileSync(encryptedTarget, 'utf8');
+        fs.writeFileSync(plaintextFallback, JSON.stringify(fixtureCookies));
+
+        expect(loader(encryptedTarget)).toEqual(fixtureCookies);
+        expect(fs.existsSync(plaintextFallback)).toBe(false);
+        expect(fs.readFileSync(encryptedTarget, 'utf8')).toBe(encryptedBefore);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('disables legacy scripts that replayed plaintext Seller Hub cookies or wrote directly to PostgreSQL', () => {
+    for (const relativePath of ['../scripts/check_new_category.js', '../scripts/live_interactive_visual_tour.js']) {
+      const source = fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+      expect(source).toContain('Disabled:');
+      expect(source).not.toMatch(/puppeteer|\.setCookie\(|syncRateCardsToDatabase|forceUpdate|cookies\.json|readFileSync|readFile\(/i);
     }
   });
 
