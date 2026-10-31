@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -142,6 +143,23 @@ test('Seller Hub login watcher cancels its one-second readiness wait when Chrome
 
   controller.abort();
   await assert.rejects(monitoring, error => error.name === 'AbortError');
+});
+
+test('Seller Hub login watcher rejects promptly when its Chromium browser disconnects', async () => {
+  const browser = new EventEmitter();
+  const publicPage = { isClosed: () => false, evaluate: async () => false };
+  browser.pages = async () => [publicPage];
+
+  const monitoring = waitForFlipkartAuthenticatedPage(browser, {
+    initialPage: publicPage,
+    timeoutMs: 30 * 60 * 1000,
+    pollMs: 1000
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  browser.emit('disconnected');
+
+  await assert.rejects(monitoring, /Chrome was closed while waiting for Seller Hub sign-in/);
+  assert.equal(browser.listenerCount('disconnected'), 0, 'disconnect listeners must be removed after cancellation');
 });
 
 test('manual Seller Hub window opens only at the root and saves cookies after manual authentication', async () => {
