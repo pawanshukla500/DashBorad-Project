@@ -143,3 +143,61 @@ test('a retained browser is discarded when its page can no longer be acquired', 
   assert.equal(runtime.browsers[0].closed, true);
   assert.equal(session.hasBrowser(), false);
 });
+
+test('a retained browser handle survives a rejected close and can be closed on retry', async () => {
+  const runtime = fakeRuntime();
+  const session = createExternalBrowserSession();
+  const lease = await session.acquire(runtime, { headless: false }, { profileKey: 'profile', keepOpen: true });
+  const browser = runtime.browsers[0];
+  const close = browser.close.bind(browser);
+  let rejectClose = true;
+  browser.close = async (...args) => {
+    if (rejectClose) throw new Error('Chromium refused to close');
+    return close(...args);
+  };
+
+  await assert.rejects(session.close({ profileKey: 'profile' }), /refused to close/);
+  assert.equal(session.hasBrowser(), true, 'a close failure must not discard the retained browser handle');
+  assert.equal(session.getProfileKey(), 'profile');
+
+  rejectClose = false;
+  assert.equal(await session.close({ profileKey: 'profile' }), true);
+  assert.equal(session.hasBrowser(), false);
+  assert.equal(browser.closed, true);
+  assert.equal(lease.browser.id, '1');
+});
+
+test('a launch cleanup failure is retried before another process can use the same profile', async () => {
+  const runtime = fakeRuntime();
+  let rejectFirstClose = true;
+  runtime.launch = async options => {
+    const browser = new FakeBrowser(String(runtime.browsers.length + 1));
+    browser.options = options;
+    if (browser.id === '1') {
+      browser.pages = async () => { throw new Error('Initial page is unavailable'); };
+      browser.close = async () => {
+        if (rejectFirstClose) throw new Error('Profile is still locked');
+        browser.closed = true;
+        browser.listeners.get('disconnected')?.();
+      };
+    }
+    runtime.browsers.push(browser);
+    return browser;
+  };
+  const session = createExternalBrowserSession();
+  const options = { headless: false, userDataDir: 'profile' };
+  const acquireOptions = { profileKey: 'profile', keepOpen: true };
+
+  await assert.rejects(session.acquire(runtime, options, acquireOptions), /Initial page is unavailable/);
+  assert.equal(runtime.browsers.length, 1);
+  await assert.rejects(session.acquire(runtime, options, acquireOptions), /Profile is still locked/);
+  assert.equal(runtime.browsers.length, 1, 'a second process must not launch while cleanup still fails');
+
+  rejectFirstClose = false;
+  const recovered = await session.acquire(runtime, options, acquireOptions);
+  assert.equal(runtime.browsers.length, 2);
+  assert.equal(runtime.browsers[0].closed, true);
+  assert.equal(recovered.reused, false);
+  assert.equal(session.getPage(), recovered.page);
+  await session.close();
+});
