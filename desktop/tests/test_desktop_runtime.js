@@ -763,7 +763,7 @@ async function runTests() {
   });
 
   await runTest('new runtime modules are present next to main.js', async () => {
-    for (const file of ['browserRuntime.js', 'sessionAccess.js', 'scrapeResults.js', 'dbUrlGuard.js', 'httpAccess.js', 'portalScraper.js', 'externalBrowserSession.js']) {
+    for (const file of ['browserRuntime.js', 'browserRecoveryRegistry.js', 'sessionAccess.js', 'scrapeResults.js', 'dbUrlGuard.js', 'httpAccess.js', 'portalScraper.js', 'externalBrowserSession.js']) {
       assert(fs.existsSync(path.join(desktopDir, file)), `${file} is missing`);
     }
     const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'));

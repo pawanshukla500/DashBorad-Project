@@ -5,7 +5,7 @@ import { parsePortalRateSnapshot } from './portalRates.js';
 import { captureScrapeFailure } from './scrapeDiagnostics.js';
 import path from 'node:path';
 import { buildFsnPlan } from './fsnPlan.js';
-import { canOpenVisibleBrowser, getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js';
+import { canOpenVisibleBrowser, focusBrowserPage, getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js';
 import { getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, deleteEncryptedCookies } from './cookieVault.js';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -41,7 +41,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
   browserProfileDir = config.browserProfileDir,
   delay = wait,
   onSessionExpiry,
-  canShowBrowser = canOpenVisibleBrowser
+  canShowBrowser = canOpenVisibleBrowser,
+  browserRecoveryRegistry
 } = {}) {
   const marketplace = config.marketplace || 'both';
   if (!['both', 'flipkart_shopsy', 'flipkart', 'shopsy'].includes(marketplace)) {
@@ -50,6 +51,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
   let browser;
   let currentPage;
   let captureHandle;
+  let browserRecoveryLease;
   let page;
   let safeGoto;
   const context = { marketplace, stage: 'launch' };
@@ -73,6 +75,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
           ...(visible ? ['--start-maximized'] : ['--window-size=1500,1000'])
         ]
       });
+      browserRecoveryLease = browserRecoveryRegistry?.track(browser, profileDir);
       const rawPage = (await browser.pages())[0] || await browser.newPage();
       currentPage = rawPage;
       captureHandle = attachRateCardCapture(rawPage);
@@ -82,10 +85,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
         if (!['goto', 'reload', 'evaluate', 'waitForSelector', 'type', 'setCookie'].includes(key)) return value.bind(target);
         return async (...args) => { await delay(1000); return value.apply(target, args); };
       }});
-      if (visible && typeof rawPage.bringToFront === 'function') {
-        await delay(1000);
-        await rawPage.bringToFront();
-      }
+      if (visible) await focusBrowserPage(rawPage, { delay });
       safeGoto = async (targetUrl, options = {}) => {
         try {
           return await page.goto(targetUrl, { waitUntil: 'load', timeout: 35000, ...options });
@@ -136,8 +136,10 @@ export async function scrapeFlipkartRateCards(config = {}, {
         }
         captureHandle?.detach();
         captureHandle = null;
-        await browser.close();
+        if (browserRecoveryLease) await browserRecoveryLease.close();
+        else await browser.close();
         browser = null;
+        browserRecoveryLease = null;
         currentPage = null;
         await launchBrowser(true);
         visibleForLogin = true;
@@ -245,6 +247,9 @@ export async function scrapeFlipkartRateCards(config = {}, {
     return { success: false, error: error.message, errorCode: diagnostic?.code || 'EXTRACTION_REJECTED', diagnostic };
   } finally {
     captureHandle?.detach();
-    if (browser) await browser.close().catch(() => {});
+    if (browser) {
+      if (browserRecoveryLease) await browserRecoveryLease.close();
+      else await browser.close();
+    }
   }
 }

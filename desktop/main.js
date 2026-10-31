@@ -18,7 +18,7 @@ import {
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
 import { verifyDesktopTokenAuthorization } from './authValidation.js';
-import { getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
+import { focusBrowserPage, getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
 import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
@@ -1017,6 +1017,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       // Seller Hub pages can keep long-polling connections open. Wait for the
       // document to load, then let the explicit authentication check drive the
       // manual sign-in lifecycle.
+      await focusBrowserPage(page);
       await page.goto(manualLoginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     } catch (gotoErr) {
       if (!String(gotoErr?.message || '').includes('ERR_ABORTED')) throw gotoErr;

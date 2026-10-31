@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createExternalBrowserSession } from '../externalBrowserSession.js';
+import { createBrowserRecoveryRegistry } from '../browserRecoveryRegistry.js';
+import { focusBrowserPage } from '../browserRuntime.js';
 
 class FakeBrowser {
   constructor(id) {
@@ -203,4 +205,40 @@ test('a launch cleanup failure is retried before another process can use the sam
   assert.equal(recovered.reused, false);
   assert.equal(session.getPage(), recovered.page);
   await session.close();
+});
+
+test('standalone browser recovery keeps failed close handles and retries before profile cleanup', async () => {
+  const registry = createBrowserRecoveryRegistry();
+  let connected = true;
+  let rejectClose = true;
+  let disconnect;
+  const browser = {
+    isConnected: () => connected,
+    on: (event, callback) => { if (event === 'disconnected') disconnect = callback; },
+    async close() {
+      if (rejectClose) throw new Error('Chromium still owns the profile lock');
+      connected = false;
+      disconnect?.();
+    }
+  };
+  const lease = registry.track(browser, 'seller-hub-profile');
+
+  await assert.rejects(lease.close(), /owns the profile lock/);
+  assert.equal(registry.hasProfile('seller-hub-profile'), true);
+  await assert.rejects(registry.closeProfile('seller-hub-profile'), /owns the profile lock/);
+  assert.equal(registry.size(), 1, 'failed profile cleanup must keep the browser handle available for another retry');
+
+  rejectClose = false;
+  assert.equal(await registry.closeProfile('seller-hub-profile'), true);
+  assert.equal(registry.hasProfile('seller-hub-profile'), false);
+  assert.equal(registry.size(), 0);
+});
+
+test('interactive browser foregrounding is separated from navigation by one-second waits', async () => {
+  const actions = [];
+  const page = { bringToFront: async () => actions.push('foreground') };
+
+  assert.equal(await focusBrowserPage(page, { delay: async ms => actions.push(`wait:${ms}`) }), true);
+  actions.push('navigate');
+  assert.deepEqual(actions, ['wait:1000', 'foreground', 'wait:1000', 'navigate']);
 });

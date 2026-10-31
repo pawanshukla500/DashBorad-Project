@@ -83,6 +83,7 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   const scraperSource = fs.readFileSync(new URL('../portalScraper.js', import.meta.url), 'utf8');
   const externalBrowserSource = fs.readFileSync(new URL('../externalBrowserSession.js', import.meta.url), 'utf8');
   const standaloneSource = fs.readFileSync(new URL('../desktopServer.mjs', import.meta.url), 'utf8');
+  const browserRuntimeSource = fs.readFileSync(new URL('../browserRuntime.js', import.meta.url), 'utf8');
   const monitorHtml = fs.readFileSync(new URL('../ui/index.html', import.meta.url), 'utf8');
   const rendererSource = fs.readFileSync(new URL('../ui/renderer.js', import.meta.url), 'utf8');
   const workerEntry = mainSource.slice(mainSource.indexOf('async function executeBackgroundWorkerJob'), mainSource.indexOf('// ── Daily Scheduler'));
@@ -99,6 +100,9 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   const clearSessionStart = standaloneSource.indexOf("if (pathname === '/api/clear-session'");
   const clearSessionEnd = standaloneSource.indexOf('// POST /api/open-excel', clearSessionStart);
   const clearSessionRoute = standaloneSource.slice(clearSessionStart, clearSessionEnd);
+  const standaloneLoginStart = standaloneSource.indexOf("if (pathname === '/api/interactive-login'");
+  const standaloneLoginEnd = standaloneSource.indexOf("if (pathname === '/api/clear-session'", standaloneLoginStart);
+  const standaloneLoginRoute = standaloneSource.slice(standaloneLoginStart, standaloneLoginEnd);
   const desktopResetStart = mainSource.indexOf("registerHandler('clear-marketplace-session'");
   const desktopResetEnd = mainSource.indexOf("registerHandler('start-scrape'", desktopResetStart);
   const desktopResetHandler = mainSource.slice(desktopResetStart, desktopResetEnd);
@@ -120,6 +124,15 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'Chromium must restore the saved profile session after a clean app restart');
   assert.match(mainSource, /userDataDir: profileDir/);
   assert.match(mainSource, /page\.goto\(manualLoginUrl, \{ waitUntil: 'domcontentloaded'/);
+  const externalLoginStart = mainSource.indexOf('const browserLease = await externalBrowserSession.acquire');
+  const externalLoginEnd = mainSource.indexOf("registerHandler('interactive-login'", externalLoginStart);
+  const externalLoginFlow = mainSource.slice(externalLoginStart, externalLoginEnd);
+  assert(externalLoginFlow.indexOf('await focusBrowserPage(page)') < externalLoginFlow.indexOf('await page.goto(manualLoginUrl'),
+    'restored external Seller Hub tabs must be brought forward before manual login navigation');
+  assert(standaloneLoginRoute.indexOf('await focusBrowserPage(page)') < standaloneLoginRoute.indexOf('await page.goto(portalUrl'),
+    'standalone manual sign-in must foreground the selected restored tab before navigation');
+  assert.match(browserRuntimeSource, /await delay\(1000\);\s*await page\.bringToFront\(\);[\s\S]*?await delay\(1000\)/,
+    'foregrounding must keep one-second interaction gaps around the selected page activation');
   assert.match(mainSource, /const timeoutMs = 30 \* 60 \* 1000/);
   assert.match(mainSource, /async function openManualFlipkartLogin\(\{ onProgress = \(\) => \{\}, waitMs \} = \{\}\)/);
   assert.match(mainSource, /manager\.open\(\{ waitMs \}\)/);
@@ -150,11 +163,17 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'session profile deletion must hold the shared browser task lock');
   assert(clearSessionRoute.indexOf('withBrowserTask(async () =>') < clearSessionRoute.indexOf('fs.rmSync'),
     'the worker profile must be deleted only after acquiring the browser task lock');
-  assert.match(clearSessionRoute, /clearEncryptedCookieSnapshot\(getMarketplaceCookiesPath\(targetId\)\)[\s\S]*?const profilePath = getMarketplaceBrowserProfilePath\(targetId\)[\s\S]*?fs\.rmSync/,
+  assert(clearSessionRoute.indexOf('await standaloneBrowserRecovery.closeProfile(profilePath)') < clearSessionRoute.indexOf('fs.rmSync(profilePath'),
+    'failed standalone browser handles must be retried before deleting their locked profile');
+  assert.match(standaloneLoginRoute, /standaloneBrowserRecovery\.track\(browser, profileDir\)/,
+    'standalone interactive-login browsers must be registered for failed-close recovery');
+  assert.match(standaloneSource, /browserRecoveryRegistry: standaloneBrowserRecovery/,
+    'standalone scraping browsers must share the recovery registry used by profile reset');
+  assert.match(clearSessionRoute, /const profilePath = getMarketplaceBrowserProfilePath\(targetId\)[\s\S]*?clearEncryptedCookieSnapshot\(getMarketplaceCookiesPath\(targetId\)\)[\s\S]*?fs\.rmSync/,
     'standalone reset must delete the selected marketplace profile after clearing its cookie snapshot');
   assert.match(clearSessionRoute, /if \(isFlipkart\) \{\s*clearEncryptedCookieSnapshot\(COOKIES_PATH\)/,
     'standalone reset must retain the legacy cookie cleanup only for Flipkart');
-  const standaloneProfileCleanup = clearSessionRoute.slice(clearSessionRoute.indexOf('const profilePath'), clearSessionRoute.indexOf('return { success: true'));
+  const standaloneProfileCleanup = clearSessionRoute.slice(clearSessionRoute.indexOf('fs.rmSync(profilePath'), clearSessionRoute.indexOf('return { success: true'));
   assert(!standaloneProfileCleanup.includes('if (isFlipkart)'), 'standalone reset must delete profiles for every marketplace');
   assert.match(clearSessionRoute, /if \(fs\.existsSync\(profilePath\)\) throw/,
     'standalone reset must fail if browser-profile removal did not take effect');

@@ -11,8 +11,10 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
-import { canOpenVisibleBrowser, getBrowserRuntime, withBrowserTask } from './browserRuntime.js';
+import { canOpenVisibleBrowser, focusBrowserPage, getBrowserRuntime, withBrowserTask } from './browserRuntime.js';
+import { createBrowserRecoveryRegistry } from './browserRecoveryRegistry.js';
 const puppeteer = getBrowserRuntime();
+const standaloneBrowserRecovery = createBrowserRecoveryRegistry();
 
 import { 
   decodeJwtPayload, 
@@ -380,9 +382,13 @@ const serverWorker = createWorkerEngine({
     try {
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, parameters: job.parameters });
       const fsnCatalog = (await fetchBrandCatalogFromApi(session)).catalog;
-      const result = await withBrowserTask(async () => scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace), visible: canOpenVisibleBrowser(), browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace) }, {
+      const profileDir = getMarketplaceBrowserProfilePath(job.marketplace);
+      const result = await withBrowserTask(async () => {
+        await standaloneBrowserRecovery.closeProfile(profileDir);
+        return scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace), visible: canOpenVisibleBrowser(), browserProfileDir: profileDir }, {
         onProgress: broadcastProgress,
-        browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace),
+        browserProfileDir: profileDir,
+        browserRecoveryRegistry: standaloneBrowserRecovery,
         onSessionExpiry: async page => {
           if (!canOpenVisibleBrowser()) return false;
           broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible Chrome window at seller.flipkart.com.');
@@ -405,7 +411,8 @@ const serverWorker = createWorkerEngine({
             return false;
           }
         }
-      }));
+        });
+      });
       if (!result.success) throw new Error(result.error);
       const cards = normalizeScrapedCards(result.data);
       if (authGeneration !== stagedExtraction.authGeneration) throw new Error('The account changed during extraction. Results were not submitted.');
@@ -1326,7 +1333,10 @@ const server = http.createServer(async (req, res) => {
       (async () => {
         try {
           broadcastProgress(`🚀 Scraper job initiated (${targetMp.toUpperCase()} | Mode: ${isVisible ? 'Visible Chrome' : 'Stealth'})...`);
-          const result = await withBrowserTask(async () => scrapeFlipkartRateCards(
+          const profileDir = getMarketplaceBrowserProfilePath(normalizedChannel);
+          const result = await withBrowserTask(async () => {
+            await standaloneBrowserRecovery.closeProfile(profileDir);
+            return scrapeFlipkartRateCards(
             {
               marketplace: normalizedChannel,
               visible: isVisible,
@@ -1334,11 +1344,12 @@ const server = http.createServer(async (req, res) => {
               scopeVerticals: targetVerticals,
               brand: selectedBrand,
               requiredVerticals,
-              browserProfileDir: getMarketplaceBrowserProfilePath(normalizedChannel)
+              browserProfileDir: profileDir
             },
             {
               onProgress: broadcastProgress,
-              browserProfileDir: getMarketplaceBrowserProfilePath(normalizedChannel),
+              browserProfileDir: profileDir,
+              browserRecoveryRegistry: standaloneBrowserRecovery,
               onSessionExpiry: async page => {
                 if (!isVisible) {
                   broadcastProgress('Seller Hub session expired. Open Seller Hub Sign-in, complete login manually, then run the worker again.');
@@ -1358,7 +1369,8 @@ const server = http.createServer(async (req, res) => {
                 }
               }
             }
-          ));
+          );
+          });
 
           if (result.success && jobAuthGeneration !== stagedExtraction.authGeneration) {
             result.success = false;
@@ -1448,7 +1460,9 @@ const server = http.createServer(async (req, res) => {
         }
         withBrowserTask(async () => {
           let browser = null;
+          let browserRecoveryLease = null;
           try {
+            await standaloneBrowserRecovery.closeProfile(profileDir);
             browser = await puppeteer.launch({
               headless: false,
               executablePath: chromePath,
@@ -1460,6 +1474,7 @@ const server = http.createServer(async (req, res) => {
                 '--window-size=1280,800'
               ]
             });
+            browserRecoveryLease = standaloneBrowserRecovery.track(browser, profileDir);
             const pages = await browser.pages();
             const page = pages.length > 0 ? pages[0] : await browser.newPage();
 
@@ -1476,6 +1491,7 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
+            await focusBrowserPage(page);
             await page.goto(portalUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
             broadcastProgress(`✓ External Chrome opened at ${portalUrl}. Sign in manually. Its persistent profile will be reused by the worker.`);
@@ -1540,18 +1556,23 @@ const server = http.createServer(async (req, res) => {
             broadcastProgress(`❌ Interactive login error for ${mpConfig.name}: ${loginErr.message}`);
           } finally {
             if (browser) {
-              await browser.close().catch(() => {});
+              if (browserRecoveryLease) await browserRecoveryLease.close();
+              else await browser.close();
             }
           }
           return { ran: true };
         }).then((gate) => {
+          if (gate?.success === false) {
+            broadcastProgress(`❌ Interactive browser cleanup or launch failed: ${gate.error}`);
+            return;
+          }
           // Unreachable while the busy check above stays adjacent to the call,
           // kept as defense in depth: a lost race must never leave a temp
           // profile behind or stay silent about skipping the login.
           if (!gate || gate.ran !== true) {
             broadcastProgress('⏳ Interactive login skipped: another browser task is already running. Finish it and try again.');
           }
-        }).catch(() => {});
+        }).catch(error => broadcastProgress(`❌ Interactive browser task failed: ${error.message}`));
 
         return sendJson(200, { 
           success: true, 
@@ -1577,12 +1598,13 @@ const server = http.createServer(async (req, res) => {
           return sendJson(409, { success: false, error: 'A browser task is running. Finish login or extraction before clearing its Seller Hub session.' });
         }
         const cleared = await withBrowserTask(async () => {
+          const profilePath = getMarketplaceBrowserProfilePath(targetId);
+          await standaloneBrowserRecovery.closeProfile(profilePath);
           clearEncryptedCookieSnapshot(getMarketplaceCookiesPath(targetId));
           const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
           if (isFlipkart) {
             clearEncryptedCookieSnapshot(COOKIES_PATH);
           }
-          const profilePath = getMarketplaceBrowserProfilePath(targetId);
           fs.rmSync(profilePath, { recursive: true, force: true });
           if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent marketplace browser profile.');
           return { success: true, message: `Session data cleared for ${targetId}` };
