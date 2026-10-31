@@ -158,6 +158,30 @@ workersRouter.post('/jobs/claim', async (req, res) => {
   }
 });
 
+/**
+ * Return a claim that arrived after the desktop worker was stopped.
+ * POST /api/workers/jobs/release
+ */
+workersRouter.post('/jobs/release', async (req, res) => {
+  const { job_id, worker_id } = req.body;
+  if (!job_id || !worker_id) return res.status(400).json({ error: 'Job id and worker id are required' });
+  try {
+    const result = await getPool().query(`
+      UPDATE worker_jobs
+      SET status = 'queued', lease_worker_id = NULL, lease_expires_at = NULL,
+          attempts = GREATEST(attempts - 1, 0), progress_pct = 0,
+          progress_message = 'Queued after worker stopped before extraction', updated_at = NOW()
+      WHERE id = $1 AND lease_worker_id = $2 AND status = 'claimed'
+      RETURNING id, status
+    `, [job_id, worker_id]);
+    if (result.rows.length === 0) return res.status(409).json({ error: 'Claim is no longer held by this worker', code: 'LEASE_MISMATCH' });
+    res.json({ success: true, job: result.rows[0] });
+  } catch (err) {
+    console.error('[Worker API] Release claim error:', err.message);
+    res.status(500).json({ error: 'Failed to release worker claim' });
+  }
+});
+
 // ==========================================
 // WORKER JOBS ROUTER (/api/worker-jobs)
 // ==========================================

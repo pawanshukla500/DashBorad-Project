@@ -165,6 +165,18 @@ export async function claimNextWorkerJob(session, workerId) {
   return await res.json();
 }
 
+export async function releaseClaimedWorkerJob(session, job, workerId) {
+  if (!job?.id || !workerId) throw new Error('Job and worker identifiers are required to release a claim.');
+  const baseUrl = await getActiveBackendUrl();
+  const res = await safeFetch(`${baseUrl}/api/workers/jobs/release`, {
+    method: 'POST',
+    headers: getHeaders(session?.idToken, baseUrl),
+    body: JSON.stringify({ job_id: job.id, worker_id: workerId })
+  });
+  if (!res.ok) throw new Error(`Release claimed job failed: HTTP ${res.status}`);
+  return await res.json();
+}
+
 export async function reportJobProgress(session, jobId, progressPct, progressMessage) {
   const baseUrl = await getActiveBackendUrl();
   const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/progress`, {

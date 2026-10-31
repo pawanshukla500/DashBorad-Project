@@ -94,11 +94,12 @@ test('worker registers and polls immediately, coalesces duplicate starts and nev
 });
 
 test('stopping during a job claim prevents executing a late claim response', async () => {
-  let finish,executed=false;
+  let finish,executed=false,released=null;
   const engine=createWorkerEngine({getSession:async()=>({idToken:'fixture'}),register:async()=>{},heartbeat:async()=>{},
-    claim:()=>new Promise(r=>{finish=r;}),execute:async()=>{executed=true;},log:()=>{}});
+    claim:()=>new Promise(r=>{finish=r;}),releaseClaim:async(_session,job)=>{released=job.id;},execute:async()=>{executed=true;},log:()=>{}});
   const started=engine.start();await new Promise(r=>setImmediate(r));engine.stop();finish({success:true,job:{id:1}});await started;
   assert.equal(executed,false);
+  assert.equal(released,1,'a claim returned after stop is released immediately instead of waiting for its lease to expire');
 });
 
 test('real HTTP worker registration and initial claim complete within five seconds', async () => {
@@ -114,6 +115,8 @@ test('real HTTP worker registration and initial claim complete within five secon
     heartbeat:async()=>{},claim:s=>client.claimNextWorkerJob(s,'fixture'),execute:async()=>{},log:()=>{}});
   try {
     const start=Date.now();await engine.start();assert.ok(Date.now()-start<5000);assert.ok(calls.includes('/api/workers/register'));assert.ok(calls.includes('/api/workers/jobs/claim'));
+    await client.releaseClaimedWorkerJob(session,{id:'fixture-job'},'fixture');
+    assert.ok(calls.includes('/api/workers/jobs/release'),'the desktop client has an authenticated worker-claim release API');
     let current=true;
     const submission=client.submitJobResults(session,'fixture-job',[],'fixture',()=>current);
     current=false;
@@ -151,23 +154,45 @@ test('rate-card snapshot keeps seller accounts in separate cards', async () => {
     {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'Youthnic',price_min:0,price_max:500,rate:0.1},
     {marketplace:'flipkart',seller_account:'seller-b',category:'kurta',brand_name:'Youthnic',price_min:0,price_max:500,rate:0.2}
   ];
-  const pool={query:async (sql,params)=>({rows:sql.includes('FROM rc_commission')?rows.filter(row=>params[1]==='all'||row.seller_account===params[1]):[]})};
+  const pickPackRows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',fulfilment_type:'FBF',price_min:0,price_max:999999,weight_min:0,weight_max:50000,price_scope:'all',rate:14},
+    {marketplace:'flipkart',seller_account:'seller-b',category:'kurta',fulfilment_type:'FBF',price_min:0,price_max:999999,weight_min:0,weight_max:50000,price_scope:'all',rate:18}
+  ];
+  const pool={query:async (sql,params)=>({rows:sql.includes('FROM rc_commission')?rows.filter(row=>params[1]==='all'||row.seller_account===params[1]):
+    sql.includes('FROM rc_pick_pack')?pickPackRows.filter(row=>params[1]==='all'||row.seller_account===params[1]):[]})};
   const cards=await buildBrandRateCardSet(pool,'all');
-  assert.equal(cards.length,2);
-  assert.deepEqual(cards.map(card=>card.seller_account).sort(),['default','seller-b']);
-  assert.equal((await buildBrandRateCardSet(pool)).length,1,'the visible review defaults to the same seller account used by publication');
+  assert.equal(cards.length,4);
+  assert.deepEqual(cards.map(card=>card.seller_account).sort(),['default','default','seller-b','seller-b']);
+  assert.deepEqual(cards.filter(card=>card.pickPackFees?.length).map(card=>[card.seller_account,card.pickPackFees[0].rate]).sort(),[['default',14],['seller-b',18]]);
+  const defaultCards=await buildBrandRateCardSet(pool);
+  assert.ok(defaultCards.length>0 && defaultCards.every(card=>card.seller_account==='default'),'the visible review defaults to the same seller account used by publication');
 });
 
 test('scrape diagnostics rotate screenshots and bound error logs', async () => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rate-diagnostics-'));
   try {
-    const page={url:()=> 'https://seller.flipkart.com/index.html#dashboard/rate-card',screenshot:async()=>Buffer.from('fixture-png')};
+    const evaluations=[];
+    const page={url:()=> 'https://seller.flipkart.com/index.html#dashboard/rate-card',evaluate:async(...args)=>{evaluations.push(args);return evaluations.length%2?[null]:undefined;},screenshot:async()=>Buffer.from('fixture-png')};
     for(let index=0;index<24;index++) await captureScrapeFailure(page,dir,{stage:'test'},Object.assign(new Error('Authorization: Bearer supersecret'),{code:'FIXTURE'}));
     const files=fs.readdirSync(dir);
     assert.equal(files.filter(name=>name.endsWith('.png')).length,20,'only the most recent 20 screenshots are retained');
     const log=fs.readFileSync(path.join(dir,'errors.jsonl'),'utf8');
     assert.ok(Buffer.byteLength(log)<=1024*1024,'the diagnostic log stays within its size bound');
     assert.ok(!log.includes('supersecret'),'authorization values are redacted');
+    assert.ok(evaluations.length>=2 && evaluations[0][1].includes('input,textarea'),'diagnostic capture masks editable form fields');
+    assert.match(String(evaluations[0][0]),/transparent/,'input text is hidden before capturing');
+    assert.match(String(evaluations[1][0]),/removeAttribute/,'original styles are restored after capture');
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('scrape diagnostics skip screenshots when editable controls cannot be redacted', async () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rate-redacted-diagnostics-'));
+  try {
+    let screenshots=0;
+    const page={url:()=> 'https://seller.flipkart.com/login',evaluate:async()=>{throw new Error('renderer unavailable');},screenshot:async()=>{screenshots++;return Buffer.from('unsafe');}};
+    const result=await captureScrapeFailure(page,dir,{stage:'login'},new Error('fixture failure'));
+    assert.equal(screenshots,0,'an unredacted screenshot is never used as a fallback');
+    assert.match(result.screenshotError,/could not be redacted/i);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
@@ -187,8 +212,14 @@ test('installed-package smoke harness imports its evidence writer', () => {
   const smoke=fs.readFileSync(new URL('../packagedSmoke.js',import.meta.url),'utf8');
   assert.match(smoke,/import fs from ['"]node:fs['"];/,'the installed smoke harness must be able to write its JSON result and screenshot');
   assert.match(smoke,/window\.show\(\)/,'the smoke harness makes the installed host window visible before Chromium screenshot capture');
+  assert.ok(smoke.indexOf('if (!fs.existsSync(outputDirectory)) fs.mkdirSync(outputDirectory') < smoke.indexOf('fs.writeFileSync(`${output}.png`'),'the output directory exists before screenshot evidence is written');
   const browser=fs.readFileSync(new URL('../embeddedBrowser.js',import.meta.url),'utf8');
   assert.match(browser,/capturePage\(undefined,\s*\{\s*stayAwake:\s*true\s*\}\)/,'live browser diagnostics allow Electron to reveal hidden contents while capturing');
+});
+
+test('rate-card detail rows follow the selected fee filter', () => {
+  const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
+  assert.match(renderer,/changeFilterByTable\[change\.table\].*changeFilterByTable\[change\.type\]/s,'changed detail rows map backend table names and local fee types to the active filter');
 });
 
 test('FSN response matching never accepts category-only or other-product fees', () => {

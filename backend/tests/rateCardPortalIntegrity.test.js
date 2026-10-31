@@ -74,6 +74,16 @@ describe('Portal observations and reviewed publication', () => {
     const db = database(); db.tables.rc_commission.push({...db.tables.rc_commission[0],id:900});
     await expect(compare(db)).rejects.toThrow(/Duplicate active/);
   });
+  it('reports removed slabs separately from modified rates in review summaries', async () => {
+    const db = database();
+    db.tables.rc_commission.push({...db.tables.rc_commission[0],id:900,price_min:2000,price_max:2500});
+    const changed = cards();
+    changed[0].commissions[0].rate += 0.01;
+    const review = await compare(db, changed);
+    expect(review.summary.modified).toBe(1);
+    expect(review.summary.removed).toBe(1);
+    expect(review.summary.added).toBe(0);
+  });
   it('detects changes below four decimals and shipping range/increment changes', async () => {
     const db = database(); db.tables.rc_commission[0].rate -= 0.000001;
     db.tables.rc_reverse_shipping[0].national_additional_fee += 1;

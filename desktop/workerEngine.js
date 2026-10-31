@@ -1,5 +1,5 @@
 // Fast control-plane work is independent of the sequential portal action lane.
-export function createWorkerEngine({ getSession, register, heartbeat, claim, execute, isBusy = () => false, log = console.log, intervalMs = 2000 }) {
+export function createWorkerEngine({ getSession, register, heartbeat, claim, releaseClaim = async () => {}, execute, isBusy = () => false, log = console.log, intervalMs = 2000 }) {
   let generation = 0, timer, heartTimer, inFlight = false, running = false, registered = false;
   const stop = () => { generation++; clearInterval(timer); clearInterval(heartTimer); timer = heartTimer = null; registered = false; };
   const start = async () => {
@@ -14,7 +14,17 @@ export function createWorkerEngine({ getSession, register, heartbeat, claim, exe
         if (!session?.idToken || owner !== generation) return;
         if (!registered) { await register(session); if (owner !== generation) return; registered = true; }
         const response = await claim(session);
-        if (owner !== generation) return;
+        if (owner !== generation) {
+          if (response?.success && response.job) {
+            try {
+              await releaseClaim(session, response.job);
+              log({ event: 'worker_late_claim_released', jobId: response.job.id });
+            } catch (error) {
+              log({ event: 'worker_claim_release_failed', jobId: response.job.id, message: error.message });
+            }
+          }
+          return;
+        }
         log({ event: 'worker_poll', startupElapsedMs: Date.now() - started });
         if (response?.success && response.job) {
           running = true;

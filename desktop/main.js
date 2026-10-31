@@ -34,6 +34,7 @@ import {
   registerWorkerWithBackend,
   sendWorkerHeartbeat,
   claimNextWorkerJob,
+  releaseClaimedWorkerJob,
   reportJobProgress,
   reportJobFailure,
   submitJobResults,
@@ -549,6 +550,7 @@ const workerEngine = createWorkerEngine({
     platform: process.platform, capabilities: ['flipkart','shopsy'], metadata: { arch: process.arch } }),
   heartbeat: (session, status) => sendWorkerHeartbeat(session, WORKER_ID, status),
   claim: session => claimNextWorkerJob(session, WORKER_ID),
+  releaseClaim: (session, job) => releaseClaimedWorkerJob(session, job, WORKER_ID),
   execute: executeBackgroundWorkerJob,
   isBusy: () => withBrowserTask.busy || isWorkerExecutingJob,
   log: event => console.log(JSON.stringify({ ...event, worker: WORKER_ID }))

@@ -79,7 +79,7 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
 export async function buildBrandRateCardSet(pool = null, sellerAccount = 'default') {
   const p = pool || getDesktopPool();
   const effectiveDate = new Date().toISOString().slice(0, 10);
-  const fields = [['rc_commission','commissions'],['rc_fixed_fee','fixedFees'],['rc_collection_fee','collectionFees'],['rc_reverse_shipping','reverseShipping']];
+  const fields = [['rc_commission','commissions'],['rc_fixed_fee','fixedFees'],['rc_collection_fee','collectionFees'],['rc_reverse_shipping','reverseShipping'],['rc_pick_pack','pickPackFees']];
   const cards = new Map();
   for (const [table, field] of fields) {
     const { rows } = await p.query(`SELECT * FROM ${table} WHERE marketplace IN ('flipkart','shopsy')
@@ -90,9 +90,10 @@ export async function buildBrandRateCardSet(pool = null, sellerAccount = 'defaul
       const sellerAccount = row.seller_account || 'default';
       const key = JSON.stringify([row.marketplace,sellerAccount,row.category,field === 'commissions' ? brand : 'General']);
       if (!cards.has(key)) cards.set(key, { marketplace: row.marketplace, seller_account: sellerAccount, category: row.category, brand,
-        source: 'published_database', effectiveDate, commissions: [], fixedFees: [], collectionFees: [], reverseShipping: [] });
+        source: 'published_database', effectiveDate, commissions: [], fixedFees: [], collectionFees: [], reverseShipping: [], pickPackFees: [] });
       const slab = { ...row };
-      for (const k of ['price_min','price_max','rate','prepaid','postpaid','local_fee','zonal_fee','national_fee']) {
+      for (const k of ['price_min','price_max','rate','prepaid','postpaid','local_fee','zonal_fee','national_fee',
+        'weight_min','weight_max','base_weight','increment_weight','local_additional_fee','zonal_additional_fee','national_additional_fee']) {
         if (slab[k] !== undefined && slab[k] !== null) slab[k] = Number(slab[k]);
       }
       cards.get(key)[field].push(slab);

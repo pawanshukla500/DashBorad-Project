@@ -1004,8 +1004,17 @@ function renderDiffTable() {
 
   // Include every changed component and removed slab in the review. The full
   // records expose weight increments and zone values which a headline rate hides.
+  const changeFilterByTable = {
+    rc_commission: 'commission', commission: 'commission',
+    rc_fixed_fee: 'fixed', fixed_fee: 'fixed', rc_pick_pack: 'fixed', pick_pack: 'fixed',
+    rc_collection_fee: 'collection', collection_fee: 'collection',
+    rc_reverse_shipping: 'reverse', reverse_shipping: 'reverse'
+  };
   for (const change of currentChanges) {
     if (change.table === 'rc_pick_pack') continue;
+    if (activeDiffFilter !== 'all' && activeDiffFilter !== 'anomalies' &&
+        changeFilterByTable[change.table] !== activeDiffFilter &&
+        changeFilterByTable[change.type] !== activeDiffFilter) continue;
     rows.push({type: change.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : 'Change detail',
       marketplace: change.marketplace.toUpperCase(), category: change.category,
       brand: change.brand || 'All', slab: change.slab,

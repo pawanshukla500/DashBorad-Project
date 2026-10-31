@@ -234,3 +234,33 @@ smoke checks passed, including exact source commit, Chromium frame/input,
 preload authorization, shared session cookies and SQLite recovery. The real
 Chromium screenshot was nonblank. GitHub must repeat Windows acceptance and run
 the Linux AppImage acceptance on the final pushed commit.
+
+## CodeAnt nitpicks follow-up — 31 October 2026
+
+The review also called out six issues on `d946ef2`, each verified against the
+current path before correction:
+
+- A worker stopped while `/jobs/claim` was in flight could leave a newly leased
+  job idle for five minutes. Both desktop entry points now release a late claim;
+  the backend only requeues a still-claimed job held by that exact worker and
+  restores the attempt count. A stale or foreign lease is rejected.
+- Rate review summaries counted removed slabs as modified. `modified` now counts
+  only `MODIFIED`, with a separate `removed` count.
+- The installed smoke harness wrote its screenshot before creating the output
+  directory. It now creates the destination before any evidence write.
+- The PostgreSQL snapshot builder omitted `rc_pick_pack`. It now loads and
+  normalizes dimensional pick-and-pack rows under the same effective-date and
+  seller-account scope, so unchanged FBF fees appear in review.
+- Failure screenshots could contain login or OTP form text. Diagnostic capture
+  masks input, textarea, select, and textbox controls during capture and restores
+  their prior styles afterward; if masking fails, the screenshot is skipped.
+  Screenshots remain local and permission-limited.
+- Change-detail rows ignored the active fee filter. Rows now map both backend
+  table identifiers and local fee types to the selected filter.
+
+Focused verification passed: 20 backend rate-card/claim-release tests and all 16
+desktop browser-safety tests. The full backend suite passed **620 tests with 2
+skipped**, the desktop suite passed **4 staging + 70 runtime + 9 E2E + 16
+browser-safety tests**, and the frontend production build passed. Installed
+Windows acceptance and Linux AppImage acceptance must be repeated on the final
+commit containing these follow-up fixes before merge.

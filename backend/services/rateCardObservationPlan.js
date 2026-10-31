@@ -180,6 +180,7 @@ export async function planRateCardChanges(client, observations, { marketplace, s
   }
   return { hasChanges: diffs.length > 0, diffCount: diffs.length, diffs, fingerprint: rateDiffFingerprint(diffs, effectiveDate),
     summary: { added: diffs.filter(d => d.changeType === 'ADDED').length,
-      modified: diffs.filter(d => d.changeType !== 'ADDED').length, unchanged,
+      modified: diffs.filter(d => d.changeType === 'MODIFIED').length,
+      removed: diffs.filter(d => d.changeType === 'REMOVED').length, unchanged,
       anomalies: diffs.filter(d => d.anomaly).length, totalChecked: diffs.length + unchanged } };
 }

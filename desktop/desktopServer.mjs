@@ -41,7 +41,7 @@ import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { isFlipkartAuthenticated } from './portalSession.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, markStagedJobStatus } from './localStaging.js';
-import { registerWorkerWithBackend, sendWorkerHeartbeat, claimNextWorkerJob, reportJobFailure, submitJobResults,
+import { registerWorkerWithBackend, sendWorkerHeartbeat, claimNextWorkerJob, releaseClaimedWorkerJob, reportJobFailure, submitJobResults,
   fetchBrandCatalogFromApi, fetchConfiguredVerticals, reviewRatesViaApi, publishReviewedRatesViaApi } from './workerClient.js';
 import { encryptVaultData, decryptVaultData } from './cookieVault.js';
 
@@ -363,6 +363,7 @@ const serverWorker = createWorkerEngine({
     version: '1.8.3', capabilities: ['flipkart','shopsy'], metadata: { runtime: 'standalone' } }),
   heartbeat: (session, status) => sendWorkerHeartbeat(session, serverWorkerId, status),
   claim: session => claimNextWorkerJob(session, serverWorkerId),
+  releaseClaim: (session, job) => releaseClaimedWorkerJob(session, job, serverWorkerId),
   isBusy: () => withBrowserTask.busy,
   execute: async (session, job) => {
     const db = getStagingDb(USER_DATA_DIR), id = `job-${job.id}`;

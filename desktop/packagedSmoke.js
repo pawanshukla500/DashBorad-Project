@@ -11,6 +11,8 @@ export async function runPackagedSmoke({ app, window, output, setPage, getBounds
   const check = (condition, label) => { if (!condition) throw new Error(label); result.checks.push(label); };
   let server, page;
   try {
+    const outputDirectory = path.dirname(output);
+    if (!fs.existsSync(outputDirectory)) fs.mkdirSync(outputDirectory, { recursive: true });
     check(app.isPackaged, 'Running the installed packaged application');
     const root = app.getAppPath();
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'build-info.json'), 'utf8'));
@@ -82,7 +84,8 @@ export async function runPackagedSmoke({ app, window, output, setPage, getBounds
     await page?.close().catch(() => {});
     closeStagingDb();
     server?.close();
-    fs.mkdirSync(path.dirname(output), { recursive: true });
+    const outputDirectory = path.dirname(output);
+    if (!fs.existsSync(outputDirectory)) fs.mkdirSync(outputDirectory, { recursive: true });
     fs.writeFileSync(output, JSON.stringify(result, null, 2));
     app.exit(result.success ? 0 : 1);
   }
