@@ -80,7 +80,8 @@ export function normalizeScrapedCards(items) {
     if (item.marketplace === 'shopsy' && (item.commissions || []).some(row => row.rate !== 0)) {
       throw new Error('Unexpected nonzero Shopsy commission. Review the actual portal response; no rates were staged.');
     }
-    const key = JSON.stringify([item.marketplace, item.vertical, item.brand || 'General', item.sample_fsn || null]);
+    const sellerAccount = item.seller_account || item.sellerAccount || 'default';
+    const key = JSON.stringify([item.marketplace, item.vertical, item.brand || 'General', item.sample_fsn || null, sellerAccount]);
     if (!groups.has(key)) groups.set(key, new Map());
     const byMode = groups.get(key);
     const mode = item.fulfilment_type || 'ALL';
@@ -97,7 +98,7 @@ export function normalizeScrapedCards(items) {
 
   const cards = [];
   for (const [key, byMode] of groups) {
-    const [marketplace, vertical, brand, fsn] = JSON.parse(key);
+    const [marketplace, vertical, brand, fsn, sellerAccount] = JSON.parse(key);
     const modes = [...byMode.keys()];
     const [first, ...rest] = [...byMode.values()];
     // A table present in one mode but missing in another is also a disagreement:
@@ -120,10 +121,14 @@ export function normalizeScrapedCards(items) {
       category: vertical,
       brand,
       sample_fsn: fsn,
-      sample_sku: items.find(i => i.sample_fsn === fsn)?.sample_sku,
+      sample_sku: items.find(i => i.marketplace === marketplace && i.vertical === vertical &&
+        (i.brand || 'General') === brand && (i.sample_fsn || null) === fsn &&
+        (i.seller_account || i.sellerAccount || 'default') === sellerAccount)?.sample_sku,
       source: 'seller_portal',
       fulfilmentModes: modes,
-      portalEvidence: items.filter(item => item.marketplace === marketplace && item.vertical === vertical && (item.brand || 'General') === brand && (item.sample_fsn || null) === fsn).map(item => item.portalEvidence).filter(Boolean),
+      portalEvidence: items.filter(item => item.marketplace === marketplace && item.vertical === vertical &&
+        (item.brand || 'General') === brand && (item.sample_fsn || null) === fsn &&
+        (item.seller_account || item.sellerAccount || 'default') === sellerAccount).map(item => item.portalEvidence).filter(Boolean),
       effectiveDate,
       ...merged
     });

@@ -1794,6 +1794,8 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
 });
 
 registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
+  const authGeneration = stagedExtraction.authGeneration;
+  const isCurrent = () => authGeneration === stagedExtraction.authGeneration;
   const cards = selectStagedCards(stagedExtraction.cards, submitted);
   const review = stagedExtraction.review;
   if (!cards || new Set(cards.map(card => card.marketplace)).size !== 1 ||
@@ -1801,7 +1803,7 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
     return { success: false, error: 'Review the selected staged cards against PostgreSQL before committing.' };
   }
   try {
-    const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount);
+    const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount, isCurrent);
     stagedExtraction.review = null;
     desktopLogger.info(result.updated ? 'rate-review.published' : 'rate-review.unchanged',
       result.message || 'Reviewed rates are unchanged.', {

@@ -443,6 +443,42 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
 });
 
 /**
+ * Discard extraction results after the desktop account changes or delivery
+ * fails. This also cancels queued sync jobs so they cannot remain stranded.
+ * POST /api/worker-jobs/:id/discard-results
+ */
+workerJobsRouter.post('/:id/discard-results', async (req, res) => {
+  const { id } = req.params;
+  const { worker_id = null, reason = 'Desktop session changed before review' } = req.body || {};
+  const pool = getPool();
+  try {
+    const result = await pool.query(`
+      UPDATE worker_jobs
+      SET status = 'cancelled', results = NULL, diff_summary = NULL,
+          progress_pct = 0, progress_message = 'Extraction results discarded',
+          error_code = 'RESULTS_DISCARDED', error_message = $4,
+          completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+      WHERE id = $1 AND job_type IN ('RATE_CARD_SCRAPE', 'RATE_CARD_SYNC')
+        AND status IN ('queued', 'claimed', 'running', 'completed')
+        AND ((lease_worker_id IS NOT NULL AND lease_worker_id = $2)
+          OR (lease_worker_id IS NULL AND created_by = $3))
+      RETURNING id, status
+    `, [id, worker_id, req.user?.email || null, String(reason).slice(0, 500)]);
+    if (result.rows.length) return res.json({ success: true, discarded: true, job: result.rows[0] });
+
+    const existing = await pool.query(`SELECT id, status, lease_worker_id, created_by FROM worker_jobs WHERE id = $1`, [id]);
+    const job = existing.rows[0];
+    const ownsCancelledJob = job?.status === 'cancelled' &&
+      (job.lease_worker_id ? job.lease_worker_id === worker_id : job.created_by === req.user?.email);
+    if (ownsCancelledJob) return res.json({ success: true, discarded: true, alreadyDiscarded: true, job });
+    return res.status(409).json({ error: 'Job is no longer discardable by this desktop session', code: 'JOB_NOT_OWNED_OR_ACTIVE' });
+  } catch (err) {
+    console.error('[Worker API] Discard results error:', err.message);
+    return res.status(500).json({ error: 'Failed to discard worker job results' });
+  }
+});
+
+/**
  * Publish approved job results to active rc_* tables
  * POST /api/worker-jobs/:id/publish
  */

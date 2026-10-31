@@ -550,6 +550,9 @@ router.post('/config/:type/save-period', async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Serialize every mutation with reviewed desktop publications so a
+      // manual save cannot change rows between fingerprint review and publish.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))");
       // One save per (fee type, marketplace, account, category) at a time:
       // two concurrent saves would otherwise each miss the other's new
       // period and both stay open.

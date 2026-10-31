@@ -294,6 +294,7 @@ export async function seedRateCardToDb() {
 
   try {
     await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))");
     // The legacy workbook is Flipkart/default only. Never erase rate cards for
     // other marketplaces or seller accounts when refreshing this seed.
     for (const table of ['rc_commission', 'rc_fixed_fee', 'rc_collection_fee', 'rc_pick_pack', 'rc_reverse_shipping']) {

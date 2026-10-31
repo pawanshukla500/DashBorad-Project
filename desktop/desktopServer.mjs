@@ -1191,6 +1191,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/sync' && req.method === 'POST') {
       const authSession = await requireDesktopAuth(true);
       if (!authSession) return;
+      const authGeneration = stagedExtraction.authGeneration;
+      const isCurrent = () => authGeneration === stagedExtraction.authGeneration;
       try {
         const body = await parseJsonBody();
         if (!stagedExtraction.cards.length) {
@@ -1209,7 +1211,7 @@ const server = http.createServer(async (req, res) => {
         if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== (body.options?.seller_account || 'default')) {
           return sendJson(409, { success: false, error: 'Refresh the PostgreSQL comparison and review it before publication.' });
         }
-        const result = await publishReviewedRatesViaApi(authSession, cardsToSync, review.fingerprints, review.sellerAccount);
+        const result = await publishReviewedRatesViaApi(authSession, cardsToSync, review.fingerprints, review.sellerAccount, isCurrent);
         stagedExtraction.review = null;
         broadcastProgress(`✓ ${result.message}`);
         return sendJson(200, { success: true, result });

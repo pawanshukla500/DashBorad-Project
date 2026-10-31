@@ -177,4 +177,30 @@ describe('Portal observations and reviewed publication', () => {
     await expect(compare(db,observed)).rejects.toThrow(/Duplicate active/);
   });
 
+  it('normalizes gram reverse-shipping labels and matches the same legacy slab', async () => {
+    const descriptor = RATE_TABLES.find(item => item.table === 'rc_reverse_shipping');
+    const normalized = normalizeObservationRow(descriptor, {
+      category: 'kurta',
+      weight_slab: '0-500 gm', price_min: 0, price_max: 1000,
+      local_fee: 10, zonal_fee: 20, national_fee: 30
+    });
+    expect(normalized.weight_min).toBe(0);
+    expect(normalized.weight_max).toBe(0.5);
+    expect(normalized.weight_slab).toBe('0kg-0.5kg');
+
+    const db = database();
+    db.tables.rc_reverse_shipping[0].weight_slab = '0-500 gm';
+    db.tables.rc_reverse_shipping[0].weight_min = null;
+    db.tables.rc_reverse_shipping[0].weight_max = null;
+    const observed = cards();
+    observed[0].reverseShipping[0].weight_slab = '0-500 gm';
+    expect((await compare(db, observed)).diffs.filter(diff => diff.table === 'rc_reverse_shipping')).toHaveLength(0);
+  });
+
+  it('matches legacy category casing without adding duplicate active rows', async () => {
+    const db = database();
+    for (const rows of Object.values(db.tables)) for (const row of rows) row.category = 'Kurta';
+    expect((await compare(db)).diffCount).toBe(0);
+  });
+
 });

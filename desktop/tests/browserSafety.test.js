@@ -103,8 +103,11 @@ test('stopping during a job claim prevents executing a late claim response', asy
 });
 
 test('real HTTP worker registration and initial claim complete within five seconds', async () => {
-  const calls=[];
-  const server=http.createServer((req,res)=>{calls.push(req.url);res.setHeader('Content-Type','application/json');res.end(JSON.stringify(req.url==='/api/health'?{dataSource:'sql'}:{success:true,job:null}));});
+  const calls=[];let pendingResults=null;
+  const server=http.createServer((req,res)=>{calls.push(req.url);res.setHeader('Content-Type','application/json');
+    if(req.url==='/api/health')return res.end(JSON.stringify({dataSource:'sql'}));
+    if(req.url.endsWith('/results')){pendingResults=res;return;}
+    res.end(JSON.stringify({success:true,job:null}));});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const previous={node:process.env.NODE_ENV,api:process.env.API_SERVER_URL},originalFetch=globalThis.fetch;
   process.env.NODE_ENV='test';process.env.API_SERVER_URL=`http://127.0.0.1:${server.address().port}`;
@@ -122,6 +125,16 @@ test('real HTTP worker registration and initial claim complete within five secon
     current=false;
     await assert.rejects(submission,/account changed/);
     assert.equal(calls.some(url=>url.endsWith('/results')),false,'An account switch during the await must prevent the HTTP submission');
+    current=true;
+    client.clearCachedActiveServer();
+    const inFlight=client.submitJobResults(session,'fixture-job',[],'fixture',()=>current);
+    for(let attempt=0;attempt<20&&!pendingResults;attempt++)await new Promise(resolve=>setTimeout(resolve,5));
+    if(!pendingResults) await assert.rejects(inFlight);
+    assert.ok(pendingResults,`the result request is in flight; current=${current}; requests seen: ${calls.join(', ')}`);
+    current=false;
+    pendingResults.end(JSON.stringify({success:true}));pendingResults=null;
+    await assert.rejects(inFlight,/Results were discarded/);
+    assert.ok(calls.some(url=>url.endsWith('/discard-results')),'a late successful response is cleared at the authenticated backend');
   }
   finally {engine.stop();client.clearCachedActiveServer();globalThis.fetch=originalFetch;
     if(previous.node===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=previous.node;
@@ -158,14 +171,71 @@ test('rate-card snapshot keeps seller accounts in separate cards', async () => {
     {marketplace:'flipkart',seller_account:'default',category:'kurta',fulfilment_type:'FBF',price_min:0,price_max:999999,weight_min:0,weight_max:50000,price_scope:'all',rate:14},
     {marketplace:'flipkart',seller_account:'seller-b',category:'kurta',fulfilment_type:'FBF',price_min:0,price_max:999999,weight_min:0,weight_max:50000,price_scope:'all',rate:18}
   ];
-  const pool={query:async (sql,params)=>({rows:sql.includes('FROM rc_commission')?rows.filter(row=>params[1]==='all'||row.seller_account===params[1]):
+  const catalogRows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku:'SKU-DEFAULT',order_count:6},
+    {marketplace:'flipkart',seller_account:'seller-b',category:'kurta',brand:'Youthnic',sample_fsn:'QRSTUVWXYZ123456',sample_sku:'SKU-B',order_count:3}
+  ];
+  const pool={query:async (sql,params)=>({rows:sql.includes('FROM orders')?catalogRows:
+    sql.includes('FROM rc_commission')?rows.filter(row=>params[1]==='all'||row.seller_account===params[1]):
     sql.includes('FROM rc_pick_pack')?pickPackRows.filter(row=>params[1]==='all'||row.seller_account===params[1]):[]})};
   const cards=await buildBrandRateCardSet(pool,'all');
   assert.equal(cards.length,4);
   assert.deepEqual(cards.map(card=>card.seller_account).sort(),['default','default','seller-b','seller-b']);
   assert.deepEqual(cards.filter(card=>card.pickPackFees?.length).map(card=>[card.seller_account,card.pickPackFees[0].rate]).sort(),[['default',14],['seller-b',18]]);
+  assert.deepEqual(cards.filter(card=>card.commissions.length).map(card=>[card.seller_account,card.sample_fsn,card.sample_sku,card.order_count]).sort(),
+    [['default','ABCDEFGHIJKLMNOP','SKU-DEFAULT',6],['seller-b','QRSTUVWXYZ123456','SKU-B',3]]);
   const defaultCards=await buildBrandRateCardSet(pool);
   assert.ok(defaultCards.length>0 && defaultCards.every(card=>card.seller_account==='default'),'the visible review defaults to the same seller account used by publication');
+});
+
+test('review helpers do not mark incomplete errors as success or duplicate active rate details', () => {
+  const source=fs.readFileSync(new URL('../ui/reviewHelpers.js',import.meta.url),'utf8');
+  const context={window:{}};vm.runInNewContext(source,context);
+  const helpers=context.window.rateCardReviewHelpers;
+  assert.equal(helpers.isSuccessfulMessage('Extraction incomplete: missing fees'),false);
+  assert.equal(helpers.isSuccessfulMessage('Extraction completed'),true);
+  assert.equal(helpers.shouldRenderChangeDetail({table:'rc_commission',changeType:'MODIFIED',slab:'₹0-500'}),false);
+  assert.equal(helpers.shouldRenderChangeDetail({table:'rc_commission',changeType:'REMOVED',slab:'₹0-500'}),true);
+  assert.equal(helpers.shouldRenderChangeDetail({table:'rc_fixed_fee',details:'summary without slab'}),true);
+});
+
+test('normalization keeps sample SKU attached to its marketplace, category, brand and account group', () => {
+  const fee=(sample_sku,seller_account,brand='Youthnic')=>({marketplace:'flipkart',vertical:'kurta',brand,sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku,seller_account,
+    fulfilment_type:'NON_FBF',commissions:[{price_min:0,price_max:500,rate:0.1}]});
+  const cards=normalizeScrapedCards([fee('SKU-A','account-a'),fee('SKU-B','account-b'),fee('SKU-OTHER-BRAND','account-a','Sangria')]);
+  assert.equal(cards.find(card=>card.sample_sku==='SKU-A').sample_sku,'SKU-A');
+  assert.equal(cards.find(card=>card.sample_sku==='SKU-B').sample_sku,'SKU-B');
+  assert.equal(cards.find(card=>card.brand==='Sangria').sample_sku,'SKU-OTHER-BRAND');
+  assert.equal(cards.length,3,'seller and brand groups remain distinct even when the FSN is repeated');
+});
+
+test('failed sync result submission cancels the unused RATE_CARD_SYNC job', async () => {
+  const calls=[];
+  const server=http.createServer((req,res)=>{
+    calls.push(req.url);res.setHeader('Content-Type','application/json');
+    if(req.url==='/api/health')return res.end(JSON.stringify({dataSource:'sql'}));
+    if(req.url==='/api/worker-jobs')return res.end(JSON.stringify({success:true,job:{id:'sync-1'}}));
+    if(req.url.endsWith('/results')){res.statusCode=500;return res.end(JSON.stringify({error:'fixture submission failure'}));}
+    if(req.url.endsWith('/discard-results'))return res.end(JSON.stringify({success:true,discarded:true}));
+    if(req.url.endsWith('/publish'))return res.end(JSON.stringify({success:true}));
+    res.statusCode=404;res.end('{}');
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const previous={node:process.env.NODE_ENV,api:process.env.API_SERVER_URL},originalFetch=globalThis.fetch;
+  process.env.NODE_ENV='test';process.env.API_SERVER_URL=`http://127.0.0.1:${server.address().port}`;
+  globalThis.fetch=(url,options)=>String(url).startsWith(process.env.API_SERVER_URL)?originalFetch(url,options):Promise.reject(new Error('External network disabled in fixture test'));
+  const client=await import('../workerClient.js');client.clearCachedActiveServer();
+  try {
+    await assert.rejects(client.publishReviewedRatesViaApi({idToken:'fixture',user:{role:'admin'}},
+      [{marketplace:'flipkart',category:'kurta'}],{flipkart:'fingerprint'}),/fixture submission failure/);
+    assert.ok(calls.some(url=>url==='/api/worker-jobs/sync-1/discard-results'));
+    assert.equal(calls.some(url=>url.endsWith('/publish')),false,'failed review data never reaches publication');
+  } finally {
+    client.clearCachedActiveServer();globalThis.fetch=originalFetch;
+    if(previous.node===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=previous.node;
+    if(previous.api===undefined)delete process.env.API_SERVER_URL;else process.env.API_SERVER_URL=previous.api;
+    await new Promise(resolve=>server.close(resolve));
+  }
 });
 
 test('scrape diagnostics rotate screenshots and bound error logs', async () => {

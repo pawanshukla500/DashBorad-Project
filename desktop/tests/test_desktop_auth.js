@@ -396,14 +396,13 @@ async function runTests() {
     const allPhase2Gated = authedPhase2Results.every(Boolean);
     console.log(`  • All 7 Phase 2 channels scraper gate when authorized (HTTP 400): Passed = ${allPhase2Gated}`);
 
-    const authedPreviewRes = await fetch(`${testBase}/api/preview?marketplace=myntra_vb`, {
+    const authedPreviewRes = await fetch(`${testBase}/api/preview?marketplace=flipkart`, {
       headers: { 'Authorization': `Bearer ${fakeIdToken}` }
     });
     const authedPreviewData = await authedPreviewRes.json();
     const authedPreviewCards = Array.isArray(authedPreviewData.rateCards) ? authedPreviewData.rateCards : [];
     const authedCardsMatch = authedPreviewCards.every(rc => (
-      String(rc.account_id || '').toLowerCase() === 'myntra_vb' ||
-      (String(rc.marketplace || '').toLowerCase() === 'myntra' && String(rc.seller_id || rc.account || '') === '10708')
+      String(rc.marketplace || '').toLowerCase() === 'flipkart'
     ));
     // Template previews (no staged extraction yet) must be read-only: canSync false
     const isPreviewIsolated = authedPreviewRes.status === 200 && authedCardsMatch && authedPreviewData.canSync === false;
@@ -433,19 +432,42 @@ async function runTests() {
     }, null, 2), 'utf8');
     setDesktopTokenVerifier(async () => ({ authorized: true, role: 'analyst', verifiedPayload: { uid: 'test-analyst-uid' } }));
     const { setDesktopDatabaseAccess } = await import('../db.js');
+    const { getStagingDb, stageReview } = await import('../localStaging.js');
+    const { clearCachedActiveServer } = await import('../workerClient.js');
+    const noDbApiServer = http.createServer((req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url === '/api/health') return res.end(JSON.stringify({ dataSource: 'sql' }));
+      res.statusCode = 401;
+      res.end(JSON.stringify({ error: 'fixture API rejects the fake token' }));
+    });
+    await new Promise(resolve => noDbApiServer.listen(0, '127.0.0.1', resolve));
+    const previousApiUrl = process.env.API_SERVER_URL, previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'test';
+    process.env.API_SERVER_URL = `http://127.0.0.1:${noDbApiServer.address().port}`;
+    clearCachedActiveServer();
+    const stagedCards = [{ marketplace: 'flipkart', category: 'Kurta', brand: 'Youthnic', commissions: [], fixedFees: [], reverseShipping: [], collectionFees: [] }];
+    stageReview(getStagingDb(tempUserDataDir), 'route-no-db-review', 'test-analyst-uid', 'flipkart', stagedCards);
     let noDbRes = null;
     let noDbData = null;
     try {
+      const noDbPreviewRes = await fetch(`${testBase}/api/preview?marketplace=flipkart`, {
+        headers: { 'Authorization': `Bearer ${fakeIdToken}` }
+      });
+      const noDbPreview = await noDbPreviewRes.json();
       noDbRes = await fetch(`${testBase}/api/detect-changes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fakeIdToken}` },
-        body: JSON.stringify({ rateCards: [{ marketplace: 'flipkart', category: 'Kurta', brand: 'Youthnic', commissions: [], fixedFees: [], reverseShipping: [], collectionFees: [] }] })
+        body: JSON.stringify({ rateCards: noDbPreview.rateCards })
       });
       noDbData = await noDbRes.json();
     } finally {
       // Undo the analyst fail-closed state the route's onAuthorized applied.
       setDesktopDatabaseAccess(null);
       resetDesktopTokenVerifier();
+      clearCachedActiveServer();
+      if (previousApiUrl === undefined) delete process.env.API_SERVER_URL; else process.env.API_SERVER_URL = previousApiUrl;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousNodeEnv;
+      await new Promise(resolve => noDbApiServer.close(resolve));
     }
     const isNoDbPreviewKept = noDbRes.status === 200 && noDbData.success === true &&
                               noDbData.dbAvailable === false &&

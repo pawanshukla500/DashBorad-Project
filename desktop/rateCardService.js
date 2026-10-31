@@ -44,15 +44,16 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
       SELECT 
         marketplace,
         category,
-        COALESCE(NULLIF(TRIM(brand), ''), 'General') as brand,
+        COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General') as brand,
+        COALESCE(NULLIF(TRIM(seller_account), ''), 'default') as seller_account,
         fsn,
         sku,
         ROW_NUMBER() OVER (
-          PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand), ''), 'General') 
+          PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General'), COALESCE(NULLIF(TRIM(seller_account), ''), 'default')
           ORDER BY id DESC
         ) as rn,
         COUNT(1) OVER (
-          PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand), ''), 'General')
+          PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General'), COALESCE(NULLIF(TRIM(seller_account), ''), 'default')
         ) as order_count
       FROM orders
       WHERE (marketplace ILIKE '%flipkart%' OR marketplace ILIKE '%shopsy%')
@@ -63,6 +64,7 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
       marketplace, 
       category, 
       brand, 
+      seller_account,
       fsn as sample_fsn, 
       sku as sample_sku, 
       order_count::int as order_count
@@ -79,6 +81,8 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
 export async function buildBrandRateCardSet(pool = null, sellerAccount = 'default') {
   const p = pool || getDesktopPool();
   const effectiveDate = new Date().toISOString().slice(0, 10);
+  const samples = await getRealTimeBrandFsnSamples(p);
+  const normalize = value => String(value || '').trim().toLowerCase();
   const fields = [['rc_commission','commissions'],['rc_fixed_fee','fixedFees'],['rc_collection_fee','collectionFees'],['rc_reverse_shipping','reverseShipping'],['rc_pick_pack','pickPackFees']];
   const cards = new Map();
   for (const [table, field] of fields) {
@@ -89,8 +93,14 @@ export async function buildBrandRateCardSet(pool = null, sellerAccount = 'defaul
       const brand = row.brand_name || 'General';
       const sellerAccount = row.seller_account || 'default';
       const key = JSON.stringify([row.marketplace,sellerAccount,row.category,field === 'commissions' ? brand : 'General']);
-      if (!cards.has(key)) cards.set(key, { marketplace: row.marketplace, seller_account: sellerAccount, category: row.category, brand,
+      if (!cards.has(key)) {
+        const sample = samples.find(item => normalize(item.marketplace).includes(normalize(row.marketplace)) &&
+          normalize(item.category) === normalize(row.category) && normalize(item.seller_account || 'default') === normalize(sellerAccount) &&
+          normalize(item.brand || 'General') === normalize(field === 'commissions' ? brand : 'General'));
+        cards.set(key, { marketplace: row.marketplace, seller_account: sellerAccount, category: row.category, brand,
+        ...(sample ? { sample_fsn: sample.sample_fsn, sample_sku: sample.sample_sku, order_count: Number(sample.order_count) } : {}),
         source: 'published_database', effectiveDate, commissions: [], fixedFees: [], collectionFees: [], reverseShipping: [], pickPackFees: [] });
+      }
       const slab = { ...row };
       for (const k of ['price_min','price_max','rate','prepaid','postpaid','local_fee','zonal_fee','national_fee',
         'weight_min','weight_max','base_weight','increment_weight','local_additional_fee','zonal_additional_fee','national_additional_fee']) {

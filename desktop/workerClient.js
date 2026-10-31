@@ -207,16 +207,41 @@ export async function reportJobFailure(session, jobId, errorMessage, errorCode =
 export async function submitJobResults(session, jobId, results, workerId = null, isCurrent = () => true) {
   const baseUrl = await getActiveBackendUrl();
   if (!isCurrent()) throw new Error('The account changed during extraction. Results were not submitted.');
-  const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/results`, {
-    timeoutMs: 30000,
-    method: 'POST',
-    headers: getHeaders(session?.idToken, baseUrl),
-    body: JSON.stringify({ results, worker_id: workerId })
-  });
+  let res;
+  try {
+    res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/results`, {
+      timeoutMs: 30000,
+      method: 'POST',
+      headers: getHeaders(session?.idToken, baseUrl),
+      body: JSON.stringify({ results, worker_id: workerId })
+    });
+  } catch (error) {
+    if (isCurrent()) throw error;
+    await discardWorkerJobResults(session, jobId, workerId, 'Signed-in account changed while extraction results were being submitted');
+    throw new Error('The account changed during extraction. Results were discarded and cannot be published.');
+  }
+
+  if (!isCurrent()) {
+    await discardWorkerJobResults(session, jobId, workerId, 'Signed-in account changed while extraction results were being submitted');
+    throw new Error('The account changed during extraction. Results were discarded and cannot be published.');
+  }
 
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
     throw new Error(errBody.error || `Submit results failed: HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function discardWorkerJobResults(session, jobId, workerId = null, reason = 'Desktop extraction was not accepted') {
+  const baseUrl = await getActiveBackendUrl();
+  const res = await safeFetch(`${baseUrl}/api/worker-jobs/${jobId}/discard-results`, {
+    method: 'POST', headers: getHeaders(session?.idToken, baseUrl),
+    body: JSON.stringify({ worker_id: workerId, reason })
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `Discard results failed: HTTP ${res.status}`);
   }
   return await res.json();
 }
@@ -271,7 +296,8 @@ export async function reviewRatesViaApi(session, cards, sellerAccount = 'default
   return { changes, fingerprints, changesCount: changes.length, anomaliesCount: changes.filter(c => c.anomaly).length };
 }
 
-export async function publishReviewedRatesViaApi(session, cards, fingerprints, sellerAccount = 'default') {
+export async function publishReviewedRatesViaApi(session, cards, fingerprints, sellerAccount = 'default', isCurrent = () => true) {
+  if (!isCurrent()) throw new Error('The signed-in account changed. Rate publication was cancelled.');
   if (session?.user?.role !== 'admin') throw new Error('An admin must approve publication.');
   const channels = [...new Set(cards.map(c => c.marketplace))];
   if (channels.length !== 1) throw new Error('Review and publish one marketplace at a time.');
@@ -283,7 +309,17 @@ export async function publishReviewedRatesViaApi(session, cards, fingerprints, s
       parameters: { verticals: cards.map(c => c.category), reviewFingerprint: fingerprints[marketplace] } }) });
   const body = await created.json();
   if (!created.ok || !body.job) throw new Error(body.error || 'Review job could not be created.');
-  await submitJobResults(session, body.job.id, cards);
+  try {
+    await submitJobResults(session, body.job.id, cards, null, isCurrent);
+    if (!isCurrent()) throw new Error('The signed-in account changed before rate publication.');
+  } catch (error) {
+    try {
+      await discardWorkerJobResults(session, body.job.id, null, 'Reviewed rate submission failed; cancel unused sync job');
+    } catch (cleanupError) {
+      throw new Error(`${error.message}; the unused sync job could not be cancelled: ${cleanupError.message}`);
+    }
+    throw error;
+  }
   const result = await publishJobViaApi(session, body.job.id);
   return { updated: result.publishResult.published, changesCount: result.publishResult.diffCount,
     versionName: result.publishResult.versionName, message: result.publishResult.message };

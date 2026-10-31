@@ -19,6 +19,7 @@ export const RATE_TABLES = [
 
 const brand = value => !String(value || '').trim() || ['general', 'all brands'].includes(String(value).trim().toLowerCase()) ? null : String(value).trim();
 const keyValue = (key, value) => key === 'brand_name' && value ? value.toLowerCase() : value;
+const categoryKey = value => String(value || '').trim().toLowerCase();
 const mode = value => String(value || 'ALL').toUpperCase().replace(/[ -]/g, '_');
 const decimal = (value, name, precision) => {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean' || !Number.isFinite(Number(value)) || Number(value) < 0) {
@@ -29,7 +30,7 @@ const decimal = (value, name, precision) => {
 
 export function normalizeObservationRow(descriptor, row, observation = {}) {
   row = { ...row };
-  const result = { category: observation.vertical || observation.category || row.category };
+  const result = { category: categoryKey(observation.vertical || observation.category || row.category) };
   if (typeof result.category !== 'string' || !result.category.trim()) throw new Error('Missing category.');
   result.price_min = decimal(row.price_min, 'price_min', 2);
   result.price_max = decimal(row.price_max, 'price_max', 2);
@@ -38,10 +39,17 @@ export function normalizeObservationRow(descriptor, row, observation = {}) {
   if (descriptor.keys.includes('fulfilment_type')) result.fulfilment_type = mode(row.fulfilment_type);
   if (descriptor.table === 'rc_reverse_shipping') {
     if (!row.weight_slab) throw new Error('Missing reverse-shipping weight slab.');
-    const weights = String(row.weight_slab).match(/\d+(?:\.\d+)?/g)?.map(Number);
-    if (!weights?.length) throw new Error('Invalid reverse-shipping weight slab.');
-    row.weight_min ??= weights.length > 1 ? weights[0] : 0;
-    row.weight_max ??= weights.at(-1);
+    const weights = [...String(row.weight_slab).matchAll(/(\d+(?:\.\d+)?)\s*(kilograms?|kgs?|kg|grams?|gms?|gm|g)?/gi)];
+    if (!weights.length) throw new Error('Invalid reverse-shipping weight slab.');
+    const explicitUnit = weights.some(match => match[2]);
+    const inheritedUnit = weights.find(match => match[2])?.[2] || 'kg';
+    const parsedWeights = weights.map(match => {
+      const unit = (match[2] || inheritedUnit).toLowerCase();
+      const weight = Number(match[1]);
+      return unit.startsWith('g') ? weight / 1000 : weight;
+    });
+    row.weight_min = explicitUnit ? parsedWeights[0] : (row.weight_min ?? parsedWeights[0]);
+    row.weight_max = explicitUnit ? parsedWeights.at(-1) : (row.weight_max ?? parsedWeights.at(-1));
     result.weight_slab = `${decimal(row.weight_min, 'weight_min', 3)}kg-${decimal(row.weight_max, 'weight_max', 3)}kg`;
   }
   if (descriptor.table === 'rc_pick_pack') {
@@ -82,7 +90,7 @@ export function validateRateObservations(observations, { marketplace, complete =
   const identities = new Map();
   for (const observation of observations) {
     if (observation.marketplace && observation.marketplace !== marketplace) throw new Error('Mixed marketplace observations are not allowed.');
-    const category = observation.vertical || observation.category;
+    const category = categoryKey(observation.vertical || observation.category);
     categories.add(category);
     if (complete && (observation.source !== 'seller_portal' ||
         !['FBF', 'NON_FBF'].every(m => observation.fulfilmentModes?.includes(m)))) {
@@ -123,15 +131,15 @@ export function validateRateObservations(observations, { marketplace, complete =
       }
     }
   }
-  for (const category of expectedVerticals) if (!categories.has(category)) throw new Error(`Missing configured category: ${category}.`);
+  for (const category of expectedVerticals) if (!categories.has(categoryKey(category))) throw new Error(`Missing configured category: ${category}.`);
 }
 
 export const rateRowIdentity = (descriptor, row) => JSON.stringify([row.category, ...descriptor.keys.map(k => keyValue(k, row[k]))]);
 const identity = rateRowIdentity;
 const value = (descriptor, row) => JSON.stringify(descriptor.values.map(k => row[k]));
-const scope = (descriptor, row) => JSON.stringify([row.category, descriptor.table === 'rc_commission' ? keyValue('brand_name', row.brand_name) : null]);
+const scope = (descriptor, row) => JSON.stringify([categoryKey(row.category), descriptor.table === 'rc_commission' ? keyValue('brand_name', row.brand_name) : null]);
 const rawScope = (descriptor, row) => JSON.stringify([
-  row.category,
+  categoryKey(row.category),
   descriptor.table === 'rc_commission' ? keyValue('brand_name', brand(row.brand_name)) : null
 ]);
 const display = (descriptor, row) => !row ? null : descriptor.table === 'rc_collection_fee'

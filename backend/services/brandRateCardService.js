@@ -345,6 +345,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
 
   try {
     await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))");
 
     let insertedCommissions = 0;
     let insertedFixed = 0;

@@ -264,3 +264,33 @@ skipped**, the desktop suite passed **4 staging + 70 runtime + 9 E2E + 16
 browser-safety tests**, and the frontend production build passed. Installed
 Windows acceptance and Linux AppImage acceptance must be repeated on the final
 commit containing these follow-up fixes before merge.
+
+## Final CodeAnt follow-up — 31 October 2026
+
+CodeAnt reviewed `dab263b` and returned nine more findings. The fixes now cover
+the full set of PostgreSQL rate-card mutation paths and desktop review flow:
+
+- Manual period saves, workbook seeding, legacy sync services and reviewed
+  publication all take the same transaction advisory lock before changing rate
+  rows. A manual save can no longer interleave between a fingerprint comparison
+  and its publish transaction.
+- The worker-results API can discard and cancel an owned scrape or sync job,
+  clearing stored observations and diff data. Desktop checks auth generation
+  after the HTTP response and discards a result if the account changed while the
+  request was in flight. Failed sync submission cancels its unused queued job.
+- Weight labels with gram units normalize to kilograms (`0-500 gm` becomes
+  `0kg-0.5kg`), and categories normalize case/whitespace before scope matching,
+  avoiding false removals and duplicate active rows.
+- Database-backed brand cards now include FSN, SKU and order count from the
+  matching marketplace/category/brand/seller account partition. Scrape
+  normalization keeps sample SKUs tied to that same group.
+- The log renderer no longer treats “incomplete” as success, and its detail
+  section only adds removed slabs or summary records that are not already
+  visible in the fee rows.
+
+Local verification on the pending follow-up commit: backend **625 passed, 2
+skipped** across 90 test files; desktop **4 staging + 70 runtime + 9 E2E + 19
+browser-safety checks passed**; the desktop auth suite passed **8 checks**; the frontend production build passed. Windows
+installed-package acceptance and Linux AppImage acceptance are still required
+for this final source commit and will be checked through the PR workflows before
+merge.

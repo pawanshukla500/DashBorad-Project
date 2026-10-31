@@ -597,7 +597,7 @@ function appendTerminalLine(text) {
   const line = document.createElement('div');
   line.className = 'log-line';
 
-  if (message.includes('✓') || lower.includes('success') || lower.includes('complete')) {
+  if (window.rateCardReviewHelpers?.isSuccessfulMessage(message)) {
     line.classList.add('success');
   } else if (level === 'warn' || message.includes('⏰')) {
     line.classList.add('warning');
@@ -1011,7 +1011,7 @@ function renderDiffTable() {
     rc_reverse_shipping: 'reverse', reverse_shipping: 'reverse'
   };
   for (const change of currentChanges) {
-    if (change.table === 'rc_pick_pack') continue;
+    if (!window.rateCardReviewHelpers?.shouldRenderChangeDetail(change)) continue;
     if (activeDiffFilter !== 'all' && activeDiffFilter !== 'anomalies' &&
         changeFilterByTable[change.table] !== activeDiffFilter &&
         changeFilterByTable[change.type] !== activeDiffFilter) continue;
