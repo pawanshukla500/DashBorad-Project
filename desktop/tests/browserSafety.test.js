@@ -14,7 +14,7 @@ import { createWorkerEngine } from '../workerEngine.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
 import { buildBrandRateCardSet } from '../rateCardService.js';
 import { captureScrapeFailure } from '../scrapeDiagnostics.js';
-import { hasPersistentProfileSession } from '../portalScraper.js';
+import { readSellerHubProfileState, writeSellerHubProfileState } from '../portalProfileState.js';
 import { rateFixture } from './fixtures/portalRateFixture.js';
 
 test('public Seller Hub, visible login and OTP challenges never count as authentication', () => {
@@ -80,19 +80,28 @@ test('Seller Hub login inspection follows the username, password, challenge and 
     'dashboard route plus navigation links are insufficient while Seller Hub still offers Login');
 });
 
-test('profile snapshot handoff distinguishes an empty Chrome folder from real session stores', () => {
+test('Seller Hub profile state distinguishes verified sessions from initialized Chrome stores', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-profile-handoff-'));
   const profileDir = path.join(tempDir, 'profile');
   try {
     fs.mkdirSync(profileDir);
-    assert.equal(hasPersistentProfileSession(profileDir), false,
-      'an existing but empty profile folder must allow encrypted-cookie restore');
+    assert.equal(readSellerHubProfileState(profileDir), 'unknown',
+      'profiles created by older versions must enter the cookie-handoff migration state');
 
     const cookieStore = path.join(profileDir, 'Default', 'Network', 'Cookies');
     fs.mkdirSync(path.dirname(cookieStore), { recursive: true });
     fs.writeFileSync(cookieStore, 'chromium-cookie-store');
-    assert.equal(hasPersistentProfileSession(profileDir), true,
-      'a real Chromium cookie store remains the session source of truth');
+    assert.equal(readSellerHubProfileState(profileDir), 'unknown',
+      'a generic initialized Chromium store does not prove Seller Hub authentication');
+
+    writeSellerHubProfileState(profileDir, 'authenticated');
+    assert.equal(readSellerHubProfileState(profileDir), 'authenticated');
+    writeSellerHubProfileState(profileDir, 'snapshot_available');
+    assert.equal(readSellerHubProfileState(profileDir), 'snapshot_available',
+      'a newly saved Electron login snapshot must be eligible for external Chrome handoff');
+    writeSellerHubProfileState(profileDir, 'signed_out');
+    assert.equal(readSellerHubProfileState(profileDir), 'signed_out',
+      'a confirmed sign-out must prevent a stale encrypted snapshot from restoring the prior session');
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

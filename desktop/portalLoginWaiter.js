@@ -126,7 +126,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       const activeLoginFlow = relevantStates.some(({ state }) => state.loginFormVisible || state.challengeVisible);
       if (activeLoginFlow) loginFormObserved = true;
       const returnedToPublicLanding = loginFormObserved && relevantStates.length > 0 &&
-        relevantStates.every(({ state }) => state.publicLanding) && !activeLoginFlow;
+        relevantStates.some(({ state }) => state.publicLanding) && !activeLoginFlow;
       if (returnedToPublicLanding) {
         if (publicReturnSince === null) publicReturnSince = now();
       } else {

@@ -25,7 +25,9 @@ import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlFo
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { createStructuredLogger } from './structuredLogger.js';
 import { captureScrapeFailure } from './scrapeDiagnostics.js';
-import { hasPersistentProfileSession, scrapeFlipkartRateCards } from './portalScraper.js';
+import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
+import { invokeProgressSafely } from './safeProgress.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { portalPartition, isFlipkartAuthenticated, FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
@@ -776,7 +778,7 @@ function broadcastMonitorState(patch = {}) {
   }
 }
 
-function reportFlipkartLoginState(state, { marketplace = 'flipkart_shopsy', operation = 'manual_login', onProgress } = {}) {
+function reportFlipkartLoginState(state, { marketplace = 'flipkart_shopsy', operation = 'manual_login', onProgress, profileDir } = {}) {
   const messages = {
     username: 'Seller Hub is waiting for the seller account ID, email, or phone number. Enter it and click Next.',
     password: 'Seller Hub is waiting for the account password. Submit using Login in the sign-in modal.',
@@ -785,6 +787,13 @@ function reportFlipkartLoginState(state, { marketplace = 'flipkart_shopsy', oper
   };
   const message = messages[state?.stage];
   if (!message) return;
+  if (state.stage === 'public_return' && profileDir) {
+    try { writeSellerHubProfileState(profileDir, 'signed_out'); } catch (error) {
+      desktopLogger.warn('portal.login.profile_state_write_failed', 'Could not record the Seller Hub signed-out state.', {
+        marketplace, operation, errorName: error?.name || 'Error'
+      });
+    }
+  }
   const context = {
     marketplace,
     operation,
@@ -806,7 +815,13 @@ function reportFlipkartLoginState(state, { marketplace = 'flipkart_shopsy', oper
     progressMessage: message
   });
   try {
-    if (typeof onProgress === 'function') onProgress(message);
+    if (typeof onProgress === 'function') {
+      void invokeProgressSafely(onProgress, message, error => {
+        desktopLogger.warn('portal.login.progress_callback_failed', 'Could not report Seller Hub sign-in progress.', {
+          marketplace, operation, stage: state.stage, errorName: error?.name || 'Error'
+        });
+      });
+    }
     else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('scrape-progress', message);
   } catch {}
 }
@@ -836,10 +851,12 @@ function getManualFlipkartLoginManager() {
         // retain an older encrypted cookie snapshot when the live store is empty.
         deleteEncryptedCookies(marketplacePath);
         deleteEncryptedCookies(COOKIES_PATH);
+        writeSellerHubProfileState(getMarketplaceBrowserProfilePath('flipkart_shopsy'), 'signed_out');
         return;
       }
       saveEncryptedCookies(marketplacePath, cookies);
       saveEncryptedCookies(COOKIES_PATH, cookies);
+      writeSellerHubProfileState(getMarketplaceBrowserProfilePath('flipkart_shopsy'), 'snapshot_available');
     },
     onState: state => {
       if (state.status === 'login_prompt') {
@@ -1021,7 +1038,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   // External Chrome runtime fallback
   const puppeteer = getBrowserRuntime();
   const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
-  const profileHasSession = hasPersistentProfileSession(profileDir);
+  const profileSessionState = readSellerHubProfileState(profileDir);
   fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
   try { fs.chmodSync(profileDir, 0o700); } catch {}
@@ -1046,12 +1063,12 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external', marketplace: mpConfig.id, url: manualLoginUrl, title: `Sign in to ${mpConfig.name}`, lastScreenshot: null });
     desktopLogger.info('portal.login.started', 'Opened the manual sign-in browser.', { marketplace: mpConfig.id, url: manualLoginUrl });
 
-    if (!profileHasSession && fs.existsSync(cookiesPath)) {
+    if (['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(cookiesPath)) {
       const existing = loadEncryptedCookies(cookiesPath);
       if (existing && Array.isArray(existing) && existing.length > 0) {
         await page.setCookie(...existing);
       }
-    } else if (!profileHasSession && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+    } else if (['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
       const existing = loadEncryptedCookies(COOKIES_PATH);
       if (existing && Array.isArray(existing) && existing.length > 0) {
         await page.setCookie(...existing);
@@ -1083,7 +1100,9 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
         },
         onState: (_candidate, state) => reportFlipkartLoginState(state, {
           marketplace: mpConfig.id,
-          operation: 'manual_login'
+          operation: 'manual_login',
+          onProgress,
+          profileDir
         })
       });
       if (authenticatedPage !== page) await focusBrowserPage(authenticatedPage);
@@ -1143,6 +1162,9 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     }, { timeout: 30 * 60 * 1000, polling: 1000 }, mpConfig.id);
 
     const cookies = await authenticatedPage.cookies();
+    if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
+      writeSellerHubProfileState(profileDir, 'authenticated');
+    }
     saveEncryptedCookies(cookiesPath, cookies);
     if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
       saveEncryptedCookies(COOKIES_PATH, cookies);
@@ -1305,9 +1327,11 @@ async function executeScrapeProcess(config, onProgress) {
             onState: (_candidate, state) => reportFlipkartLoginState(state, {
               marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
               operation: 'scrape_reauthentication',
-              onProgress
+              onProgress,
+              profileDir: getMarketplaceBrowserProfilePath('flipkart_shopsy')
             })
           });
+          writeSellerHubProfileState(getMarketplaceBrowserProfilePath('flipkart_shopsy'), 'authenticated');
           const cookies = await authPage.cookies();
           if (cookies.length) {
             saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
