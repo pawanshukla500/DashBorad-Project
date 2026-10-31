@@ -5,6 +5,7 @@
  */
 export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = () => {} } = {}) {
   let retained = null;
+  const recoveryEntries = new Set();
 
   const notify = (callback, ...args) => {
     try { callback(...args); } catch {}
@@ -29,13 +30,7 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
       if (property === 'close') {
         return async (...args) => {
           if (keepOpen && retained === entry) return;
-          if (retained === entry) retained = null;
-          try {
-            return await target.close(...args);
-          } finally {
-            notify(onPage, null);
-            notify(onLifecycle, 'closed', { profileKey: entry.profileKey });
-          }
+          return closeEntry(entry, 'released', args);
         };
       }
       const value = Reflect.get(target, property, target);
@@ -43,15 +38,26 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     }
   });
 
-  async function closeEntry(entry, reason = 'released') {
+  async function closeEntry(entry, reason = 'released', closeArgs = []) {
     if (!entry) return false;
-    if (retained === entry) retained = null;
+    entry.closing = true;
     try {
-      if (isConnected(entry.browser)) await entry.browser.close();
-    } finally {
-      notify(onPage, null);
-      notify(onLifecycle, 'closed', { profileKey: entry.profileKey, reason });
+      if (isConnected(entry.browser)) await entry.browser.close(...closeArgs);
+    } catch (error) {
+      entry.closing = false;
+      // Keep the process handle so a failed close cannot strand Chromium with
+      // the profile lock and cause the next acquire to launch a duplicate.
+      if (isConnected(entry.browser)) {
+        recoveryEntries.add(entry);
+        notify(onLifecycle, 'close-failed', { profileKey: entry.profileKey, reason });
+        throw error;
+      }
     }
+    entry.closing = false;
+    recoveryEntries.delete(entry);
+    if (retained === entry) retained = null;
+    notify(onPage, null);
+    notify(onLifecycle, 'closed', { profileKey: entry.profileKey, reason });
     return true;
   }
 
@@ -63,17 +69,24 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     if (retained && !isConnected(retained.browser)) {
       const disconnected = retained;
       retained = null;
+      recoveryEntries.delete(disconnected);
       notify(onPage, null);
       notify(onLifecycle, 'disconnected', { profileKey: disconnected.profileKey });
     }
 
     if (retained && retained.profileKey === profileKey) {
-      retained.page = await getPage(retained.browser);
-      notify(onPage, retained.page);
-      notify(onLifecycle, 'reused', { profileKey, url: retained.page.url?.() || '' });
+      const entry = retained;
+      try {
+        entry.page = await getPage(entry.browser);
+      } catch (error) {
+        try { await closeEntry(entry, 'page-acquisition-failed'); } catch {}
+        throw error;
+      }
+      notify(onPage, entry.page);
+      notify(onLifecycle, 'reused', { profileKey, url: entry.page.url?.() || '' });
       return {
-        browser: lease(retained, true),
-        page: retained.page,
+        browser: lease(entry, true),
+        page: entry.page,
         retained: true,
         reused: true
       };
@@ -81,17 +94,29 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
 
     if (retained) await closeEntry(retained, 'profile-changed');
 
+    for (const entry of [...recoveryEntries]) {
+      if (entry.profileKey === profileKey) await closeEntry(entry, 'retry-cleanup');
+    }
+
     const browser = await runtime.launch(options);
-    const page = await getPage(browser);
-    const entry = { browser, page, profileKey };
+    const entry = { browser, page: null, profileKey, closing: false };
+    browser.on?.('disconnected', () => {
+      recoveryEntries.delete(entry);
+      if (entry.closing) return;
+      if (retained !== entry) return;
+      retained = null;
+      notify(onPage, null);
+      notify(onLifecycle, 'disconnected', { profileKey });
+    });
+    try {
+      entry.page = await getPage(browser);
+    } catch (error) {
+      try { await closeEntry(entry, 'page-acquisition-failed'); } catch {}
+      throw error;
+    }
+    const page = entry.page;
     if (keepOpen) {
       retained = entry;
-      browser.on?.('disconnected', () => {
-        if (retained !== entry) return;
-        retained = null;
-        notify(onPage, null);
-        notify(onLifecycle, 'disconnected', { profileKey });
-      });
     }
     notify(onPage, page);
     notify(onLifecycle, keepOpen ? 'retained' : 'launched', { profileKey, url: page.url?.() || '' });
@@ -104,8 +129,14 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
   }
 
   async function close({ profileKey, reason = 'requested' } = {}) {
-    if (!retained || (profileKey !== undefined && retained.profileKey !== profileKey)) return false;
-    return closeEntry(retained, reason);
+    const candidates = [...new Set([...(retained ? [retained] : []), ...recoveryEntries])]
+      .filter(entry => profileKey === undefined || entry.profileKey === profileKey);
+    if (!candidates.length) return false;
+    let closed = false;
+    for (const entry of candidates) {
+      closed = (await closeEntry(entry, reason)) || closed;
+    }
+    return closed;
   }
 
   return {
@@ -113,6 +144,9 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     close,
     getPage: () => retained?.page || null,
     getProfileKey: () => retained?.profileKey || null,
-    hasBrowser: () => Boolean(retained && isConnected(retained.browser))
+    hasBrowser: () => Boolean(
+      (retained && isConnected(retained.browser)) ||
+      [...recoveryEntries].some(entry => isConnected(entry.browser))
+    )
   };
 }

@@ -18,7 +18,7 @@ import {
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
 import { verifyDesktopTokenAuthorization } from './authValidation.js';
-import { getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
+import { focusBrowserPage, getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
 import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
@@ -564,11 +564,12 @@ app.on('before-quit', event => {
   if (!externalBrowserSession.hasBrowser()) return;
   event.preventDefault();
   externalBrowserShutdownPending = true;
-  externalBrowserSession.close({ reason: 'app-quit' }).catch(err => {
-    desktopLogger.error('portal.browser.shutdown_failed', err, {});
-  }).finally(() => {
+  externalBrowserSession.close({ reason: 'app-quit' }).then(() => {
     allowQuitWithExternalBrowserClosed = true;
     app.quit();
+  }).catch(err => {
+    externalBrowserShutdownPending = false;
+    desktopLogger.error('portal.browser.shutdown_failed', err, {});
   });
 });
 
@@ -1016,6 +1017,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       // Seller Hub pages can keep long-polling connections open. Wait for the
       // document to load, then let the explicit authentication check drive the
       // manual sign-in lifecycle.
+      await focusBrowserPage(page);
       await page.goto(manualLoginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     } catch (gotoErr) {
       if (!String(gotoErr?.message || '').includes('ERR_ABORTED')) throw gotoErr;
@@ -1799,12 +1801,10 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
   return await withBrowserTask(async () => {
     const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
     const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
-    if (isFlipkart) {
-      await externalBrowserSession.close({
-        profileKey: getMarketplaceBrowserProfilePath(targetId),
-        reason: 'cookie-reset'
-      });
-    }
+    await externalBrowserSession.close({
+      profileKey: getMarketplaceBrowserProfilePath(targetId),
+      reason: 'cookie-reset'
+    });
     const cookiesPath = getMarketplaceCookiesPath(targetId);
     clearEncryptedCookieSnapshot(cookiesPath);
     if (isFlipkart) {
@@ -1823,14 +1823,12 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
     } catch (err) {
       partitionErr = err.message;
     }
-    if (isFlipkart) {
-      try {
-        const profilePath = getMarketplaceBrowserProfilePath(targetId);
-        fs.rmSync(profilePath, { recursive: true, force: true });
-        if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent Seller Hub browser profile.');
-      }
-      catch (err) { partitionErr = partitionErr || err.message; }
+    try {
+      const profilePath = getMarketplaceBrowserProfilePath(targetId);
+      fs.rmSync(profilePath, { recursive: true, force: true });
+      if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent marketplace browser profile.');
     }
+    catch (err) { partitionErr = partitionErr || err.message; }
     if (partitionErr) {
       return { success: false, error: `Failed to clear in-memory partition cookies: ${partitionErr}` };
     }
