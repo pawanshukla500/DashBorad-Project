@@ -33,6 +33,7 @@ import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } fr
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { createExternalBrowserSession } from './externalBrowserSession.js';
 import { resolveScrapeVerticals } from './fsnPlan.js';
+import { resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 import {
   getActiveBackendUrl,
   getCandidateServers,
@@ -70,14 +71,22 @@ const { Pool } = require('pg');
 
 let mainWindow = null;
 const smokeOutput = process.argv.find(arg => arg.startsWith('--ratecard-smoke-test='))?.slice('--ratecard-smoke-test='.length);
+const userDataOverride = process.env.RECONCENTRAL_USER_DATA || process.env.RECON_USER_DATA_DIR;
 if (smokeOutput) {
   const profile = path.resolve(`${smokeOutput}.profile`);
   fs.mkdirSync(profile, { recursive: true });
   app.setPath('userData', profile);
+} else {
+  app.setPath('userData', resolveDesktopUserDataDir());
 }
 const stagedExtraction = createStagedExtractionState();
 const USER_DATA_DIR = app.getPath('userData');
 process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
+const FLIPKART_BROWSER_PROFILE_DIR = resolveFlipkartBrowserProfileDir({
+  userDataDir: USER_DATA_DIR,
+  allowLegacyProfile: !smokeOutput && !userDataOverride
+});
+process.env.RECON_FLIPKART_PROFILE_DIR = FLIPKART_BROWSER_PROFILE_DIR;
 const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
 const SESSION_FILE = path.join(USER_DATA_DIR, 'auth-session.json');
 const COOKIES_PATH = path.join(USER_DATA_DIR, 'cookies.json');
@@ -329,6 +338,7 @@ function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
   const normalized = ['flipkart', 'shopsy', 'both', 'flipkart_shopsy'].includes(marketplace)
     ? 'flipkart_shopsy'
     : String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  if (normalized === 'flipkart_shopsy') return FLIPKART_BROWSER_PROFILE_DIR;
   return path.join(USER_DATA_DIR, 'browser-profiles', normalized);
 }
 

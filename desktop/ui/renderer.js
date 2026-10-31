@@ -375,10 +375,16 @@ function updateBrowserMonitorUI(state) {
     const heading = placeholder?.querySelector('h4');
     const description = placeholder?.querySelector('p');
     if (state.engine === 'external') {
-      if (heading) heading.textContent = state.active ? 'Seller Hub is open in external Chrome' : 'External Chrome is ready';
-      if (description) description.textContent = state.active
-        ? 'The public Seller Hub page is open in Chrome. Click its Login button and finish sign-in; the worker confirms the dashboard before saving the session.'
-        : 'The rate-card worker uses the persistent Seller Hub session in external Chrome. Open Seller Hub Sign-in if the portal asks you to log in again.';
+      const loginRequired = state.status === 'login_prompt';
+      const working = state.status === 'extracting' || state.status === 'navigating';
+      if (heading) heading.textContent = loginRequired
+        ? 'Seller Hub sign-in is open in external Chrome'
+        : (working ? 'Seller Hub activity is in progress' : (state.active ? 'Seller Hub browser is active' : 'External Chrome is ready'));
+      if (description) description.textContent = loginRequired
+        ? 'The public Seller Hub page is open in Chrome. Click Login and finish sign-in; the worker confirms the dashboard before saving the session.'
+        : (working
+          ? 'The worker is using this persistent Seller Hub session. Wait for the current page interaction to finish.'
+          : 'The rate-card worker uses the persistent Seller Hub session in external Chrome. Open Seller Hub Sign-in if the portal asks you to log in again.');
     } else if (state.engine === 'manual-login-window') {
       if (heading) heading.textContent = state.active ? 'Seller Hub sign-in is open in a separate window' : 'Seller Hub sign-in is ready';
       if (description) description.textContent = 'Click Login on the public Seller Hub page and complete sign-in manually. The persistent session is saved after the dashboard is verified.';

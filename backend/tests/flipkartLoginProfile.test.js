@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getFlipkartBrowserProfileDir } from '../services/flipkartBrowserProfile.js';
+import { resolveDesktopUserDataDir } from '../../desktop/userDataPaths.js';
 import { getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
 import { scrapeRateCard } from '../services/rateCardScraper.js';
 import { loadEncryptedCookies as loadBackendCookies } from '../utils/cookieVault.js';
@@ -12,7 +13,9 @@ describe('Flipkart persistent Seller Hub login', () => {
   it('uses the desktop app profile on Windows', () => {
     const appData = path.join(os.tmpdir(), 'reconcentral-test-roaming');
     expect(getFlipkartBrowserProfileDir({ env: { APPDATA: appData }, platform: 'win32' }))
-      .toBe(path.join(appData, 'reconcentral-ratecard-worker', 'browser-profiles', 'flipkart_shopsy'));
+      .toBe(path.join(appData, 'ReconCentral RateCard Worker', 'browser-profiles', 'flipkart_shopsy'));
+    expect(resolveDesktopUserDataDir({ env: { APPDATA: appData }, platform: 'win32' }))
+      .toBe(path.join(appData, 'ReconCentral RateCard Worker'));
   });
 
   it('honors the user-data directory supplied by the running desktop app', () => {
@@ -34,6 +37,42 @@ describe('Flipkart persistent Seller Hub login', () => {
       .toBe(path.join(xdg, 'reconcentral-ratecard-worker', 'browser-profiles', 'flipkart_shopsy'));
     expect(getFlipkartBrowserProfileDir({ env: { HOME: home }, platform: 'linux' }))
       .toBe(path.join(home, '.config', 'reconcentral-ratecard-worker', 'browser-profiles', 'flipkart_shopsy'));
+  });
+
+  it('reuses the legacy Windows Seller Hub profile only when it has Chromium stores', () => {
+    const appData = path.join(os.tmpdir(), 'reconcentral-legacy-roaming');
+    const legacyProfile = path.join(appData, 'reconcentral-ratecard-worker', 'browser-profiles', 'flipkart_shopsy');
+    const canonicalProfile = path.join(appData, 'ReconCentral RateCard Worker', 'browser-profiles', 'flipkart_shopsy');
+    const legacyCookieStore = path.join(legacyProfile, 'Default', 'Network', 'Cookies');
+    const existing = new Set([legacyCookieStore]);
+    const options = { env: { APPDATA: appData }, platform: 'win32', existsSync: candidate => existing.has(candidate) };
+
+    expect(getFlipkartBrowserProfileDir(options)).toBe(legacyProfile);
+    existing.add(path.join(canonicalProfile, 'Default', 'Cookies'));
+    expect(getFlipkartBrowserProfileDir(options)).toBe(canonicalProfile);
+  });
+
+  it('does not search legacy profiles when an explicit user-data override is supplied', () => {
+    const appData = path.join(os.tmpdir(), 'reconcentral-override-roaming');
+    const userData = path.join(os.tmpdir(), 'explicit-reconcentral-user-data');
+    const legacyCookieStore = path.join(appData, 'reconcentral-ratecard-worker', 'browser-profiles', 'flipkart_shopsy', 'Default', 'Cookies');
+    expect(getFlipkartBrowserProfileDir({
+      env: { APPDATA: appData, RECON_USER_DATA_DIR: userData },
+      platform: 'win32',
+      existsSync: candidate => candidate === legacyCookieStore
+    })).toBe(path.join(userData, 'browser-profiles', 'flipkart_shopsy'));
+  });
+
+  it('treats an explicit profile root as isolated unless legacy reuse is requested', () => {
+    const appData = path.join(os.tmpdir(), 'reconcentral-isolated-roaming');
+    const userData = path.join(os.tmpdir(), 'isolated-user-data');
+    const legacyCookieStore = path.join(appData, 'reconcentral-ratecard-worker', 'browser-profiles', 'flipkart_shopsy', 'Default', 'Cookies');
+    expect(getFlipkartBrowserProfileDir({
+      env: { APPDATA: appData },
+      platform: 'win32',
+      userDataDir: userData,
+      existsSync: candidate => candidate === legacyCookieStore
+    })).toBe(path.join(userData, 'browser-profiles', 'flipkart_shopsy'));
   });
 
   it('keeps the sign-in helper manual, root-only, and persistent', () => {

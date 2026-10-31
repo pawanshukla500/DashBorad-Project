@@ -8,6 +8,31 @@ import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL } from '../portalSess
 import { waitForFlipkartAuthenticatedPage } from '../portalLoginWaiter.js';
 import { scrapeFlipkartRateCards } from '../portalScraper.js';
 import { clearEncryptedCookieSnapshot, saveEncryptedCookies } from '../cookieVault.js';
+import { resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from '../userDataPaths.js';
+
+test('desktop app and standalone login helper share one Windows Seller Hub profile', () => {
+  const appData = path.join(os.tmpdir(), 'shared-seller-hub-roaming');
+  const legacyProfile = path.join(appData, 'reconcentral-ratecard-worker', 'browser-profiles', 'flipkart_shopsy');
+  const legacyCookieStore = path.join(legacyProfile, 'Default', 'Network', 'Cookies');
+  const canonicalProfile = path.join(appData, 'ReconCentral RateCard Worker', 'browser-profiles', 'flipkart_shopsy');
+  const existing = new Set([legacyCookieStore]);
+  const env = { APPDATA: appData };
+  const userDataDir = resolveDesktopUserDataDir({ env, platform: 'win32' });
+  const desktopProfile = resolveFlipkartBrowserProfileDir({ userDataDir, env, platform: 'win32', allowLegacyProfile: true, existsSync: value => existing.has(value) });
+  const helperProfile = resolveFlipkartBrowserProfileDir({ env, platform: 'win32', existsSync: value => existing.has(value) });
+
+  assert.equal(userDataDir, path.join(appData, 'ReconCentral RateCard Worker'));
+  assert.equal(desktopProfile, legacyProfile);
+  assert.equal(helperProfile, desktopProfile);
+  existing.add(path.join(canonicalProfile, 'Default', 'Cookies'));
+  assert.equal(resolveFlipkartBrowserProfileDir({ userDataDir, env, platform: 'win32', allowLegacyProfile: true, existsSync: value => existing.has(value) }), canonicalProfile);
+});
+
+test('external browser viewport only asks for sign-in when the portal state requires it', () => {
+  const renderer = fs.readFileSync(new URL('../ui/renderer.js', import.meta.url), 'utf8');
+  assert.match(renderer, /const loginRequired = state\.status === 'login_prompt'/);
+  assert.match(renderer, /const working = state\.status === 'extracting' \|\| state\.status === 'navigating'/);
+});
 
 class FakeWindow {
   constructor(options) {

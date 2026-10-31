@@ -93,6 +93,7 @@ import {
 } from './excelExport.js';
 import { getChromeExecutablePath } from './chromeFinder.js';
 import { getDesktopPool, closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
+import { resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 
 function getPool() {
   return getDesktopPool(loadConfig().databaseUrl);
@@ -100,24 +101,14 @@ function getPool() {
 
 const PORT = 3388;
 const UI_DIR = path.join(__dirname, 'ui');
-
-function resolveUserDataDir() {
-  if (process.env.RECONCENTRAL_USER_DATA) return process.env.RECONCENTRAL_USER_DATA;
-  if (process.env.RECON_USER_DATA_DIR) return process.env.RECON_USER_DATA_DIR;
-  if (process.platform === 'win32' && process.env.APPDATA) {
-    return path.join(process.env.APPDATA, 'ReconCentral RateCard Worker');
-  }
-  if (process.platform === 'linux' && process.env.XDG_CONFIG_HOME) {
-    return path.join(process.env.XDG_CONFIG_HOME, 'reconcentral-ratecard-worker');
-  }
-  if (process.platform === 'linux' && process.env.HOME) {
-    return path.join(process.env.HOME, '.config', 'reconcentral-ratecard-worker');
-  }
-  return path.join(__dirname, '.runtime');
-}
-
-const USER_DATA_DIR = resolveUserDataDir();
+const userDataOverride = process.env.RECONCENTRAL_USER_DATA || process.env.RECON_USER_DATA_DIR;
+const USER_DATA_DIR = resolveDesktopUserDataDir();
 process.env.RECON_USER_DATA_DIR = USER_DATA_DIR;
+const FLIPKART_BROWSER_PROFILE_DIR = resolveFlipkartBrowserProfileDir({
+  userDataDir: USER_DATA_DIR,
+  allowLegacyProfile: !userDataOverride
+});
+process.env.RECON_FLIPKART_PROFILE_DIR = FLIPKART_BROWSER_PROFILE_DIR;
 fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
 const CONFIG_FILE = path.join(USER_DATA_DIR, 'worker-config.json');
@@ -138,6 +129,7 @@ function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
 function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
   if (['flipkart','shopsy','both','flipkart_shopsy'].includes(marketplace)) marketplace = 'flipkart_shopsy';
   const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  if (safeId === 'flipkart_shopsy') return FLIPKART_BROWSER_PROFILE_DIR;
   return path.join(USER_DATA_DIR, 'browser-profiles', safeId);
 }
 
