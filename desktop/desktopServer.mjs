@@ -41,6 +41,7 @@ import {
   isAllowedDesktopOrigin, isSameDesktopOrigin
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
 import { resolveScrapeVerticals } from './fsnPlan.js';
 import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
@@ -1447,7 +1448,7 @@ const server = http.createServer(async (req, res) => {
         const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
         const chromePath = getChromeExecutablePath();
         const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
-        const profileAlreadyExists = fs.existsSync(profileDir);
+        const profileSessionState = readSellerHubProfileState(profileDir);
         fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
         try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
         try { fs.chmodSync(profileDir, 0o700); } catch {}
@@ -1482,12 +1483,12 @@ const server = http.createServer(async (req, res) => {
             const page = pages.length > 0 ? pages[0] : await browser.newPage();
 
             // Load existing encrypted session cookies if present
-            if (!profileAlreadyExists && fs.existsSync(cookiesPath)) {
+            if (['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(cookiesPath)) {
               const existing = loadEncryptedCookies(cookiesPath);
               if (existing && Array.isArray(existing) && existing.length > 0) {
                 await page.setCookie(...existing);
               }
-            } else if (!profileAlreadyExists && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+            } else if (['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
               const existing = loadEncryptedCookies(COOKIES_PATH);
               if (existing && Array.isArray(existing) && existing.length > 0) {
                 await page.setCookie(...existing);
@@ -1506,7 +1507,13 @@ const server = http.createServer(async (req, res) => {
                 timeoutMs: 30 * 60 * 1000,
                 pollMs: 1000,
                 onPage: candidate => broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external',
-                  marketplace: mpConfig.id, url: candidate.url(), title: 'Seller Hub sign-in tab' })
+                  marketplace: mpConfig.id, url: candidate.url(), title: 'Seller Hub sign-in tab' }),
+                onState: (_candidate, state) => {
+                  if (state.stage === 'public_return' && state.returnConfirmed === true) {
+                    try { writeSellerHubProfileState(profileDir, 'signed_out'); } catch {}
+                  }
+                  broadcastProgress(`Seller Hub login state: ${state.stage}.`);
+                }
               });
               if (authPage !== page) await focusBrowserPage(authPage);
             } else await page.waitForFunction((id) => {
@@ -1558,6 +1565,9 @@ const server = http.createServer(async (req, res) => {
             }, { timeout: 300000, polling: 1000 }, mpConfig.id);
 
             const cookies = await authPage.cookies();
+            if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
+              writeSellerHubProfileState(profileDir, 'authenticated');
+            }
             saveEncryptedCookies(cookiesPath, cookies);
             if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
               saveEncryptedCookies(COOKIES_PATH, cookies);
