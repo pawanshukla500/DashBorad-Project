@@ -56,6 +56,7 @@ export function resetDesktopTokenVerifier() {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const DESKTOP_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
 
 // Load environment from backend/.env natively
 const envPath = path.join(__dirname, '../backend/.env');
@@ -367,7 +368,7 @@ const serverWorkerId = `server-${process.platform}-${os.hostname()}`;
 const serverWorker = createWorkerEngine({
   getSession: () => authorizeSession(),
   register: session => registerWorkerWithBackend(session, { id: serverWorkerId, name: os.hostname(), platform: process.platform,
-    version: '1.8.3', capabilities: ['flipkart','shopsy'], metadata: { runtime: 'standalone' } }),
+    version: DESKTOP_VERSION, capabilities: ['flipkart','shopsy'], metadata: { runtime: 'standalone' } }),
   heartbeat: (session, status) => sendWorkerHeartbeat(session, serverWorkerId, status),
   claim: session => claimNextWorkerJob(session, serverWorkerId),
   releaseClaim: (session, job) => releaseClaimedWorkerJob(session, job, serverWorkerId),
@@ -378,7 +379,26 @@ const serverWorker = createWorkerEngine({
     try {
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, parameters: job.parameters });
       const fsnCatalog = (await fetchBrandCatalogFromApi(session)).catalog;
-      const result = await withBrowserTask(async () => scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace), browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace) }, { onProgress: broadcastProgress, browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace) }));
+      const result = await withBrowserTask(async () => scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace), visible: true, browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace) }, {
+        onProgress: broadcastProgress,
+        browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace),
+        onSessionExpiry: async page => {
+          broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible Chrome window at seller.flipkart.com.');
+          try {
+            await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
+            const cookies = await page.cookies();
+            if (cookies.length) {
+              saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
+              saveEncryptedCookies(COOKIES_PATH, cookies);
+            }
+            broadcastProgress(`Seller Hub login verified. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile will be reused.`);
+            return true;
+          } catch (loginError) {
+            broadcastProgress(`Manual Seller Hub sign-in did not complete: ${loginError.message}`);
+            return false;
+          }
+        }
+      }));
       if (!result.success) throw new Error(result.error);
       const cards = normalizeScrapedCards(result.data);
       if (authGeneration !== stagedExtraction.authGeneration) throw new Error('The account changed during extraction. Results were not submitted.');
@@ -1540,21 +1560,27 @@ const server = http.createServer(async (req, res) => {
     // POST /api/clear-session
     if (pathname === '/api/clear-session' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
-      if (withBrowserTask.busy) {
-        return sendJson(409, { success: false, error: 'A browser task is running. Finish login or extraction before clearing its Seller Hub session.' });
-      }
       try {
         const body = await parseJsonBody();
         const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
-        const cookiesPath = getMarketplaceCookiesPath(targetId);
-        deleteEncryptedCookies(cookiesPath);
-        const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
-        if (isFlipkart) {
-          deleteEncryptedCookies(COOKIES_PATH);
-          fs.rmSync(getMarketplaceBrowserProfilePath(targetId), { recursive: true, force: true });
+        // Parse the body before checking the lock, then acquire it without an
+        // intervening await so a scrape cannot start while profile data is
+        // being cleared.
+        if (withBrowserTask.busy) {
+          return sendJson(409, { success: false, error: 'A browser task is running. Finish login or extraction before clearing its Seller Hub session.' });
         }
+        const cleared = await withBrowserTask(async () => {
+          deleteEncryptedCookies(getMarketplaceCookiesPath(targetId));
+          const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
+          if (isFlipkart) {
+            deleteEncryptedCookies(COOKIES_PATH);
+            fs.rmSync(getMarketplaceBrowserProfilePath(targetId), { recursive: true, force: true });
+          }
+          return { success: true, message: `Session data cleared for ${targetId}` };
+        });
+        if (!cleared.success) return sendJson(/already running/i.test(cleared.error || '') ? 409 : 500, cleared);
         broadcastProgress(`✓ Cleared saved cookies and browser profile for ${targetId}`);
-        return sendJson(200, { success: true, message: `Session data cleared for ${targetId}` });
+        return sendJson(200, cleared);
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }

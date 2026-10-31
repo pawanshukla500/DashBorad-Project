@@ -83,6 +83,10 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   const standaloneSource = fs.readFileSync(new URL('../desktopServer.mjs', import.meta.url), 'utf8');
   const monitorHtml = fs.readFileSync(new URL('../ui/index.html', import.meta.url), 'utf8');
   const workerEntry = mainSource.slice(mainSource.indexOf('async function executeBackgroundWorkerJob'), mainSource.indexOf('// ── Daily Scheduler'));
+  const standaloneWorker = standaloneSource.slice(standaloneSource.indexOf('const serverWorker = createWorkerEngine'), standaloneSource.indexOf('const sseClients = new Set()'));
+  const clearSessionStart = standaloneSource.indexOf("if (pathname === '/api/clear-session'");
+  const clearSessionEnd = standaloneSource.indexOf('// POST /api/open-excel', clearSessionStart);
+  const clearSessionRoute = standaloneSource.slice(clearSessionStart, clearSessionEnd);
 
   assert.match(mainSource, /let currentBrowserEngine = 'external'/);
   assert.match(mainSource, /userDataDir: profileDir/);
@@ -93,7 +97,17 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(workerEntry, /visible: true/);
   assert.match(standaloneSource, /userDataDir: profileDir/);
   assert.match(standaloneSource, /mpConfig\.id === 'flipkart_shopsy'[\s\S]*?FLIPKART_MANUAL_LOGIN_URL/);
+  assert.match(standaloneWorker, /visible: true/);
+  assert.match(standaloneWorker, /onSessionExpiry: async page/);
+  assert.match(standaloneWorker, /page\.waitForFunction\(isFlipkartAuthenticated, \{ timeout: 30 \* 60 \* 1000/);
+  assert.match(standaloneSource, /version: DESKTOP_VERSION/);
   assert(!monitorHtml.includes('value="embedded"'), 'the monitor must not let users select a separate embedded session');
+  assert(clearSessionRoute.indexOf('await parseJsonBody()') < clearSessionRoute.indexOf('if (withBrowserTask.busy)'),
+    'the session clear route must recheck browser activity after parsing the request body');
+  assert(clearSessionRoute.includes('const cleared = await withBrowserTask(async () =>'),
+    'session profile deletion must hold the shared browser task lock');
+  assert(clearSessionRoute.indexOf('withBrowserTask(async () =>') < clearSessionRoute.indexOf('fs.rmSync'),
+    'the worker profile must be deleted only after acquiring the browser task lock');
 });
 
 test('manual sign-in timeout leaves its window and authentication watcher available to the worker', async () => {
