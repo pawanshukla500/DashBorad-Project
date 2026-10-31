@@ -88,23 +88,86 @@ test('Windows data-root selection prefers current app state and user overrides s
   const appData = path.join(os.tmpdir(), 'rcw-windows-root-precedence');
   const legacy = path.join(appData, 'reconcentral-ratecard-worker');
   const canonical = path.join(appData, 'ReconCentral RateCard Worker');
-  const marker = path.join(canonical, '.desktop-user-data-root');
   const existing = new Set([
     path.join(legacy, 'auth-session.json'),
+    path.join(legacy, 'worker-config.json'),
+    path.join(legacy, 'staging.db'),
+    path.join(canonical, 'auth-session.json'),
     path.join(canonical, 'worker-config.json')
   ]);
   const existsSync = value => existing.has(value) || value === legacy || value === canonical;
   const readFileSync = () => '';
+  const sessionTimes = new Map([
+    [path.join(legacy, 'auth-session.json'), 10],
+    [path.join(canonical, 'auth-session.json'), 20]
+  ]);
+  const statSync = value => {
+    if (!sessionTimes.has(value)) throw Object.assign(new Error('missing fixture metadata'), { code: 'ENOENT' });
+    return { mtimeMs: sessionTimes.get(value) };
+  };
 
-  assert.equal(resolveDesktopUserDataDir({ env: { APPDATA: appData }, platform: 'win32', existsSync, readFileSync }), legacy,
-    'the existing desktop auth session must survive a partial upgrade that created only a new config');
-  existing.add(path.join(canonical, 'auth-session.json'));
-  assert.equal(resolveDesktopUserDataDir({ env: { APPDATA: appData }, platform: 'win32', existsSync, readFileSync }), canonical,
-    'a current canonical auth session must win over an older legacy session');
+  assert.equal(resolveDesktopUserDataDir({ env: { APPDATA: appData }, platform: 'win32', existsSync, readFileSync, statSync }), canonical,
+    'the newest canonical auth session must win even when legacy contains more app-state files');
+  sessionTimes.set(path.join(legacy, 'auth-session.json'), 30);
+  assert.equal(resolveDesktopUserDataDir({ env: { APPDATA: appData }, platform: 'win32', existsSync, readFileSync, statSync }), legacy,
+    'the newest legacy auth session must win when it was the last one written');
   assert.equal(resolveDesktopUserDataDir({
     env: { APPDATA: appData, RECONCENTRAL_USER_DATA: path.join(appData, 'isolated') },
     platform: 'win32', existsSync, readFileSync
   }), path.join(appData, 'isolated'), 'explicit test/portable data overrides must bypass migration selection');
+});
+
+test('a stale Windows legacy-root marker is repaired before the app selects canonical state', () => {
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-windows-root-repair-'));
+  const legacy = path.join(appData, 'reconcentral-ratecard-worker');
+  const canonical = path.join(appData, 'ReconCentral RateCard Worker');
+  const marker = path.join(canonical, '.desktop-user-data-root');
+  const env = { APPDATA: appData };
+
+  try {
+    fs.mkdirSync(canonical, { recursive: true });
+    fs.writeFileSync(marker, 'legacy\n');
+    assert.equal(persistDesktopUserDataDirChoice({ env, platform: 'win32' }), canonical);
+    assert.equal(fs.readFileSync(marker, 'utf8').trim(), 'canonical');
+
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'auth-session.json'), 'old-session');
+    assert.equal(resolveDesktopUserDataDir({ env, platform: 'win32' }), canonical,
+      'a returning legacy directory must not switch roots after canonical state has been selected');
+  } finally {
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(appData));
+    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative), 'fixture cleanup must stay inside the OS temp directory');
+    fs.rmSync(appData, { recursive: true, force: true });
+  }
+});
+
+test('Windows marker write failures are reported without exposing data paths', () => {
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-windows-root-write-failure-'));
+  const legacy = path.join(appData, 'reconcentral-ratecard-worker');
+  const env = { APPDATA: appData };
+  const warnings = [];
+
+  try {
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'auth-session.json'), 'encrypted-fixture');
+    const selected = persistDesktopUserDataDirChoice({
+      env,
+      platform: 'win32',
+      writeFileSync: () => { throw Object.assign(new Error('fixture'), { code: 'EACCES' }); },
+      warn: message => warnings.push(JSON.parse(message))
+    });
+
+    assert.equal(selected, legacy);
+    assert.deepEqual(warnings, [{
+      level: 'warn',
+      event: 'windows_desktop_user_data_marker_write_failed',
+      code: 'EACCES'
+    }]);
+  } finally {
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(appData));
+    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative), 'fixture cleanup must stay inside the OS temp directory');
+    fs.rmSync(appData, { recursive: true, force: true });
+  }
 });
 
 test('Linux keeps its existing XDG data root without writing a Windows marker', () => {

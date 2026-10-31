@@ -19,6 +19,17 @@ function countWindowsAppStateFiles(directory, existsSync) {
   return WINDOWS_APP_STATE_FILES.reduce((count, name) => count + Number(existsSync(path.join(directory, name))), 0);
 }
 
+function getWindowsAuthSessionMtime(directory, existsSync, statSync) {
+  const sessionFile = path.join(directory, 'auth-session.json');
+  if (!existsSync(sessionFile)) return null;
+  try {
+    const mtimeMs = Number(statSync(sessionFile).mtimeMs);
+    return Number.isFinite(mtimeMs) ? mtimeMs : null;
+  } catch {
+    return null;
+  }
+}
+
 function readWindowsDataRootMarker(canonical, existsSync, readFileSync) {
   const marker = path.join(canonical, WINDOWS_DATA_ROOT_MARKER);
   if (!existsSync(marker)) return null;
@@ -37,7 +48,8 @@ export function resolveDesktopUserDataDir({
   homeDir = os.homedir(),
   scriptDir = process.cwd(),
   existsSync = fs.existsSync,
-  readFileSync = fs.readFileSync
+  readFileSync = fs.readFileSync,
+  statSync = fs.statSync
 } = {}) {
   const override = env.RECONCENTRAL_USER_DATA || env.RECON_USER_DATA_DIR;
   if (override) return path.resolve(override);
@@ -55,6 +67,15 @@ export function resolveDesktopUserDataDir({
     const canonicalHasSession = existsSync(path.join(canonical, 'auth-session.json'));
     const legacyHasSession = existsSync(path.join(legacy, 'auth-session.json'));
     if (canonicalHasSession !== legacyHasSession) return canonicalHasSession ? canonical : legacy;
+    if (canonicalHasSession && legacyHasSession) {
+      const canonicalSessionMtime = getWindowsAuthSessionMtime(canonical, existsSync, statSync);
+      const legacySessionMtime = getWindowsAuthSessionMtime(legacy, existsSync, statSync);
+      if (canonicalSessionMtime !== null && legacySessionMtime !== null && canonicalSessionMtime !== legacySessionMtime) {
+        return canonicalSessionMtime > legacySessionMtime ? canonical : legacy;
+      }
+      if (canonicalSessionMtime === null && legacySessionMtime !== null) return legacy;
+      return canonical;
+    }
     if (countWindowsAppStateFiles(legacy, existsSync) > countWindowsAppStateFiles(canonical, existsSync)) {
       return legacy;
     }
@@ -79,24 +100,43 @@ export function persistDesktopUserDataDirChoice(options = {}) {
 
   const existsSync = options.existsSync || fs.existsSync;
   const readFileSync = options.readFileSync || fs.readFileSync;
+  const statSync = options.statSync || fs.statSync;
   const mkdirSync = options.mkdirSync || fs.mkdirSync;
   const writeFileSync = options.writeFileSync || fs.writeFileSync;
+  const warn = options.warn || console.warn;
   const homeDir = options.homeDir || os.homedir();
   const { canonical, legacy } = getWindowsUserDataPaths({ env, homeDir: env.HOME || homeDir });
-  const selected = resolveDesktopUserDataDir({ ...options, env, platform, existsSync, readFileSync });
   const marker = path.join(canonical, WINDOWS_DATA_ROOT_MARKER);
+  const markerExists = existsSync(marker);
+  const markerChoice = markerExists ? readWindowsDataRootMarker(canonical, existsSync, readFileSync) : null;
+  const selected = resolveDesktopUserDataDir({ ...options, env, platform, existsSync, readFileSync, statSync });
   const choice = path.resolve(selected) === path.resolve(legacy) ? 'legacy' : 'canonical';
 
   try {
     mkdirSync(canonical, { recursive: true });
-    writeFileSync(marker, `${choice}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    if (markerExists && markerChoice !== choice) {
+      // Heal invalid markers and stale legacy markers whose directory has gone.
+      writeFileSync(marker, `${choice}\n`, { encoding: 'utf8', flag: 'w', mode: 0o600 });
+    } else if (!markerExists) {
+      writeFileSync(marker, `${choice}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    }
   } catch (error) {
     // A concurrent launch may have written the same marker. Other marker I/O
     // failures should not prevent the desktop app from opening its data.
-    if (error?.code !== 'EEXIST') return selected;
+    if (error?.code === 'EEXIST') {
+      return resolveDesktopUserDataDir({ ...options, env, platform, existsSync, readFileSync, statSync });
+    }
+    try {
+      warn(JSON.stringify({
+        level: 'warn',
+        event: 'windows_desktop_user_data_marker_write_failed',
+        code: error?.code || 'unknown'
+      }));
+    } catch {}
+    return selected;
   }
 
-  return resolveDesktopUserDataDir({ ...options, env, platform, existsSync, readFileSync });
+  return resolveDesktopUserDataDir({ ...options, env, platform, existsSync, readFileSync, statSync });
 }
 
 function hasChromiumProfile(profileDir, existsSync) {
