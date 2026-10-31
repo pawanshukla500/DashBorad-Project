@@ -449,9 +449,7 @@ function initBrowserMonitorListeners() {
 
   const btnLogin = document.getElementById('btn-monitor-login');
   btnLogin?.addEventListener('click', () => {
-    const select = document.getElementById('select-marketplace');
-    const mp = select ? select.value : 'flipkart_shopsy';
-    triggerInteractiveLogin(mp);
+    triggerInteractiveLogin('flipkart_shopsy');
   });
 
   const btnTestOpen = document.getElementById('btn-monitor-test-open');
@@ -1201,14 +1199,15 @@ function setupEventListeners() {
 
   // Human interactive login; the marketplace may request an OTP or other challenge.
   btnInteractiveLogin?.addEventListener('click', async () => {
+    const selectedVal = 'flipkart_shopsy';
+    syncMarketplaceSelection(selectedVal);
     const selectEl = document.getElementById('select-marketplace');
-    const selectedVal = selectEl?.value || 'flipkart_shopsy';
     const selectedOption = selectEl?.selectedOptions?.[0] || (selectEl && Array.from(selectEl.options).find(o => o.value === selectedVal));
-    const portalUrl = selectedOption?.getAttribute('data-portal') || 'https://seller.flipkart.com/';
-    const channelName = selectedOption?.innerText || selectedVal;
+    const portalUrl = 'https://seller.flipkart.com/';
+    const channelName = selectedOption?.innerText || 'Flipkart & Shopsy Seller Hub';
 
     appendTerminalLine(`Opening the ${channelName} sign-in window...`);
-    appendTerminalLine(`Sign-in starts at: ${selectedVal === 'flipkart_shopsy' ? 'https://seller.flipkart.com/' : portalUrl}`);
+    appendTerminalLine(`Sign-in starts at: ${portalUrl}`);
 
     try {
       const result = await window.ratecardAPI.runInteractiveLogin({

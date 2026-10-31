@@ -82,8 +82,15 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   const mainSource = fs.readFileSync(new URL('../main.js', import.meta.url), 'utf8');
   const standaloneSource = fs.readFileSync(new URL('../desktopServer.mjs', import.meta.url), 'utf8');
   const monitorHtml = fs.readFileSync(new URL('../ui/index.html', import.meta.url), 'utf8');
+  const rendererSource = fs.readFileSync(new URL('../ui/renderer.js', import.meta.url), 'utf8');
   const workerEntry = mainSource.slice(mainSource.indexOf('async function executeBackgroundWorkerJob'), mainSource.indexOf('// ── Daily Scheduler'));
   const standaloneWorker = standaloneSource.slice(standaloneSource.indexOf('const serverWorker = createWorkerEngine'), standaloneSource.indexOf('const sseClients = new Set()'));
+  const monitorLoginStart = rendererSource.indexOf("const btnLogin = document.getElementById('btn-monitor-login')");
+  const monitorLoginEnd = rendererSource.indexOf('const btnTestOpen', monitorLoginStart);
+  const monitorLoginHandler = rendererSource.slice(monitorLoginStart, monitorLoginEnd);
+  const sellerHubLoginStart = rendererSource.indexOf("btnInteractiveLogin?.addEventListener('click'");
+  const sellerHubLoginEnd = rendererSource.indexOf('// Reset session cookies', sellerHubLoginStart);
+  const sellerHubLoginHandler = rendererSource.slice(sellerHubLoginStart, sellerHubLoginEnd);
   const clearSessionStart = standaloneSource.indexOf("if (pathname === '/api/clear-session'");
   const clearSessionEnd = standaloneSource.indexOf('// POST /api/open-excel', clearSessionStart);
   const clearSessionRoute = standaloneSource.slice(clearSessionStart, clearSessionEnd);
@@ -102,6 +109,10 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(standaloneWorker, /page\.waitForFunction\(isFlipkartAuthenticated, \{ timeout: 30 \* 60 \* 1000/);
   assert.match(standaloneSource, /version: DESKTOP_VERSION/);
   assert(!monitorHtml.includes('value="embedded"'), 'the monitor must not let users select a separate embedded session');
+  assert(monitorLoginHandler.includes("triggerInteractiveLogin('flipkart_shopsy')"), 'the live-browser sign-in button must always open Flipkart Seller Hub');
+  assert(sellerHubLoginHandler.includes("const selectedVal = 'flipkart_shopsy'"), 'the Seller Hub sign-in action must ignore unrelated marketplace selection');
+  assert(sellerHubLoginHandler.includes("const portalUrl = 'https://seller.flipkart.com/'"), 'the Seller Hub sign-in action must open only the Seller Hub root');
+  assert(!sellerHubLoginHandler.includes('getAttribute(\'data-portal\')'), 'the Seller Hub sign-in action must not inherit another marketplace portal URL');
   assert(clearSessionRoute.indexOf('await parseJsonBody()') < clearSessionRoute.indexOf('if (withBrowserTask.busy)'),
     'the session clear route must recheck browser activity after parsing the request body');
   assert(clearSessionRoute.includes('const cleared = await withBrowserTask(async () =>'),
