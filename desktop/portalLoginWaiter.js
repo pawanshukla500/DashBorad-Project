@@ -65,8 +65,12 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
   const reportedStates = new Map();
   const loginFlowPages = new Set();
   const flowOriginTargets = new Set();
+  const flowAncestorTargets = new Set();
   const flowDescendantPages = new Set();
+  const flowDescendantTargets = new Set();
   const flowAncestorPages = new Set();
+  const initialLineagePages = new Set([initialPage]);
+  const initialLineageTargets = new Set();
   const pageByTarget = new Map();
   const publicReturnSince = new Map();
   const targetOf = page => {
@@ -82,6 +86,46 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
     }
   };
 
+  const rememberInitialLineage = () => {
+    let changed;
+    do {
+      changed = false;
+      for (const page of initialLineagePages) {
+        const target = targetOf(page);
+        if (target && !initialLineageTargets.has(target)) {
+          initialLineageTargets.add(target);
+          changed = true;
+        }
+        let opener;
+        try { opener = target?.opener?.(); } catch {}
+        if (!opener) continue;
+        if (!initialLineageTargets.has(opener)) {
+          initialLineageTargets.add(opener);
+          changed = true;
+        }
+        const openerPage = pageByTarget.get(opener);
+        if (openerPage && !initialLineagePages.has(openerPage)) {
+          initialLineagePages.add(openerPage);
+          changed = true;
+        }
+      }
+      for (const page of pages) {
+        const target = targetOf(page);
+        let opener;
+        try { opener = target?.opener?.(); } catch {}
+        if (!target || !opener || !initialLineageTargets.has(opener)) continue;
+        if (!initialLineagePages.has(page)) {
+          initialLineagePages.add(page);
+          changed = true;
+        }
+        if (!initialLineageTargets.has(target)) {
+          initialLineageTargets.add(target);
+          changed = true;
+        }
+      }
+    } while (changed);
+  };
+
   const rememberFlowPage = page => {
     loginFlowPages.add(page);
     let target = targetOf(page);
@@ -92,6 +136,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       try { opener = target.opener?.(); } catch {}
       if (!opener || visited.has(opener)) break;
       visited.add(opener);
+      flowAncestorTargets.add(opener);
       const openerPage = pageByTarget.get(opener);
       if (openerPage) flowAncestorPages.add(openerPage);
       target = opener;
@@ -104,11 +149,11 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       changed = false;
       for (const page of pages) {
         const target = targetOf(page);
-        if (!target || flowOriginTargets.has(target)) continue;
+        if (!target || flowOriginTargets.has(target) || flowDescendantTargets.has(target)) continue;
         let opener;
         try { opener = target.opener?.(); } catch {}
-        if (opener && flowOriginTargets.has(opener)) {
-          flowOriginTargets.add(target);
+        if (opener && (flowOriginTargets.has(opener) || flowAncestorTargets.has(opener) || flowDescendantTargets.has(opener))) {
+          flowDescendantTargets.add(target);
           flowDescendantPages.add(page);
           changed = true;
         }
@@ -131,6 +176,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       throwIfAborted();
       try {
         for (const page of await browser.pages()) addPage(page);
+        rememberInitialLineage();
       } catch {
         // Chrome may be replacing targets during the Seller Hub login redirect.
         throwIfAborted();
@@ -166,9 +212,10 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       }
 
       const relevantStates = pageStates.filter(item => item.state.surface === 'flipkart');
-      const activeLoginFlow = relevantStates.some(({ state }) => state.loginFormVisible || state.challengeVisible);
+      const activeLoginFlow = relevantStates.some(({ page, state }) => initialLineagePages.has(page) &&
+        (state.loginFormVisible || state.challengeVisible));
       for (const { page, state } of relevantStates) {
-        if (state.loginFormVisible || state.challengeVisible) rememberFlowPage(page);
+        if (initialLineagePages.has(page) && (state.loginFormVisible || state.challengeVisible)) rememberFlowPage(page);
       }
       rememberFlowDescendants();
 
@@ -196,6 +243,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       const stableReturnPages = new Set([...returnedPages].filter(page =>
         now() - publicReturnSince.get(page) >= publicReturnGraceMs));
       for (const { page, state } of pageStates) {
+        if (!initialLineagePages.has(page)) continue;
         const confirmedReturn = stableReturnPages.has(page);
         const stage = confirmedReturn ? 'public_return' : returnedPages.has(page) ? 'public_return_pending' : state.stage;
         const stateForUi = { ...state, stage, ...(confirmedReturn ? { returnConfirmed: true } : {}) };

@@ -273,7 +273,7 @@ test('Seller Hub login watcher recognizes a public return opened from the login 
   let loginClosed = false;
   const rootTarget = { opener: () => undefined };
   const loginTarget = { opener: () => rootTarget };
-  const returnTarget = { opener: () => loginTarget };
+  const returnTarget = { opener: () => rootTarget };
   const rootPage = {
     target: () => rootTarget,
     isClosed: () => false,
@@ -407,6 +407,49 @@ test('a retained public tab cannot fail a cross-tab sign-in that is still in pro
     }),
     error => /timed out/.test(error.message) && !/returned to its public landing page/.test(error.message)
   );
+});
+
+test('an unrelated stale login form does not block a stable return in the linked flow', async () => {
+  let now = 0;
+  let flowReads = 0;
+  const flowStates = [
+    { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false },
+    { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true }
+  ];
+  const flowTarget = { opener: () => undefined };
+  const staleTarget = { opener: () => undefined };
+  const flowPage = {
+    target: () => flowTarget,
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? flowStates[Math.min(flowReads++, flowStates.length - 1)]
+      : false
+  };
+  const staleLoginPage = {
+    target: () => staleTarget,
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false }
+      : false
+  };
+  const states = [];
+
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => [flowPage, staleLoginPage] }, {
+      initialPage: flowPage,
+      timeoutMs: 12000,
+      pollMs: 1000,
+      publicReturnGraceMs: 2000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; },
+      onState: (page, state) => states.push({ page, state })
+    }),
+    /returned to its public landing page.*Nothing was staged/
+  );
+
+  assert(states.some(item => item.page === flowPage && item.state.returnConfirmed === true),
+    'an unrelated stale form must not keep the actual flow from confirming its stable return');
+  assert.equal(states.some(item => item.page === staleLoginPage && item.state.stage === 'public_return'), false);
 });
 
 test('progress reporting contains rejected callbacks without an unhandled rejection', async () => {
