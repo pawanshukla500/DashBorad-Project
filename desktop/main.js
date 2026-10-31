@@ -23,6 +23,7 @@ import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards }
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { createStructuredLogger } from './structuredLogger.js';
+import { captureScrapeFailure } from './scrapeDiagnostics.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { portalPartition, isFlipkartAuthenticated, FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
@@ -1065,10 +1066,9 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     try {
       const page = (await browser?.pages?.())?.[0];
       if (page) {
-        const screenshot = await page.screenshot({ type: 'png' });
-        screenshotPath = path.join(DIAGNOSTICS_DIR, `login-failure-${Date.now()}.png`);
-        fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true, mode: 0o700 });
-        fs.writeFileSync(screenshotPath, screenshot, { mode: 0o600 });
+        const diagnostic = await captureScrapeFailure(page, DIAGNOSTICS_DIR,
+          { marketplace: mpConfig?.id || targetId, operation: 'manual_login' }, err);
+        if (diagnostic.screenshot) screenshotPath = path.join(DIAGNOSTICS_DIR, diagnostic.screenshot);
       }
     } catch {}
     desktopLogger.error('portal.login.failed', err, { marketplace: mpConfig?.id || targetId, screenshotPath });

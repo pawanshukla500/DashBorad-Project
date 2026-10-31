@@ -101,6 +101,8 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(mainSource, /const timeoutMs = 30 \* 60 \* 1000/);
   assert.match(mainSource, /async function openManualFlipkartLogin\(\{ onProgress = \(\) => \{\}, waitMs \} = \{\}\)/);
   assert.match(mainSource, /manager\.open\(\{ waitMs \}\)/);
+  assert.match(mainSource, /captureScrapeFailure\(page, DIAGNOSTICS_DIR,[\s\S]*?operation: 'manual_login'/,
+    'manual-login failures must use the redacted, bounded diagnostic screenshot path');
   assert.match(workerEntry, /visible: true/);
   assert.match(standaloneSource, /userDataDir: profileDir/);
   assert.match(standaloneSource, /mpConfig\.id === 'flipkart_shopsy'[\s\S]*?FLIPKART_MANUAL_LOGIN_URL/);
