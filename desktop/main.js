@@ -816,7 +816,7 @@ function getManualFlipkartLoginManager() {
 
 async function openManualFlipkartLogin({ onProgress = () => {}, waitMs } = {}) {
   const manager = getManualFlipkartLoginManager();
-  onProgress(`Opening a separate Seller Hub sign-in window at ${FLIPKART_MANUAL_LOGIN_URL}. Complete login manually; the persistent session will be saved for the worker.`);
+  onProgress(`Opening Seller Hub at ${FLIPKART_MANUAL_LOGIN_URL}. Click Login, complete sign-in manually, and leave the window open until the dashboard is verified.`);
   broadcastMonitorState({
     active: true,
     status: 'login_prompt',

@@ -67,6 +67,9 @@ describe('Rate Card Automation & Sync Endpoints', () => {
     expect(body).toHaveProperty('marketplace', 'flipkart');
     expect(body).toHaveProperty('latestVersion');
     expect(body.latestVersion.version_name).toBe('test-version-1');
+    expect(body).toHaveProperty('sessionManagedBy', 'desktop_chromium_profile');
+    expect(body.hasCookies).toBeNull();
+    expect(body.sessionStatusMessage).toContain('not visible to the backend');
   });
 
   it('GET /api/rate-card/verticals returns distinct verticals and sample FSNs', async () => {

@@ -143,8 +143,24 @@ export function saveEncryptedCookies(filePath, cookies) {
   fs.writeFileSync(filePath, encrypted, 'utf8');
 }
 
+function isPlaintextCookieSnapshot(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    const cookies = Array.isArray(parsed) ? parsed : parsed?.cookies;
+    return Array.isArray(cookies) && cookies.length > 0 && cookies.every(cookie =>
+      cookie && typeof cookie.name === 'string' && typeof cookie.value === 'string' && typeof cookie.domain === 'string'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isEncryptedVaultPayload(raw) {
+  return /^[a-f0-9]{24}:[a-f0-9]{32}:[a-f0-9]+$/i.test(raw);
+}
+
 /**
- * Loads cookies with AES-256-GCM decryption, with legacy plaintext JSON fallback.
+ * Loads only AES-256-GCM encrypted cookie snapshots. Plaintext cookie JSON is rejected.
  */
 export function loadEncryptedCookies(filePath) {
   try {
@@ -161,26 +177,20 @@ export function loadEncryptedCookies(filePath) {
         if (cand !== filePath && fs.existsSync(cand)) {
           try {
             const raw = fs.readFileSync(cand, 'utf8').trim();
-            if (raw) {
-              let fallbackCookies = null;
-              if (raw.includes(':')) {
-                try {
-                  const dec = decryptVaultData(raw);
-                  if (dec) fallbackCookies = JSON.parse(dec);
-                } catch {}
+            if (!isEncryptedVaultPayload(raw)) {
+              if (isPlaintextCookieSnapshot(raw)) {
+                try { fs.unlinkSync(cand); } catch {}
               }
-              if (!fallbackCookies) {
-                try {
-                  fallbackCookies = JSON.parse(raw);
-                } catch {}
-              }
-              if (Array.isArray(fallbackCookies) && fallbackCookies.length > 0) {
-                try {
-                  saveEncryptedCookies(filePath, fallbackCookies);
-                } catch {}
-                return fallbackCookies;
-              }
+              continue;
             }
+            let fallbackCookies = null;
+            try {
+              const dec = decryptVaultData(raw);
+              if (dec) fallbackCookies = JSON.parse(dec);
+            } catch {}
+            if (!Array.isArray(fallbackCookies) || fallbackCookies.length === 0) continue;
+            try { saveEncryptedCookies(filePath, fallbackCookies); } catch {}
+            return fallbackCookies;
           } catch {}
         }
       }
@@ -189,14 +199,16 @@ export function loadEncryptedCookies(filePath) {
     const raw = fs.readFileSync(filePath, 'utf8').trim();
     if (!raw) return null;
     // Check if AES-256-GCM serialized format: ivHex:authTagHex:ciphertextHex
-    if (raw.includes(':')) {
+    if (isEncryptedVaultPayload(raw)) {
       try {
         const decrypted = decryptVaultData(raw);
         if (decrypted) return JSON.parse(decrypted);
       } catch {}
     }
-    // Fallback to plain JSON for existing unencrypted sessions
-    return JSON.parse(raw);
+    // Never load plaintext session cookies; keep the active Chromium profile
+    // as the persistent Seller Hub session source of truth.
+    try { fs.unlinkSync(filePath); } catch {}
+    return null;
   } catch {
     return null;
   }

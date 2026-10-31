@@ -377,11 +377,11 @@ function updateBrowserMonitorUI(state) {
     if (state.engine === 'external') {
       if (heading) heading.textContent = state.active ? 'Seller Hub is open in external Chrome' : 'External Chrome is ready';
       if (description) description.textContent = state.active
-        ? 'Complete sign-in or watch the worker in the separate Chrome window. It opens at seller.flipkart.com and keeps its profile for the next run.'
+        ? 'The public Seller Hub page is open in Chrome. Click its Login button and finish sign-in; the worker confirms the dashboard before saving the session.'
         : 'The rate-card worker uses the persistent Seller Hub session in external Chrome. Open Seller Hub Sign-in if the portal asks you to log in again.';
     } else if (state.engine === 'manual-login-window') {
       if (heading) heading.textContent = state.active ? 'Seller Hub sign-in is open in a separate window' : 'Seller Hub sign-in is ready';
-      if (description) description.textContent = 'Complete login manually in the Seller Hub window. The persistent Chromium session is saved for the worker.';
+      if (description) description.textContent = 'Click Login on the public Seller Hub page and complete sign-in manually. The persistent session is saved after the dashboard is verified.';
     } else {
       if (heading) heading.textContent = 'Live Viewport Ready';
       if (description) description.textContent = 'When an automated scrape runs, the embedded Chromium view attaches natively into this window.';
@@ -1205,7 +1205,7 @@ function setupEventListeners() {
     const portalUrl = selectedOption?.getAttribute('data-portal') || 'https://seller.flipkart.com/';
     const channelName = selectedOption?.innerText || selectedVal;
 
-    appendTerminalLine(`Opening the ${channelName} sign-in window...`);
+    appendTerminalLine(`Opening the ${channelName} public page. Click its Login button to sign in manually.`);
     appendTerminalLine(`Sign-in starts at: ${portalUrl}`);
 
     try {

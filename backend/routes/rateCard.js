@@ -9,8 +9,7 @@ import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { normalizeCategory, clearRateCardCache } from '../services/rateCard.js';
-import { scrapeRateCard } from '../services/rateCardScraper.js';
-import { scrapeFlipkartRateCards, getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
+import { getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
 import { detectRateChanges, syncRateCardsToDatabase } from '../services/rateCardSyncEngine.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
@@ -1543,7 +1542,7 @@ router.get('/verticals', async (req, res) => {
 
 /**
  * GET /api/rate-card/sync-status
- * Current status of Flipkart credentials, session cookies, and latest rate card version
+ * Latest published rate-card version. Seller Hub sessions are local to the desktop worker.
  */
 router.get('/sync-status', async (req, res) => {
   try {
@@ -1556,18 +1555,11 @@ router.get('/sync-status', async (req, res) => {
       LIMIT 1
     `);
 
-    // Check cookies
-    let hasCookies = false;
-    try {
-      const fsSync = await import('fs');
-      const pathMod = (await import('path')).default;
-      const p = pathMod.join(process.cwd(), '.runtime/cookies.json');
-      hasCookies = fsSync.existsSync(p);
-    } catch {}
-
     res.json({
       marketplace: 'flipkart',
-      hasCookies,
+      hasCookies: null,
+      sessionManagedBy: 'desktop_chromium_profile',
+      sessionStatusMessage: 'Seller Hub sign-in is stored in the desktop worker profile and is not visible to the backend.',
       latestVersion: latestVersion.rows[0] || null,
       sellerAccount: 'default'
     });
