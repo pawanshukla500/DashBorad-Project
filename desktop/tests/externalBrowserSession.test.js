@@ -106,3 +106,40 @@ test('a disconnected retained browser is discarded before a fresh session launch
   await session.close();
   assert.equal(first.browser.id, '1');
 });
+
+test('a launched browser is closed when its first page cannot be acquired', async () => {
+  const runtime = fakeRuntime();
+  runtime.launch = async options => {
+    const browser = new FakeBrowser('page-error');
+    browser.options = options;
+    browser.pages = async () => { throw new Error('Chromium page enumeration failed'); };
+    runtime.browsers.push(browser);
+    return browser;
+  };
+  const lifecycle = [];
+  const session = createExternalBrowserSession({ onLifecycle: event => lifecycle.push(event) });
+
+  await assert.rejects(
+    session.acquire(runtime, { headless: false }, { profileKey: 'profile', keepOpen: true }),
+    /page enumeration failed/
+  );
+
+  assert.equal(runtime.browsers[0].closed, true, 'failed page acquisition must release the launched Chrome process');
+  assert.equal(session.hasBrowser(), false, 'failed acquisition must not retain a broken browser');
+  assert(lifecycle.includes('closed'));
+});
+
+test('a retained browser is discarded when its page can no longer be acquired', async () => {
+  const runtime = fakeRuntime();
+  const session = createExternalBrowserSession();
+  await session.acquire(runtime, { headless: false }, { profileKey: 'profile', keepOpen: true });
+  runtime.browsers[0].pages = async () => { throw new Error('Browser page is unavailable'); };
+
+  await assert.rejects(
+    session.acquire(runtime, { headless: false }, { profileKey: 'profile', keepOpen: true }),
+    /page is unavailable/
+  );
+
+  assert.equal(runtime.browsers[0].closed, true);
+  assert.equal(session.hasBrowser(), false);
+});

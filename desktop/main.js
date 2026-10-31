@@ -1799,12 +1799,10 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
   return await withBrowserTask(async () => {
     const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
     const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
-    if (isFlipkart) {
-      await externalBrowserSession.close({
-        profileKey: getMarketplaceBrowserProfilePath(targetId),
-        reason: 'cookie-reset'
-      });
-    }
+    await externalBrowserSession.close({
+      profileKey: getMarketplaceBrowserProfilePath(targetId),
+      reason: 'cookie-reset'
+    });
     const cookiesPath = getMarketplaceCookiesPath(targetId);
     clearEncryptedCookieSnapshot(cookiesPath);
     if (isFlipkart) {
@@ -1823,14 +1821,12 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
     } catch (err) {
       partitionErr = err.message;
     }
-    if (isFlipkart) {
-      try {
-        const profilePath = getMarketplaceBrowserProfilePath(targetId);
-        fs.rmSync(profilePath, { recursive: true, force: true });
-        if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent Seller Hub browser profile.');
-      }
-      catch (err) { partitionErr = partitionErr || err.message; }
+    try {
+      const profilePath = getMarketplaceBrowserProfilePath(targetId);
+      fs.rmSync(profilePath, { recursive: true, force: true });
+      if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent marketplace browser profile.');
     }
+    catch (err) { partitionErr = partitionErr || err.message; }
     if (partitionErr) {
       return { success: false, error: `Failed to clear in-memory partition cookies: ${partitionErr}` };
     }

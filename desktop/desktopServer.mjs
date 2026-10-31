@@ -1581,10 +1581,10 @@ const server = http.createServer(async (req, res) => {
           const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
           if (isFlipkart) {
             clearEncryptedCookieSnapshot(COOKIES_PATH);
-            const profilePath = getMarketplaceBrowserProfilePath(targetId);
-            fs.rmSync(profilePath, { recursive: true, force: true });
-            if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent Seller Hub browser profile.');
           }
+          const profilePath = getMarketplaceBrowserProfilePath(targetId);
+          fs.rmSync(profilePath, { recursive: true, force: true });
+          if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent marketplace browser profile.');
           return { success: true, message: `Session data cleared for ${targetId}` };
         });
         if (!cleared.success) return sendJson(/already running/i.test(cleared.error || '') ? 409 : 500, cleared);

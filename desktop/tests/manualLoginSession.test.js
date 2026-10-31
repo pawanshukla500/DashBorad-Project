@@ -146,14 +146,24 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'session profile deletion must hold the shared browser task lock');
   assert(clearSessionRoute.indexOf('withBrowserTask(async () =>') < clearSessionRoute.indexOf('fs.rmSync'),
     'the worker profile must be deleted only after acquiring the browser task lock');
-  assert.match(clearSessionRoute, /clearEncryptedCookieSnapshot\(getMarketplaceCookiesPath\(targetId\)\)[\s\S]*?clearEncryptedCookieSnapshot\(COOKIES_PATH\)[\s\S]*?fs\.rmSync/,
-    'standalone reset must verify both cookie snapshots are removed before deleting the persistent profile');
+  assert.match(clearSessionRoute, /clearEncryptedCookieSnapshot\(getMarketplaceCookiesPath\(targetId\)\)[\s\S]*?const profilePath = getMarketplaceBrowserProfilePath\(targetId\)[\s\S]*?fs\.rmSync/,
+    'standalone reset must delete the selected marketplace profile after clearing its cookie snapshot');
+  assert.match(clearSessionRoute, /if \(isFlipkart\) \{\s*clearEncryptedCookieSnapshot\(COOKIES_PATH\)/,
+    'standalone reset must retain the legacy cookie cleanup only for Flipkart');
+  const standaloneProfileCleanup = clearSessionRoute.slice(clearSessionRoute.indexOf('const profilePath'), clearSessionRoute.indexOf('return { success: true'));
+  assert(!standaloneProfileCleanup.includes('if (isFlipkart)'), 'standalone reset must delete profiles for every marketplace');
   assert.match(clearSessionRoute, /if \(fs\.existsSync\(profilePath\)\) throw/,
     'standalone reset must fail if browser-profile removal did not take effect');
-  assert.match(desktopResetHandler, /clearEncryptedCookieSnapshot\(cookiesPath\)[\s\S]*?clearEncryptedCookieSnapshot\(COOKIES_PATH\)[\s\S]*?fs\.rmSync/,
-    'desktop reset must verify both cookie snapshots are removed before deleting the persistent profile');
-  assert.match(desktopResetHandler, /externalBrowserSession\.close\([\s\S]*?reason: 'cookie-reset'[\s\S]*?fs\.rmSync/,
-    'desktop reset must close the profile owner before deleting its browser data');
+  assert.match(desktopResetHandler, /clearEncryptedCookieSnapshot\(cookiesPath\)[\s\S]*?const profilePath = getMarketplaceBrowserProfilePath\(targetId\)[\s\S]*?fs\.rmSync/,
+    'desktop reset must delete the selected marketplace profile after clearing its cookie snapshot');
+  assert.match(desktopResetHandler, /if \(isFlipkart\) \{\s*clearEncryptedCookieSnapshot\(COOKIES_PATH\)/,
+    'desktop reset must retain the legacy cookie cleanup only for Flipkart');
+  const desktopProfileCleanup = desktopResetHandler.slice(desktopResetHandler.indexOf('const profilePath'), desktopResetHandler.indexOf('if (partitionErr)'));
+  assert(!desktopProfileCleanup.includes('if (isFlipkart)'), 'desktop reset must delete profiles for every marketplace');
+  const desktopBrowserClose = desktopResetHandler.slice(desktopResetHandler.indexOf('const isFlipkart'), desktopResetHandler.indexOf('const cookiesPath'));
+  assert(desktopBrowserClose.includes('await externalBrowserSession.close({') && desktopBrowserClose.includes("reason: 'cookie-reset'"),
+    'desktop reset must close the selected retained browser for every marketplace');
+  assert(!desktopBrowserClose.includes('if (isFlipkart)'), 'retained browser cleanup must cover every marketplace');
   assert.match(desktopResetHandler, /if \(fs\.existsSync\(profilePath\)\) throw/,
     'desktop reset must fail if browser-profile removal did not take effect');
 });

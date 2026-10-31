@@ -68,12 +68,18 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     }
 
     if (retained && retained.profileKey === profileKey) {
-      retained.page = await getPage(retained.browser);
-      notify(onPage, retained.page);
-      notify(onLifecycle, 'reused', { profileKey, url: retained.page.url?.() || '' });
+      const entry = retained;
+      try {
+        entry.page = await getPage(entry.browser);
+      } catch (error) {
+        try { await closeEntry(entry, 'page-acquisition-failed'); } catch {}
+        throw error;
+      }
+      notify(onPage, entry.page);
+      notify(onLifecycle, 'reused', { profileKey, url: entry.page.url?.() || '' });
       return {
-        browser: lease(retained, true),
-        page: retained.page,
+        browser: lease(entry, true),
+        page: entry.page,
         retained: true,
         reused: true
       };
@@ -82,7 +88,17 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     if (retained) await closeEntry(retained, 'profile-changed');
 
     const browser = await runtime.launch(options);
-    const page = await getPage(browser);
+    let page;
+    try {
+      page = await getPage(browser);
+    } catch (error) {
+      try {
+        if (isConnected(browser)) await browser.close();
+      } catch {}
+      notify(onPage, null);
+      notify(onLifecycle, 'closed', { profileKey, reason: 'page-acquisition-failed' });
+      throw error;
+    }
     const entry = { browser, page, profileKey };
     if (keepOpen) {
       retained = entry;
