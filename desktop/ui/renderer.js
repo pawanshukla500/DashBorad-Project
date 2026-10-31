@@ -1211,7 +1211,13 @@ function setupEventListeners() {
     const portalUrl = selectedOption?.getAttribute('data-portal') || 'https://seller.flipkart.com/';
     const channelName = selectedOption?.innerText || selectedVal;
 
-    appendTerminalLine(`Opening the ${channelName} public page. Click its Login button to sign in manually.`);
+    const isSellerHub = ['flipkart_shopsy', 'flipkart', 'shopsy', 'both'].includes(selectedVal);
+    if (isSellerHub) {
+      appendTerminalLine(`Opening the ${channelName} public page. Flipkart sign-in is two steps: click Login, enter the seller ID/email/phone, click Next, then enter the password and click Login in the modal.`);
+      appendTerminalLine('Leave the Seller Hub Chrome window open until the authenticated dashboard is confirmed. Complete any verification prompt manually.');
+    } else {
+      appendTerminalLine(`Opening the ${channelName} sign-in page. Complete sign-in manually and leave the browser open until authentication is confirmed.`);
+    }
     appendTerminalLine(`Sign-in starts at: ${portalUrl}`);
 
     try {

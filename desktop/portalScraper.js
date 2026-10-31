@@ -7,26 +7,9 @@ import path from 'node:path';
 import { buildFsnPlan } from './fsnPlan.js';
 import { canOpenVisibleBrowser, focusBrowserPage, getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js';
 import { getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, deleteEncryptedCookies } from './cookieVault.js';
+import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const PROFILE_SESSION_STORES = [
-  path.join('Default', 'Network', 'Cookies'),
-  path.join('Default', 'Cookies'),
-  path.join('Default', 'Local Storage', 'leveldb', 'CURRENT')
-];
-
-function hasPersistentProfileSession(profileDir) {
-  if (!profileDir) return false;
-  return PROFILE_SESSION_STORES.some(relativePath => {
-    try {
-      const store = fs.statSync(path.join(profileDir, relativePath));
-      return store.isFile() && store.size > 0;
-    } catch {
-      return false;
-    }
-  });
-}
-
 /**
  * Self-contained portal extraction for both Electron and the Linux server.
  * Runtime injection keeps the full extraction lifecycle testable offline.
@@ -57,10 +40,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
   const context = { marketplace, stage: 'launch' };
   try {
     const profileDir = browserProfileDir;
-    // A failed first launch may leave an empty userDataDir behind. Treat only
-    // actual Chromium cookie/local-storage stores as the profile source of
-    // truth, so that directory cannot suppress a valid encrypted cookie import.
-    const hasPersistentProfile = hasPersistentProfileSession(profileDir);
+    // Chromium creates cookie/local-storage files before a seller signs in.
+    // Only a verified profile session or an explicit sign-out can suppress
+    // cookie handoff. This also migrates older initialized profiles and allows
+    // a fresh Electron login snapshot to reach external Chrome.
+    const profileSessionState = readSellerHubProfileState(profileDir);
     if (profileDir && !runtime?.partition) fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
     const launchBrowser = async visible => {
       browser = await runtime.launch({
@@ -103,22 +87,29 @@ export async function scrapeFlipkartRateCards(config = {}, {
     };
     await launchBrowser(Boolean(config.visible));
     const cookieFile = fs.existsSync(cookiesPath) ? cookiesPath : fallbackCookiesPath;
-    // A persistent Chromium profile is the session source of truth. Replaying
-    // an old cookie snapshot after a Seller Hub logout could silently undo it.
-    // Import the encrypted snapshot only for a fresh non-Electron profile.
-    if (!runtime?.partition && !hasPersistentProfile && fs.existsSync(cookieFile)) {
+    // A confirmed profile session remains authoritative after sign-out. For
+    // older/unknown profiles or a fresh snapshot from the in-app login window,
+    // restore encrypted cookies even if Chromium initialized generic stores.
+    let snapshotImported = false;
+    if (!runtime?.partition && ['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(cookieFile)) {
       const cookies = loadEncryptedCookies(cookieFile);
       if (cookies?.length) {
         await page.setCookie(...cookies);
+        snapshotImported = true;
       } else {
         deleteEncryptedCookies(cookieFile);
       }
     }
-    // Always begin on the public Seller Hub landing page. The operator signs
-    // in manually; only after verified authentication do we enter the portal.
+    // Begin on the public landing page for manual sign-in, then probe the
+    // same-origin dashboard to validate the saved session before extraction.
     await onProgress('Connecting to Flipkart Seller Hub...');
     context.stage = 'authentication';
     await safeGoto(FLIPKART_MANUAL_LOGIN_URL, { waitUntil: 'load', timeout: 35000 });
+    // The public landing page is intentionally not an authentication signal.
+    // Probe the same-origin dashboard route so a persisted session can be
+    // recognized even when Seller Hub leaves the public page open at `/`.
+    await onProgress('Checking the saved Seller Hub session...');
+    await safeGoto(FLIPKART_DASHBOARD_URL, { waitUntil: 'load', timeout: 35000 });
 
     let authenticated = false;
     // A restored Chromium session can redirect asynchronously. Never delete a
@@ -126,6 +117,17 @@ export async function scrapeFlipkartRateCards(config = {}, {
     for (let attempt = 0; attempt < 5; attempt++) {
       if (await page.evaluate(isFlipkartAuthenticated) === true) { authenticated = true; break; }
       await delay(1000);
+    }
+    if (!runtime?.partition && profileDir) {
+      if (authenticated) {
+        writeSellerHubProfileState(profileDir, 'authenticated');
+      } else if (profileSessionState === 'authenticated' || snapshotImported) {
+        // The prior verified session or imported snapshot no longer opens the
+        // dashboard. Stop replaying it so an operator must sign in again.
+        writeSellerHubProfileState(profileDir, 'signed_out');
+        deleteEncryptedCookies(cookiesPath);
+        deleteEncryptedCookies(fallbackCookiesPath);
+      }
     }
     if (!authenticated) {
       if (typeof onSessionExpiry !== 'function') throw new Error('Seller Hub login required. Open the manual sign-in window at seller.flipkart.com and retry.');
@@ -157,6 +159,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
         await delay(1000);
       }
       if (!authenticated) throw new Error('Seller Hub sign-in did not establish an authenticated dashboard session. Nothing was staged.');
+      if (!runtime?.partition && profileDir) writeSellerHubProfileState(profileDir, 'authenticated');
     }
     const sessionCookies = await page.cookies();
     if (sessionCookies?.length) {
