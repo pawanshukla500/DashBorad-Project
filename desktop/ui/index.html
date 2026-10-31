@@ -170,7 +170,7 @@
                 <div style="font-size: 11px; color: var(--text-muted);">Seller Hub & Rate Card Center</div>
                 <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
                   <span id="status-ch-flipkart" style="font-size: 11px; color: #94a3b8;">Not Checked</span>
-                  <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="flipkart_shopsy" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
+                  <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="flipkart_shopsy" style="padding: 2px 8px; font-size: 11px;">Seller Hub Sign-in</button>
                 </div>
               </div>
               <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
@@ -310,8 +310,8 @@
               </div>
 
               <div class="control-actions">
-                <button class="btn btn-secondary" id="btn-interactive-login" title="Open visible browser window to log in or handle OTP manually">
-                  🔑 Human Login (2FA)
+                <button class="btn btn-secondary" id="btn-interactive-login" title="Open the selected marketplace portal in external Chrome for manual sign-in">
+                  🔑 Open Selected Portal Sign-in
                 </button>
                 <button class="btn btn-secondary" id="btn-clear-session" title="Purge saved session cookies for this channel so fresh authentication is used">
                   🗑️ Reset Cookies
@@ -517,7 +517,7 @@
                     <td>Vbexports@outlook.com</td>
                     <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">https://seller.flipkart.com/</td>
                     <td><span class="badge" style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981;">Vault Active</span></td>
-                    <td><button class="btn btn-sm btn-secondary btn-ch-login" data-channel="flipkart_shopsy" style="padding: 2px 8px; font-size: 11px;">2FA Login</button></td>
+                    <td><button class="btn btn-sm btn-secondary btn-ch-login" data-channel="flipkart_shopsy" style="padding: 2px 8px; font-size: 11px;">Seller Hub Sign-in</button></td>
                   </tr>
                   <tr>
                     <td><strong>Myntra (VB)</strong></td>
@@ -559,7 +559,7 @@
                   <div class="status-dot active" id="monitor-status-dot"></div>
                   <div class="status-info">
                     <span class="status-label" style="font-size: 10px;">Browser Engine</span>
-                    <span class="status-val" id="monitor-engine-text" style="font-size: 12px;">Embedded Chromium</span>
+                    <span class="status-val" id="monitor-engine-text" style="font-size: 12px;">External Chrome (persistent)</span>
                   </div>
                 </div>
                 <div>
@@ -574,21 +574,17 @@
               </div>
 
               <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                <select id="select-monitor-engine" class="form-input" style="width: auto; font-size: 12px; padding: 6px 10px;">
-                  <option value="embedded" selected>⚡ Embedded Engine (In-App)</option>
-                  <option value="external">🌐 External Chrome Window</option>
-                </select>
-                <button class="btn btn-sm btn-secondary" id="btn-monitor-visibility">👁️ Show / Hide View</button>
+                <span class="badge" style="font-size: 11px;">🌐 External Chrome — persistent Seller Hub session</span>
                 <button class="btn btn-sm btn-secondary" id="btn-monitor-screenshot">📸 Capture Frame</button>
-                <button class="btn btn-sm btn-primary" id="btn-monitor-login">🔑 2FA Portal Login</button>
+                <button class="btn btn-sm btn-primary" id="btn-monitor-login">🔑 Open Seller Hub Sign-in</button>
               </div>
             </div>
 
-            <!-- 2FA / Human Intervention Alert Banner -->
+          <!-- Manual Seller Hub sign-in alert -->
             <div id="monitor-auth-alert" style="display: none; margin-top: 14px; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--warning); padding: 10px 14px; border-radius: 8px; align-items: center; justify-content: space-between; font-size: 12px; color: #fde68a;">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-size: 16px;">🔐</span>
-                <span><strong>2FA Verification Required:</strong> Interactive portal login is active. Please complete any OTP, captcha, or password challenge in the viewport below. Encrypted cookies will be saved automatically upon successful login.</span>
+                <span><strong>Manual Seller Hub sign-in required:</strong> Sign in yourself in the separate Chrome window opened at <code>https://seller.flipkart.com/</code>. The worker saves the session and reuses it until Seller Hub logs out.</span>
               </div>
             </div>
           </div>
@@ -611,9 +607,9 @@
             <div id="browser-view-dock" style="flex: 1; min-height: 500px; display: flex; align-items: center; justify-content: center; position: relative; background: #020617;">
               <div id="browser-view-placeholder" style="text-align: center; color: var(--text-muted); padding: 40px 20px;">
                 <div style="font-size: 42px; margin-bottom: 14px; opacity: 0.7;">🌐</div>
-                <h4 style="font-size: 16px; font-weight: 600; color: #cbd5e1;">Live Viewport Ready</h4>
+                <h4 style="font-size: 16px; font-weight: 600; color: #cbd5e1;">External Chrome is ready</h4>
                 <p style="font-size: 13px; max-width: 440px; margin: 8px auto 20px; line-height: 1.5;">
-                  When an automated scrape or interactive 2FA login starts, the embedded Chromium view attaches natively into this window.
+                  Manual sign-in opens only https://seller.flipkart.com/ in the worker’s persistent Chrome profile. The same profile is reused for future rate-card runs until Seller Hub signs out.
                 </p>
                 <div style="display: flex; gap: 10px; justify-content: center;">
                   <button class="btn btn-secondary btn-sm" id="btn-monitor-test-open">Launch Flipkart Portal</button>

@@ -68,12 +68,16 @@ async function runE2ETests() {
     const capture = createRateCardCapture();
     capture.observe({url:'https://seller.flipkart.com/napi/rate-card/get-complete-category-tree',status:200,body:{result:[{verticalName:'kurta'}]}});
     let navigatedUrls = [];
+    let currentUrl = 'about:blank';
     let currentQuery, pendingFsn;
     const fakePage = {
       setCookie: async () => {},
       rateCardCapture: capture,
       goto: async url => {
         navigatedUrls.push(url);
+        currentUrl = url === 'https://seller.flipkart.com/'
+          ? 'https://seller.flipkart.com/index.html#dashboard/home-page'
+          : url;
         if (!url.includes('?query=')) return;
         const query=JSON.parse(decodeURIComponent(url.split('?query=')[1]));
         currentQuery=query;
@@ -92,11 +96,10 @@ async function runE2ETests() {
         if (fn.name === 'isFlipkartAuthenticated') return true;
         if (fn.toString().includes('KeyboardEvent')) { currentQuery.fsn=pendingFsn; return true; }
         if (fn.toString().includes('q.fsn === expected')) return Boolean(currentQuery.fsn);
-        const lastUrl = navigatedUrls[navigatedUrls.length - 1] || '';
-        if (lastUrl.includes('dashboard/home-page')) return true; // session valid
+        if (currentUrl.includes('#dashboard/')) return true; // the root request restored the existing session
         return [];
       },
-      url: () => 'https://seller.flipkart.com/dashboard/home-page',
+      url: () => currentUrl,
       title: () => 'Seller Dashboard'
     };
 
