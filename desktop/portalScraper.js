@@ -69,6 +69,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
+          ...(profileDir ? ['--restore-last-session'] : []),
           ...(visible ? ['--start-maximized'] : ['--window-size=1500,1000'])
         ]
       });
