@@ -9,7 +9,7 @@ import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL } from '../portalSess
 import { waitForFlipkartAuthenticatedPage } from '../portalLoginWaiter.js';
 import { scrapeFlipkartRateCards } from '../portalScraper.js';
 import { clearEncryptedCookieSnapshot, saveEncryptedCookies } from '../cookieVault.js';
-import { resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from '../userDataPaths.js';
+import { persistDesktopUserDataDirChoice, resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from '../userDataPaths.js';
 
 test('desktop app and standalone login helper share one Windows Seller Hub profile', () => {
   const appData = path.join(os.tmpdir(), 'shared-seller-hub-roaming');
@@ -27,6 +27,93 @@ test('desktop app and standalone login helper share one Windows Seller Hub profi
   assert.equal(helperProfile, desktopProfile);
   existing.add(path.join(canonicalProfile, 'Default', 'Cookies'));
   assert.equal(resolveFlipkartBrowserProfileDir({ userDataDir, env, platform: 'win32', allowLegacyProfile: true, existsSync: value => existing.has(value) }), canonicalProfile);
+});
+
+test('Windows upgrades keep the existing desktop auth, config, and review data root', () => {
+  const appData = path.join(os.tmpdir(), 'rcw-windows-data-root-fixture');
+  const legacy = path.join(appData, 'reconcentral-ratecard-worker');
+  const canonical = path.join(appData, 'ReconCentral RateCard Worker');
+  const existing = new Set([
+    path.join(legacy, 'auth-session.json'),
+    path.join(legacy, 'worker-config.json'),
+    path.join(legacy, 'staging.db'),
+    path.join(canonical, 'cookies.json'),
+    path.join(legacy, 'browser-profiles', 'flipkart_shopsy', 'Default', 'Network', 'Cookies')
+  ]);
+  const userDataDir = resolveDesktopUserDataDir({
+    env: { APPDATA: appData },
+    platform: 'win32',
+    existsSync: value => existing.has(value),
+    readFileSync: () => ''
+  });
+
+  assert.equal(userDataDir, legacy, 'new cookie snapshots alone must not displace the established app state');
+  assert.equal(resolveFlipkartBrowserProfileDir({
+    userDataDir,
+    env: { APPDATA: appData },
+    platform: 'win32',
+    allowLegacyProfile: true,
+    existsSync: value => existing.has(value)
+  }), path.join(legacy, 'browser-profiles', 'flipkart_shopsy'),
+  'the migrated app data root must continue using the established Seller Hub profile');
+});
+
+test('the selected Windows data root remains stable after sign-out removes its auth session', () => {
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-windows-root-sticky-'));
+  const legacy = path.join(appData, 'reconcentral-ratecard-worker');
+  const canonical = path.join(appData, 'ReconCentral RateCard Worker');
+  const marker = path.join(canonical, '.desktop-user-data-root');
+  const env = { APPDATA: appData };
+
+  try {
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.mkdirSync(canonical, { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'auth-session.json'), 'encrypted-fixture');
+    fs.writeFileSync(path.join(legacy, 'worker-config.json'), '{}');
+
+    assert.equal(persistDesktopUserDataDirChoice({ env, platform: 'win32' }), legacy);
+    assert.equal(fs.readFileSync(marker, 'utf8').trim(), 'legacy');
+
+    fs.unlinkSync(path.join(legacy, 'auth-session.json'));
+    assert.equal(resolveDesktopUserDataDir({ env, platform: 'win32' }), legacy,
+      'sign-out must keep the selected root even when it removes the auth session');
+  } finally {
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(appData));
+    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative), 'fixture cleanup must stay inside the OS temp directory');
+    fs.rmSync(appData, { recursive: true, force: true });
+  }
+});
+
+test('Windows data-root selection prefers current app state and user overrides stay isolated', () => {
+  const appData = path.join(os.tmpdir(), 'rcw-windows-root-precedence');
+  const legacy = path.join(appData, 'reconcentral-ratecard-worker');
+  const canonical = path.join(appData, 'ReconCentral RateCard Worker');
+  const marker = path.join(canonical, '.desktop-user-data-root');
+  const existing = new Set([
+    path.join(legacy, 'auth-session.json'),
+    path.join(canonical, 'worker-config.json')
+  ]);
+  const existsSync = value => existing.has(value) || value === legacy || value === canonical;
+  const readFileSync = () => '';
+
+  assert.equal(resolveDesktopUserDataDir({ env: { APPDATA: appData }, platform: 'win32', existsSync, readFileSync }), legacy,
+    'the existing desktop auth session must survive a partial upgrade that created only a new config');
+  existing.add(path.join(canonical, 'auth-session.json'));
+  assert.equal(resolveDesktopUserDataDir({ env: { APPDATA: appData }, platform: 'win32', existsSync, readFileSync }), canonical,
+    'a current canonical auth session must win over an older legacy session');
+  assert.equal(resolveDesktopUserDataDir({
+    env: { APPDATA: appData, RECONCENTRAL_USER_DATA: path.join(appData, 'isolated') },
+    platform: 'win32', existsSync, readFileSync
+  }), path.join(appData, 'isolated'), 'explicit test/portable data overrides must bypass migration selection');
+});
+
+test('Linux keeps its existing XDG data root without writing a Windows marker', () => {
+  const home = path.join(os.tmpdir(), 'rcw-linux-data-root-home');
+  const expected = path.join(home, '.config', 'reconcentral-ratecard-worker');
+  const env = { HOME: home };
+
+  assert.equal(resolveDesktopUserDataDir({ env, platform: 'linux' }), expected);
+  assert.equal(persistDesktopUserDataDirChoice({ env, platform: 'linux' }), expected);
 });
 
 test('external browser viewport only asks for sign-in when the portal state requires it', () => {

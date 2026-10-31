@@ -33,7 +33,7 @@ import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } fr
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { createExternalBrowserSession } from './externalBrowserSession.js';
 import { resolveScrapeVerticals } from './fsnPlan.js';
-import { resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
+import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 import {
   getActiveBackendUrl,
   getCandidateServers,
@@ -77,7 +77,7 @@ if (smokeOutput) {
   fs.mkdirSync(profile, { recursive: true });
   app.setPath('userData', profile);
 } else {
-  app.setPath('userData', resolveDesktopUserDataDir());
+  app.setPath('userData', persistDesktopUserDataDirChoice());
 }
 const stagedExtraction = createStagedExtractionState();
 const USER_DATA_DIR = app.getPath('userData');

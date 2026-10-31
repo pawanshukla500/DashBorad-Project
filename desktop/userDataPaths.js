@@ -4,16 +4,61 @@ import path from 'node:path';
 
 export const DESKTOP_PRODUCT_NAME = 'ReconCentral RateCard Worker';
 const LEGACY_PACKAGE_NAME = 'reconcentral-ratecard-worker';
+const WINDOWS_DATA_ROOT_MARKER = '.desktop-user-data-root';
+const WINDOWS_APP_STATE_FILES = ['auth-session.json', 'worker-config.json', 'staging.db'];
+
+function getWindowsUserDataPaths({ env, homeDir }) {
+  const roaming = env.APPDATA || path.join(env.HOME || homeDir, 'AppData', 'Roaming');
+  return {
+    canonical: path.join(roaming, DESKTOP_PRODUCT_NAME),
+    legacy: path.join(roaming, LEGACY_PACKAGE_NAME)
+  };
+}
+
+function countWindowsAppStateFiles(directory, existsSync) {
+  return WINDOWS_APP_STATE_FILES.reduce((count, name) => count + Number(existsSync(path.join(directory, name))), 0);
+}
+
+function readWindowsDataRootMarker(canonical, existsSync, readFileSync) {
+  const marker = path.join(canonical, WINDOWS_DATA_ROOT_MARKER);
+  if (!existsSync(marker)) return null;
+  try {
+    const value = String(readFileSync(marker, 'utf8')).trim();
+    return value === 'legacy' || value === 'canonical' ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Resolve the single persistent application data directory used by both launchers. */
-export function resolveDesktopUserDataDir({ env = process.env, platform = process.platform, homeDir = os.homedir(), scriptDir = process.cwd() } = {}) {
+export function resolveDesktopUserDataDir({
+  env = process.env,
+  platform = process.platform,
+  homeDir = os.homedir(),
+  scriptDir = process.cwd(),
+  existsSync = fs.existsSync,
+  readFileSync = fs.readFileSync
+} = {}) {
   const override = env.RECONCENTRAL_USER_DATA || env.RECON_USER_DATA_DIR;
   if (override) return path.resolve(override);
   const resolvedHome = env.HOME || homeDir;
 
   if (platform === 'win32') {
-    const roaming = env.APPDATA || path.join(resolvedHome, 'AppData', 'Roaming');
-    return path.join(roaming, DESKTOP_PRODUCT_NAME);
+    const { canonical, legacy } = getWindowsUserDataPaths({ env, homeDir: resolvedHome });
+    const markerChoice = readWindowsDataRootMarker(canonical, existsSync, readFileSync);
+    if (markerChoice === 'canonical') return canonical;
+    if (markerChoice === 'legacy' && existsSync(legacy)) return legacy;
+
+    // Older Windows releases kept app state under the package-name directory.
+    // Prefer the root holding the current desktop auth session, then the root
+    // holding more app state. Chromium's profile stays in place and is never copied.
+    const canonicalHasSession = existsSync(path.join(canonical, 'auth-session.json'));
+    const legacyHasSession = existsSync(path.join(legacy, 'auth-session.json'));
+    if (canonicalHasSession !== legacyHasSession) return canonicalHasSession ? canonical : legacy;
+    if (countWindowsAppStateFiles(legacy, existsSync) > countWindowsAppStateFiles(canonical, existsSync)) {
+      return legacy;
+    }
+    return canonical;
   }
   if (platform === 'darwin') {
     return path.join(resolvedHome, 'Library', 'Application Support', DESKTOP_PRODUCT_NAME);
@@ -23,6 +68,35 @@ export function resolveDesktopUserDataDir({ env = process.env, platform = proces
     return path.join(configHome, LEGACY_PACKAGE_NAME);
   }
   return path.join(scriptDir, '.runtime');
+}
+
+/** Persist the first Windows data-root choice so logout cannot revive a stale legacy session. */
+export function persistDesktopUserDataDirChoice(options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const override = env.RECONCENTRAL_USER_DATA || env.RECON_USER_DATA_DIR;
+  if (override || platform !== 'win32') return resolveDesktopUserDataDir(options);
+
+  const existsSync = options.existsSync || fs.existsSync;
+  const readFileSync = options.readFileSync || fs.readFileSync;
+  const mkdirSync = options.mkdirSync || fs.mkdirSync;
+  const writeFileSync = options.writeFileSync || fs.writeFileSync;
+  const homeDir = options.homeDir || os.homedir();
+  const { canonical, legacy } = getWindowsUserDataPaths({ env, homeDir: env.HOME || homeDir });
+  const selected = resolveDesktopUserDataDir({ ...options, env, platform, existsSync, readFileSync });
+  const marker = path.join(canonical, WINDOWS_DATA_ROOT_MARKER);
+  const choice = path.resolve(selected) === path.resolve(legacy) ? 'legacy' : 'canonical';
+
+  try {
+    mkdirSync(canonical, { recursive: true });
+    writeFileSync(marker, `${choice}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    // A concurrent launch may have written the same marker. Other marker I/O
+    // failures should not prevent the desktop app from opening its data.
+    if (error?.code !== 'EEXIST') return selected;
+  }
+
+  return resolveDesktopUserDataDir({ ...options, env, platform, existsSync, readFileSync });
 }
 
 function hasChromiumProfile(profileDir, existsSync) {
