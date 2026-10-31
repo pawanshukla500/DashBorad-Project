@@ -194,9 +194,11 @@ test('a launch cleanup failure is retried before another process can use the sam
   assert.equal(runtime.browsers.length, 1, 'a second process must not launch while cleanup still fails');
 
   rejectFirstClose = false;
+  assert.equal(await session.close({ profileKey: 'profile', reason: 'cookie-reset' }), true);
+  assert.equal(runtime.browsers[0].closed, true, 'explicit reset must close a browser held for recovery');
+
   const recovered = await session.acquire(runtime, options, acquireOptions);
   assert.equal(runtime.browsers.length, 2);
-  assert.equal(runtime.browsers[0].closed, true);
   assert.equal(recovered.reused, false);
   assert.equal(session.getPage(), recovered.page);
   await session.close();

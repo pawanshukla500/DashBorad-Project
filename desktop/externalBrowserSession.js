@@ -129,8 +129,14 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
   }
 
   async function close({ profileKey, reason = 'requested' } = {}) {
-    if (!retained || (profileKey !== undefined && retained.profileKey !== profileKey)) return false;
-    return closeEntry(retained, reason);
+    const candidates = [...new Set([...(retained ? [retained] : []), ...recoveryEntries])]
+      .filter(entry => profileKey === undefined || entry.profileKey === profileKey);
+    if (!candidates.length) return false;
+    let closed = false;
+    for (const entry of candidates) {
+      closed = (await closeEntry(entry, reason)) || closed;
+    }
+    return closed;
   }
 
   return {
