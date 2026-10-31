@@ -112,6 +112,10 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'scrape cleanup must not close a retained login browser');
   assert.match(mainSource, /app\.on\('before-quit'[\s\S]*?externalBrowserSession\.close\(\{ reason: 'app-quit' \}\)/,
     'app shutdown must flush and close the retained browser cleanly');
+  const shutdownHandler = mainSource.slice(mainSource.indexOf("app.on('before-quit'"), mainSource.indexOf('// ── Distributed Worker Engine'));
+  assert.match(shutdownHandler, /externalBrowserSession\.close\(\{ reason: 'app-quit' \}\)\.then\([\s\S]*?\.catch\(err => \{[\s\S]*?externalBrowserShutdownPending = false/,
+    'a failed browser close must keep the app open so the user can retry cleanup');
+  assert(!shutdownHandler.includes('.finally('), 'shutdown must not quit after a rejected browser close');
   assert.match(scraperSource, /--restore-last-session/,
     'Chromium must restore the saved profile session after a clean app restart');
   assert.match(mainSource, /userDataDir: profileDir/);

@@ -190,6 +190,7 @@ test('a launch cleanup failure is retried before another process can use the sam
 
   await assert.rejects(session.acquire(runtime, options, acquireOptions), /Initial page is unavailable/);
   assert.equal(runtime.browsers.length, 1);
+  assert.equal(session.hasBrowser(), true, 'shutdown checks must see a browser held for recovery');
   await assert.rejects(session.acquire(runtime, options, acquireOptions), /Profile is still locked/);
   assert.equal(runtime.browsers.length, 1, 'a second process must not launch while cleanup still fails');
 

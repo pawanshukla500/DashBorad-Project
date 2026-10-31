@@ -564,11 +564,12 @@ app.on('before-quit', event => {
   if (!externalBrowserSession.hasBrowser()) return;
   event.preventDefault();
   externalBrowserShutdownPending = true;
-  externalBrowserSession.close({ reason: 'app-quit' }).catch(err => {
-    desktopLogger.error('portal.browser.shutdown_failed', err, {});
-  }).finally(() => {
+  externalBrowserSession.close({ reason: 'app-quit' }).then(() => {
     allowQuitWithExternalBrowserClosed = true;
     app.quit();
+  }).catch(err => {
+    externalBrowserShutdownPending = false;
+    desktopLogger.error('portal.browser.shutdown_failed', err, {});
   });
 });
 

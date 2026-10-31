@@ -144,6 +144,9 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     close,
     getPage: () => retained?.page || null,
     getProfileKey: () => retained?.profileKey || null,
-    hasBrowser: () => Boolean(retained && isConnected(retained.browser))
+    hasBrowser: () => Boolean(
+      (retained && isConnected(retained.browser)) ||
+      [...recoveryEntries].some(entry => isConnected(entry.browser))
+    )
   };
 }
