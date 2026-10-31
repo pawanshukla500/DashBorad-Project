@@ -80,6 +80,8 @@ test('manual Seller Hub window opens only at the root and saves cookies after ma
 
 test('desktop and standalone worker use the same persistent external Chrome profile for Seller Hub', () => {
   const mainSource = fs.readFileSync(new URL('../main.js', import.meta.url), 'utf8');
+  const scraperSource = fs.readFileSync(new URL('../portalScraper.js', import.meta.url), 'utf8');
+  const externalBrowserSource = fs.readFileSync(new URL('../externalBrowserSession.js', import.meta.url), 'utf8');
   const standaloneSource = fs.readFileSync(new URL('../desktopServer.mjs', import.meta.url), 'utf8');
   const monitorHtml = fs.readFileSync(new URL('../ui/index.html', import.meta.url), 'utf8');
   const rendererSource = fs.readFileSync(new URL('../ui/renderer.js', import.meta.url), 'utf8');
@@ -102,6 +104,16 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   const desktopResetHandler = mainSource.slice(desktopResetStart, desktopResetEnd);
 
   assert.match(mainSource, /let currentBrowserEngine = 'external'/);
+  assert.match(mainSource, /externalBrowserSession\.acquire\(puppeteer,[\s\S]*?keepOpen: true/,
+    'manual sign-in must retain the authenticated external Chrome process');
+  assert.match(mainSource, /externalBrowserSession\.acquire\(target, options,[\s\S]*?keepOpen: options\.headless === false/,
+    'scrapes must reuse a retained Seller Hub browser profile');
+  assert.match(externalBrowserSource, /if \(keepOpen && retained === entry\) return/,
+    'scrape cleanup must not close a retained login browser');
+  assert.match(mainSource, /app\.on\('before-quit'[\s\S]*?externalBrowserSession\.close\(\{ reason: 'app-quit' \}\)/,
+    'app shutdown must flush and close the retained browser cleanly');
+  assert.match(scraperSource, /--restore-last-session/,
+    'Chromium must restore the saved profile session after a clean app restart');
   assert.match(mainSource, /userDataDir: profileDir/);
   assert.match(mainSource, /page\.goto\(manualLoginUrl, \{ waitUntil: 'domcontentloaded'/);
   assert.match(mainSource, /const timeoutMs = 30 \* 60 \* 1000/);
@@ -140,6 +152,8 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'standalone reset must fail if browser-profile removal did not take effect');
   assert.match(desktopResetHandler, /clearEncryptedCookieSnapshot\(cookiesPath\)[\s\S]*?clearEncryptedCookieSnapshot\(COOKIES_PATH\)[\s\S]*?fs\.rmSync/,
     'desktop reset must verify both cookie snapshots are removed before deleting the persistent profile');
+  assert.match(desktopResetHandler, /externalBrowserSession\.close\([\s\S]*?reason: 'cookie-reset'[\s\S]*?fs\.rmSync/,
+    'desktop reset must close the profile owner before deleting its browser data');
   assert.match(desktopResetHandler, /if \(fs\.existsSync\(profilePath\)\) throw/,
     'desktop reset must fail if browser-profile removal did not take effect');
 });
@@ -398,6 +412,7 @@ test('an empty directory from a failed Chrome launch still imports encrypted coo
       onProgress: () => {}
     });
     assert.equal(launchedWith.userDataDir, profileDir);
+    assert(launchedWith.args.includes('--restore-last-session'), 'existing profiles must restore their saved Seller Hub session on launch');
     assert.equal(setCookieCalls, 1, 'a directory without Chromium session stores must not block the valid cookie snapshot');
     assert.equal(result.success, false);
     assert.match(result.error, /login required/i);

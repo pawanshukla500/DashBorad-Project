@@ -1,0 +1,108 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createExternalBrowserSession } from '../externalBrowserSession.js';
+
+class FakeBrowser {
+  constructor(id) {
+    this.id = id;
+    this.closed = false;
+    this.listeners = new Map();
+    this.page = {
+      isClosed: () => this.closed,
+      url: () => `https://seller.flipkart.com/${this.id}`
+    };
+  }
+
+  isConnected() { return !this.closed; }
+  on(event, callback) { this.listeners.set(event, callback); }
+  async pages() { return this.closed ? [] : [this.page]; }
+  async newPage() { this.page = { isClosed: () => false, url: () => 'about:blank' }; return this.page; }
+  async close() {
+    this.closed = true;
+    this.listeners.get('disconnected')?.();
+  }
+}
+
+function fakeRuntime() {
+  const browsers = [];
+  return {
+    browsers,
+    async launch(options) {
+      const browser = new FakeBrowser(String(browsers.length + 1));
+      browser.options = options;
+      browsers.push(browser);
+      return browser;
+    }
+  };
+}
+
+test('manual login browser is reused by extraction and closes only on explicit teardown', async () => {
+  const runtime = fakeRuntime();
+  const pages = [];
+  const session = createExternalBrowserSession({ onPage: page => pages.push(page) });
+
+  const login = await session.acquire(runtime, {
+    headless: false,
+    userDataDir: 'profile-flipkart'
+  }, { profileKey: 'profile-flipkart', keepOpen: true });
+
+  assert.equal(login.retained, true);
+  assert.equal(session.hasBrowser(), true);
+  assert.equal(session.getPage(), login.page);
+  await login.browser.close();
+  assert.equal(runtime.browsers[0].closed, false, 'the login helper must not close the authenticated browser');
+
+  const scrape = await session.acquire(runtime, {
+    headless: 'new',
+    userDataDir: 'profile-flipkart'
+  }, { profileKey: 'profile-flipkart', keepOpen: false });
+
+  assert.equal(scrape.reused, true);
+  assert.equal(scrape.browser.id, login.browser.id);
+  assert.equal(scrape.page, login.page);
+  assert.equal(runtime.browsers.length, 1, 'extraction must not launch a second Chromium process for the same profile');
+  await scrape.browser.close();
+  assert.equal(runtime.browsers[0].closed, false, 'scrape cleanup must preserve the signed-in browser');
+
+  assert.equal(await session.close({ profileKey: 'profile-flipkart', reason: 'cookie-reset' }), true);
+  assert.equal(runtime.browsers[0].closed, true);
+  assert.equal(session.hasBrowser(), false);
+  assert.equal(pages.at(-1), null, 'teardown clears the live page reference');
+});
+
+test('a headless scrape browser is released while a visible browser is retained', async () => {
+  const runtime = fakeRuntime();
+  const session = createExternalBrowserSession();
+  const lease = await session.acquire(runtime, { headless: 'new', userDataDir: 'profile' }, {
+    profileKey: 'profile', keepOpen: false
+  });
+
+  assert.equal(lease.retained, false);
+  assert.equal(session.hasBrowser(), false);
+  await lease.browser.close();
+  assert.equal(runtime.browsers[0].closed, true);
+
+  const visible = await session.acquire(runtime, { headless: false, userDataDir: 'profile' }, {
+    profileKey: 'profile', keepOpen: true
+  });
+  assert.equal(visible.retained, true);
+  assert.equal(session.hasBrowser(), true);
+  await session.close();
+});
+
+test('a disconnected retained browser is discarded before a fresh session launches', async () => {
+  const runtime = fakeRuntime();
+  const lifecycle = [];
+  const session = createExternalBrowserSession({ onLifecycle: event => lifecycle.push(event) });
+  const first = await session.acquire(runtime, { headless: false }, { profileKey: 'profile', keepOpen: true });
+
+  await runtime.browsers[0].close();
+  assert.equal(session.hasBrowser(), false);
+  const next = await session.acquire(runtime, { headless: false }, { profileKey: 'profile', keepOpen: true });
+
+  assert.equal(next.reused, false);
+  assert.equal(runtime.browsers.length, 2);
+  assert(lifecycle.includes('disconnected'));
+  await session.close();
+  assert.equal(first.browser.id, '1');
+});
