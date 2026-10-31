@@ -300,8 +300,11 @@ test('Seller Hub login watcher recognizes a public return opened from the login 
 
   await assert.rejects(
     waitForFlipkartAuthenticatedPage({ pages: async () => {
-      if (++pageReads > 1) loginClosed = true;
-      return pageReads === 1 ? [rootPage, loginPage] : [rootPage, loginPage, returnPage];
+      pageReads++;
+      if (pageReads === 1) return [rootPage];
+      if (pageReads === 2) return [rootPage, loginPage];
+      loginClosed = true;
+      return [rootPage, loginPage, returnPage];
     } }, {
       initialPage: rootPage,
       timeoutMs: 12000,

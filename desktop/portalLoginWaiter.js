@@ -62,6 +62,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
   if (signal?.aborted) stopOnCallerAbort();
 
   const pages = new Set();
+  const postBaselinePages = new Set();
   const reportedStates = new Map();
   const loginFlowPages = new Set();
   const flowOriginTargets = new Set();
@@ -73,12 +74,14 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
   const initialLineageTargets = new Set();
   const pageByTarget = new Map();
   const publicReturnSince = new Map();
+  let baselineCaptured = false;
   const targetOf = page => {
     try { return page.target?.() || null; } catch { return null; }
   };
   const addPage = page => {
     if (!page || page.isClosed?.() || pages.has(page)) return;
     pages.add(page);
+    if (baselineCaptured) postBaselinePages.add(page);
     const target = targetOf(page);
     if (target) pageByTarget.set(target, page);
     if (page !== initialPage) {
@@ -109,7 +112,15 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
           changed = true;
         }
       }
-      for (const page of pages) {
+    } while (changed);
+  };
+
+  const rememberRelatedPages = () => {
+    let changed;
+    do {
+      changed = false;
+      for (const page of postBaselinePages) {
+        if (page.isClosed?.()) continue;
         const target = targetOf(page);
         let opener;
         try { opener = target?.opener?.(); } catch {}
@@ -147,7 +158,8 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
     let changed;
     do {
       changed = false;
-      for (const page of pages) {
+      for (const page of postBaselinePages) {
+        if (page.isClosed?.()) continue;
         const target = targetOf(page);
         if (!target || flowOriginTargets.has(target) || flowDescendantTargets.has(target)) continue;
         let opener;
@@ -176,7 +188,9 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       throwIfAborted();
       try {
         for (const page of await browser.pages()) addPage(page);
+        baselineCaptured = true;
         rememberInitialLineage();
+        rememberRelatedPages();
       } catch {
         // Chrome may be replacing targets during the Seller Hub login redirect.
         throwIfAborted();
