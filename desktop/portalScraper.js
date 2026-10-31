@@ -15,7 +15,7 @@ const PROFILE_SESSION_STORES = [
   path.join('Default', 'Local Storage', 'leveldb', 'CURRENT')
 ];
 
-function hasPersistentProfileSession(profileDir) {
+export function hasPersistentProfileSession(profileDir) {
   if (!profileDir) return false;
   return PROFILE_SESSION_STORES.some(relativePath => {
     try {

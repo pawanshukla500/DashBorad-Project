@@ -25,7 +25,7 @@ import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlFo
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { createStructuredLogger } from './structuredLogger.js';
 import { captureScrapeFailure } from './scrapeDiagnostics.js';
-import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { hasPersistentProfileSession, scrapeFlipkartRateCards } from './portalScraper.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { portalPartition, isFlipkartAuthenticated, FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
@@ -776,6 +776,41 @@ function broadcastMonitorState(patch = {}) {
   }
 }
 
+function reportFlipkartLoginState(state, { marketplace = 'flipkart_shopsy', operation = 'manual_login', onProgress } = {}) {
+  const messages = {
+    username: 'Seller Hub is waiting for the seller account ID, email, or phone number. Enter it and click Next.',
+    password: 'Seller Hub is waiting for the account password. Submit using Login in the sign-in modal.',
+    challenge: 'Seller Hub requested an extra verification step. Complete it manually in Chrome; extraction continues only after dashboard verification.',
+    public_return: 'Seller Hub returned to its public landing page after the sign-in form closed. No authenticated session was detected; nothing was staged.'
+  };
+  const message = messages[state?.stage];
+  if (!message) return;
+  const context = {
+    marketplace,
+    operation,
+    stage: state.stage,
+    host: state.host,
+    path: state.path,
+    loginFormVisible: Boolean(state.loginFormVisible),
+    challengeVisible: Boolean(state.challengeVisible)
+  };
+  const writer = state.stage === 'public_return' ? desktopLogger.warn : desktopLogger.info;
+  writer.call(desktopLogger, 'portal.login.state', 'Observed Seller Hub sign-in progress.', context);
+  broadcastMonitorState({
+    active: true,
+    status: 'login_prompt',
+    engine: 'external',
+    marketplace,
+    url: `https://${state.host}${state.path}`,
+    title: 'Seller Hub sign-in',
+    progressMessage: message
+  });
+  try {
+    if (typeof onProgress === 'function') onProgress(message);
+    else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('scrape-progress', message);
+  } catch {}
+}
+
 let manualFlipkartLoginManager = null;
 function getManualFlipkartLoginManager() {
   if (manualFlipkartLoginManager) return manualFlipkartLoginManager;
@@ -986,7 +1021,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   // External Chrome runtime fallback
   const puppeteer = getBrowserRuntime();
   const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
-  const profileAlreadyExists = fs.existsSync(profileDir);
+  const profileHasSession = hasPersistentProfileSession(profileDir);
   fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
   try { fs.chmodSync(profileDir, 0o700); } catch {}
@@ -1011,12 +1046,12 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external', marketplace: mpConfig.id, url: manualLoginUrl, title: `Sign in to ${mpConfig.name}`, lastScreenshot: null });
     desktopLogger.info('portal.login.started', 'Opened the manual sign-in browser.', { marketplace: mpConfig.id, url: manualLoginUrl });
 
-    if (!profileAlreadyExists && fs.existsSync(cookiesPath)) {
+    if (!profileHasSession && fs.existsSync(cookiesPath)) {
       const existing = loadEncryptedCookies(cookiesPath);
       if (existing && Array.isArray(existing) && existing.length > 0) {
         await page.setCookie(...existing);
       }
-    } else if (!profileAlreadyExists && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+    } else if (!profileHasSession && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
       const existing = loadEncryptedCookies(COOKIES_PATH);
       if (existing && Array.isArray(existing) && existing.length > 0) {
         await page.setCookie(...existing);
@@ -1045,7 +1080,11 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
           desktopLogger.info('portal.login.tab_observed', 'Seller Hub opened another Chrome tab during manual sign-in.', { marketplace: mpConfig.id });
           broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external', marketplace: mpConfig.id,
             url: candidate.url(), title: 'Seller Hub sign-in tab' });
-        }
+        },
+        onState: (_candidate, state) => reportFlipkartLoginState(state, {
+          marketplace: mpConfig.id,
+          operation: 'manual_login'
+        })
       });
       if (authenticatedPage !== page) await focusBrowserPage(authenticatedPage);
     } else await page.waitForFunction((id) => {
@@ -1262,7 +1301,12 @@ async function executeScrapeProcess(config, onProgress) {
             initialPage: page,
             timeoutMs: 30 * 60 * 1000,
             pollMs: 1000,
-            onPage: () => onProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.')
+            onPage: () => onProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.'),
+            onState: (_candidate, state) => reportFlipkartLoginState(state, {
+              marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
+              operation: 'scrape_reauthentication',
+              onProgress
+            })
           });
           const cookies = await authPage.cookies();
           if (cookies.length) {

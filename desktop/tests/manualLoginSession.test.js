@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from '../manualLoginWindow.js';
-import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL } from '../portalSession.js';
+import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL, inspectFlipkartLoginState } from '../portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from '../portalLoginWaiter.js';
 import { scrapeFlipkartRateCards } from '../portalScraper.js';
 import { clearEncryptedCookieSnapshot, saveEncryptedCookies } from '../cookieVault.js';
@@ -266,6 +266,25 @@ test('Seller Hub login watcher follows authentication into another tab in the sa
   assert.equal(pageReads, 2, 'all open Chrome pages must be polled after the one-second interval');
 });
 
+test('Seller Hub login watcher preserves caller-supplied authentication probes', async () => {
+  let legacyChecks = 0;
+  const page = {
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? { surface: 'flipkart', authenticated: false, loginFormVisible: false, challengeVisible: false, publicLanding: false }
+      : (++legacyChecks, true)
+  };
+  const result = await waitForFlipkartAuthenticatedPage({ pages: async () => [page] }, {
+    initialPage: page,
+    timeoutMs: 1000,
+    pollMs: 1000,
+    isAuthenticated: () => true
+  });
+
+  assert.equal(result, page);
+  assert.equal(legacyChecks, 1, 'custom probes remain a supported override after state inspection');
+});
+
 test('Seller Hub login watcher explains when no authenticated dashboard appears', async () => {
   let now = 0;
   const publicPage = { isClosed: () => false, evaluate: async () => false };
@@ -278,6 +297,72 @@ test('Seller Hub login watcher explains when no authenticated dashboard appears'
       wait: async milliseconds => { now += milliseconds; }
     }),
     /No authenticated dashboard was detected in any open Chrome tab/
+  );
+});
+
+test('Seller Hub login watcher reports a stable return to the public page after the login form closes', async () => {
+  let now = 0;
+  let reads = 0;
+  const states = [
+    { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false },
+    { surface:'flipkart', stage:'password', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false },
+    { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true },
+    { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true },
+    { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true },
+    { surface:'flipkart', stage:'public', authenticated:false, loginFormVisible:false, challengeVisible:false, publicLanding:true }
+  ];
+  const publicPage = {
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? states[Math.min(reads++, states.length - 1)]
+      : false
+  };
+  const intervals = [];
+  const progress = [];
+
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => [publicPage] }, {
+      initialPage: publicPage,
+      timeoutMs: 10000,
+      pollMs: 1000,
+      publicReturnGraceMs: 2000,
+      now: () => now,
+      wait: async milliseconds => { intervals.push(milliseconds); now += milliseconds; },
+      onState: (_page, state) => progress.push(state.stage)
+    }),
+    /returned to its public landing page.*Nothing was staged/
+  );
+
+  assert.ok(progress.includes('username'));
+  assert.ok(progress.includes('password'));
+  assert.ok(progress.includes('public_return'));
+  assert.ok(intervals.length > 0 && intervals.every(milliseconds => milliseconds >= 1000),
+    'login state checks must remain at least one second apart');
+});
+
+test('Seller Hub login watcher keeps waiting when a verification prompt is visible', async () => {
+  let now = 0;
+  let reads = 0;
+  const states = [
+    { surface:'flipkart', stage:'username', authenticated:false, loginFormVisible:true, challengeVisible:false, publicLanding:false },
+    { surface:'flipkart', stage:'challenge', authenticated:false, loginFormVisible:false, challengeVisible:true, publicLanding:false }
+  ];
+  const publicPage = {
+    isClosed: () => false,
+    evaluate: async fn => fn === inspectFlipkartLoginState
+      ? states[Math.min(reads++, states.length - 1)]
+      : false
+  };
+
+  await assert.rejects(
+    waitForFlipkartAuthenticatedPage({ pages: async () => [publicPage] }, {
+      initialPage: publicPage,
+      timeoutMs: 2000,
+      pollMs: 1000,
+      now: () => now,
+      wait: async milliseconds => { now += milliseconds; }
+    }),
+    error => /No authenticated dashboard was detected/.test(error.message) && !/returned to its public landing page/.test(error.message)
   );
 });
 
@@ -377,6 +462,10 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert(!shutdownHandler.includes('.finally('), 'shutdown must not quit after a rejected browser close');
   assert.match(scraperSource, /--restore-last-session/,
     'Chromium must restore the saved profile session after a clean app restart');
+  assert.match(mainSource, /const profileHasSession = hasPersistentProfileSession\(profileDir\);[\s\S]*?!profileHasSession && fs\.existsSync\(cookiesPath\)/,
+    'desktop sign-in must restore an encrypted cookie snapshot if the existing profile folder has no Chromium session stores');
+  assert.match(standaloneSource, /const profileHasSession = hasPersistentProfileSession\(profileDir\);[\s\S]*?!profileHasSession && fs\.existsSync\(cookiesPath\)/,
+    'standalone sign-in must use the same empty-profile cookie handoff rule');
   assert.match(mainSource, /userDataDir: profileDir/);
   assert.match(mainSource, /page\.goto\(manualLoginUrl, \{ waitUntil: 'domcontentloaded'/);
   const externalLoginStart = mainSource.indexOf('const browserLease = await externalBrowserSession.acquire');
@@ -396,6 +485,8 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'manual-login failures must use the redacted, bounded diagnostic screenshot path');
   assert.match(externalExpiryHandler, /async \(page, \{ visible = false \} = \{\}\) => \{\s*if \(!visible\) return false;/,
     'external reauthentication must only wait on a visible browser page');
+  assert.match(externalExpiryHandler, /onState: \(_candidate, state\) => reportFlipkartLoginState\(state,[\s\S]*?operation: 'scrape_reauthentication'/,
+    'scrape-time reauthentication must report the observed username, password, challenge, and public-return states');
   assert(!externalExpiryHandler.includes('openManualFlipkartLogin'), 'external Chrome reauthentication must not switch to a separate Electron storage partition');
   assert.match(externalExpiryHandler, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\)\)/,
     'visible reauthentication must remove stale cookie snapshots when the authenticated browser has no cookies');

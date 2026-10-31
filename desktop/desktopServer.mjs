@@ -40,7 +40,7 @@ import {
   authorizeDesktopRequest, bindBrowserSession, expiredBrowserCookie,
   isAllowedDesktopOrigin, isSameDesktopOrigin
 } from './httpAccess.js';
-import { scrapeFlipkartRateCards } from './portalScraper.js';
+import { hasPersistentProfileSession, scrapeFlipkartRateCards } from './portalScraper.js';
 import { resolveScrapeVerticals } from './fsnPlan.js';
 import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
@@ -1447,7 +1447,7 @@ const server = http.createServer(async (req, res) => {
         const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
         const chromePath = getChromeExecutablePath();
         const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
-        const profileAlreadyExists = fs.existsSync(profileDir);
+        const profileHasSession = hasPersistentProfileSession(profileDir);
         fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
         try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
         try { fs.chmodSync(profileDir, 0o700); } catch {}
@@ -1482,12 +1482,12 @@ const server = http.createServer(async (req, res) => {
             const page = pages.length > 0 ? pages[0] : await browser.newPage();
 
             // Load existing encrypted session cookies if present
-            if (!profileAlreadyExists && fs.existsSync(cookiesPath)) {
+            if (!profileHasSession && fs.existsSync(cookiesPath)) {
               const existing = loadEncryptedCookies(cookiesPath);
               if (existing && Array.isArray(existing) && existing.length > 0) {
                 await page.setCookie(...existing);
               }
-            } else if (!profileAlreadyExists && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+            } else if (!profileHasSession && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
               const existing = loadEncryptedCookies(COOKIES_PATH);
               if (existing && Array.isArray(existing) && existing.length > 0) {
                 await page.setCookie(...existing);

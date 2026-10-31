@@ -1,4 +1,4 @@
-import { isFlipkartAuthenticated } from './portalSession.js';
+import { inspectFlipkartLoginState, isFlipkartAuthenticated } from './portalSession.js';
 
 const delay = (ms, signal) => new Promise((resolve, reject) => {
   if (signal?.aborted) {
@@ -35,15 +35,19 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
   timeoutMs = 30 * 60 * 1000,
   pollMs = 1000,
   isAuthenticated = isFlipkartAuthenticated,
+  inspectState = inspectFlipkartLoginState,
+  publicReturnGraceMs = 5000,
   wait = delay,
   now = Date.now,
   onPage = () => {},
+  onState = () => {},
   signal
 } = {}) {
   if (!browser || typeof browser.pages !== 'function' || !initialPage || typeof initialPage.evaluate !== 'function') {
     throw new Error('Seller Hub sign-in monitoring requires the active browser and its initial page.');
   }
-  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || !Number.isFinite(pollMs) || pollMs < 1000) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || !Number.isFinite(pollMs) || pollMs < 1000 ||
+      !Number.isFinite(publicReturnGraceMs) || publicReturnGraceMs < pollMs) {
     throw new Error('Seller Hub readiness checks must be at least one second apart.');
   }
 
@@ -58,6 +62,9 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
   if (signal?.aborted) stopOnCallerAbort();
 
   const pages = new Set();
+  const reportedStates = new Map();
+  let loginFormObserved = false;
+  let publicReturnSince = null;
   const addPage = page => {
     if (!page || page.isClosed?.() || pages.has(page)) return;
     pages.add(page);
@@ -87,6 +94,7 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
       }
 
       let checkedPage = false;
+      const pageStates = [];
       for (const page of pages) {
         throwIfAborted();
         if (page.isClosed?.()) continue;
@@ -95,11 +103,47 @@ export async function waitForFlipkartAuthenticatedPage(browser, {
         if (now() >= deadline) break;
         checkedPage = true;
         try {
-          if (await page.evaluate(isAuthenticated)) return page;
+          const inspection = await page.evaluate(inspectState);
+          // The browser-facing inspector includes auth proof and the visible
+          // login stage. Boolean results keep custom test/integration probes
+          // compatible with the original `isAuthenticated` contract.
+          const authenticated = typeof inspection === 'boolean'
+            ? inspection
+            : Boolean(inspection?.authenticated);
+          if (authenticated) return page;
+          if (inspection && typeof inspection === 'object') pageStates.push({ page, state: inspection });
+          if (!authenticated && (isAuthenticated !== isFlipkartAuthenticated || inspectState !== inspectFlipkartLoginState)) {
+            const fallback = await page.evaluate(isAuthenticated);
+            if (fallback) return page;
+          }
         } catch {
           // A renderer can navigate between discovery and evaluation; retry next tick.
           throwIfAborted();
         }
+      }
+
+      const relevantStates = pageStates.filter(item => item.state.surface === 'flipkart');
+      const activeLoginFlow = relevantStates.some(({ state }) => state.loginFormVisible || state.challengeVisible);
+      if (activeLoginFlow) loginFormObserved = true;
+      const returnedToPublicLanding = loginFormObserved && relevantStates.length > 0 &&
+        relevantStates.every(({ state }) => state.publicLanding) && !activeLoginFlow;
+      if (returnedToPublicLanding) {
+        if (publicReturnSince === null) publicReturnSince = now();
+      } else {
+        publicReturnSince = null;
+      }
+
+      for (const { page, state } of pageStates) {
+        const stage = state.publicLanding && returnedToPublicLanding ? 'public_return' : state.stage;
+        const stateForUi = { ...state, stage };
+        const signature = JSON.stringify(stateForUi);
+        if (reportedStates.get(page) === signature) continue;
+        reportedStates.set(page, signature);
+        try { onState(page, stateForUi); } catch {}
+      }
+
+      if (publicReturnSince !== null && now() - publicReturnSince >= publicReturnGraceMs) {
+        throw new Error('Seller Hub returned to its public landing page after the sign-in form closed. No authenticated dashboard was detected; review the login result in Chrome. Nothing was staged.');
       }
 
       throwIfAborted();

@@ -7,17 +7,21 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import http from 'node:http';
-import { isFlipkartAuthenticated, portalPartition } from '../portalSession.js';
+import { inspectFlipkartLoginState, isFlipkartAuthenticated, portalPartition } from '../portalSession.js';
 import { createRateCardCapture } from '../rateCardCapture.js';
 import { parsePortalRateSnapshot } from '../portalRates.js';
 import { createWorkerEngine } from '../workerEngine.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
 import { buildBrandRateCardSet } from '../rateCardService.js';
 import { captureScrapeFailure } from '../scrapeDiagnostics.js';
+import { hasPersistentProfileSession } from '../portalScraper.js';
 import { rateFixture } from './fixtures/portalRateFixture.js';
 
 test('public Seller Hub, visible login and OTP challenges never count as authentication', () => {
-  const element = (text, href = '') => ({innerText:text,getClientRects:()=>[{}],getAttribute:()=>href});
+  const element = (text, href = '', fields = {}) => ({
+    innerText:text,type:fields.type||'',name:fields.name||'',id:fields.id||'',autocomplete:fields.autocomplete||'',
+    getClientRects:()=>[{}],getAttribute:name=>name==='href'?href:''
+  });
   const check = ({pathname='/',hash='',inputs=[],controls=[]}={}) => vm.runInNewContext(`(${isFlipkartAuthenticated.toString()})()`, {
     location:{hostname:'seller.flipkart.com',pathname,hash}, getComputedStyle:()=>({visibility:'visible',display:'block'}),
     document:{querySelectorAll:selector=>selector.startsWith('input')?inputs:controls}
@@ -27,9 +31,71 @@ test('public Seller Hub, visible login and OTP challenges never count as authent
   assert.equal(check(route),true);
   assert.equal(check({...route,controls:[element('Home','#dashboard/home-page'),element('Advertising','#dashboard/ads/home'),element('Help','#dashboard/assistance/node/landing')]}),true);
   assert.equal(check({...route,controls:[element('Home','#dashboard/home-page')]}),false);
-  assert.equal(check({...route,inputs:[element('OTP')]}),false);
+  assert.equal(check({...route,inputs:[element('OTP','',{name:'otp'})]}),false);
   assert.equal(check({...route,controls:[...route.controls,element('Login')]}),false);
   assert.equal(portalPartition('flipkart'),portalPartition('shopsy'));
+});
+
+test('Seller Hub login inspection follows the username, password, challenge and dashboard stages', () => {
+  const element = (text, href = '', fields = {}) => ({
+    innerText: text,
+    href,
+    type: fields.type || '',
+    name: fields.name || '',
+    id: fields.id || '',
+    autocomplete: fields.autocomplete || '',
+    src: fields.src || '',
+    getClientRects: () => [{}],
+    getAttribute: name => name === 'href' ? href : name === 'src' ? (fields.src || '') : ''
+  });
+  const inspect = ({ pathname='/',hash='',inputs=[],controls=[],iframes=[] }={}) => vm.runInNewContext(
+    `(${inspectFlipkartLoginState.toString()})()`,
+    {
+      location:{hostname:'seller.flipkart.com',pathname,hash},
+      getComputedStyle:()=>({visibility:'visible',display:'block'}),
+      document:{
+        querySelectorAll:selector=>selector === 'input' ? inputs : selector === 'iframe' ? iframes :
+          selector === '[role="dialog"], [aria-modal="true"], .form-modal' ? [] : controls
+      }
+    }
+  );
+
+  const loginControl = element('Login');
+  assert.equal(inspect({controls:[loginControl]}).stage,'public');
+  assert.equal(inspect({controls:[loginControl]}).publicLanding,true);
+  assert.equal(inspect({inputs:[element('', '', {name:'username'})],controls:[loginControl]}).stage,'username');
+  assert.equal(inspect({inputs:[element('', '', {type:'password',name:'password'})],controls:[loginControl]}).stage,'password');
+  assert.equal(inspect({inputs:[element('', '', {name:'otp',autocomplete:'one-time-code'})],controls:[loginControl]}).stage,'challenge');
+  const dashboard = inspect({
+    pathname:'/index.html',hash:'#dashboard/home-page',
+    controls:[element('Home','#dashboard/home-page'),element('Advertising','#dashboard/ads/home'),element('Help','#dashboard/assistance/')]
+  });
+  assert.equal(dashboard.authenticated,true);
+  assert.equal(dashboard.stage,'authenticated');
+  const dashboardWithLogin = inspect({
+    pathname:'/index.html',hash:'#dashboard/home-page',
+    controls:[element('Home','#dashboard/home-page'),element('Advertising','#dashboard/ads/home'),element('Help','#dashboard/assistance/'),loginControl]
+  });
+  assert.equal(dashboardWithLogin.authenticated,false,
+    'dashboard route plus navigation links are insufficient while Seller Hub still offers Login');
+});
+
+test('profile snapshot handoff distinguishes an empty Chrome folder from real session stores', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-profile-handoff-'));
+  const profileDir = path.join(tempDir, 'profile');
+  try {
+    fs.mkdirSync(profileDir);
+    assert.equal(hasPersistentProfileSession(profileDir), false,
+      'an existing but empty profile folder must allow encrypted-cookie restore');
+
+    const cookieStore = path.join(profileDir, 'Default', 'Network', 'Cookies');
+    fs.mkdirSync(path.dirname(cookieStore), { recursive: true });
+    fs.writeFileSync(cookieStore, 'chromium-cookie-store');
+    assert.equal(hasPersistentProfileSession(profileDir), true,
+      'a real Chromium cookie store remains the session source of truth');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('response capture rejects stale category/mode/date data and incomplete responses', () => {
