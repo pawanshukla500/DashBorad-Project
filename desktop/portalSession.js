@@ -1,3 +1,6 @@
+export const FLIPKART_MANUAL_LOGIN_URL = 'https://seller.flipkart.com/';
+export const FLIPKART_DASHBOARD_URL = 'https://seller.flipkart.com/index.html#dashboard/home-page';
+
 // One Seller Hub session for login, Flipkart and Shopsy. Their rates remain
 // separate; their authentication storage belongs to the same portal account.
 export function portalPartition(channel) {

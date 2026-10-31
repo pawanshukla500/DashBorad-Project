@@ -237,7 +237,7 @@ function setupNavigation() {
     },
     monitor: {
       title: 'Live Browser & Automation Viewport',
-      desc: 'Embedded Chromium rendering engine, interactive 2FA prompt handler, and real-time page inspection'
+      desc: 'Manual Seller Hub sign-in, persistent Chrome session, and real-time worker status'
     },
     excel: { 
       title: 'Desktop Multi-Sheet Excel Center', 
@@ -265,11 +265,8 @@ function setupNavigation() {
       }
 
       if (tabId === 'monitor') {
-        window.ratecardAPI.setBrowserVisibility(true);
         syncMonitorDockBounds();
         refreshBrowserMonitorState();
-      } else {
-        window.ratecardAPI.setBrowserVisibility(false);
       }
 
       if (tabId === 'catalog' && currentCatalog.length === 0) {
@@ -327,7 +324,9 @@ function updateBrowserMonitorUI(state) {
   const statusDot = document.getElementById('monitor-status-dot');
 
   if (liveBadge) liveBadge.style.display = state.active ? 'inline-block' : 'none';
-  if (engineText) engineText.textContent = state.engine === 'embedded' ? 'Embedded Chromium' : 'External Chrome';
+  if (engineText) engineText.textContent = state.engine === 'manual-login-window'
+    ? 'Seller Hub Sign-in Window'
+    : (state.engine === 'embedded' ? 'Embedded Chromium' : 'External Chrome');
   if (statePill) {
     statePill.textContent = (state.status || 'idle').toUpperCase();
     if (state.status === 'extracting' || state.status === 'navigating') {
@@ -370,9 +369,23 @@ function updateBrowserMonitorUI(state) {
       screenshotImg.style.display = 'block';
     }
     if (placeholder) placeholder.style.display = 'none';
-  } else if (!state.active) {
+  } else {
     if (screenshotImg) screenshotImg.style.display = 'none';
     if (placeholder) placeholder.style.display = 'block';
+    const heading = placeholder?.querySelector('h4');
+    const description = placeholder?.querySelector('p');
+    if (state.engine === 'external') {
+      if (heading) heading.textContent = state.active ? 'Seller Hub is open in external Chrome' : 'External Chrome is ready';
+      if (description) description.textContent = state.active
+        ? 'Complete sign-in or watch the worker in the separate Chrome window. It opens at seller.flipkart.com and keeps its profile for the next run.'
+        : 'The rate-card worker uses the persistent Seller Hub session in external Chrome. Open Seller Hub Sign-in if the portal asks you to log in again.';
+    } else if (state.engine === 'manual-login-window') {
+      if (heading) heading.textContent = state.active ? 'Seller Hub sign-in is open in a separate window' : 'Seller Hub sign-in is ready';
+      if (description) description.textContent = 'Complete login manually in the Seller Hub window. The persistent Chromium session is saved for the worker.';
+    } else {
+      if (heading) heading.textContent = 'Live Viewport Ready';
+      if (description) description.textContent = 'When an automated scrape runs, the embedded Chromium view attaches natively into this window.';
+    }
   }
 }
 
@@ -412,14 +425,6 @@ function initBrowserMonitorListeners() {
     const engine = e.target.value;
     await window.ratecardAPI.setBrowserEngine(engine);
     refreshBrowserMonitorState();
-  });
-
-  const btnVisibility = document.getElementById('btn-monitor-visibility');
-  let viewVisible = true;
-  btnVisibility?.addEventListener('click', async () => {
-    viewVisible = !viewVisible;
-    await window.ratecardAPI.setBrowserVisibility(viewVisible);
-    btnVisibility.textContent = viewVisible ? '👁️ Hide View' : '👁️ Show View';
   });
 
   const btnScreenshot = document.getElementById('btn-monitor-screenshot');
@@ -534,7 +539,7 @@ async function loadSessionStatusUI() {
         el.innerText = `Session Saved (${mp.cookieCount ?? '?'} cookies)`;
         el.style.color = '#10b981';
       } else {
-        el.innerText = 'No Session — 2FA Login';
+        el.innerText = channelId === 'flipkart_shopsy' ? 'No Seller Hub Session — Sign in' : 'No Session — 2FA Login';
         el.style.color = '#f59e0b';
       }
     }
@@ -552,7 +557,8 @@ async function loadSessionStatusUI() {
       } else {
         statusEl.innerText = 'No Session';
         statusEl.style.color = '#f59e0b';
-        subEl.innerText = 'Run 2FA Login to store marketplace cookies for ' + (current?.name || channel);
+        const signInAction = channel === 'flipkart_shopsy' ? 'Open Seller Hub Sign-in' : 'Run 2FA Login';
+        subEl.innerText = `${signInAction} to store marketplace cookies for ${current?.name || channel}`;
       }
     }
   } catch (err) {
@@ -1177,7 +1183,7 @@ function setupEventListeners() {
   });
   document.getElementById('select-review-marketplace')?.addEventListener('change', loadRateCardPreview);
 
-  // Multi-Marketplace 2FA Login buttons (Dashboard & Settings)
+  // Manual marketplace sign-in buttons (Dashboard & Settings)
   document.addEventListener('click', async (e) => {
     const btn = e.target.closest('.btn-ch-login');
     if (!btn) return;
@@ -1185,7 +1191,7 @@ function setupEventListeners() {
     if (!channel) return;
 
     syncMarketplaceSelection(channel);
-    // Switch to Live Browser (monitor) tab so user sees the embedded browser dock
+    // Switch to Live Browser so the user can follow the separate sign-in window.
     document.querySelector('.nav-item[data-tab="monitor"]')?.click();
     setTimeout(() => {
       syncMonitorDockBounds();
@@ -1193,7 +1199,7 @@ function setupEventListeners() {
     }, 60);
   });
 
-  // Human interactive login & 2FA
+  // Human interactive login; the marketplace may request an OTP or other challenge.
   btnInteractiveLogin?.addEventListener('click', async () => {
     const selectEl = document.getElementById('select-marketplace');
     const selectedVal = selectEl?.value || 'flipkart_shopsy';
@@ -1201,8 +1207,8 @@ function setupEventListeners() {
     const portalUrl = selectedOption?.getAttribute('data-portal') || 'https://seller.flipkart.com/';
     const channelName = selectedOption?.innerText || selectedVal;
 
-    appendTerminalLine(`Opening visible browser for ${channelName}...`);
-    appendTerminalLine(`Target Portal: ${portalUrl}`);
+    appendTerminalLine(`Opening the ${channelName} sign-in window...`);
+    appendTerminalLine(`Sign-in starts at: ${selectedVal === 'flipkart_shopsy' ? 'https://seller.flipkart.com/' : portalUrl}`);
 
     try {
       const result = await window.ratecardAPI.runInteractiveLogin({
@@ -1212,10 +1218,12 @@ function setupEventListeners() {
       });
       if (result.success) {
         if (result.cookiesCount) {
-          appendTerminalLine(`✓ Browser session saved successfully (${result.cookiesCount} cookies).`);
+          appendTerminalLine(`✓ Seller Hub session saved (${result.cookiesCount} encrypted cookies plus the persistent browser profile).`);
         } else {
-          appendTerminalLine(`✓ Browser window launched. Complete 2FA / Login in the window.`);
+          appendTerminalLine(`✓ Sign-in window opened. Complete login manually; the worker will retain and reuse the session.`);
         }
+      } else if (result.waitingForManualLogin) {
+        appendTerminalLine('Sign-in is still waiting. Complete login in the open Seller Hub window; the worker will save the session automatically.');
       } else {
         appendTerminalLine(`Launch error: ${result.error}`);
       }
@@ -1573,14 +1581,14 @@ async function loadMarketplaceAccountsUI() {
           tdBadge.appendChild(spanBadge);
           tr.appendChild(tdBadge);
 
-          // TD 5: 2FA Login Button
+          // TD 5: Manual session sign-in Button
           const tdBtn = document.createElement('td');
           const btn = document.createElement('button');
           btn.className = 'btn btn-sm btn-secondary btn-ch-login';
           btn.setAttribute('data-channel', channelKey);
           btn.style.padding = '2px 8px';
           btn.style.fontSize = '11px';
-          btn.textContent = '2FA Login';
+          btn.textContent = channelKey === 'flipkart_shopsy' ? 'Seller Hub Sign-in' : '2FA Login';
           tdBtn.appendChild(btn);
           tr.appendChild(tdBtn);
 

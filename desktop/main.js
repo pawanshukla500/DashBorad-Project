@@ -25,8 +25,9 @@ import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { createStructuredLogger } from './structuredLogger.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { createWorkerEngine } from './workerEngine.js';
-import { portalPartition, isFlipkartAuthenticated } from './portalSession.js';
+import { portalPartition, isFlipkartAuthenticated, FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
+import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { resolveScrapeVerticals } from './fsnPlan.js';
 import {
   getActiveBackendUrl,
@@ -58,7 +59,7 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const { app, BrowserWindow, ipcMain, dialog, Notification, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Notification, shell, safeStorage, session: electronSession } = require('electron');
 const fs = require('fs');
 const fsp = require('fs').promises;
 const { Pool } = require('pg');
@@ -180,12 +181,17 @@ function clearAuthSession() {
     if (fs.existsSync(SESSION_FILE)) {
       fs.unlinkSync(SESSION_FILE);
     }
-    deleteEncryptedCookies(COOKIES_PATH);
+    // Keep only Flipkart's encrypted snapshot on ReconCentral sign-out. The
+    // persistent Flipkart partition is intentionally kept; Reset Cookies is
+    // the explicit action that clears Seller Hub authentication.
     const cookiesDir = path.join(USER_DATA_DIR, 'cookies');
+    const flipkartCookiesPath = getMarketplaceCookiesPath('flipkart_shopsy');
     if (fs.existsSync(cookiesDir)) {
-      const files = fs.readdirSync(cookiesDir);
-      for (const f of files) {
-        try { fs.unlinkSync(path.join(cookiesDir, f)); } catch {}
+      for (const name of fs.readdirSync(cookiesDir)) {
+        const file = path.join(cookiesDir, name);
+        if (file !== flipkartCookiesPath) {
+          try { fs.unlinkSync(file); } catch {}
+        }
       }
     }
     return { success: true };
@@ -313,6 +319,13 @@ function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
   const dir = path.join(USER_DATA_DIR, 'cookies');
   fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, `cookies_${safeId}.json`);
+}
+
+function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
+  const normalized = ['flipkart', 'shopsy', 'both', 'flipkart_shopsy'].includes(marketplace)
+    ? 'flipkart_shopsy'
+    : String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  return path.join(USER_DATA_DIR, 'browser-profiles', normalized);
 }
 
 const DEFAULT_CONFIG = {
@@ -585,7 +598,9 @@ async function executeBackgroundWorkerJob(session, job) {
         marketplace: job.marketplace,
         scopeVerticals: job.parameters?.verticals,
         brand: job.parameters?.brand,
-        visible: false
+        // Remote jobs use the persistent visible Chrome profile too, so an
+        // expired Seller Hub session can be completed manually in-place.
+        visible: true
       }, async (msg) => {
         if (mainWindow) mainWindow.webContents.send('scrape-progress', msg);
         try {
@@ -697,10 +712,11 @@ async function checkDailySchedule() {
 
 // ── Live Browser Monitor & Embedded View Management ────────────────────────
 let activeEmbeddedPage = null;
-let currentBrowserEngine = 'embedded'; // 'embedded' | 'external'
+let activeExternalPage = null;
+let currentBrowserEngine = 'external'; // external Chrome owns the durable manual-login profile by default
 let monitorState = {
   active: false,
-  engine: 'embedded',
+  engine: 'external',
   visible: false,
   url: '',
   title: '',
@@ -711,10 +727,79 @@ let monitorState = {
 };
 
 function broadcastMonitorState(patch = {}) {
-  monitorState = { ...monitorState, ...patch, engine: currentBrowserEngine, updatedAt: new Date().toISOString() };
+  monitorState = { ...monitorState, ...patch, engine: patch.engine || currentBrowserEngine, updatedAt: new Date().toISOString() };
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('browser-monitor-update', monitorState);
   }
+}
+
+let manualFlipkartLoginManager = null;
+function getManualFlipkartLoginManager() {
+  if (manualFlipkartLoginManager) return manualFlipkartLoginManager;
+  const portalSession = electronSession.fromPartition(portalPartition('flipkart_shopsy'));
+  manualFlipkartLoginManager = createManualLoginWindowManager({
+    BrowserWindow,
+    portalSession,
+    isAuthenticated: async webContents => {
+      if (!webContents || webContents.isDestroyed?.()) return false;
+      try {
+        return await webContents.executeJavaScript(`(${isFlipkartAuthenticated.toString()})()`, true) === true;
+      } catch {
+        return false;
+      }
+    },
+    readCookies: async session => normalizeElectronSessionCookies(
+      await session.cookies.get({ url: FLIPKART_MANUAL_LOGIN_URL })
+    ),
+    saveCookies: async cookies => {
+      const marketplacePath = getMarketplaceCookiesPath('flipkart_shopsy');
+      if (!cookies.length) {
+        // A Seller Hub session can also live in persistent web storage. Never
+        // retain an older encrypted cookie snapshot when the live store is empty.
+        deleteEncryptedCookies(marketplacePath);
+        deleteEncryptedCookies(COOKIES_PATH);
+        return;
+      }
+      saveEncryptedCookies(marketplacePath, cookies);
+      saveEncryptedCookies(COOKIES_PATH, cookies);
+    },
+    onState: state => {
+      if (state.status === 'login_prompt') {
+        try { activeEmbeddedPage?.setVisible(false); } catch {}
+      } else if (state.status === 'completed') {
+        try { activeEmbeddedPage?.setVisible(true); } catch {}
+      }
+      broadcastMonitorState(state);
+      if (state.progressMessage && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('scrape-progress', state.progressMessage);
+      }
+    },
+    log: (level, event, details) => {
+      const writer = desktopLogger[level] || desktopLogger.info;
+      writer.call(desktopLogger, event, 'Manual Seller Hub login lifecycle.', details);
+    }
+  });
+  return manualFlipkartLoginManager;
+}
+
+async function openManualFlipkartLogin({ onProgress = () => {}, waitMs } = {}) {
+  const manager = getManualFlipkartLoginManager();
+  onProgress(`Opening a separate Seller Hub sign-in window at ${FLIPKART_MANUAL_LOGIN_URL}. Complete login manually; the persistent session will be saved for the worker.`);
+  broadcastMonitorState({
+    active: true,
+    status: 'login_prompt',
+    engine: 'manual-login-window',
+    marketplace: 'flipkart_shopsy',
+    url: FLIPKART_MANUAL_LOGIN_URL,
+    title: 'Flipkart Seller Hub — Manual Sign-in'
+  });
+  const result = await manager.open({ waitMs });
+  if (result.success) {
+    onProgress(`✓ Seller Hub login verified. Persistent session saved (${result.cookiesCount} cookies captured).`);
+  } else {
+    onProgress(result.error || 'Seller Hub login is still pending in the separate sign-in window.');
+  }
+  return result;
 }
 
 let currentDockBounds = null;
@@ -730,9 +815,21 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     return { success: false, marketplace: targetId, error: `Unsupported marketplace channel: "${targetId}". Supported channels: ${validIds}` };
   }
   const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
+  const isFlipkart = mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart';
+  const manualLoginUrl = isFlipkart ? FLIPKART_MANUAL_LOGIN_URL : mpConfig.loginUrl;
+
+  if ((mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') && currentBrowserEngine === 'embedded') {
+    // Flipkart and Shopsy share one durable Seller Hub session. Always give
+    // the operator a clean root page in a visible window and leave every login
+    // action (including the site's Login control and OTP prompts) manual.
+    return {
+      ...(await openManualFlipkartLogin({ waitMs: 5000 })),
+      marketplace: mpConfig.id
+    };
+  }
 
   if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
-    broadcastMonitorState({ active: true, status: 'navigating', marketplace: mpConfig.id, url: mpConfig.loginUrl });
+    broadcastMonitorState({ active: true, status: 'navigating', marketplace: mpConfig.id, url: manualLoginUrl });
     const partition = portalPartition(mpConfig.id);
     const page = createEmbeddedPage({
       window: mainWindow,
@@ -753,28 +850,11 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
 
       console.log(`[InteractiveLogin:Embedded] Opening ${mpConfig.name} at ${mpConfig.loginUrl}...`);
       try {
-        await page.goto(mpConfig.loginUrl, { waitUntil: 'load', timeout: 60000 });
+        await page.goto(manualLoginUrl, { waitUntil: 'load', timeout: 60000 });
       } catch (gotoErr) {
         if (!String(gotoErr?.message || '').includes('ERR_ABORTED')) throw gotoErr;
       }
 
-      if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
-        try {
-          await new Promise((r) => setTimeout(r, 1200));
-          await page.evaluate(() => {
-            const href = window.location.href.toLowerCase();
-            const body = document.body ? document.body.innerText.toLowerCase() : '';
-            if (href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard')) return;
-            const modalOpen = Boolean(document.querySelector('input[name="username"], input[name="password"]'));
-            if (!modalOpen) {
-              const all = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-              const btn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 120 && el.offsetWidth > 0) ||
-                          all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
-              if (btn) btn.click();
-            }
-          });
-        } catch {}
-      }
       broadcastMonitorState({ status: 'login_prompt', url: page.url(), title: page.title() });
 
       const pollAuth = async () => {
@@ -862,9 +942,15 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
 
   // External Chrome runtime fallback
   const puppeteer = getBrowserRuntime();
+  const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
+  const profileAlreadyExists = fs.existsSync(profileDir);
+  fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
+  try { fs.chmodSync(profileDir, 0o700); } catch {}
   const browser = await puppeteer.launch({
     executablePath: requireChromeExecutable(),
     headless: false,
+    userDataDir: profileDir,
     defaultViewport: null,
     args: ['--start-maximized', '--no-sandbox', '--disable-setuid-sandbox']
   });
@@ -872,42 +958,38 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   try {
     const pages = await browser.pages();
     const page = pages[0] || await browser.newPage();
+    activeExternalPage = page;
+    const reportNavigation = async frame => {
+      if (frame !== page.mainFrame()) return;
+      const url = page.url();
+      const title = await page.title().catch(() => '');
+      broadcastMonitorState({ active: true, status: 'navigating', engine: 'external', marketplace: mpConfig.id, url, title });
+      desktopLogger.info('portal.login.navigation', 'Manual marketplace sign-in navigated.', { marketplace: mpConfig.id, url });
+    };
+    page.on?.('framenavigated', reportNavigation);
+    broadcastMonitorState({ active: true, status: 'login_prompt', engine: 'external', marketplace: mpConfig.id, url: manualLoginUrl, title: `Sign in to ${mpConfig.name}`, lastScreenshot: null });
+    desktopLogger.info('portal.login.started', 'Opened the manual sign-in browser.', { marketplace: mpConfig.id, url: manualLoginUrl });
 
-    if (fs.existsSync(cookiesPath)) {
+    if (!profileAlreadyExists && fs.existsSync(cookiesPath)) {
       const existing = loadEncryptedCookies(cookiesPath);
       if (existing && Array.isArray(existing) && existing.length > 0) {
         await page.setCookie(...existing);
       }
-    } else if (fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+    } else if (!profileAlreadyExists && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
       const existing = loadEncryptedCookies(COOKIES_PATH);
       if (existing && Array.isArray(existing) && existing.length > 0) {
         await page.setCookie(...existing);
       }
     }
 
-    console.log(`[InteractiveLogin] Opening ${mpConfig.name} at ${mpConfig.loginUrl}...`);
+    console.log(`[InteractiveLogin] Opening ${mpConfig.name} at ${manualLoginUrl}...`);
     try {
-      await page.goto(mpConfig.loginUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      // Seller Hub pages can keep long-polling connections open. Wait for the
+      // document to load, then let the explicit authentication check drive the
+      // manual sign-in lifecycle.
+      await page.goto(manualLoginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     } catch (gotoErr) {
       if (!String(gotoErr?.message || '').includes('ERR_ABORTED')) throw gotoErr;
-    }
-
-    if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
-      try {
-        await new Promise((r) => setTimeout(r, 1200));
-        await page.evaluate(() => {
-          const href = window.location.href.toLowerCase();
-          const body = document.body ? document.body.innerText.toLowerCase() : '';
-          if (href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard')) return;
-          const modalOpen = Boolean(document.querySelector('input[name="username"], input[name="password"]'));
-          if (!modalOpen) {
-            const all = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-            const btn = all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.getBoundingClientRect().top < 120 && el.offsetWidth > 0) ||
-                        all.find((el) => el.innerText?.trim().toLowerCase() === 'login' && el.offsetWidth > 0);
-            if (btn) btn.click();
-          }
-        });
-      } catch {}
     }
 
     console.log(`[InteractiveLogin] Waiting for ${mpConfig.name} authenticated navigation...`);
@@ -964,19 +1046,35 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
         return href.includes('admin.shopify.com') && notLogin && (onStoreRoute || hasLogoutAction);
       }
       return href.includes('#dashboard') || href.includes('listings-management') || body.includes('seller dashboard') || body.includes('ethnicjunction') || body.includes('logout') || body.includes('seller hub');
-    }, { timeout: 300000 }, mpConfig.id);
+    }, { timeout: 30 * 60 * 1000, polling: 1000 }, mpConfig.id);
 
     const cookies = await page.cookies();
     saveEncryptedCookies(cookiesPath, cookies);
     if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
       saveEncryptedCookies(COOKIES_PATH, cookies);
     }
-    console.log(`[InteractiveLogin] Logged in to ${mpConfig.name} successfully! Saved and encrypted ${cookies.length} session cookies in vault.`);
+    console.log(`[InteractiveLogin] Logged in to ${mpConfig.name} successfully! Saved and encrypted ${cookies.length} session cookies; persistent browser profile retained.`);
 
+    activeExternalPage = null;
+    broadcastMonitorState({ active: false, status: 'completed', engine: 'external', marketplace: mpConfig.id, url: page.url(), title: page.title() });
+    desktopLogger.info('portal.login.authenticated', 'Manual Seller Hub sign-in verified and session saved.', { marketplace: mpConfig.id, cookieCount: cookies.length, profileRetained: true });
     await browser.close();
     return { success: true, marketplace: mpConfig.id, cookiesCount: cookies.length };
   } catch (err) {
-    if (browser) await browser.close();
+    let screenshotPath = null;
+    try {
+      const page = (await browser?.pages?.())?.[0];
+      if (page) {
+        const screenshot = await page.screenshot({ type: 'png' });
+        screenshotPath = path.join(DIAGNOSTICS_DIR, `login-failure-${Date.now()}.png`);
+        fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(screenshotPath, screenshot, { mode: 0o600 });
+      }
+    } catch {}
+    desktopLogger.error('portal.login.failed', err, { marketplace: mpConfig?.id || targetId, screenshotPath });
+    activeExternalPage = null;
+    broadcastMonitorState({ active: false, status: 'error', engine: 'external', marketplace: mpConfig?.id || targetId, error: err.message });
+    if (browser) await browser.close().catch(() => {});
     return { success: false, marketplace: mpConfig?.id || targetId, error: err.message };
   }
 }
@@ -1072,39 +1170,18 @@ async function executeScrapeProcess(config, onProgress) {
             url: page.url(),
             title: page.title()
           });
-          onProgress('🔐 2FA / Session authentication required. Please complete verification in the browser viewport...');
+          onProgress('🔐 Seller Hub sign-in is required. Complete it manually in the separate window that opens at seller.flipkart.com.');
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('browser-monitor-prompt-login', {
               marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
               url: page.url()
             });
           }
-          const startTime = Date.now();
-          page.setVisible(true);
-          page.layout?.();
-          const timeoutMs = 300000;
-          while (Date.now() - startTime < timeoutMs) {
-            await new Promise((r) => setTimeout(r, 1000));
-            try {
-              const authed = await page.evaluate(isFlipkartAuthenticated);
-              if (authed) {
-                const cookies = await page.cookies();
-                saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
-                saveEncryptedCookies(COOKIES_PATH, cookies);
-                broadcastMonitorState({
-                  active: true,
-                  status: 'extracting',
-                  url: page.url(),
-                  title: page.title()
-                });
-                onProgress('✓ In-view authentication complete. Session cookies encrypted and saved.');
-                return true;
-              }
-            } catch {
-              // Context destroyed during navigation or redirect; continue polling
-            }
-          }
-          return false;
+          const login = await openManualFlipkartLogin({ onProgress, waitMs: 30 * 60 * 1000 });
+          if (!login.success || login.waitingForManualLogin) return false;
+          broadcastMonitorState({ active: true, status: 'extracting', url: page.url(), title: page.title() });
+          onProgress('✓ Manual Seller Hub login verified. The scraper is reusing the persistent authenticated session.');
+          return true;
         };
 
         try {
@@ -1128,9 +1205,9 @@ async function executeScrapeProcess(config, onProgress) {
       }
 
       const externalSessionExpiry = async (page) => {
-        onProgress('🔐 2FA / Session authentication required. Please complete login in the opened browser window...');
+        onProgress('🔐 Seller Hub sign-in is required. Complete it manually in the visible Seller Hub browser window.');
         const startTime = Date.now();
-        const timeoutMs = 300000;
+        const timeoutMs = 30 * 60 * 1000;
         while (Date.now() - startTime < timeoutMs) {
           await new Promise((r) => setTimeout(r, 1000));
           try {
@@ -1147,12 +1224,52 @@ async function executeScrapeProcess(config, onProgress) {
         return false;
       };
 
+      const baseExternalRuntime = getBrowserRuntime();
+      const externalRuntime = new Proxy(baseExternalRuntime, {
+        get(target, property, receiver) {
+          if (property !== 'launch') return Reflect.get(target, property, receiver);
+          return async options => {
+            const browser = await target.launch.call(target, options);
+            const page = (await browser.pages())[0] || await browser.newPage();
+            activeExternalPage = page;
+            const originalClose = browser.close.bind(browser);
+            browser.close = async () => {
+              if (activeExternalPage === page) activeExternalPage = null;
+              await originalClose();
+            };
+            return browser;
+          };
+        }
+      });
+      const externalProgress = async message => {
+        await onProgress(message);
+        broadcastMonitorState({
+          active: true,
+          status: 'extracting',
+          engine: 'external',
+          marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
+          url: activeExternalPage?.url?.() || FLIPKART_MANUAL_LOGIN_URL,
+          title: activeExternalPage ? await activeExternalPage.title().catch(() => '') : 'External Chrome rate-card worker',
+          progressMessage: message
+        });
+      };
+
       const externalResult = await scrapeFlipkartRateCards(effectiveConfig, {
-        onProgress,
+        onProgress: externalProgress,
         cookiesPath: getMarketplaceCookiesPath('flipkart_shopsy'),
         fallbackCookiesPath: COOKIES_PATH,
         stagingDir: STAGING_DIR,
+        runtime: externalRuntime,
+        browserProfileDir: getMarketplaceBrowserProfilePath('flipkart_shopsy'),
         onSessionExpiry: externalSessionExpiry
+      });
+      activeExternalPage = null;
+      broadcastMonitorState({
+        active: false,
+        status: externalResult.success ? 'completed' : 'error',
+        engine: 'external',
+        marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
+        error: externalResult.success ? '' : externalResult.error
       });
       if (!externalResult.success && /HTTP 5\d\d|ERR_|timed? out|renderer|Missing rate responses/i.test(externalResult.error)) throw new Error(externalResult.error);
       return externalResult;
@@ -1254,9 +1371,10 @@ registerHandler('browser-monitor-get-state', () => ({
 }));
 
 registerHandler('browser-monitor-screenshot', async () => {
-  if (activeEmbeddedPage && typeof activeEmbeddedPage.screenshot === 'function') {
+  const activePage = activeEmbeddedPage || activeExternalPage;
+  if (activePage && typeof activePage.screenshot === 'function') {
     try {
-      const pngBuffer = await activeEmbeddedPage.screenshot();
+      const pngBuffer = await activePage.screenshot();
       const base64 = `data:image/png;base64,${pngBuffer.toString('base64')}`;
       broadcastMonitorState({ lastScreenshot: base64 });
       return { success: true, screenshot: base64 };
@@ -1264,7 +1382,7 @@ registerHandler('browser-monitor-screenshot', async () => {
       return { success: false, error: err.message };
     }
   }
-  return { success: false, error: 'No active embedded browser view to capture.' };
+  return { success: false, error: 'No active Seller Hub browser page to capture.' };
 });
 
 registerHandler('browser-monitor-set-visibility', (e, visible) => {
@@ -1280,10 +1398,11 @@ registerHandler('browser-monitor-set-visibility', (e, visible) => {
 });
 
 registerHandler('browser-monitor-set-engine', (e, engine) => {
-  const next = engine === 'external' ? 'external' : 'embedded';
-  currentBrowserEngine = next;
-  broadcastMonitorState({ engine: next });
-  return { success: true, engine: next };
+  // Flipkart login and extraction must share the same durable Chrome profile.
+  // Do not route users back to the separate embedded Chromium partition.
+  currentBrowserEngine = 'external';
+  broadcastMonitorState({ engine: 'external' });
+  return { success: true, engine: 'external' };
 });
 
 registerHandler('browser-monitor-set-dock-bounds', (e, rect) => {
@@ -1603,6 +1722,9 @@ registerHandler('auth-logout', async () => {
     const { session: electronSession } = require('electron');
     if (electronSession) {
       for (const mp of SUPPORTED_MARKETPLACES) {
+        // Seller Hub sign-in is independent from the ReconCentral account.
+        // Keep Flipkart and Shopsy authenticated across desktop sign-out.
+        if (portalPartition(mp.id) === portalPartition('flipkart_shopsy')) continue;
         const part = electronSession.fromPartition(`persist:marketplace-${mp.id}`);
         if (part?.clearStorageData) {
           await part.clearStorageData({ storages: ['cookies'] }).catch(() => {});
@@ -1649,22 +1771,28 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
   }
   return await withBrowserTask(async () => {
     const targetId = (typeof marketplace === 'string' ? marketplace : marketplace?.marketplace || marketplace?.id) || 'flipkart_shopsy';
+    const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
     const cookiesPath = getMarketplaceCookiesPath(targetId);
     deleteEncryptedCookies(cookiesPath);
-    if (['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId)) {
+    if (isFlipkart) {
       deleteEncryptedCookies(COOKIES_PATH);
     }
     let partitionErr = null;
     try {
+      if (isFlipkart) manualFlipkartLoginManager?.close();
       const { session: electronSession } = require('electron');
       if (electronSession) {
         const part = electronSession.fromPartition(portalPartition(targetId));
         if (part?.clearStorageData) {
-          await part.clearStorageData({ storages: ['cookies'] });
+          await part.clearStorageData();
         }
       }
     } catch (err) {
       partitionErr = err.message;
+    }
+    if (isFlipkart) {
+      try { fs.rmSync(getMarketplaceBrowserProfilePath(targetId), { recursive: true, force: true }); }
+      catch (err) { partitionErr = partitionErr || err.message; }
     }
     if (partitionErr) {
       return { success: false, error: `Failed to clear in-memory partition cookies: ${partitionErr}` };

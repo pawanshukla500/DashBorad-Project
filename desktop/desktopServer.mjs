@@ -39,7 +39,7 @@ import {
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { resolveScrapeVerticals } from './fsnPlan.js';
-import { isFlipkartAuthenticated } from './portalSession.js';
+import { FLIPKART_MANUAL_LOGIN_URL, isFlipkartAuthenticated } from './portalSession.js';
 import { createWorkerEngine } from './workerEngine.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, markStagedJobStatus } from './localStaging.js';
 import { registerWorkerWithBackend, sendWorkerHeartbeat, claimNextWorkerJob, releaseClaimedWorkerJob, reportJobFailure, submitJobResults,
@@ -128,6 +128,12 @@ function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
   const dir = path.join(USER_DATA_DIR, 'cookies');
   fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, `cookies_${safeId}.json`);
+}
+
+function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
+  if (['flipkart','shopsy','both','flipkart_shopsy'].includes(marketplace)) marketplace = 'flipkart_shopsy';
+  const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  return path.join(USER_DATA_DIR, 'browser-profiles', safeId);
 }
 
 const CANDIDATE_API_SERVERS = [
@@ -372,7 +378,7 @@ const serverWorker = createWorkerEngine({
     try {
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, parameters: job.parameters });
       const fsnCatalog = (await fetchBrandCatalogFromApi(session)).catalog;
-      const result = await withBrowserTask(async () => scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace) }, { onProgress: broadcastProgress }));
+      const result = await withBrowserTask(async () => scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace), browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace) }, { onProgress: broadcastProgress, browserProfileDir: getMarketplaceBrowserProfilePath(job.marketplace) }));
       if (!result.success) throw new Error(result.error);
       const cards = normalizeScrapedCards(result.data);
       if (authGeneration !== stagedExtraction.authGeneration) throw new Error('The account changed during extraction. Results were not submitted.');
@@ -1251,7 +1257,7 @@ const server = http.createServer(async (req, res) => {
       if (mpConfig && !mpConfig.hasScraper) {
         return sendJson(400, {
           success: false,
-          error: `Automated scraping is not yet implemented for ${mpConfig.name}. Automated scrapers are currently active for Flipkart & Shopsy. Use "🔑 Human Login (2FA)" to authorize and store your session for Phase 2.`
+          error: `Automated scraping is not yet implemented for ${mpConfig.name}. Automated scrapers are currently active for Flipkart & Shopsy. Use “Open Seller Hub Sign-in” to authorize manually and store the persistent session for Phase 2.`
         });
       }
       const isVisible = body.mode === 'visible' || body.visible === true;
@@ -1300,9 +1306,31 @@ const server = http.createServer(async (req, res) => {
               fsnCatalog: (await fetchBrandCatalogFromApi(loadAuthSession())).catalog,
               scopeVerticals: targetVerticals,
               brand: selectedBrand,
-              requiredVerticals
+              requiredVerticals,
+              browserProfileDir: getMarketplaceBrowserProfilePath(normalizedChannel)
             },
-            { onProgress: broadcastProgress }
+            {
+              onProgress: broadcastProgress,
+              browserProfileDir: getMarketplaceBrowserProfilePath(normalizedChannel),
+              onSessionExpiry: async page => {
+                if (!isVisible) {
+                  broadcastProgress('Seller Hub session expired. Open Seller Hub Sign-in, complete login manually, then run the worker again.');
+                  return false;
+                }
+                broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible browser at seller.flipkart.com.');
+                try {
+                  await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
+                  const cookies = await page.cookies();
+                  saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
+                  saveEncryptedCookies(COOKIES_PATH, cookies);
+                  broadcastProgress(`Seller Hub login verified. Saved ${cookies.length} encrypted cookies and retained the persistent browser profile.`);
+                  return true;
+                } catch (loginError) {
+                  broadcastProgress(`Manual Seller Hub sign-in did not complete: ${loginError.message}`);
+                  return false;
+                }
+              }
+            }
           ));
 
           if (result.success && jobAuthGeneration !== stagedExtraction.authGeneration) {
@@ -1371,10 +1399,16 @@ const server = http.createServer(async (req, res) => {
         const body = await parseJsonBody();
         const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
         const mpConfig = SUPPORTED_MARKETPLACES.find(m => m.id === targetId || m.marketplace === targetId) || SUPPORTED_MARKETPLACES[0];
-        const portalUrl = mpConfig.loginUrl || mpConfig.portalUrl || body.portal_url || 'https://seller.flipkart.com/';
+        const portalUrl = mpConfig.id === 'flipkart_shopsy'
+          ? FLIPKART_MANUAL_LOGIN_URL
+          : (mpConfig.loginUrl || mpConfig.portalUrl || body.portal_url || FLIPKART_MANUAL_LOGIN_URL);
         const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
         const chromePath = getChromeExecutablePath();
-        const tempProfileDir = fs.mkdtempSync(path.join(os.tmpdir(), `recon-login-${targetId}-`));
+        const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
+        const profileAlreadyExists = fs.existsSync(profileDir);
+        fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+        try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
+        try { fs.chmodSync(profileDir, 0o700); } catch {}
 
         broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
 
@@ -1383,7 +1417,6 @@ const server = http.createServer(async (req, res) => {
         // that raced past the earlier busy check while its body was still
         // parsing gets an honest 409 instead of a false "launched" 200.
         if (withBrowserTask.busy) {
-          try { fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
           return sendJson(409, { success: false, error: 'A browser task is already running. Finish login or extraction before starting another.' });
         }
         withBrowserTask(async () => {
@@ -1392,7 +1425,7 @@ const server = http.createServer(async (req, res) => {
             browser = await puppeteer.launch({
               headless: false,
               executablePath: chromePath,
-              userDataDir: tempProfileDir,
+              userDataDir: profileDir,
               defaultViewport: null,
               args: [
                 '--no-first-run',
@@ -1404,12 +1437,12 @@ const server = http.createServer(async (req, res) => {
             const page = pages.length > 0 ? pages[0] : await browser.newPage();
 
             // Load existing encrypted session cookies if present
-            if (fs.existsSync(cookiesPath)) {
+            if (!profileAlreadyExists && fs.existsSync(cookiesPath)) {
               const existing = loadEncryptedCookies(cookiesPath);
               if (existing && Array.isArray(existing) && existing.length > 0) {
                 await page.setCookie(...existing);
               }
-            } else if (fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
+            } else if (!profileAlreadyExists && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
               const existing = loadEncryptedCookies(COOKIES_PATH);
               if (existing && Array.isArray(existing) && existing.length > 0) {
                 await page.setCookie(...existing);
@@ -1418,10 +1451,10 @@ const server = http.createServer(async (req, res) => {
 
             await page.goto(portalUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-            broadcastProgress(`✓ Browser window opened for ${mpConfig.name}. Please complete 2FA or human login in the window...`);
+            broadcastProgress(`✓ External Chrome opened at ${portalUrl}. Sign in manually. Its persistent profile will be reused by the worker.`);
 
             if (mpConfig.id === 'flipkart_shopsy') {
-              await page.waitForFunction(isFlipkartAuthenticated, { timeout: 300000, polling: 1000 });
+              await page.waitForFunction(isFlipkartAuthenticated, { timeout: 30 * 60 * 1000, polling: 1000 });
             } else await page.waitForFunction((id) => {
               const href = window.location.href.toLowerCase();
               const body = document.body ? document.body.innerText.toLowerCase() : '';
@@ -1475,16 +1508,13 @@ const server = http.createServer(async (req, res) => {
             if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
               saveEncryptedCookies(COOKIES_PATH, cookies);
             }
-            broadcastProgress(`✓ Authentication detected! Encrypted and saved ${cookies.length} session cookies into vault.`);
+            broadcastProgress(`✓ Authentication detected. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile remains available to the worker.`);
           } catch (loginErr) {
             broadcastProgress(`❌ Interactive login error for ${mpConfig.name}: ${loginErr.message}`);
           } finally {
             if (browser) {
               await browser.close().catch(() => {});
             }
-            try {
-              fs.rmSync(tempProfileDir, { recursive: true, force: true });
-            } catch {}
           }
           return { ran: true };
         }).then((gate) => {
@@ -1492,14 +1522,13 @@ const server = http.createServer(async (req, res) => {
           // kept as defense in depth: a lost race must never leave a temp
           // profile behind or stay silent about skipping the login.
           if (!gate || gate.ran !== true) {
-            try { fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
             broadcastProgress('⏳ Interactive login skipped: another browser task is already running. Finish it and try again.');
           }
         }).catch(() => {});
 
         return sendJson(200, { 
           success: true, 
-          message: `Interactive login window launched for ${mpConfig.name}. Please complete login in the window. Cookies will be encrypted and saved to the cookie vault.`, 
+          message: `External Chrome opened for ${mpConfig.name}. Sign in manually; cookies and the persistent browser profile will be reused by future worker runs.`,
           portal_url: portalUrl 
         });
       } catch (err) {
@@ -1511,16 +1540,21 @@ const server = http.createServer(async (req, res) => {
     // POST /api/clear-session
     if (pathname === '/api/clear-session' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
+      if (withBrowserTask.busy) {
+        return sendJson(409, { success: false, error: 'A browser task is running. Finish login or extraction before clearing its Seller Hub session.' });
+      }
       try {
         const body = await parseJsonBody();
         const targetId = (body.marketplace || body.id || 'flipkart_shopsy').toLowerCase().replace(/[^a-z0-9_]/g, '_');
         const cookiesPath = getMarketplaceCookiesPath(targetId);
         deleteEncryptedCookies(cookiesPath);
-        if (['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId)) {
+        const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
+        if (isFlipkart) {
           deleteEncryptedCookies(COOKIES_PATH);
+          fs.rmSync(getMarketplaceBrowserProfilePath(targetId), { recursive: true, force: true });
         }
-        broadcastProgress(`✓ Purged saved cookies for ${targetId}`);
-        return sendJson(200, { success: true, message: `Session cookies cleared for ${targetId}` });
+        broadcastProgress(`✓ Cleared saved cookies and browser profile for ${targetId}`);
+        return sendJson(200, { success: true, message: `Session data cleared for ${targetId}` });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }

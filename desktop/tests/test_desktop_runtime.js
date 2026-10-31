@@ -1569,8 +1569,6 @@ async function runTests() {
       'id="browser-live-badge"',
       'id="browser-dock-card"',
       'id="browser-view-dock"',
-      'id="select-monitor-engine"',
-      'id="btn-monitor-visibility"',
       'id="btn-monitor-screenshot"',
       'id="btn-monitor-login"',
       'id="monitor-auth-alert"',
@@ -1579,6 +1577,12 @@ async function runTests() {
     for (const sel of requiredSelectors) {
       assert(html.includes(sel), `index.html must contain element with ${sel}`);
     }
+    assert(html.includes('External Chrome — persistent Seller Hub session'),
+      'the monitor must explain that Seller Hub uses persistent external Chrome');
+    assert(html.includes('data-channel="flipkart_shopsy"') && html.includes('Seller Hub Sign-in'),
+      'Flipkart actions must be labeled Seller Hub Sign-in rather than 2FA Login');
+    assert(!html.includes('value="embedded"'),
+      'Flipkart monitor UI must not offer the isolated embedded session engine');
   });
 
   await runTest('main.js registers browser monitor IPC handlers and gates sensitive actions (stage 2)', async () => {
@@ -1594,6 +1598,8 @@ async function runTests() {
     for (const handler of monitorHandlers) {
       assert(mainContent.includes(`registerHandler('${handler}'`), `main.js must register IPC handler '${handler}'`);
     }
+    assert(/registerHandler\('browser-monitor-set-engine',[\s\S]*?currentBrowserEngine = 'external'/.test(mainContent),
+      'the monitor engine must remain external so manual login and worker extraction share a profile');
 
     // Static security invariant: Browser monitor, interactive login, and scrape operations
     // MUST NOT be public channels (they must require an authorized ReconCentral session).
@@ -1613,8 +1619,7 @@ async function runTests() {
     assert(rendererContent.includes('initBrowserMonitorListeners()'), 'renderer.js must initialize monitor listeners');
     assert(rendererContent.includes('updateBrowserMonitorUI('), 'renderer.js must have updateBrowserMonitorUI');
     assert(rendererContent.includes('refreshBrowserMonitorState()'), 'renderer.js must have refreshBrowserMonitorState');
-    assert(rendererContent.includes("window.ratecardAPI.setBrowserVisibility(true)"), 'renderer.js must show browser on monitor tab switch');
-    assert(rendererContent.includes("window.ratecardAPI.setBrowserVisibility(false)"), 'renderer.js must hide browser on leaving monitor tab');
+    assert(!rendererContent.includes('setBrowserVisibility('), 'external Chrome visibility is controlled by its own window, not an embedded viewport');
   });
 
   await runTest('portalScraper triggers onSessionExpiry when session check fails (stage 3)', async () => {

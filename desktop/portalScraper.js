@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { isFlipkartAuthenticated } from './portalSession.js';
+import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL, isFlipkartAuthenticated } from './portalSession.js';
 import { attachRateCardCapture } from './rateCardCapture.js';
 import { parsePortalRateSnapshot } from './portalRates.js';
 import { captureScrapeFailure } from './scrapeDiagnostics.js';
@@ -21,6 +21,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
   stagingDir = path.join(getResolvedUserDataDir(), 'staging'),
   runtime = getBrowserRuntime(),
   executablePath,
+  browserProfileDir = config.browserProfileDir,
   delay = wait,
   onSessionExpiry
 } = {}) {
@@ -33,10 +34,14 @@ export async function scrapeFlipkartRateCards(config = {}, {
   let captureHandle;
   const context = { marketplace, stage: 'launch' };
   try {
+    const profileDir = browserProfileDir;
+    const hasPersistentProfile = Boolean(profileDir && fs.existsSync(profileDir));
+    if (profileDir && !runtime?.partition) fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
     browser = await runtime.launch({
       executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
       headless: config.visible ? false : 'new',
       defaultViewport: config.visible ? null : { width: 1500, height: 1000 },
+      ...(!runtime?.partition && profileDir ? { userDataDir: profileDir } : {}),
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -53,7 +58,10 @@ export async function scrapeFlipkartRateCards(config = {}, {
       return async (...args) => { await delay(1000); return value.apply(target, args); };
     }});
     const cookieFile = fs.existsSync(cookiesPath) ? cookiesPath : fallbackCookiesPath;
-    if (fs.existsSync(cookieFile)) {
+    // A persistent Chromium profile is the session source of truth. Replaying
+    // an old cookie snapshot after a Seller Hub logout could silently undo it.
+    // Import the encrypted snapshot only for a fresh non-Electron profile.
+    if (!runtime?.partition && !hasPersistentProfile && fs.existsSync(cookieFile)) {
       const cookies = loadEncryptedCookies(cookieFile);
       if (cookies?.length) {
         await page.setCookie(...cookies);
@@ -76,10 +84,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
       }
     };
 
-    // Step 1: Navigate to seller.flipkart.com landing page first
+    // Always begin on the public Seller Hub landing page. The operator signs
+    // in manually; only after verified authentication do we enter the portal.
     await onProgress('Connecting to Flipkart Seller Hub...');
     context.stage = 'authentication';
-    await safeGoto('https://seller.flipkart.com/index.html#dashboard/home-page', { waitUntil: 'load', timeout: 35000 });
+    await safeGoto(FLIPKART_MANUAL_LOGIN_URL, { waitUntil: 'load', timeout: 35000 });
 
     let authenticated = false;
     // A restored Chromium session can redirect asynchronously. Never delete a
@@ -89,15 +98,18 @@ export async function scrapeFlipkartRateCards(config = {}, {
       await delay(1000);
     }
     if (!authenticated) {
-      if (typeof onSessionExpiry !== 'function') throw new Error('Seller Hub login required. Sign in manually in the desktop Live Browser, then retry.');
-      await page.evaluate(() => {
-        const visible = el => el.getClientRects().length > 0;
-        if (Array.from(document.querySelectorAll('input[name="username"],input[type="password"]')).some(visible)) return;
-        const login = Array.from(document.querySelectorAll('button,a,[role="button"]')).find(el => visible(el) && /^login$/i.test(el.innerText.trim()));
-        login?.click();
-      });
+      if (typeof onSessionExpiry !== 'function') throw new Error('Seller Hub login required. Open the manual sign-in window at seller.flipkart.com and retry.');
       const resumed = await onSessionExpiry(page);
-      if (!resumed || await page.evaluate(isFlipkartAuthenticated) !== true) throw new Error('Manual Seller Hub login is incomplete. Nothing was staged.');
+      if (!resumed) throw new Error('Manual Seller Hub login is incomplete. Nothing was staged.');
+      const refreshedCookies = loadEncryptedCookies(cookiesPath) || loadEncryptedCookies(fallbackCookiesPath);
+      if (refreshedCookies?.length) await page.setCookie(...refreshedCookies);
+      await safeGoto(FLIPKART_DASHBOARD_URL, { waitUntil: 'load', timeout: 35000 });
+      authenticated = false;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (await page.evaluate(isFlipkartAuthenticated) === true) { authenticated = true; break; }
+        await delay(1000);
+      }
+      if (!authenticated) throw new Error('Seller Hub sign-in did not establish an authenticated dashboard session. Nothing was staged.');
     }
     const sessionCookies = await page.cookies();
     if (sessionCookies?.length) {
