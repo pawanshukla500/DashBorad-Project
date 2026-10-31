@@ -183,6 +183,14 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   assert.match(renderer,/for\s*\(const fee of pickPackFees\)/,'unchanged observed FBF pick-and-pack fees are visible in review');
 });
 
+test('installed-package smoke harness imports its evidence writer', () => {
+  const smoke=fs.readFileSync(new URL('../packagedSmoke.js',import.meta.url),'utf8');
+  assert.match(smoke,/import fs from ['"]node:fs['"];/,'the installed smoke harness must be able to write its JSON result and screenshot');
+  assert.match(smoke,/window\.show\(\)/,'the smoke harness makes the installed host window visible before Chromium screenshot capture');
+  const browser=fs.readFileSync(new URL('../embeddedBrowser.js',import.meta.url),'utf8');
+  assert.match(browser,/capturePage\(undefined,\s*\{\s*stayAwake:\s*true\s*\}\)/,'live browser diagnostics allow Electron to reveal hidden contents while capturing');
+});
+
 test('FSN response matching never accepts category-only or other-product fees', () => {
   const capture=createRateCardCapture(), date='2026-10-30 12:00:00';
   const context={fsn:'ABCDEFGHIJKLMNOP',marketplace:'flipkart',fulfilment:'NON_FBF',date};

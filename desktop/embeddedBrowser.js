@@ -651,7 +651,11 @@ export function createEmbeddedPage({
 
     /** Screenshot of the live page (monitoring + debugging aid). */
     async screenshot() {
-      const image = await contents.capturePage(undefined, { stayHidden: true, stayAwake: true });
+      // Let Electron temporarily reveal hidden contents for capture. Keeping a
+      // just-created WebContentsView hidden can return an empty NativeImage on
+      // Windows even after its host window becomes visible.
+      await contents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))').catch(() => {});
+      const image = await contents.capturePage(undefined, { stayAwake: true });
       const png = image.toPNG();
       if (!png.length) throw new Error('Chromium has no rendered frame to capture.');
       return png;

@@ -226,8 +226,11 @@ now requires an explicit `workflow_dispatch`. A merge therefore cannot deploy
 production. No production rate-card write, production migration or deployment
 has been performed.
 
-Working-tree validation: backend full suite **617 passed, 2 skipped**; frontend
-production build **passed**; desktop suite **4 staging + 70 runtime + 9 E2E + 13
+Validation: backend full suite **617 passed, 2 skipped**; frontend production
+build **passed**; desktop suite **4 staging + 70 runtime + 9 E2E + 14
 browser-safety checks passed**; focused rate-card/fee tests **22 passed**.
-Windows installed-package and Linux AppImage acceptance must still pass on the
-final pushed commit.
+Windows NSIS was built, silently installed and launched locally; all 49 packaged
+smoke checks passed, including exact source commit, Chromium frame/input,
+preload authorization, shared session cookies and SQLite recovery. The real
+Chromium screenshot was nonblank. GitHub must repeat Windows acceptance and run
+the Linux AppImage acceptance on the final pushed commit.

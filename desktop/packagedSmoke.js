@@ -43,6 +43,15 @@ export async function runPackagedSmoke({ app, window, output, setPage, getBounds
     await page.type('#otp', '123456', { delay: 10 });
     check(await page.evaluate(() => document.querySelector('#otp').value) === '123456', 'Hidden renderer accepts real OTP editor input');
     page.setVisible(true);
+    // CI and local install checks start the GUI process hidden so the helper
+    // does not steal focus. capturePage(..., stayHidden) can then return an
+    // empty frame even though the WebContentsView is attached and navigated.
+    // Show the real host window and allow Chromium a paint turn before taking
+    // evidence from the installed package.
+    window.show();
+    window.focus();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    check(window.isVisible(), 'Packaged host window is visible for live Chromium rendering');
     await window.webContents.executeJavaScript('window.ratecardAPI.setMonitorDockBounds({x:30,y:150,width:420,height:280})');
     check(page._view.getBounds().x === 30 && page._view.getBounds().width === 420, 'Renderer dock IPC updates native bounds');
     const png = await page.screenshot();
