@@ -9,6 +9,23 @@ import { getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js'
 import { getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, deleteEncryptedCookies } from './cookieVault.js';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const PROFILE_SESSION_STORES = [
+  path.join('Default', 'Network', 'Cookies'),
+  path.join('Default', 'Cookies'),
+  path.join('Default', 'Local Storage', 'leveldb', 'CURRENT')
+];
+
+function hasPersistentProfileSession(profileDir) {
+  if (!profileDir) return false;
+  return PROFILE_SESSION_STORES.some(relativePath => {
+    try {
+      const store = fs.statSync(path.join(profileDir, relativePath));
+      return store.isFile() && store.size > 0;
+    } catch {
+      return false;
+    }
+  });
+}
 
 /**
  * Self-contained portal extraction for both Electron and the Linux server.
@@ -35,7 +52,10 @@ export async function scrapeFlipkartRateCards(config = {}, {
   const context = { marketplace, stage: 'launch' };
   try {
     const profileDir = browserProfileDir;
-    const hasPersistentProfile = Boolean(profileDir && fs.existsSync(profileDir));
+    // A failed first launch may leave an empty userDataDir behind. Treat only
+    // actual Chromium cookie/local-storage stores as the profile source of
+    // truth, so that directory cannot suppress a valid encrypted cookie import.
+    const hasPersistentProfile = hasPersistentProfileSession(profileDir);
     if (profileDir && !runtime?.partition) fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
     browser = await runtime.launch({
       executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),

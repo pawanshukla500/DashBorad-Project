@@ -211,11 +211,53 @@ test('scraping starts at the Seller Hub root, then enters the dashboard only aft
   }
 });
 
+test('an empty directory from a failed Chrome launch still imports encrypted cookies', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-empty-profile-'));
+  const profileDir = path.join(tempDir, 'profile');
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  fs.mkdirSync(profileDir);
+  saveEncryptedCookies(cookiePath, [{ name: 'valid-session', value: 'restorable', domain: '.flipkart.com' }]);
+  let launchedWith;
+  let setCookieCalls = 0;
+  let currentUrl = '';
+  const page = {
+    on() {}, off() {},
+    goto: async url => { currentUrl = url; },
+    setCookie: async () => { setCookieCalls++; },
+    evaluate: async fn => fn.name === 'isFlipkartAuthenticated' ? false : [],
+    url: () => currentUrl,
+    title: () => 'Signed out',
+    screenshot: async () => Buffer.from('test screenshot')
+  };
+  const browser = { pages: async () => [page], newPage: async () => page, close: async () => {} };
+  const runtime = { launch: async options => { launchedWith = options; return browser; } };
+  try {
+    const result = await scrapeFlipkartRateCards({ marketplace: 'flipkart', browserProfileDir: profileDir }, {
+      runtime,
+      executablePath: 'test-chrome',
+      browserProfileDir: profileDir,
+      cookiesPath: cookiePath,
+      fallbackCookiesPath: path.join(tempDir, 'fallback.json'),
+      stagingDir: path.join(tempDir, 'staging'),
+      delay: async () => {},
+      onProgress: () => {}
+    });
+    assert.equal(launchedWith.userDataDir, profileDir);
+    assert.equal(setCookieCalls, 1, 'a directory without Chromium session stores must not block the valid cookie snapshot');
+    assert.equal(result.success, false);
+    assert.match(result.error, /login required/i);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('an existing persistent browser profile is not overwritten by stale cookie snapshots after Seller Hub logout', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-profile-session-'));
   const profileDir = path.join(tempDir, 'profile');
   const cookiePath = path.join(tempDir, 'cookies.json');
-  fs.mkdirSync(profileDir);
+  const cookieStore = path.join(profileDir, 'Default', 'Network', 'Cookies');
+  fs.mkdirSync(path.dirname(cookieStore), { recursive: true });
+  fs.writeFileSync(cookieStore, 'chromium-cookie-store');
   saveEncryptedCookies(cookiePath, [{ name: 'old-session', value: 'expired', domain: '.flipkart.com' }]);
   let launchedWith;
   let setCookieCalls = 0;
