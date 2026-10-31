@@ -166,6 +166,7 @@ function legacyCookieCandidates(filePath) {
     path.join(process.cwd(), '.runtime', path.basename(filePath)),
     path.join(process.cwd(), '.runtime', 'cookies.json'),
     path.join(__dirname, '..', '.runtime', 'cookies.json'),
+    path.join(__dirname, '..', '..', '.runtime', 'cookies.json'),
     path.join(__dirname, '.runtime', 'cookies.json')
   ].map(candidate => path.resolve(candidate)))];
 }

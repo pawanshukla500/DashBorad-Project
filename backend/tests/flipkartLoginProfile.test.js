@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -126,6 +127,54 @@ describe('Flipkart persistent Seller Hub login', () => {
       }
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes the repository-root plaintext cookie file when started from the backend directory', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flipkart-root-cookie-cleanup-'));
+    const backendDir = path.join(repoRoot, 'backend');
+    const sourceDir = path.join(backendDir, 'utils');
+    const userDataDir = path.join(repoRoot, 'app-data');
+    const legacyRuntimeDir = path.join(repoRoot, '.runtime');
+    const modulePath = path.join(sourceDir, 'cookieVault.js');
+    const encryptedTarget = path.join(userDataDir, 'cookies_flipkart.json');
+    const plaintextFallback = path.join(legacyRuntimeDir, 'cookies.json');
+    const runnerPath = path.join(repoRoot, 'run-vault-test.mjs');
+    const runnerSource = `
+      import fs from 'node:fs';
+      import { pathToFileURL } from 'node:url';
+      const [, , modulePath, targetPath, fallbackPath] = process.argv;
+      const vault = await import(pathToFileURL(modulePath).href);
+      const fixtureCookies = [{ name: 'fixture-session', value: 'test-only', domain: '.flipkart.com' }];
+      vault.saveEncryptedCookies(targetPath, fixtureCookies);
+      const encryptedBefore = fs.readFileSync(targetPath, 'utf8');
+      fs.writeFileSync(fallbackPath, JSON.stringify(fixtureCookies));
+      const loaded = vault.loadEncryptedCookies(targetPath);
+      const encryptedUnchanged = fs.readFileSync(targetPath, 'utf8') === encryptedBefore;
+      process.stdout.write(JSON.stringify({ loaded, fallbackExists: fs.existsSync(fallbackPath), encryptedUnchanged }));
+    `;
+
+    try {
+      fs.mkdirSync(sourceDir, { recursive: true });
+      fs.mkdirSync(legacyRuntimeDir, { recursive: true });
+      fs.writeFileSync(path.join(backendDir, 'package.json'), '{"type":"module"}');
+      fs.copyFileSync(new URL('../utils/cookieVault.js', import.meta.url), modulePath);
+      fs.writeFileSync(runnerPath, runnerSource);
+      const childEnv = { RECON_USER_DATA_DIR: userDataDir };
+      for (const name of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME']) {
+        if (process.env[name]) childEnv[name] = process.env[name];
+      }
+      const result = JSON.parse(execFileSync(process.execPath, [runnerPath, modulePath, encryptedTarget, plaintextFallback], {
+        cwd: backendDir,
+        env: childEnv,
+        encoding: 'utf8'
+      }));
+
+      expect(result.loaded).toEqual([{ name: 'fixture-session', value: 'test-only', domain: '.flipkart.com' }]);
+      expect(result.fallbackExists).toBe(false);
+      expect(result.encryptedUnchanged).toBe(true);
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 
