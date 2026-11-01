@@ -64,7 +64,8 @@ export async function publishRateCardObservations(observations, options = {}) {
       const keys = ['category', ...descriptor.keys];
       // Respect already scheduled periods for the exact same identity.
       const future = await client.query(`SELECT * FROM ${descriptor.table}
-        WHERE marketplace = $1 AND seller_account = $2 AND start_date > $3 AND category = $4`,
+        WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
+          AND start_date > $3 AND category = $4`,
         [marketplace, sellerAccount, effectiveDate, row.category]);
       const identity = rateRowIdentity(descriptor, row);
       const next = future.rows.filter(raw => iso(raw.start_date) > effectiveDate &&

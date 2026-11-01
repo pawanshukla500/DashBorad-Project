@@ -27,7 +27,8 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount 
     let result;
     try {
       result = await client.query(
-        `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1 AND seller_account = $2
+        `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1
+          AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
           AND (start_date IS NULL OR start_date <= CURRENT_DATE)
           AND (end_date IS NULL OR end_date >= CURRENT_DATE)`,
         [channel, account],
@@ -55,10 +56,10 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount 
     catalog = await client.query(`
       SELECT DISTINCT category, fsn
       FROM orders
-      WHERE (($1 = 'shopsy' AND (marketplace = 'shopsy'
-               OR (marketplace = 'flipkart' AND LEFT(LOWER(TRIM(category)), 7) = 'shopsy_')))
-          OR ($1 = 'flipkart' AND marketplace = 'flipkart'
-               AND LEFT(LOWER(TRIM(category)), 7) <> 'shopsy_'))
+      WHERE (($1 = 'shopsy' AND (LOWER(TRIM(marketplace)) = 'shopsy'
+               OR (LOWER(TRIM(marketplace)) = 'flipkart' AND LOWER(TRIM(category)) ~ '^shopsy([[:space:]_-]+)')))
+          OR ($1 = 'flipkart' AND LOWER(TRIM(marketplace)) = 'flipkart'
+               AND LOWER(TRIM(category)) !~ '^shopsy([[:space:]_-]+)'))
         AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
         AND category IS NOT NULL AND TRIM(category) <> ''
         AND fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'

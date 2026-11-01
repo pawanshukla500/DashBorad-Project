@@ -128,7 +128,7 @@ describe('Brand-Wise & FSN-Driven Rate Card System', () => {
       await getRealTimeBrandFsnSamples(mockPool, { marketplace: 'flipkart', sellerAccount: 'seller_ej' });
 
       const [query, params] = mockPool.query.mock.calls[0];
-      expect(query).toContain('marketplace = $1');
+      expect(query).toContain('LOWER(TRIM(marketplace)) = $1');
       expect(query).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
       expect(params).toEqual(['flipkart', 'seller_ej']);
     });
@@ -146,8 +146,8 @@ describe('Brand-Wise & FSN-Driven Rate Card System', () => {
       const mockPool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
       await getRealTimeBrandFsnSamples(mockPool, { marketplace: 'shopsy', sellerAccount: 'seller_ej' });
       const [query, params] = mockPool.query.mock.calls[0];
-      expect(query).toContain("marketplace = $1 OR (marketplace = 'flipkart'");
-      expect(query).toContain("LEFT(LOWER(TRIM(category)), 7) = 'shopsy_'");
+      expect(query).toContain("LOWER(TRIM(marketplace)) = $1 OR (LOWER(TRIM(marketplace)) = 'flipkart'");
+      expect(query).toContain("LOWER(TRIM(category)) ~ '^shopsy([[:space:]_-]+)'");
       expect(params).toEqual(['shopsy', 'seller_ej']);
     });
   });

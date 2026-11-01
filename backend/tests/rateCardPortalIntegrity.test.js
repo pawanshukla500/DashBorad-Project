@@ -247,6 +247,7 @@ describe('Portal observations and reviewed publication', () => {
     expect(coverage.missingFsnCategories).toEqual([]);
     expect(queries).toHaveLength(7);
     expect(queries.every(query => query.params?.[1] === 'seller_ej')).toBe(true);
+    expect(queries.every(query => query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"))).toBe(true);
     expect(queries.filter(query => !query.sql.includes('FROM orders')).every(query =>
       query.sql.includes('start_date <= CURRENT_DATE') && query.sql.includes('end_date >= CURRENT_DATE'))).toBe(true);
     expect(assertRateObservationCoverage(cards(), coverage)).toEqual(['kurta']);
@@ -260,14 +261,30 @@ describe('Portal observations and reviewed publication', () => {
       const configTable = RATE_CARD_CONFIG_TABLES.find(table => text.includes(`FROM ${table}`));
       if (configTable) return { rows: rowsByTable[configTable] };
       catalogQuery = text;
-      return { rows: [{ category: 'shopsy_saree', fsn: 'ABCDEFGHIJKLMNOP' }] };
+      return { rows: [{ marketplace: 'flipkart', category: 'Shopsy Saree', fsn: 'ABCDEFGHIJKLMNOP' }] };
     }) };
     const coverage = await loadRateCardCoverage(client, { marketplace: 'shopsy', sellerAccount: 'seller_ej' });
     expect(coverage.configuredCategories).toEqual(['shopsy_sari']);
     expect(coverage.fsnCategories).toEqual(['shopsy_sari']);
     expect(coverage.missingFsnCategories).toEqual([]);
-    expect(catalogQuery).toContain("marketplace = 'flipkart'");
-    expect(catalogQuery).toContain("LEFT(LOWER(TRIM(category)), 7) = 'shopsy_'");
+    expect(catalogQuery).toContain("LOWER(TRIM(marketplace)) = 'flipkart'");
+    expect(catalogQuery).toContain("LOWER(TRIM(category)) ~ '^shopsy([[:space:]_-]+)'");
+  });
+
+  it('includes NULL and blank legacy rate-card accounts in the default category scope', async () => {
+    const queries = [];
+    const client = { query: vi.fn(async (sql, params) => {
+      queries.push({ sql: String(sql), params });
+      if (String(sql).includes('FROM orders')) return { rows: [{ category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' }] };
+      return { rows: [{ category: 'Kurta' }] };
+    }) };
+    const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'default' });
+    expect(coverage.configuredCategories).toEqual(['kurta']);
+    expect(coverage.missingFsnCategories).toEqual([]);
+    const configReads = queries.filter(query => !query.sql.includes('FROM orders'));
+    expect(configReads).toHaveLength(RATE_CARD_CONFIG_TABLES.length);
+    expect(configReads.every(query => query.params[1] === 'default' &&
+      query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"))).toBe(true);
   });
 
   it('fails closed when a configuration table is missing', async () => {

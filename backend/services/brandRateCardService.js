@@ -29,11 +29,11 @@ export async function getRealTimeBrandFsnSamples(pool = null, { marketplace = nu
     params.push(marketplace);
     const marketplaceParam = `$${params.length}`;
     if (marketplace === 'shopsy') {
-      filters.push(`(marketplace = ${marketplaceParam} OR (marketplace = 'flipkart' AND LEFT(LOWER(TRIM(category)), 7) = 'shopsy_'))`);
+      filters.push(`(LOWER(TRIM(marketplace)) = ${marketplaceParam} OR (LOWER(TRIM(marketplace)) = 'flipkart' AND LOWER(TRIM(category)) ~ '^shopsy([[:space:]_-]+)'))`);
     } else if (marketplace === 'flipkart') {
-      filters.push(`(marketplace = ${marketplaceParam} AND LEFT(LOWER(TRIM(category)), 7) <> 'shopsy_')`);
+      filters.push(`(LOWER(TRIM(marketplace)) = ${marketplaceParam} AND LOWER(TRIM(category)) !~ '^shopsy([[:space:]_-]+)')`);
     } else {
-      filters.push(`marketplace = ${marketplaceParam}`);
+      filters.push(`LOWER(TRIM(marketplace)) = ${marketplaceParam}`);
     }
   }
   if (sellerAccount) {

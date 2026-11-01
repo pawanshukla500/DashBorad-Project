@@ -35,6 +35,7 @@ const TABLE_MAP = {
   reverse_shipping:'rc_reverse_shipping',
   franchise_fee:   'rc_franchise_fee',
 };
+const DEFAULT_SELLER_ACCOUNT_SQL = "COALESCE(NULLIF(TRIM(seller_account), ''), 'default')";
 
 // Columns that vary per table (beyond id, category, start_date, end_date, marketplace, seller_account, updated_at)
 const TABLE_EXTRA_COLUMNS = {
@@ -184,7 +185,7 @@ export function parseRateCardRow(type, row) {
 
 export function resolveMarketplaceAndAccount(rawMarketplace, rawSellerAccount) {
   let marketplace = String(rawMarketplace || 'flipkart').trim().toLowerCase();
-  let sellerAccount = String(rawSellerAccount || 'default').trim();
+  let sellerAccount = String(rawSellerAccount || 'default').trim() || 'default';
   if (marketplace === 'myntra_vb') {
     marketplace = 'myntra';
     sellerAccount = 'myntra_vb';
@@ -278,7 +279,7 @@ router.get('/config/categories', async (req, res) => {
     const results = await Promise.all(
       Object.values(TABLE_MAP).map(table =>
         pool.query(
-          `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1 AND seller_account = $2`,
+          `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2`,
           [marketplace, sellerAccount],
         ).catch(() => ({ rows: [] })),
       ),
@@ -290,10 +291,8 @@ router.get('/config/categories', async (req, res) => {
 
     // Also pull categories from orders for this marketplace & account
     try {
-      const orderCond = sellerAccount !== 'default'
-        ? `marketplace = $1 AND seller_account = $2`
-        : `marketplace = $1`;
-      const orderParams = sellerAccount !== 'default' ? [marketplace, sellerAccount] : [marketplace];
+      const orderCond = `marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2`;
+      const orderParams = [marketplace, sellerAccount];
       const { rows: orderCats } = await pool.query(
         `SELECT DISTINCT COALESCE(vb_export_category, category) AS category FROM orders WHERE ${orderCond} AND COALESCE(vb_export_category, category) IS NOT NULL AND COALESCE(vb_export_category, category) != ''`,
         orderParams,
@@ -308,7 +307,7 @@ router.get('/config/categories', async (req, res) => {
       try {
         const { rows: brandRows } = await pool.query(
           `SELECT DISTINCT brand_name FROM rc_commission 
-           WHERE marketplace = $1 AND seller_account = $2 AND brand_name IS NOT NULL AND brand_name != ''`,
+           WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2 AND brand_name IS NOT NULL AND brand_name != ''`,
           [marketplace, sellerAccount],
         );
         const brands = brandRows.map(r => r.brand_name).filter(Boolean).sort();
@@ -332,7 +331,7 @@ router.get('/config-status', async (req, res) => {
     const results = await Promise.all(
       Object.entries(TABLE_MAP).map(async ([type, table]) => {
         const { rows } = await pool.query(
-          `SELECT COUNT(*) AS cnt FROM ${table} WHERE marketplace = $1 AND seller_account = $2`,
+          `SELECT COUNT(*) AS cnt FROM ${table} WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2`,
           [marketplace, sellerAccount],
         );
         return { type, count: Number(rows[0]?.cnt || 0) };
@@ -384,7 +383,7 @@ router.get('/config/:type', async (req, res) => {
       `SELECT id, category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date,
               marketplace, seller_account, ${TABLE_EXTRA_COLUMNS[req.params.type].join(', ')}
        FROM ${table}
-       WHERE marketplace = $1 AND seller_account = $2 ${activePeriodFilter}
+       WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2 ${activePeriodFilter}
        ORDER BY category, ${TABLE_EXTRA_COLUMNS[req.params.type].includes('brand_name') ? "NULLIF(brand_name,'') NULLS LAST, " : ""} price_min ${TABLE_EXTRA_COLUMNS[req.params.type].includes('weight_slab') ? ", weight_slab" : ""}`,
       [marketplace, sellerAccount],
     );
@@ -836,7 +835,7 @@ router.get('/versions', async (req, res) => {
       `SELECT id, version_name, status, effective_from, effective_to,
               created_at, published_at, created_by, published_by
        FROM rate_card_versions
-       WHERE marketplace = $1 AND seller_account = $2
+       WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2
        ORDER BY created_at DESC
        LIMIT 50`,
       [marketplace, sellerAccount],
@@ -861,7 +860,7 @@ router.post('/versions', async (req, res) => {
     const snapshot = {};
     for (const [type, table] of Object.entries(TABLE_MAP)) {
       const { rows } = await pool.query(
-        `SELECT * FROM ${table} WHERE marketplace = $1 AND seller_account = $2 ORDER BY category, price_min`,
+        `SELECT * FROM ${table} WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2 ORDER BY category, price_min`,
         [marketplace, sellerAccount],
       );
       snapshot[type] = rows;

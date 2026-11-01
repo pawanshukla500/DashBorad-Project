@@ -156,7 +156,7 @@ export async function planRateCardChanges(client, observations, { marketplace, s
     if (!incoming.length) continue;
     const scopes = new Set(incoming.map(row => scope(descriptor, row, marketplace)));
     const result = await client.query(`SELECT * FROM ${descriptor.table}
-      WHERE marketplace = $1 AND seller_account = $2
+      WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
         AND (start_date IS NULL OR start_date <= $3) AND (end_date IS NULL OR end_date >= $3)`, [marketplace, sellerAccount, effectiveDate]);
     const existing = new Map();
     for (const raw of result.rows) {

@@ -71,6 +71,15 @@ describe('desktop category discovery API', () => {
     expect(response.status).toBe(200);
     expect(read.params).toEqual(['flipkart', 'seller_ej']);
     expect(body.rows[0].category).toBe('salwar_kurta_dupatta');
+    expect(read.sql).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
+  });
+
+  it('normalizes an empty seller account to default and includes legacy default rows', async () => {
+    const response = await fetch(`${baseUrl}/config/commission?marketplace=flipkart&seller_account=`);
+    const read = statements.find(statement => statement.sql.startsWith('SELECT id, category, TO_CHAR'));
+    expect(response.status).toBe(200);
+    expect(read.params).toEqual(['flipkart', 'default']);
+    expect(read.sql).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
   });
 
   it('returns an account-scoped FSN catalog with canonical category keys', async () => {
