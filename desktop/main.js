@@ -641,6 +641,7 @@ async function executeBackgroundWorkerJob(session, job) {
     const scrapeRes = await withBrowserTask(async () => {
       return await executeScrapeProcess({
         marketplace: job.marketplace,
+        seller_account: job.seller_account || job.parameters?.seller_account || 'default',
         scopeVerticals: job.parameters?.verticals,
         brand: job.parameters?.brand,
         requireCompleteCoverage: true,
@@ -1234,6 +1235,7 @@ function isPermanentScrapeError(err) {
 async function executeScrapeProcess(config, onProgress) {
   let effectiveConfig = { ...loadConfig(), ...config };
   const session = loadAuthSession();
+  const sellerAccount = String(effectiveConfig.seller_account || effectiveConfig.sellerAccount || 'default').trim() || 'default';
   // Keep the user's original selection stable across retries. Discovered
   // backend categories are written to effectiveConfig for the scraper, but
   // must not become explicit selections on the next attempt.
@@ -1255,9 +1257,9 @@ async function executeScrapeProcess(config, onProgress) {
       // backend failures can use the configured second attempt.
       const configuredVerticalsPromise = requestedVerticals.length
         ? Promise.resolve([])
-        : fetchConfiguredVerticals(session, effectiveConfig.marketplace);
+        : fetchConfiguredVerticals(session, effectiveConfig.marketplace, [], sellerAccount);
       const [catalogResult, configuredVerticals] = await Promise.all([
-        fetchBrandCatalogFromApi(session), configuredVerticalsPromise
+        fetchBrandCatalogFromApi(session, { marketplace: effectiveConfig.marketplace, sellerAccount }), configuredVerticalsPromise
       ]);
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals,

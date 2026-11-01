@@ -17,8 +17,22 @@ import { dayBefore } from '../routes/rateCard.js';
 /**
  * 1. Query real-time brand-wise and category-wise sample FSNs from orders table
  */
-export async function getRealTimeBrandFsnSamples(pool = null) {
+export async function getRealTimeBrandFsnSamples(pool = null, { marketplace = null, sellerAccount = null } = {}) {
   const p = pool || getPool();
+  const filters = [
+    "(marketplace ILIKE '%flipkart%' OR marketplace ILIKE '%shopsy%')",
+    "fsn IS NOT NULL AND fsn != ''",
+    "category IS NOT NULL AND category != ''"
+  ];
+  const params = [];
+  if (marketplace) {
+    params.push(marketplace);
+    filters.push(`marketplace = $${params.length}`);
+  }
+  if (sellerAccount) {
+    params.push(sellerAccount);
+    filters.push(`COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $${params.length}`);
+  }
   const query = `
     WITH ranked AS (
       SELECT 
@@ -35,9 +49,7 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
           PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand), ''), 'General')
         ) as order_count
       FROM orders
-      WHERE (marketplace ILIKE '%flipkart%' OR marketplace ILIKE '%shopsy%')
-        AND fsn IS NOT NULL AND fsn != ''
-        AND category IS NOT NULL AND category != ''
+      WHERE ${filters.join('\n        AND ')}
     )
     SELECT 
       marketplace, 
@@ -51,7 +63,7 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
     ORDER BY marketplace, category, order_count DESC;
   `;
 
-  const res = await p.query(query);
+  const res = await p.query(query, params);
   return res.rows;
 }
 

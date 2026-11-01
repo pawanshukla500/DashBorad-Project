@@ -230,6 +230,9 @@ test('configured category discovery normalizes marketplace before selecting chan
     requested.push(req.url);res.setHeader('Content-Type','application/json');
     if(req.url==='/api/health')return res.end(JSON.stringify({dataSource:'sql'}));
     const url=new URL(req.url,'http://localhost');
+    if(url.pathname==='/api/rate-card/brand-fsn-catalog')return res.end(JSON.stringify({success:true,catalog:[
+      {marketplace:'flipkart',category:'salwar_kurta_dupatta',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP'}
+    ]}));
     const type=url.pathname.split('/').at(-1);
     const marketplace=url.searchParams.get('marketplace');
     const flipkartCategories={commission:'kurta',fixed_fee:'dress',collection_fee:'sari',pick_pack:'gown',reverse_shipping:'top',franchise_fee:'fabric'};
@@ -244,16 +247,22 @@ test('configured category discovery normalizes marketplace before selecting chan
   globalThis.fetch=(url,options)=>String(url).startsWith(process.env.API_SERVER_URL)?originalFetch(url,options):Promise.reject(new Error('External network disabled in fixture test'));
   const client=await import('../workerClient.js');client.clearCachedActiveServer();
   try {
-    assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},'  FLIPKART '),
+    assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},'  FLIPKART ',[],'seller_ej'),
       ['kurta','dress','sari','gown','top','fabric']);
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('marketplace=flipkart')).length,6,
       'all six configured fee tables are read through the authenticated API');
+    assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('seller_account=seller_ej')).length,6,
+      'all six configured fee tables are scoped to the selected seller account');
     assert.equal(requested.some(url=>url.endsWith('marketplace=shopsy')),false,'Flipkart extraction must not add Shopsy categories');
     assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},' ShOpSy '),['shopsy_kurta','shopsy_sari']);
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('marketplace=shopsy')).length,6,
       'Shopsy categories are discovered independently from all six configured fee tables');
     assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},'flipkart_shopsy'),
       ['kurta','dress','sari','gown','top','fabric','shopsy_kurta','shopsy_sari']);
+    const catalog=await client.fetchBrandCatalogFromApi({idToken:'fixture'},{marketplace:'flipkart',sellerAccount:'seller_ej'});
+    assert.equal(catalog.catalog[0].sample_fsn,'ABCDEFGHIJKLMNOP');
+    assert(requested.some(url=>url==='/api/rate-card/brand-fsn-catalog?marketplace=flipkart&seller_account=seller_ej'),
+      'the authenticated FSN catalog request uses the same marketplace and seller account');
   } finally {
     client.clearCachedActiveServer();globalThis.fetch=originalFetch;
     if(previous.node===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=previous.node;
@@ -467,11 +476,12 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   const main=fs.readFileSync(new URL('../main.js',import.meta.url),'utf8');
   const start=main.indexOf('async function executeScrapeProcess');
   const loop=main.indexOf('for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)',start);
-  const catalog=main.indexOf('fetchBrandCatalogFromApi(session)',loop);
+  const catalog=main.indexOf('fetchBrandCatalogFromApi(session, { marketplace:',loop);
   assert.ok(start>=0 && loop>start && catalog>loop,'catalog lookup is inside the extraction retry loop');
   const server=fs.readFileSync(new URL('../desktopServer.mjs',import.meta.url),'utf8');
   assert.match(server,/scopeVerticals:\s*targetVerticals/,'the standalone scrape route passes its selected verticals to the scraper');
-  assert.match(server,/fetchConfiguredVerticals\(loadAuthSession\(\),\s*normalizedChannel\)/,'the standalone route uses its normalized marketplace for category discovery');
+  assert.match(server,/fetchConfiguredVerticals\(loadAuthSession\(\),\s*normalizedChannel,\s*\[\],\s*sellerAccount\)/,'the standalone route scopes category discovery to its seller account');
+  assert.match(server,/fetchBrandCatalogFromApi\(loadAuthSession\(\),\s*\{\s*marketplace:\s*normalizedChannel,\s*sellerAccount\s*\}\)/,'the standalone route scopes real FSN discovery to the same seller account');
   const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
   assert.match(renderer,/for\s*\(const fee of pickPackFees\)/,'unchanged observed FBF pick-and-pack fees are visible in review');
 });

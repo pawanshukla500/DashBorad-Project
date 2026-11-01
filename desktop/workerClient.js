@@ -110,9 +110,10 @@ async function safeFetch(url, { timeoutMs = 3000, ...options } = {}) {
   }
 }
 
-export async function fetchConfiguredVerticals(session, marketplace = 'both', selected = []) {
+export async function fetchConfiguredVerticals(session, marketplace = 'both', selected = [], sellerAccount = 'default') {
   const baseUrl = await getActiveBackendUrl();
   const normalizedMarketplace = String(marketplace || 'both').trim().toLowerCase();
+  const normalizedSellerAccount = String(sellerAccount || 'default').trim() || 'default';
   const channels = normalizedMarketplace === 'flipkart' ? ['flipkart'] : normalizedMarketplace === 'shopsy' ? ['shopsy'] : ['flipkart', 'shopsy'];
   // The merged /config/categories endpoint also includes vb_export_category
   // values from orders. Those master taxonomy labels are not the exact
@@ -121,7 +122,8 @@ export async function fetchConfiguredVerticals(session, marketplace = 'both', se
   const configTypes = ['commission', 'fixed_fee', 'collection_fee', 'pick_pack', 'reverse_shipping', 'franchise_fee'];
   const lists = await Promise.all(channels.map(async channel => {
     const tables = await Promise.all(configTypes.map(async type => {
-      const res = await safeFetch(`${baseUrl}/api/rate-card/config/${type}?marketplace=${channel}`, {
+      const query = new URLSearchParams({ marketplace: channel, seller_account: normalizedSellerAccount });
+      const res = await safeFetch(`${baseUrl}/api/rate-card/config/${type}?${query}`, {
         headers: getHeaders(session?.idToken, baseUrl)
       });
       const body = await res.json().catch(() => ({}));
@@ -259,9 +261,18 @@ export async function discardWorkerJobResults(session, jobId, workerId = null, r
   return await res.json();
 }
 
-export async function fetchBrandCatalogFromApi(session) {
+export async function fetchBrandCatalogFromApi(session, { marketplace, sellerAccount } = {}) {
   const baseUrl = await getActiveBackendUrl();
-  const res = await safeFetch(`${baseUrl}/api/rate-card/brand-fsn-catalog`, {
+  const query = new URLSearchParams();
+  const normalizedMarketplace = String(marketplace || '').trim().toLowerCase();
+  if (normalizedMarketplace === 'flipkart' || normalizedMarketplace === 'shopsy') {
+    query.set('marketplace', normalizedMarketplace);
+  }
+  if (sellerAccount !== undefined && sellerAccount !== null) {
+    query.set('seller_account', String(sellerAccount || 'default').trim() || 'default');
+  }
+  const suffix = query.toString();
+  const res = await safeFetch(`${baseUrl}/api/rate-card/brand-fsn-catalog${suffix ? `?${suffix}` : ''}`, {
     timeoutMs: 30000,
     method: 'GET',
     headers: getHeaders(session?.idToken, baseUrl)

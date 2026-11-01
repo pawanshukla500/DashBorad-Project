@@ -387,12 +387,13 @@ const serverWorker = createWorkerEngine({
   execute: async (session, job) => {
     const db = getStagingDb(USER_DATA_DIR), id = `job-${job.id}`;
     const authGeneration = stagedExtraction.authGeneration;
+    const sellerAccount = String(job.seller_account || job.parameters?.seller_account || 'default').trim() || 'default';
     try {
-      saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, parameters: job.parameters });
-      const fsnCatalog = (await fetchBrandCatalogFromApi(session)).catalog;
+      saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, seller_account: sellerAccount, parameters: job.parameters });
+      const fsnCatalog = (await fetchBrandCatalogFromApi(session, { marketplace: job.marketplace, sellerAccount })).catalog;
       const configuredVerticals = job.parameters?.verticals?.length
         ? []
-        : await fetchConfiguredVerticals(session, job.marketplace);
+        : await fetchConfiguredVerticals(session, job.marketplace, [], sellerAccount);
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals: job.parameters?.verticals,
         configuredVerticals,
@@ -403,7 +404,7 @@ const serverWorker = createWorkerEngine({
       if (!verticalSelection.complete) {
         throw new Error(`Worker job is incomplete: configured categories have no database FSNs: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}. Nothing was submitted.`);
       }
-      saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace,
+      saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, seller_account: sellerAccount,
         parameters: { ...job.parameters, coverage: verticalSelection } });
       const profileDir = getMarketplaceBrowserProfilePath(job.marketplace);
       const result = await withBrowserTask(async () => {
@@ -1352,10 +1353,14 @@ const server = http.createServer(async (req, res) => {
       const targetBrands = body.brands || config.selectedBrands;
       const selectedBrand = body.brand || 'all';
       const requestedVerticals = Array.isArray(body.verticals) ? body.verticals : [];
-      const fsnCatalog = (await fetchBrandCatalogFromApi(loadAuthSession())).catalog;
+      const sellerAccount = String(body.seller_account || body.options?.seller_account || config.seller_account || 'default').trim() || 'default';
+      if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
+        return sendJson(400, { success: false, error: 'Choose one valid seller account before starting a rate-card extraction.' });
+      }
+      const fsnCatalog = (await fetchBrandCatalogFromApi(loadAuthSession(), { marketplace: normalizedChannel, sellerAccount })).catalog;
       const configuredVerticals = requestedVerticals.length
         ? []
-        : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel);
+        : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel, [], sellerAccount);
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals,
         configuredVerticals,

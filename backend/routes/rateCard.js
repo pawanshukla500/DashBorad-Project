@@ -383,7 +383,10 @@ router.get('/config/:type', async (req, res) => {
        ORDER BY category, ${TABLE_EXTRA_COLUMNS[req.params.type].includes('brand_name') ? "NULLIF(brand_name,'') NULLS LAST, " : ""} price_min ${TABLE_EXTRA_COLUMNS[req.params.type].includes('weight_slab') ? ", weight_slab" : ""}`,
       [marketplace, sellerAccount],
     );
-    res.json({ rows });
+    // Legacy rows can contain display aliases (for example "salwar suit").
+    // The desktop worker matches configured categories to the FSN catalog, so
+    // return the same canonical category key used by rate-card calculations.
+    res.json({ rows: rows.map(row => ({ ...row, category: normalizeCategory(row.category) })) });
   } catch (e) {
     console.error('[rate-card/config]', e);
     res.status(e.status || 500).json({ error: e.message });
@@ -1700,11 +1703,23 @@ router.post('/check-category', async (req, res) => {
 router.get('/brand-fsn-catalog', async (req, res) => {
   try {
     const pool = getPool();
-    const catalog = await getRealTimeBrandFsnSamples(pool);
+    const rawMarketplace = String(req.query.marketplace || '').trim().toLowerCase();
+    if (rawMarketplace && !['flipkart', 'shopsy', 'both', 'flipkart_shopsy'].includes(rawMarketplace)) {
+      return res.status(400).json({ success: false, error: 'Marketplace must be Flipkart, Shopsy, or both.' });
+    }
+    const marketplace = ['flipkart', 'shopsy'].includes(rawMarketplace) ? rawMarketplace : null;
+    const sellerAccount = req.query.seller_account == null
+      ? null
+      : (String(req.query.seller_account).trim() || 'default');
+    if (sellerAccount && (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all')) {
+      return res.status(400).json({ success: false, error: 'Choose one valid seller account for the FSN catalog.' });
+    }
+    const catalog = await getRealTimeBrandFsnSamples(pool, { marketplace, sellerAccount });
+    const canonicalCatalog = catalog.map(row => ({ ...row, category: normalizeCategory(row.category) }));
     res.json({
       success: true,
-      count: catalog.length,
-      catalog
+      count: canonicalCatalog.length,
+      catalog: canonicalCatalog
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

@@ -9,6 +9,12 @@ let updateRows;
 function recorder(text, params) {
   const sql = String(text).replace(/\s+/g, ' ').trim();
   statements.push({ sql, params });
+  if (/^SELECT id, category, TO_CHAR\(start_date/i.test(sql)) {
+    return { rows: [{ id: 17, category: 'salwar suit', marketplace: 'flipkart', seller_account: 'seller_ej' }], rowCount: 1 };
+  }
+  if (/^WITH ranked AS/i.test(sql)) {
+    return { rows: [{ marketplace: 'flipkart', category: 'salwar suit', brand: 'Youthnic', sample_fsn: 'ABCDEFGHIJKLMNOP', sample_sku: 'SKU-EJ', order_count: 4 }], rowCount: 1 };
+  }
   if (/SELECT DISTINCT TO_CHAR\(start_date/i.test(sql)) {
     return { rows: [{ start_date: '2026-04-01' }], rowCount: 1 };
   }
@@ -55,6 +61,28 @@ const newPeriod = {
   end_date: null,
   rows: [{ brand_name: '', price_min: 0, price_max: 500, rate: 0.12 }],
 };
+
+describe('desktop category discovery API', () => {
+  it('normalizes legacy category aliases and reads configured rows for the requested seller account', async () => {
+    const response = await fetch(`${baseUrl}/config/commission?marketplace=flipkart&seller_account=seller_ej`);
+    const body = await response.json();
+    const read = statements.find(statement => statement.sql.startsWith('SELECT id, category, TO_CHAR'));
+
+    expect(response.status).toBe(200);
+    expect(read.params).toEqual(['flipkart', 'seller_ej']);
+    expect(body.rows[0].category).toBe('salwar_kurta_dupatta');
+  });
+
+  it('returns an account-scoped FSN catalog with canonical category keys', async () => {
+    const response = await fetch(`${baseUrl}/brand-fsn-catalog?marketplace=flipkart&seller_account=seller_ej`);
+    const body = await response.json();
+    const read = statements.find(statement => statement.sql.startsWith('WITH ranked AS'));
+
+    expect(response.status).toBe(200);
+    expect(read.params).toEqual(['flipkart', 'seller_ej']);
+    expect(body.catalog[0].category).toBe('salwar_kurta_dupatta');
+  });
+});
 
 describe('save-period — auto-close the current active rate', () => {
   it('ends every earlier period still running on the new start date, the day before, inside the save transaction', async () => {
