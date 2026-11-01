@@ -1,64 +1,15 @@
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { getPool } from '../db/index.js';
-import * as XLSX from 'xlsx';
-import fs from 'fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// The ES module build of SheetJS needs fs handed to it for readFile.
-XLSX.set_fs(fs);
+export const LEGACY_IMPORT_DISABLED_MESSAGE = 'The commission-only workbook importer is disabled because it bypasses complete Seller Hub extraction, review, and rate-period closure. Use the ReconCentral desktop app to review and publish rate cards.';
 
-dotenv.config({ path: path.resolve(fileURLToPath(import.meta.url), '../../.env') });
-
-async function importCommissions() {
-  const desktopPath = path.join(process.env.USERPROFILE || process.env.HOMEPATH || 'C:\\Users\\Pawan Shukla', 'Desktop', 'RateCard_Commission_Template.xlsx');
-  
-  if (!fs.existsSync(desktopPath)) {
-    console.error(`File not found: ${desktopPath}`);
-    process.exit(1);
-  }
-
-  try {
-    const wb = XLSX.readFile(desktopPath);
-    const ws = wb.Sheets["Commissions"];
-    if (!ws) {
-      throw new Error('Sheet "Commissions" not found.');
-    }
-    
-    const rows = XLSX.utils.sheet_to_json(ws);
-    console.log(`Found ${rows.length} rows to import.`);
-    
-    let imported = 0;
-    const pool = getPool();
-    
-    for (const row of rows) {
-      const marketplace = row.Marketplace || 'flipkart';
-      const category = row.Category;
-      const brand = row.Brand || '';
-      const minP = parseFloat(row['Min Price']) || 0;
-      const maxP = parseFloat(row['Max Price']) || 9999999;
-      const rate = parseFloat(row['Commission Rate (%)']);
-      
-      if (category && !isNaN(rate)) {
-        // Insert into rc_commission
-        await pool.query(`
-          INSERT INTO rc_commission (
-            marketplace, seller_account, category, brand_name, 
-            price_min, price_max, rate, start_date, end_date
-          ) VALUES (
-            $1, 'default', $2, $3, $4, $5, $6, '2020-01-01', NULL
-          )
-        `, [marketplace, category, brand, minP, maxP, rate]);
-        imported++;
-      }
-    }
-    
-    console.log(`Successfully imported ${imported} commission rates!`);
-    process.exit(0);
-  } catch(e) {
-    console.error('Error importing:', e);
-    process.exit(1);
-  }
+export async function importCommissions() {
+  throw new Error(LEGACY_IMPORT_DISABLED_MESSAGE);
 }
 
-importCommissions();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  importCommissions().catch(error => {
+    console.error(`[rate-card/import] ${error.message}`);
+    process.exitCode = 1;
+  });
+}
