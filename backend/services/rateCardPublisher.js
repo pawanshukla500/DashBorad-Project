@@ -1,5 +1,5 @@
 import { getPool } from '../db/index.js';
-import { clearRateCardCache, marketplaceCategoryAliases } from './rateCard.js';
+import { clearRateCardCache, normalizeMarketplaceCategory } from './rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
 import { RATE_TABLES, validateRateObservations, normalizeObservationRow, rateRowIdentity } from './rateCardObservationPlan.js';
@@ -62,15 +62,16 @@ export async function publishRateCardObservations(observations, options = {}) {
       if (!diff.newRow || sameDay) continue;
       const row = diff.newRow;
       const keys = ['category', ...descriptor.keys];
-      // Legacy category labels may normalize to this row's canonical key.
-      // Fetch those aliases, then compare the full natural identity below.
+      // Category normalization accepts arbitrary space/hyphen variants, so a
+      // finite SQL alias list can miss future rows. Restrict this read to the
+      // marketplace/account's future periods, then canonicalize before row matching.
       const future = await client.query(`SELECT * FROM ${descriptor.table}
         WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
-          AND start_date > $3 AND LOWER(TRIM(category)) = ANY($4::text[])`,
-        [marketplace, sellerAccount, effectiveDate,
-          marketplaceCategoryAliases(row.category, marketplace).map(value => value.toLowerCase())]);
+          AND start_date > $3`,
+        [marketplace, sellerAccount, effectiveDate]);
       const identity = rateRowIdentity(descriptor, row);
       const next = future.rows.filter(raw => iso(raw.start_date) > effectiveDate &&
+        normalizeMarketplaceCategory(raw.category, marketplace) === row.category &&
         rateRowIdentity(descriptor, normalizeObservationRow(descriptor, raw)) === identity)
         .map(raw => iso(raw.start_date)).sort()[0];
       const endDate = next ? before(next) : (iso(diff.oldRow?.end_date) || null);
