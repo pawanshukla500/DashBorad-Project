@@ -474,6 +474,15 @@ test('rate-card snapshot keeps seller accounts in separate cards', async () => {
   assert.ok(defaultCards.length>0 && defaultCards.every(card=>card.seller_account==='default'),'the visible review defaults to the same seller account used by publication');
 });
 
+test('standalone worker keeps requested published-rate workbook export when all profiles lack FSNs', () => {
+  const source = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
+  const emptyProfileBranch = source.slice(source.indexOf('if (rateCards.length === 0) {'), source.indexOf('console.log(`✓ Staged ${rateCards.length} rate card profiles.`)'));
+  assert.match(emptyProfileBranch, /await exportPublishedWorkbook\(pool, onProgress\)/,
+    'the zero-profile early exit still honors --export-excel using the read-only published-rate snapshot');
+  assert.match(source, /async function exportPublishedWorkbook\(pool, onProgress\)[\s\S]*?generateBrandwiseRateCardExcel\(targetPath, pool\)/,
+    'the workbook generator reads published database rates rather than generating fee estimates');
+});
+
 test('review helpers do not mark incomplete errors as success or duplicate active rate details', () => {
   const source=fs.readFileSync(new URL('../ui/reviewHelpers.js',import.meta.url),'utf8');
   const context={window:{}};vm.runInNewContext(source,context);
