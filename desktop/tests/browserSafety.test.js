@@ -1,5 +1,5 @@
 import { buildFsnPlan, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, normalizeScrapeVertical, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals, uncoveredCategoriesForMarketplace } from '../fsnPlan.js';
-import { normalizeScrapedCards, resolveSellerAccountForRateCards } from '../scrapeResults.js';
+import { captureScrapeAuthContext, createStagedExtractionState, isScrapeAuthContextCurrent, normalizeScrapedCards, resolveSellerAccountForRateCards } from '../scrapeResults.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -523,6 +523,18 @@ test('scrape diagnostics skip screenshots when editable controls cannot be redac
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
+test('standalone scrape auth context rejects stale account and generation results', () => {
+  const state = createStagedExtractionState();
+  const session = { user: { firebase_uid: 'user-1' } };
+  const context = captureScrapeAuthContext(state, session);
+  assert.equal(isScrapeAuthContextCurrent(state, context, session), true);
+  assert.throws(() => captureScrapeAuthContext(state, { user: null }), /authenticated ReconCentral account/);
+
+  state.resetForAuthChange();
+  assert.equal(isScrapeAuthContextCurrent(state, context, session), false, 'a same-user re-login still invalidates the in-flight request');
+  assert.equal(isScrapeAuthContextCurrent(state, context, { user: { firebase_uid: 'user-2' } }), false);
+});
+
 test('desktop fixes retry backend discovery and render unchanged pick-pack rows', () => {
   const main=fs.readFileSync(new URL('../main.js',import.meta.url),'utf8');
   const start=main.indexOf('async function executeScrapeProcess');
@@ -531,11 +543,20 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   assert.ok(start>=0 && loop>start && catalog>loop,'catalog lookup is inside the extraction retry loop');
   const server=fs.readFileSync(new URL('../desktopServer.mjs',import.meta.url),'utf8');
   assert.match(server,/scopeVerticals:\s*targetVerticals/,'the standalone scrape route passes its selected verticals to the scraper');
-  assert.match(server,/fetchConfiguredVerticals\(loadAuthSession\(\),\s*normalizedChannel,\s*\[\],\s*sellerAccount\)/,'the standalone route scopes category discovery to its seller account');
-  assert.match(server,/fetchBrandCatalogFromApi\(loadAuthSession\(\),\s*\{\s*marketplace:\s*normalizedChannel,\s*sellerAccount\s*\}\)/,'the standalone route scopes real FSN discovery to the same seller account');
+  const scrapeRouteStart=server.indexOf("if (pathname === '/api/scrape/start'");
+  const scrapeRouteEnd=server.indexOf('// GET /api/desktop/marketplaces',scrapeRouteStart);
+  const scrapeRoute=server.slice(scrapeRouteStart,scrapeRouteEnd);
+  assert.ok(scrapeRoute.indexOf('captureScrapeAuthContext(stagedExtraction, requestSession)') < scrapeRoute.indexOf('await parseJsonBody()'),
+    'the standalone route captures the authorized account before request-body and API awaits');
+  assert.match(scrapeRoute,/fetchConfiguredVerticals\(requestSession,\s*normalizedChannel,\s*\[\],\s*sellerAccount\)/,'the standalone route uses the captured session for category discovery');
+  assert.match(scrapeRoute,/fetchBrandCatalogFromApi\(requestSession,\s*\{\s*marketplace:\s*normalizedChannel,\s*sellerAccount\s*\}\)/,'the standalone route uses the captured session for FSN discovery');
+  assert.match(scrapeRoute,/supersedeReviews\(getStagingDb\(USER_DATA_DIR\),\s*requestAuthContext\.userId\)/,'the standalone route supersedes reviews only for the captured account');
+  assert.match(scrapeRoute,/stageReview\(getStagingDb\(USER_DATA_DIR\),\s*`review-\$\{Date\.now\(\)\}`,\s*requestAuthContext\.userId/,'the standalone route stages results under the captured account');
+  assert.ok(scrapeRoute.indexOf('if (!isRequestAuthCurrent())') < scrapeRoute.indexOf('supersedeReviews('),
+    'the standalone route rechecks account identity before invalidating prior staging');
   assert.match(main,/const configuredVerticalsPromise = fetchConfiguredVerticals\(session, effectiveConfig\.marketplace, \[\], sellerAccount\)/,
     'explicit category runs still discover all configured categories for completeness checks');
-  assert.match(server,/const configuredVerticals = await fetchConfiguredVerticals\(loadAuthSession\(\), normalizedChannel, \[\], sellerAccount\)/,
+  assert.match(scrapeRoute,/const configuredVerticals = await fetchConfiguredVerticals\(requestSession, normalizedChannel, \[\], sellerAccount\)/,
     'the standalone route discovers configured categories even for explicit requests');
   const workerStart=server.indexOf('const serverWorker = createWorkerEngine');
   const workerEnd=server.indexOf('const sseClients = new Set()',workerStart);

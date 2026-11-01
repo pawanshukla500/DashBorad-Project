@@ -34,7 +34,7 @@ import {
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
-import { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
+import { captureScrapeAuthContext, createStagedExtractionState, isScrapeAuthContextCurrent, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import {
   authorizeDesktopRequest, bindBrowserSession, expiredBrowserCookie,
@@ -1334,7 +1334,15 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/scrape/start
     if (pathname === '/api/scrape/start' && req.method === 'POST') {
-      if (!(await requireDesktopAuth())) return;
+      const requestSession = await requireDesktopAuth();
+      if (!requestSession) return;
+      let requestAuthContext;
+      try {
+        requestAuthContext = captureScrapeAuthContext(stagedExtraction, requestSession);
+      } catch (error) {
+        return sendJson(401, { success: false, authenticated: false, error: error.message });
+      }
+      const isRequestAuthCurrent = () => isScrapeAuthContextCurrent(stagedExtraction, requestAuthContext, loadAuthSession());
       if (activeScrapeJob.running) {
         return sendJson(409, { success: false, error: 'A scraping job is already running.' });
       }
@@ -1345,6 +1353,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await parseJsonBody();
+      if (!isRequestAuthCurrent()) {
+        return sendJson(409, { success: false, error: 'The ReconCentral account changed while the scrape request was being prepared. Start the extraction again.' });
+      }
       const config = loadConfig();
       const targetMp = body.marketplace || config.marketplace || 'both';
       const normalizedChannel = String(targetMp).toLowerCase().trim();
@@ -1372,8 +1383,14 @@ const server = http.createServer(async (req, res) => {
       if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
         return sendJson(400, { success: false, error: 'Choose one valid seller account before starting a rate-card extraction.' });
       }
-      const fsnCatalog = (await fetchBrandCatalogFromApi(loadAuthSession(), { marketplace: normalizedChannel, sellerAccount })).catalog;
-      const configuredVerticals = await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel, [], sellerAccount);
+      const fsnCatalog = (await fetchBrandCatalogFromApi(requestSession, { marketplace: normalizedChannel, sellerAccount })).catalog;
+      if (!isRequestAuthCurrent()) {
+        return sendJson(409, { success: false, error: 'The ReconCentral account changed during FSN discovery. Start the extraction again.' });
+      }
+      const configuredVerticals = await fetchConfiguredVerticals(requestSession, normalizedChannel, [], sellerAccount);
+      if (!isRequestAuthCurrent()) {
+        return sendJson(409, { success: false, error: 'The ReconCentral account changed during category discovery. Start the extraction again.' });
+      }
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals,
         configuredVerticals,
@@ -1392,11 +1409,13 @@ const server = http.createServer(async (req, res) => {
 
       // A new run supersedes the previous staging; a failed run must not leave
       // old cards syncable. Wipe only once the request has been fully accepted.
+      if (!isRequestAuthCurrent()) {
+        return sendJson(409, { success: false, error: 'The ReconCentral account changed before the extraction started. Start the extraction again.' });
+      }
       stagedExtraction.cards = [];
       stagedExtraction.coverage = null;
       stagedExtraction.review = null;
-      supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
-      const jobAuthGeneration = stagedExtraction.authGeneration;
+      supersedeReviews(getStagingDb(USER_DATA_DIR), requestAuthContext.userId);
 
       activeScrapeJob = {
         running: true,
@@ -1468,13 +1487,13 @@ const server = http.createServer(async (req, res) => {
           });
 
           result.coverage = verticalSelection;
-          if (result.success && jobAuthGeneration !== stagedExtraction.authGeneration) {
+          if (result.success && !isRequestAuthCurrent()) {
             result.success = false;
             result.error = 'The account changed while the extraction was running. Results were discarded; run the extraction again.';
           } else if (result.success) {
             try {
               const cards = normalizeScrapedCards(result.data);
-              stageReview(getStagingDb(USER_DATA_DIR), `review-${Date.now()}`, loadAuthSession().user.firebase_uid, cards[0].marketplace, cards,
+              stageReview(getStagingDb(USER_DATA_DIR), `review-${Date.now()}`, requestAuthContext.userId, cards[0].marketplace, cards,
                 { coverage: verticalSelection, seller_account: sellerAccount });
               stagedExtraction.cards = cards;
               stagedExtraction.coverage = verticalSelection;
