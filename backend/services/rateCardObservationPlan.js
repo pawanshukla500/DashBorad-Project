@@ -201,8 +201,9 @@ export async function planRateCardChanges(client, observations, { marketplace, s
         WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
           AND start_date > $3`, [marketplace, sellerAccount, effectiveDate]);
       for (const diff of changedRows) {
+        const targetScope = scope(descriptor, diff.newRow, marketplace);
         const nextPeriod = (future.rows || []).filter(raw => dateOnly(raw.start_date) > effectiveDate &&
-          normalizeMarketplaceCategory(raw.category, marketplace) === diff.category &&
+          rawScope(descriptor, raw, marketplace) === targetScope &&
           rateRowIdentity(descriptor, normalizeObservationRow(descriptor, raw)) === rateRowIdentity(descriptor, diff.newRow))
           .map(raw => dateOnly(raw.start_date)).sort()[0] || null;
         diff.nextPeriodStart = nextPeriod;

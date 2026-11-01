@@ -134,6 +134,38 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
     } finally { client.release(); }
   });
 
+  it('preserves the configured end date and gap before a later scheduled period in PostgreSQL', async () => {
+    const observations = cards().map(card => ({ ...card, vertical: 'intentional_gap', category: 'intentional_gap' }));
+    const client = await scoped.connect();
+    try {
+      const descriptor = RATE_TABLES.find(item => item.table === 'rc_commission');
+      const commission = normalizeObservationRow(descriptor, observations[0].commissions[0], observations[0]);
+      const columns = ['marketplace', 'seller_account', 'category', 'brand_name', 'start_date', 'end_date', 'price_min', 'price_max', 'rate'];
+      await client.query(`INSERT INTO rc_commission (${columns.join(',')}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        ['flipkart', 'default', commission.category, commission.brand_name, '2026-10-01', '2026-11-15', commission.price_min, commission.price_max, 0.2]);
+      await client.query(`INSERT INTO rc_commission (${columns.join(',')}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        ['flipkart', 'default', commission.category, commission.brand_name, '2026-12-01', null, commission.price_min, commission.price_max, 0.18]);
+
+      const review = await compareScrapedRatesWithActive(observations, {
+        marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30', dbClient: client,
+      });
+      await publishRateCardObservations(observations, {
+        pool: scoped, marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30',
+        publishedBy: 'integration-fixture', reviewFingerprint: review.fingerprint,
+      });
+
+      const periods = await client.query(`SELECT TO_CHAR(start_date,'YYYY-MM-DD') AS start_date,
+          TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, rate FROM rc_commission
+        WHERE category = 'intentional_gap' ORDER BY start_date`);
+      expect(periods.rows).toHaveLength(3);
+      expect(periods.rows.map(row => [row.start_date, row.end_date])).toEqual([
+        ['2026-10-01', '2026-10-29'],
+        ['2026-10-30', '2026-11-15'],
+        ['2026-12-01', null],
+      ]);
+    } finally { client.release(); }
+  });
+
   it('compares NULL and blank legacy account rows as default without inserting duplicates',async()=>{
     const observations = ['legacy_null', 'legacy_blank'].flatMap((category, index) =>
       cards().map(card => ({ ...card, vertical: category, category })));

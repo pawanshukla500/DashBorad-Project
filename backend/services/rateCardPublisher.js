@@ -11,6 +11,11 @@ const before = date => {
   return value.toISOString().slice(0, 10);
 };
 const iso = date => date instanceof Date ? date.toISOString().slice(0, 10) : date;
+const replacementEndDate = (existingEnd, nextStart) => {
+  const configuredEnd = iso(existingEnd) || null;
+  const scheduledEnd = nextStart ? before(nextStart) : null;
+  return scheduledEnd && (!configuredEnd || configuredEnd > scheduledEnd) ? scheduledEnd : configuredEnd;
+};
 
 export async function publishRateCardObservations(observations, options = {}) {
   const { marketplace = 'flipkart', sellerAccount = 'default', publishedBy,
@@ -55,9 +60,7 @@ export async function publishRateCardObservations(observations, options = {}) {
         if (sameDay && !diff.newRow) {
           await client.query(`DELETE FROM ${descriptor.table} WHERE id = $1`, [diff.oldRow.id]);
         } else if (sameDay) {
-          const existingEnd = iso(diff.oldRow.end_date) || null;
-          const futureEnd = nextStart ? before(nextStart) : null;
-          const endDate = futureEnd && (!existingEnd || existingEnd > futureEnd) ? futureEnd : existingEnd;
+          const endDate = replacementEndDate(diff.oldRow.end_date, nextStart);
           await client.query(`UPDATE ${descriptor.table} SET end_date = $2, ${descriptor.values.map((k, i) => `${k} = $${i + 3}`).join(', ')}, updated_at = NOW() WHERE id = $1`,
             [diff.oldRow.id, endDate, ...descriptor.values.map(k => row[k])]);
         } else {
@@ -66,7 +69,9 @@ export async function publishRateCardObservations(observations, options = {}) {
       }
       if (!diff.newRow || sameDay) continue;
       const keys = ['category', ...descriptor.keys];
-      const endDate = nextStart ? before(nextStart) : (iso(diff.oldRow?.end_date) || null);
+      // A scheduled gap is intentional: replacement rates inherit the prior
+      // row's configured end when it precedes the next scheduled period.
+      const endDate = replacementEndDate(diff.oldRow?.end_date, nextStart);
       const columns = ['marketplace', 'seller_account', 'start_date', 'end_date', ...keys, ...descriptor.values];
       const values = [marketplace, sellerAccount, effectiveDate, endDate, ...keys.map(k => row[k]), ...descriptor.values.map(k => row[k])];
       await client.query(`INSERT INTO ${descriptor.table} (${columns.join(', ')}) VALUES (${values.map((_, i) => `$${i + 1}`).join(', ')})`, values);

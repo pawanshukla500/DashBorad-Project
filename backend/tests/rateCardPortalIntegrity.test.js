@@ -153,6 +153,26 @@ describe('Portal observations and reviewed publication', () => {
     expect(update[1].slice(0, 2)).toEqual([db.tables.rc_commission[0].id, '2026-11-30']);
   });
 
+  it('preserves an intentional gap when a replacement row ends before the next scheduled period', async () => {
+    const db = database();
+    db.tables.rc_commission[0].rate = 0.25;
+    db.tables.rc_commission[0].end_date = '2026-11-15';
+    const future = { ...db.tables.rc_commission[0], id: 903, start_date: '2026-12-01', end_date: null, rate: 0.18 };
+    const originalQuery = db.client.query.getMockImplementation();
+    db.client.query.mockImplementation(async (sql, params) => {
+      if (String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission')) return { rows: [future] };
+      return originalQuery(sql, params);
+    });
+
+    const review = await compare(db);
+    await publishRateCardObservations(cards(), {
+      pool: db.pool, publishedBy: 'fixture', effectiveDate: date, reviewFingerprint: review.fingerprint,
+    });
+
+    const insert = mutations(db).find(([sql]) => sql.startsWith('INSERT INTO rc_commission'));
+    expect(insert[1][3]).toBe('2026-11-15');
+  });
+
   it('loads future periods once per changed table per review and publication pass', async () => {
     const first = cards()[0];
     const second = { ...structuredClone(first), brand: 'Sangria' };
@@ -191,6 +211,23 @@ describe('Portal observations and reviewed publication', () => {
       pool: db.pool, publishedBy: 'fixture', effectiveDate: date, reviewFingerprint: review.fingerprint,
     })).rejects.toThrow(/REVIEW_STALE/);
     expect(mutations(db)).toEqual([]);
+  });
+
+  it('does not normalize malformed future commission rows for a different brand', async () => {
+    const db = database();
+    db.tables.rc_commission[0].rate = 0.25;
+    const malformedOtherBrand = {
+      ...db.tables.rc_commission[0], id: 904, brand_name: 'Other Brand',
+      start_date: '2026-12-01', end_date: null, price_min: null, rate: 'not-a-rate',
+    };
+    const originalQuery = db.client.query.getMockImplementation();
+    db.client.query.mockImplementation(async (sql, params) => {
+      if (String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission')) return { rows: [malformedOtherBrand] };
+      return originalQuery(sql, params);
+    });
+
+    const review = await compare(db);
+    expect(review.diffs.find(diff => diff.table === 'rc_commission').nextPeriodStart).toBeNull();
   });
 
   it('rejects observations from another seller account before opening a publish transaction', async () => {

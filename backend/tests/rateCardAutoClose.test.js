@@ -180,8 +180,11 @@ describe('close-period — resolve an overlap left by earlier saves', () => {
     const response = await post('/config/fixed_fee/close-period', { ...period, close_on: '2026-08-31' });
     expect(response.status).toBe(200);
     const update = statements.find(s => s.sql.startsWith('UPDATE rc_fixed_fee'));
+    const lock = statements.findIndex(s => s.sql.includes("hashtext('rate_card_publish_lock')"));
     expect(update.sql).toContain('start_date IS NOT DISTINCT FROM $4::date AND end_date IS NOT DISTINCT FROM $5::date');
     expect(update.params).toEqual(['kurta', 'flipkart', 'default', '2026-04-01', null, '2026-08-31', 'kurta']);
+    expect(lock).toBeGreaterThan(statements.findIndex(s => s.sql === 'BEGIN'));
+    expect(lock).toBeLessThan(statements.indexOf(update));
   });
 
   it.each([
@@ -199,6 +202,58 @@ describe('close-period — resolve an overlap left by earlier saves', () => {
     updateRows = [];
     const response = await post('/config/fixed_fee/close-period', { ...period, close_on: '2026-08-31' });
     expect(response.status).toBe(404);
+  });
+});
+
+describe('rate-card mutation serialization', () => {
+  it('takes the publication lock before single-row insert, update, and delete writes', async () => {
+    const operations = [
+      { method: 'POST', path: '/config/commission', sql: 'INSERT INTO rc_commission', body: {
+        category: 'kurta', marketplace: 'flipkart', seller_account: 'default', start_date: '2026-10-01',
+        price_min: 0, price_max: 500, brand_name: '', rate: 0.12,
+      } },
+      { method: 'PUT', path: '/config/commission/17', sql: 'UPDATE rc_commission', body: { rate: 0.12 } },
+      { method: 'DELETE', path: '/config/commission/17', sql: 'DELETE FROM rc_commission' },
+    ];
+    for (const operation of operations) {
+      statements = [];
+      const response = await fetch(`${baseUrl}${operation.path}`, {
+        method: operation.method,
+        headers: { 'Content-Type': 'application/json' },
+        ...(operation.body ? { body: JSON.stringify(operation.body) } : {}),
+      });
+      expect(response.status, operation.method).toBe(200);
+      const mutationIndex = statements.findIndex(s => s.sql.startsWith(operation.sql));
+      const lockIndex = statements.findIndex(s => s.sql.includes("hashtext('rate_card_publish_lock')"));
+      expect(statements[0].sql).toBe('BEGIN');
+      expect(lockIndex).toBeGreaterThan(0);
+      expect(lockIndex).toBeLessThan(mutationIndex);
+      expect(statements.at(-1).sql).toBe('COMMIT');
+    }
+  });
+
+  it('locks before reading periods for auto-close-superseded', async () => {
+    const response = await post('/config/fixed_fee/auto-close-superseded', {
+      marketplace: 'flipkart', seller_account: 'default',
+    });
+    expect(response.status).toBe(200);
+    const lockIndex = statements.findIndex(s => s.sql.includes("hashtext('rate_card_publish_lock')"));
+    const readIndex = statements.findIndex(s => s.sql.startsWith('SELECT category, TO_CHAR'));
+    expect(statements[0].sql).toBe('BEGIN');
+    expect(lockIndex).toBeGreaterThan(0);
+    expect(lockIndex).toBeLessThan(readIndex);
+    expect(statements.at(-1).sql).toBe('COMMIT');
+  });
+
+  it('locks before loading the rollback snapshot and does not mutate when it is missing', async () => {
+    const response = await post('/versions/999/rollback', {});
+    expect(response.status).toBe(404);
+    const lockIndex = statements.findIndex(s => s.sql.includes("hashtext('rate_card_publish_lock')"));
+    const versionReadIndex = statements.findIndex(s => s.sql === 'SELECT * FROM rate_card_versions WHERE id = $1');
+    expect(statements[0].sql).toBe('BEGIN');
+    expect(lockIndex).toBeGreaterThan(0);
+    expect(lockIndex).toBeLessThan(versionReadIndex);
+    expect(statements.at(-1).sql).toBe('ROLLBACK');
   });
 });
 
