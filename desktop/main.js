@@ -367,10 +367,8 @@ const DEFAULT_CONFIG = {
   scheduledMinute: 0,
   notificationEmail: 'payments@youthnic.shop',
   selectedBrands: ['Ethnic Junction', 'Youthnic', 'Sangria', 'Divastri', 'General'],
-  selectedVerticals: [
-    'ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric',
-    'blouse', 'lehenga_choli', 'gown', 'shopsy_kurta', 'shopsy_ethnic_set'
-  ],
+  // Category scope is discovered from the authenticated backend at run time.
+  selectedVerticals: [],
   accounts: {
     flipkart_shopsy: { email: 'Vbexports@outlook.com', portalUrl: 'https://seller.flipkart.com' },
     myntra_vb: { email: 'returnorders@vbexports.co.in', sellerId: '10708', portalUrl: 'https://partnerportal.myntra.com' },
@@ -1231,25 +1229,25 @@ async function executeScrapeProcess(config, onProgress) {
     try {
       // Keep API dataset discovery inside the retry boundary so transient
       // backend failures can use the configured second attempt.
+      const requestedVerticals = Array.isArray(effectiveConfig.scopeVerticals)
+        ? effectiveConfig.scopeVerticals
+        : [];
+      const configuredVerticalsPromise = requestedVerticals.length
+        ? Promise.resolve([])
+        : fetchConfiguredVerticals(session, effectiveConfig.marketplace);
+      const [catalogResult, configuredVerticals] = await Promise.all([
+        fetchBrandCatalogFromApi(session), configuredVerticalsPromise
+      ]);
       const verticalSelection = resolveScrapeVerticals({
-        requestedVerticals: effectiveConfig.scopeVerticals,
-        savedVerticals: effectiveConfig.selectedVerticals,
+        requestedVerticals,
+        configuredVerticals,
         brand: effectiveConfig.brand || 'all'
       });
-      const selectedVerticals = verticalSelection.scopeVerticals;
-      const requiredVerticalsPromise = Array.isArray(effectiveConfig.requiredVerticals)
-        ? Promise.resolve(effectiveConfig.requiredVerticals)
-        : selectedVerticals.length
-          ? Promise.resolve(verticalSelection.requiredVerticals)
-          : effectiveConfig.brand && effectiveConfig.brand !== 'all'
-            ? Promise.resolve([])
-            : fetchConfiguredVerticals(session, effectiveConfig.marketplace);
-      const [catalogResult, requiredVerticals] = await Promise.all([
-        fetchBrandCatalogFromApi(session), requiredVerticalsPromise
-      ]);
       effectiveConfig.fsnCatalog = catalogResult.catalog;
-      effectiveConfig.requiredVerticals = requiredVerticals;
-      effectiveConfig.scopeVerticals = selectedVerticals;
+      effectiveConfig.requiredVerticals = Array.isArray(effectiveConfig.requiredVerticals) && effectiveConfig.requiredVerticals.length
+        ? effectiveConfig.requiredVerticals
+        : verticalSelection.requiredVerticals;
+      effectiveConfig.scopeVerticals = verticalSelection.scopeVerticals;
 
       if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
         broadcastMonitorState({
@@ -1966,7 +1964,7 @@ registerHandler('start-scrape', async (e, options) => {
   const selectedBrand = options?.brand || 'all';
   const verticalSelection = resolveScrapeVerticals({
     requestedVerticals: options?.verticals,
-    savedVerticals: config.selectedVerticals,
+    configuredVerticals: [],
     brand: selectedBrand
   });
   const mergedOptions = {
@@ -2054,19 +2052,20 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
     const review = recoverReview(getStagingDb(USER_DATA_DIR), session.user.firebase_uid);
     if (review) stagedExtraction.cards = review.cards;
   }
-  const config = loadConfig();
-  if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+  if (!stagedExtraction.cards.length) {
+    return {
+      success: false,
+      rateCards: [],
+      canSync: false,
+      error: 'No successful local extraction is staged. Run the scraper before reviewing rate changes.'
+    };
+  }
   try {
-    const { buildBrandRateCardSet } = await import('./rateCardService.js');
-    const { getDesktopPool } = await import('./db.js');
     const sellerAccount = String(options.seller_account || 'default').trim() || 'default';
     if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
       return { success: false, error: 'Choose one valid seller account for the rate review.' };
     }
-    // Staged extractions are reviewable without a database; templates need one.
-    const rateCards = stagedExtraction.cards.length
-      ? stagedExtraction.cards
-      : await buildBrandRateCardSet(getDesktopPool(config.databaseUrl), sellerAccount);
+    const rateCards = stagedExtraction.cards;
     const targetMp = String(options.marketplace || options.channel || 'flipkart').toLowerCase().trim();
     if (!['flipkart', 'shopsy'].includes(targetMp)) {
       return { success: false, error: 'Choose Flipkart or Shopsy for a separate rate review.' };

@@ -744,6 +744,16 @@ async function runTests() {
     assert(guardCount >= 3, `stale responses must be dropped after each await, including the catch path (found ${guardCount} guards)`);
   });
 
+  await runTest('rate review requires local extraction and avoids direct PostgreSQL fallback', async () => {
+    const mainSource = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+    const handlerIdx = mainSource.indexOf("registerHandler('get-ratecard-preview'");
+    assert(handlerIdx !== -1, 'get-ratecard-preview handler not found');
+    const handlerWindow = mainSource.slice(handlerIdx, handlerIdx + 1800);
+    assert(handlerWindow.includes('No successful local extraction is staged'), 'preview must explain that extraction is required');
+    assert(!handlerWindow.includes('getDesktopPool'), 'rate review preview must not open direct PostgreSQL connections');
+    assert(!handlerWindow.includes('buildBrandRateCardSet'), 'empty reviews must not manufacture a database-derived preview');
+  });
+
   await runTest('Linux installer verifies runtime modules resolve before skipping npm install', async () => {
     const installer = fs.readFileSync(path.join(path.resolve(desktopDir, '..'), 'released', 'linux', 'install-linux.sh'), 'utf8');
     // Old node_modules directories predate puppeteer-core; the installer must

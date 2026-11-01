@@ -236,12 +236,15 @@ test('database FSN plan covers every brand/category/channel without static verti
   assert.equal(buildFsnPlan(catalog,{brand:'sangria'}).length,1);
   assert.equal(buildFsnPlan(catalog,{brand:'sangria',verticals:['kurta','dress']}).length,1,
     'selecting a brand does not require it to have an FSN in every configured category');
-  assert.deepEqual(resolveScrapeVerticals({savedVerticals:['kurta','dress'],brand:'all'}),
+  assert.deepEqual(resolveScrapeVerticals({configuredVerticals:['kurta','dress'],brand:'all'}),
     {scopeVerticals:['kurta','dress'],requiredVerticals:['kurta','dress']});
-  assert.deepEqual(resolveScrapeVerticals({savedVerticals:['kurta','dress'],brand:'sangria'}),
+  assert.deepEqual(resolveScrapeVerticals({configuredVerticals:['kurta','dress'],brand:'sangria'}),
     {scopeVerticals:['kurta','dress'],requiredVerticals:[]});
-  assert.deepEqual(resolveScrapeVerticals({requestedVerticals:['kurta'],savedVerticals:['dress'],brand:'sangria'}),
+  assert.deepEqual(resolveScrapeVerticals({requestedVerticals:['kurta'],configuredVerticals:['dress'],brand:'sangria'}),
     {scopeVerticals:['kurta'],requiredVerticals:['kurta']});
+  assert.deepEqual(resolveScrapeVerticals({configuredVerticals:[' kurta ', 'kurta', 'dress'], savedVerticals:['blouse'], brand:'all'}),
+    {scopeVerticals:['kurta','dress'],requiredVerticals:['kurta','dress']},
+    'live backend categories replace stale category defaults from older worker configs');
   assert.throws(()=>buildFsnPlan(catalog,{verticals:['missing']}),/No database FSN/);
   assert.throws(()=>buildFsnPlan([{...catalog[0],sample_fsn:''}]),/invalid real FSN/);
   const raw=catalog.slice(0,2).flatMap(t=>['FBF','NON_FBF'].map(fulfilment_type=>({...t,vertical:t.category,fulfilment_type,commissions:[{price_min:0,price_max:500,rate:t.brand==='Sangria'?0.12:0.15}]})));
