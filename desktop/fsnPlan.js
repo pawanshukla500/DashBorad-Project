@@ -56,21 +56,26 @@ export function resolveFsnBackedScrapeVerticals({
   const configured = normalize(configuredVerticals);
   const available = catalogVerticals(catalog, { marketplace, brand });
   const explicit = requested.length > 0;
+  const availableAcrossBrands = explicit
+    ? catalogVerticals(catalog, { marketplace, brand: 'all' })
+    : available;
+  if (!configured.length) {
+    throw new Error('No configured rate-card categories were returned. Extraction was not started.');
+  }
   const unavailableRequestedVerticals = explicit
     ? requested.filter(category => !available.includes(category))
     : [];
   if (unavailableRequestedVerticals.length) {
     throw new Error(`Selected categories have no database FSNs for the selected marketplace and brand: ${unavailableRequestedVerticals.join(', ')}. Nothing was scraped.`);
   }
-  if (!explicit && !configured.length) {
-    throw new Error('No configured rate-card categories were returned. Extraction was not started.');
-  }
   const scopeVerticals = explicit ? requested : configured.filter(category => available.includes(category));
   if (!explicit && !scopeVerticals.length) {
     throw new Error('No configured rate-card category has a database FSN for the selected marketplace and brand. Extraction was not started.');
   }
   const requiredVerticals = explicit ? requested : scopeVerticals;
-  const unavailableConfiguredVerticals = explicit || (brand && brand !== 'all')
+  const unavailableConfiguredVerticals = explicit
+    ? configured.filter(category => !availableAcrossBrands.includes(category))
+    : (brand && brand !== 'all')
     ? []
     : configured.filter(category => !available.includes(category));
   const incompleteByMarketplace = { flipkart: [], shopsy: [] };
@@ -99,6 +104,15 @@ export function missingFsnCategoriesForMarketplace(coverage, marketplace) {
   return [...new Set(['flipkart', 'shopsy'].flatMap(channel =>
     Array.isArray(byMarketplace[channel]) ? byMarketplace[channel] : []
   ))];
+}
+
+export function hasKnownMarketplaceFsnCoverage(coverage, marketplace) {
+  const target = String(marketplace || '').trim().toLowerCase();
+  if (!['flipkart', 'shopsy'].includes(target)) return false;
+  return Array.isArray(coverage?.configuredVerticals) && coverage.configuredVerticals.length > 0 &&
+    Array.isArray(coverage?.scopeVerticals) &&
+    Array.isArray(coverage?.incompleteByMarketplace?.[target]) &&
+    typeof coverage.complete === 'boolean';
 }
 
 export function buildFsnPlan(catalog, { marketplace = 'both', brand = 'all', verticals, requiredVerticals } = {}) {

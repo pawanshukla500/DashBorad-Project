@@ -1,5 +1,5 @@
-import { buildFsnPlan, missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from '../fsnPlan.js';
-import { normalizeScrapedCards } from '../scrapeResults.js';
+import { buildFsnPlan, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from '../fsnPlan.js';
+import { normalizeScrapedCards, resolveSellerAccountForRateCards } from '../scrapeResults.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -124,7 +124,8 @@ test('response capture rejects stale category/mode/date data and incomplete resp
   for(const [key,fee] of Object.entries(fixture.fees))observe(key,fee);
   const snapshot=capture.snapshot(context);
   assert.deepEqual(snapshot.missing,[]);
-  const parsed=parsePortalRateSnapshot(snapshot,{vertical:'kurta',marketplace:'flipkart',fulfilment:'FBF',effectiveDate:'2026-10-30',portalVertical:'kurta'});
+  const parsed=parsePortalRateSnapshot(snapshot,{vertical:'kurta',marketplace:'flipkart',fulfilment:'FBF',effectiveDate:'2026-10-30',portalVertical:'kurta',sellerAccount:'seller-ej'});
+  assert.equal(parsed.seller_account,'seller-ej','the account selected for FSN discovery stays attached to Seller Hub observations');
   assert.equal(parsed.reverseShipping[0].national_additional_fee,4);
   assert.equal(parsed.commissions[0].price_max,10000000);
   const changed=structuredClone(fixture.fees.platformFee);changed.slabs.asp[0].agreementParameters.fixedRate='13%';
@@ -147,13 +148,16 @@ test('SQLite review survives restart, rejects a different owner and rolls back a
     saveStagedObservations(db,'interrupted',[{category:'shopsy_kurta',commissions:[{rate:0}]}]);
     closeStagingDb();db=getStagingDb(dir);
     assert.equal(recoverReview(db,'recovery-owner').cards[0].category,'shopsy_kurta','complete observations survive a crash before the final review status write');
-    const coverage={complete:false,unavailableConfiguredVerticals:['lehenga_choli'],incompleteByMarketplace:{flipkart:['lehenga_choli'],shopsy:[]}};
+    const coverage={complete:false,configuredVerticals:['kurta','lehenga_choli'],scopeVerticals:['kurta'],unavailableConfiguredVerticals:['lehenga_choli'],incompleteByMarketplace:{flipkart:['lehenga_choli'],shopsy:[]}};
     stageReview(db,'review','owner','flipkart',[{category:'kurta',commissions:[{rate:0.1}]}],{coverage});
     assert.throws(()=>saveStagedObservations(db,'review',[{category:'dress'},null]));
     assert.equal(getStagedObservations(db,'review')[0].category,'kurta');
     closeStagingDb();db=getStagingDb(dir);
     assert.equal(recoverReview(db,'owner').cards[0].category,'kurta');
     assert.deepEqual(recoverReview(db,'owner').coverage,coverage,'coverage gaps survive a restart with the staged review');
+    assert.equal(recoverReview(db,'owner').sellerAccount,'default','the recovery metadata retains the seller account');
+    assert.equal(hasKnownMarketplaceFsnCoverage(null,'flipkart'),false,'legacy SQLite reviews without coverage metadata cannot pass publication checks');
+    assert.equal(hasKnownMarketplaceFsnCoverage(coverage,'flipkart'),true,'current review metadata records a complete coverage shape even when it contains gaps');
     assert.equal(recoverReview(db,'another-owner'),null);
     saveStagedJob(db,{id:'stale-staging',marketplace:'flipkart',status:'staging',parameters:{owner:'owner'}});
     saveStagedObservations(db,'stale-staging',[{category:'dress',commissions:[{rate:0.2}]}]);
@@ -364,10 +368,24 @@ test('explicit missing category remains a hard failure while a brand scope ignor
     'an explicitly selected category without an FSN stops before the browser is opened'
   );
 
+  const explicitSubset=resolveFsnBackedScrapeVerticals({requestedVerticals:['kurta'],configuredVerticals:['kurta','lehenga_choli'],catalog,brand:'all'});
+  assert.deepEqual(explicitSubset.unavailableConfiguredVerticals,['lehenga_choli'],
+    'an explicit category request still discovers configured categories missing a real FSN');
+  assert.deepEqual(missingFsnCategoriesForMarketplace(explicitSubset,'flipkart'),['lehenga_choli']);
+  assert.equal(explicitSubset.complete,false);
+
   const brandScope=resolveFsnBackedScrapeVerticals({configuredVerticals:['kurta','lehenga_choli'],catalog,brand:'Sangria'});
   assert.deepEqual(brandScope.scopeVerticals,['kurta']);
   assert.deepEqual(brandScope.requiredVerticals,['kurta']);
   assert.equal(brandScope.complete,true,'categories without a sample for the selected brand are outside that brand scope');
+});
+
+test('seller-account selection is derived from staged cards and rejects cross-account review', () => {
+  const cards=normalizeScrapedCards([{marketplace:'flipkart',vertical:'kurta',seller_account:'seller-ej',commissions:[{price_min:0,price_max:500,rate:0.1}]}]);
+  assert.equal(cards[0].seller_account,'seller-ej');
+  assert.equal(resolveSellerAccountForRateCards(cards),'seller-ej','an omitted UI option resolves to the scraped account');
+  assert.throws(()=>resolveSellerAccountForRateCards(cards,'default'),/does not match/);
+  assert.throws(()=>resolveSellerAccountForRateCards([...cards,{...cards[0],seller_account:'default'}]),/one seller account/);
 });
 
 test('rate-card snapshot keeps seller accounts in separate cards', async () => {
@@ -484,11 +502,19 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   assert.match(server,/scopeVerticals:\s*targetVerticals/,'the standalone scrape route passes its selected verticals to the scraper');
   assert.match(server,/fetchConfiguredVerticals\(loadAuthSession\(\),\s*normalizedChannel,\s*\[\],\s*sellerAccount\)/,'the standalone route scopes category discovery to its seller account');
   assert.match(server,/fetchBrandCatalogFromApi\(loadAuthSession\(\),\s*\{\s*marketplace:\s*normalizedChannel,\s*sellerAccount\s*\}\)/,'the standalone route scopes real FSN discovery to the same seller account');
-  assert.match(main,/canSync:\s*stagedExtraction\.cards\.length > 0 && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
-    'the desktop review cannot publish an empty marketplace preview');
-  assert.match(server,/canSync:\s*stagedExtraction\.cards\.length > 0 && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
-    'the standalone review cannot publish an empty marketplace preview');
+  assert.match(main,/const configuredVerticalsPromise = fetchConfiguredVerticals\(session, effectiveConfig\.marketplace, \[\], sellerAccount\)/,
+    'explicit category runs still discover all configured categories for completeness checks');
+  assert.match(server,/const configuredVerticals = await fetchConfiguredVerticals\(loadAuthSession\(\), normalizedChannel, \[\], sellerAccount\)/,
+    'the standalone route discovers configured categories even for explicit requests');
+  assert.match(main,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
+    'the desktop review blocks empty, incomplete, or legacy unknown-coverage previews');
+  assert.match(server,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
+    'the standalone review blocks empty, incomplete, or legacy unknown-coverage previews');
   const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
+  assert.match(renderer,/Local extraction is available, but PostgreSQL comparison failed/,
+    'a comparison contract failure keeps staged rate cards visible and explains the blocked publication');
+  assert.match(renderer,/currentComparisonAvailable \? 'Active \/ Matched' : 'Uncompared'/,
+    'uncompared staged values are never presented as unchanged PostgreSQL rates');
   assert.match(renderer,/for\s*\(const fee of pickPackFees\)/,'unchanged observed FBF pick-and-pack fees are visible in review');
 });
 

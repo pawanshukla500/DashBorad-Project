@@ -30,7 +30,7 @@ function shipping(fee, fulfilment, allPrices = false) {
   });
 }
 
-export function parsePortalRateSnapshot(snapshot, { vertical, marketplace, fulfilment, effectiveDate, portalVertical, brand, fsn, sku, orderCount }) {
+export function parsePortalRateSnapshot(snapshot, { vertical, marketplace, fulfilment, effectiveDate, portalVertical, brand, fsn, sku, orderCount, sellerAccount = 'default' }) {
   if (snapshot.missing.length) throw new Error(`Incomplete rate response: ${snapshot.missing.join(', ')}.`);
   const { fees } = snapshot;
   const asps = key => {
@@ -38,7 +38,7 @@ export function parsePortalRateSnapshot(snapshot, { vertical, marketplace, fulfi
     if (!Array.isArray(rows) || !rows.length) throw new Error(`Missing ${key} price slabs.`);
     return rows;
   };
-  const card = { marketplace, vertical, brand, sample_fsn: fsn, sample_sku: sku, order_count: orderCount, effectiveDate, fulfilment_type: fulfilment,
+  const card = { marketplace, vertical, brand, seller_account: sellerAccount, sample_fsn: fsn, sample_sku: sku, order_count: orderCount, effectiveDate, fulfilment_type: fulfilment,
     commissions: asps('platformFee').map(row => ({ ...price(row), rate: amount(row.agreementParameters.fixedRate, '%') / 100 })),
     fixedFees: asps('closingFee').map(row => ({ ...price(row), rate: amount(row.agreementParameters.fixedRate, '₹'), fulfilment_type: fulfilment })),
     collectionFees: asps('collectionFee').map(row => {

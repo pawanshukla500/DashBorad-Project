@@ -21,6 +21,17 @@ export function createStagedExtractionState() {
   return state;
 }
 
+export function resolveSellerAccountForRateCards(cards, requestedAccount) {
+  if (!Array.isArray(cards) || cards.length === 0) throw new Error('No rate cards are available for seller-account review.');
+  const accounts = [...new Set(cards.map(card => String(card.seller_account || 'default').trim() || 'default'))];
+  if (accounts.length !== 1) throw new Error('Review one seller account at a time.');
+  const account = accounts[0];
+  if (requestedAccount != null && String(requestedAccount).trim() !== account) {
+    throw new Error('Selected seller account does not match the staged rate cards.');
+  }
+  return account;
+}
+
 function dedupe(slabs) {
   const out = [];
   for (const slab of slabs || []) {
@@ -121,6 +132,7 @@ export function normalizeScrapedCards(items) {
       marketplace,
       category: vertical,
       brand,
+      seller_account: sellerAccount,
       sample_fsn: fsn,
       sample_sku: items.find(i => i.marketplace === marketplace && i.vertical === vertical &&
         (i.brand || 'General') === brand && (i.sample_fsn || null) === fsn &&

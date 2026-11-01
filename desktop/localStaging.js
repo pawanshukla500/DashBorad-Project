@@ -172,7 +172,9 @@ export function saveStagedObservations(db, jobId, observations) {
 
 export function stageReview(db, jobId, owner, marketplace, cards, metadata = {}) {
   if (!owner) throw new Error('Verified review owner is required.');
-  saveStagedJob(db, { id: jobId, marketplace, status: 'staging', parameters: { ...metadata, owner } });
+  const sellerAccount = metadata.seller_account || cards?.[0]?.seller_account || 'default';
+  saveStagedJob(db, { id: jobId, marketplace, seller_account: sellerAccount, status: 'staging',
+    parameters: { ...metadata, seller_account: sellerAccount, owner } });
   saveStagedObservations(db, jobId, cards);
   markStagedJobStatus(db, jobId, 'review');
 }
@@ -193,7 +195,8 @@ export function recoverReview(db, owner) {
     const cards = getStagedObservations(db, id).map(({ _staged_id, _created_at, ...card }) => card);
     if (!cards.length) continue;
     if (status === 'staging') markStagedJobStatus(db, id, 'review');
-    return { id, cards, coverage: metadata.coverage || null };
+    return { id, cards, coverage: metadata.coverage || null,
+      sellerAccount: metadata.seller_account || cards[0].seller_account || 'default' };
   }
   return null;
 }

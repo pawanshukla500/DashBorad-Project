@@ -34,7 +34,7 @@ import {
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
-import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } from './scrapeResults.js';
+import { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import {
   authorizeDesktopRequest, bindBrowserSession, expiredBrowserCookie,
@@ -42,7 +42,7 @@ import {
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
-import { missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
+import { hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
 import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createWorkerEngine } from './workerEngine.js';
@@ -727,10 +727,6 @@ const server = http.createServer(async (req, res) => {
             stagedExtraction.coverage = review.coverage || null;
           }
         }
-        const sellerAccount = String(urlObj.searchParams.get('seller_account') || 'default').trim() || 'default';
-        if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
-          return sendJson(400, { success: false, error: 'Choose one valid seller account for the rate review.' });
-        }
         if (!stagedExtraction.cards.length) {
           return sendJson(409, {
             success: false,
@@ -740,16 +736,22 @@ const server = http.createServer(async (req, res) => {
             error: 'No successful local extraction is staged. Run the scraper before reviewing rate changes.'
           });
         }
-        const rateCards = stagedExtraction.cards;
+        const sellerAccount = resolveSellerAccountForRateCards(stagedExtraction.cards,
+          urlObj.searchParams.has('seller_account') ? urlObj.searchParams.get('seller_account') : undefined);
+        if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
+          return sendJson(400, { success: false, error: 'Choose one valid seller account for the rate review.' });
+        }
+        const rateCards = stagedExtraction.cards.filter(card => (card.seller_account || 'default') === sellerAccount);
         const targetMp = (urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || 'flipkart').toLowerCase().trim();
         if (!['flipkart', 'shopsy'].includes(targetMp)) {
           return sendJson(400, { success: false, error: 'Choose Flipkart or Shopsy for a separate rate review.' });
         }
         const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
         const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
+        const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, targetMp);
         return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards,
-          canSync: stagedExtraction.cards.length > 0 && filteredRateCards.length > 0 && missingCategories.length === 0,
-          coverage: stagedExtraction.coverage, missingFsnCategories: missingCategories });
+          canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0,
+          coverage: stagedExtraction.coverage, coverageKnown, missingFsnCategories: missingCategories });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
@@ -1255,6 +1257,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/detect-changes' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
       let body = null;
+      let reviewRequestValidated = false;
       try {
         body = await parseJsonBody();
         const cards = selectStagedCards(stagedExtraction.cards, body.rateCards);
@@ -1262,17 +1265,19 @@ const server = http.createServer(async (req, res) => {
         if (new Set(cards.map(card => card.marketplace)).size !== 1) {
           return sendJson(400, { success: false, error: 'Review Flipkart and Shopsy separately.' });
         }
-        const sellerAccount = body.options?.seller_account || 'default';
+        const sellerAccount = resolveSellerAccountForRateCards(cards, body.options?.seller_account);
+        reviewRequestValidated = true;
         const review = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
         stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: review.fingerprints };
         return sendJson(200, { success: true, ...review, dbAvailable: true });
       } catch (err) {
+        if (!reviewRequestValidated) return sendJson(400, { success: false, error: err.message });
         // /api/preview can serve staged cards without a database; change
         // detection cannot. Keep the staged review visible with an explicit
         // dbAvailable:false (diffs unknowable, commit disabled) instead of
         // failing the request and clearing the reviewed preview.
         if (body?.rateCards?.length) {
-          return sendJson(200, { success: true, changesCount: 0, anomaliesCount: 0, changes: [], dbAvailable: false });
+          return sendJson(200, { success: true, changesCount: 0, anomaliesCount: 0, changes: [], dbAvailable: false, comparisonError: err.message });
         }
         return sendJson(500, { success: false, error: err.message });
       }
@@ -1298,13 +1303,19 @@ const server = http.createServer(async (req, res) => {
         if (new Set(cardsToSync.map(card => card.marketplace)).size !== 1) {
           return sendJson(400, { success: false, error: 'Review Flipkart and Shopsy separately.' });
         }
+        let sellerAccount;
+        try { sellerAccount = resolveSellerAccountForRateCards(cardsToSync, body.options?.seller_account); }
+        catch (error) { return sendJson(409, { success: false, error: error.message }); }
+        if (!hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, cardsToSync[0].marketplace)) {
+          return sendJson(409, { success: false, error: 'Publication blocked: extraction coverage is unknown. Run a fresh extraction with the current app.' });
+        }
         const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, cardsToSync[0].marketplace);
         if (missingCategories.length) {
           return sendJson(409, { success: false,
             error: `Publication blocked: configured categories have no database FSNs and were not extracted: ${missingCategories.join(', ')}.` });
         }
         const review = stagedExtraction.review;
-        if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== (body.options?.seller_account || 'default')) {
+        if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== sellerAccount) {
           return sendJson(409, { success: false, error: 'Refresh the PostgreSQL comparison and review it before publication.' });
         }
         const result = await publishReviewedRatesViaApi(authSession, cardsToSync, review.fingerprints, review.sellerAccount, isCurrent);
@@ -1358,9 +1369,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(400, { success: false, error: 'Choose one valid seller account before starting a rate-card extraction.' });
       }
       const fsnCatalog = (await fetchBrandCatalogFromApi(loadAuthSession(), { marketplace: normalizedChannel, sellerAccount })).catalog;
-      const configuredVerticals = requestedVerticals.length
-        ? []
-        : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel, [], sellerAccount);
+      const configuredVerticals = await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel, [], sellerAccount);
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals,
         configuredVerticals,
@@ -1409,6 +1418,7 @@ const server = http.createServer(async (req, res) => {
             return scrapeFlipkartRateCards(
             {
               marketplace: normalizedChannel,
+              seller_account: sellerAccount,
               visible: isVisible,
               fsnCatalog,
               scopeVerticals: targetVerticals,
@@ -1461,7 +1471,7 @@ const server = http.createServer(async (req, res) => {
             try {
               const cards = normalizeScrapedCards(result.data);
               stageReview(getStagingDb(USER_DATA_DIR), `review-${Date.now()}`, loadAuthSession().user.firebase_uid, cards[0].marketplace, cards,
-                { coverage: verticalSelection });
+                { coverage: verticalSelection, seller_account: sellerAccount });
               stagedExtraction.cards = cards;
               stagedExtraction.coverage = verticalSelection;
               stagedExtraction.review = null;
