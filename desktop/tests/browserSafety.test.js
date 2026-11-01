@@ -127,6 +127,10 @@ test('response capture rejects stale category/mode/date data and incomplete resp
   assert.deepEqual(snapshot.missing,[]);
   const parsed=parsePortalRateSnapshot(snapshot,{vertical:'kurta',marketplace:'flipkart',fulfilment:'FBF',effectiveDate:'2026-10-30',portalVertical:'kurta',sellerAccount:'seller-ej'});
   assert.equal(parsed.seller_account,'seller-ej','the account selected for FSN discovery stays attached to Seller Hub observations');
+  const whitespaceAccount=parsePortalRateSnapshot(snapshot,{vertical:'kurta',marketplace:'flipkart',fulfilment:'FBF',effectiveDate:'2026-10-30',sellerAccount:' seller-ej '});
+  assert.equal(whitespaceAccount.seller_account,'seller-ej','scraped account metadata matches the trimmed account used for discovery');
+  assert.equal(normalizeScrapedCards([{...whitespaceAccount, seller_account:' seller-ej '}])[0].seller_account,'seller-ej',
+    'the shared staging boundary also canonicalizes account metadata from queued observations');
   assert.equal(parsed.reverseShipping[0].national_additional_fee,4);
   assert.equal(parsed.commissions[0].price_max,10000000);
   const changed=structuredClone(fixture.fees.platformFee);changed.slabs.asp[0].agreementParameters.fixedRate='13%';
