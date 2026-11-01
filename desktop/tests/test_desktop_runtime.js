@@ -1676,6 +1676,10 @@ async function runTests() {
     assert(rendererContent.includes('initBrowserMonitorListeners()'), 'renderer.js must initialize monitor listeners');
     assert(rendererContent.includes('updateBrowserMonitorUI('), 'renderer.js must have updateBrowserMonitorUI');
     assert(rendererContent.includes('refreshBrowserMonitorState()'), 'renderer.js must have refreshBrowserMonitorState');
+    assert(/window\.addEventListener\('focus',[\s\S]*?loadSessionStatusUI\(\)/.test(rendererContent),
+      'returning from the manual Seller Hub window refreshes the saved session status');
+    assert(rendererContent.includes('Saved Browser Profile — Recheck'),
+      'a last-authenticated Chromium profile is shown as needing a live recheck, not as logged out');
     assert(!rendererContent.includes('setBrowserVisibility('), 'external Chrome visibility is controlled by its own window, not an embedded viewport');
   });
 

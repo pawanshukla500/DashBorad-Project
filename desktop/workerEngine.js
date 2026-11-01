@@ -1,10 +1,13 @@
 // Fast control-plane work is independent of the sequential portal action lane.
 export function createWorkerEngine({ getSession, register, heartbeat, claim, releaseClaim = async () => {}, execute, isBusy = () => false, log = console.log, intervalMs = 2000 }) {
   let generation = 0, timer, heartTimer, inFlight = false, running = false, registered = false;
+  let firstPollLogged = false, lastPollError = null;
   const stop = () => { generation++; clearInterval(timer); clearInterval(heartTimer); timer = heartTimer = null; registered = false; };
   const start = async () => {
     if (timer) return;
     stop();
+    firstPollLogged = false;
+    lastPollError = null;
     const owner = generation, started = Date.now();
     const tick = async () => {
       if (owner !== generation || inFlight || running || isBusy()) return;
@@ -25,15 +28,27 @@ export function createWorkerEngine({ getSession, register, heartbeat, claim, rel
           }
           return;
         }
-        log({ event: 'worker_poll', startupElapsedMs: Date.now() - started });
+        if (lastPollError) {
+          log({ event: 'worker_poll_recovered', message: lastPollError });
+          lastPollError = null;
+        }
+        if (!firstPollLogged) {
+          firstPollLogged = true;
+          log({ event: 'worker.first_poll', startupElapsedMs: Date.now() - started, jobAvailable: Boolean(response?.success && response.job) });
+        }
         if (response?.success && response.job) {
           running = true;
+          log({ event: 'worker.job_claimed', jobId: response.job.id });
           Promise.resolve().then(() => execute(session, response.job)).catch(error => log({ event: 'worker_job_failed', message: error.message }))
             .finally(() => { running = false; });
         }
       } catch (error) {
         registered = false;
-        log({ event: 'worker_poll_failed', message: error.message });
+        const message = error?.message || String(error);
+        if (message !== lastPollError) {
+          log({ event: 'worker_poll_failed', message });
+          lastPollError = message;
+        }
       } finally { inFlight = false; }
     };
     timer = setInterval(tick, intervalMs);

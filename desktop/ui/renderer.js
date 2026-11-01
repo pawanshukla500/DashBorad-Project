@@ -269,6 +269,9 @@ function setupNavigation() {
         syncMonitorDockBounds();
         refreshBrowserMonitorState();
       }
+      if (tabId === 'dashboard') {
+        loadSessionStatusUI();
+      }
 
       if (tabId === 'catalog' && currentCatalog.length === 0) {
         loadCatalogData();
@@ -418,6 +421,9 @@ function initBrowserMonitorListeners() {
   let pending = false;
   const syncLayout = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; syncMonitorDockBounds(); }); };
   window.addEventListener('resize', syncLayout);
+  // The manual Seller Hub window can finish sign-in while this window is
+  // unfocused. Refresh the vault when the user returns to the desktop app.
+  window.addEventListener('focus', () => { loadSessionStatusUI(); });
   document.addEventListener('scroll', syncLayout, true);
   const dock = document.getElementById('browser-view-dock');
   if (dock) new ResizeObserver(syncLayout).observe(dock);
@@ -543,6 +549,9 @@ async function loadSessionStatusUI() {
       if (mp.hasCookies) {
         el.innerText = `Session Saved (${mp.cookieCount ?? '?'} cookies)`;
         el.style.color = '#10b981';
+      } else if (mp.profileState === 'authenticated') {
+        el.innerText = 'Saved Browser Profile — Recheck';
+        el.style.color = '#f59e0b';
       } else {
         el.innerText = channelId === 'flipkart_shopsy' ? 'No Seller Hub Session — Sign in' : 'No Session — 2FA Login';
         el.style.color = '#f59e0b';
@@ -559,6 +568,10 @@ async function loadSessionStatusUI() {
         statusEl.style.color = '#10b981';
         const savedAt = current.lastSavedAt ? new Date(current.lastSavedAt).toLocaleString() : '';
         subEl.innerText = `${current.cookieCount ?? 0} cookies for ${current.name || channel}${savedAt ? ' · saved ' + savedAt : ''}`;
+      } else if (current?.profileState === 'authenticated') {
+        statusEl.innerText = 'Saved Browser Profile';
+        statusEl.style.color = '#f59e0b';
+        subEl.innerText = `Last confirmed signed in for ${current.name || channel}; open Seller Hub to verify the session is still active`;
       } else {
         statusEl.innerText = 'No Session';
         statusEl.style.color = '#f59e0b';

@@ -1093,6 +1093,7 @@ const server = http.createServer(async (req, res) => {
       if (!(await requireDesktopAuth())) return;
       const list = SUPPORTED_MARKETPLACES.map(m => {
         const cookiesPath = getMarketplaceCookiesPath(m.id);
+        const profileDir = getMarketplaceBrowserProfilePath(m.id);
         let cookieCount = 0;
         let lastSavedAt = null;
         try {
@@ -1105,6 +1106,9 @@ const server = http.createServer(async (req, res) => {
           hasCookies: cookieCount > 0,
           cookieCount,
           lastSavedAt,
+          // This is historical metadata; portal authentication is rechecked
+          // against the live page before any extraction proceeds.
+          profileState: readSellerHubProfileState(profileDir),
           cookiesPath
         };
       });
