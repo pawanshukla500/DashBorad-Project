@@ -517,13 +517,22 @@ test('generic commission cards compare against NULL, blank, General and All bran
     {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku:'SKU-DEFAULT',order_count:6},
     {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Sangria',sample_fsn:'QRSTUVWXYZ123456',sample_sku:'SKU-SANGRIA',order_count:2}
   ];
-  const pool={query:async sql=>{
+  let detectorSql='';
+  const pool={query:async (sql,params=[])=>{
     const query=String(sql);
     if (query.includes('FROM orders')) return {rows:samples};
     if (query.includes('FROM rc_commission')) {
-      return {rows:/AND\s+end_date\s+IS\s+NULL/i.test(query)
-        ? genericRows.map(({price_min,price_max,rate})=>({price_min,price_max,rate}))
-        : genericRows};
+      if (/AND\s+end_date\s+IS\s+NULL/i.test(query)) {
+        detectorSql=query;
+        const wantedBrand=String(params[2]||'').trim().toLowerCase();
+        const hasGenericMatcher=/LOWER\(TRIM\(\$3\)\)\s+IN\s+\('general',\s*'all brands'\)/i.test(query);
+        return {rows:genericRows.filter(row=>{
+          const storedBrand=String(row.brand_name||'').trim().toLowerCase();
+          return storedBrand===wantedBrand || (hasGenericMatcher && ['general','all brands'].includes(wantedBrand) &&
+            (!storedBrand || ['general','all brands'].includes(storedBrand)));
+        }).map(({price_min,price_max,rate})=>({price_min,price_max,rate}))};
+      }
+      return {rows:genericRows};
     }
     return {rows:[]};
   }};
@@ -532,6 +541,7 @@ test('generic commission cards compare against NULL, blank, General and All bran
   assert.equal(cards[0].brand,'All brands');
   assert.equal(cards[0].commissions.length,4);
   const changes=await detectBrandRateChanges(cards,pool);
+  assert.match(detectorSql,/LOWER\(TRIM\(\$3\)\)\s+IN\s+\('general',\s*'all brands'\)/i);
   assert.deepEqual(changes.filter(change=>change.type==='commission'),[]);
 });
 
