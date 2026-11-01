@@ -65,7 +65,7 @@ export async function getRealTimeBrandFsnSamples(pool = null, { marketplace = nu
           PARTITION BY marketplace, category,
             COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General'),
             COALESCE(NULLIF(TRIM(seller_account), ''), 'default')
-          ORDER BY id DESC
+          ORDER BY CASE WHEN UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$' THEN 0 ELSE 1 END, id DESC
         ) AS rn,
         COUNT(*) OVER (
           PARTITION BY marketplace, category,
@@ -77,68 +77,86 @@ export async function getRealTimeBrandFsnSamples(pool = null, { marketplace = nu
     )
     SELECT marketplace, category, brand, seller_account, fsn AS sample_fsn,
       sku AS sample_sku, order_count::int AS order_count
-    FROM ranked WHERE rn = 1
+    FROM ranked WHERE rn = 1 AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'
     ORDER BY marketplace, category, seller_account, order_count DESC
   `, params);
   return result.rows;
 }
 
-/** Read active published DB rates, attaching a real order FSN when one exists. */
-export async function buildBrandRateCardSet(pool = null, sellerAccount = 'all') {
+/** Load one consistent, read-only snapshot of active rates and their FSN catalog. */
+export async function loadPublishedRateCardSnapshot(pool = null, sellerAccount = 'all') {
   const p = pool || getPool();
   const effectiveDate = resolveRateCardEffectiveDate();
   const accountFilter = normalizedAccount(sellerAccount);
-  const samples = await getRealTimeBrandFsnSamples(p, {
-    sellerAccount: accountFilter === 'all' ? null : accountFilter,
-  });
+  const client = await p.connect();
   const cards = new Map();
 
-  for (const [table, field, brandSpecific] of RATE_TABLES) {
-    const { rows } = await p.query(`
-      SELECT * FROM ${table}
-      WHERE marketplace IN ('flipkart', 'shopsy')
-        AND ($2 = 'all' OR COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2)
-        AND (start_date IS NULL OR start_date <= $1::date)
-        AND (end_date IS NULL OR end_date >= $1::date)
-      ORDER BY marketplace, category, id
-    `, [effectiveDate, accountFilter]);
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const samples = await getRealTimeBrandFsnSamples(client, {
+      sellerAccount: accountFilter === 'all' ? null : accountFilter,
+    });
 
-    for (const row of rows || []) {
-      const channel = channelFor(row.marketplace, row.category);
-      if (!['flipkart', 'shopsy'].includes(channel)) continue;
-      const category = normalizeMarketplaceCategory(row.category, channel);
-      const account = normalizedAccount(row.seller_account);
-      const brand = brandSpecific ? (String(row.brand_name || '').trim() || 'General') : 'General';
-      const sample = (samples || []).find(item =>
-        channelFor(item.marketplace, item.category) === channel &&
-        normalizeMarketplaceCategory(item.category, channel) === category &&
-        normalizedAccount(item.seller_account) === account &&
-        (!brandSpecific || normalized(item.brand || 'General') === normalized(brand))
-      );
-      if (!sample) continue;
+    for (const [table, field, brandSpecific] of RATE_TABLES) {
+      const { rows } = await client.query(`
+        SELECT * FROM ${table}
+        WHERE marketplace IN ('flipkart', 'shopsy')
+          AND ($2 = 'all' OR COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2)
+          AND (start_date IS NULL OR start_date <= $1::date)
+          AND (end_date IS NULL OR end_date >= $1::date)
+        ORDER BY marketplace, category, id
+      `, [effectiveDate, accountFilter]);
 
-      const key = JSON.stringify([channel, account, category, brand]);
-      if (!cards.has(key)) {
-        cards.set(key, {
-          marketplace: channel,
-          seller_account: account,
-          category,
-          brand,
-          sample_fsn: sample.sample_fsn,
-          sample_sku: sample.sample_sku,
-          order_count: Number(sample.order_count || 0),
-          source: 'published_database',
-          effectiveDate,
-          commissions: [], fixedFees: [], collectionFees: [], pickPackFees: [],
-          reverseShipping: [], franchiseFees: [],
-        });
+      for (const row of rows || []) {
+        const channel = channelFor(row.marketplace, row.category);
+        if (!['flipkart', 'shopsy'].includes(channel)) continue;
+        const category = normalizeMarketplaceCategory(row.category, channel);
+        const account = normalizedAccount(row.seller_account);
+        const brand = brandSpecific ? (String(row.brand_name || '').trim() || 'General') : 'General';
+        const sample = (samples || []).find(item =>
+          channelFor(item.marketplace, item.category) === channel &&
+          normalizeMarketplaceCategory(item.category, channel) === category &&
+          normalizedAccount(item.seller_account) === account &&
+          (!brandSpecific || normalized(item.brand || 'General') === normalized(brand))
+        );
+        if (!sample) continue;
+
+        const key = JSON.stringify([channel, account, category, brand]);
+        if (!cards.has(key)) {
+          cards.set(key, {
+            marketplace: channel,
+            seller_account: account,
+            category,
+            brand,
+            sample_fsn: sample.sample_fsn,
+            sample_sku: sample.sample_sku,
+            order_count: Number(sample.order_count || 0),
+            source: 'published_database',
+            effectiveDate,
+            commissions: [], fixedFees: [], collectionFees: [], pickPackFees: [],
+            reverseShipping: [], franchiseFees: [],
+          });
+        }
+        const slab = { ...row };
+        for (const fieldName of NUMERIC_FIELDS) {
+          if (slab[fieldName] !== undefined && slab[fieldName] !== null) slab[fieldName] = Number(slab[fieldName]);
+        }
+        cards.get(key)[field].push(slab);
       }
-      const slab = { ...row };
-      for (const fieldName of NUMERIC_FIELDS) {
-        if (slab[fieldName] !== undefined && slab[fieldName] !== null) slab[fieldName] = Number(slab[fieldName]);
-      }
-      cards.get(key)[field].push(slab);
     }
+
+    await client.query('COMMIT');
+    return { cards: [...cards.values()], catalog: samples, effectiveDate };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
-  return [...cards.values()];
+}
+
+/** Read active published DB rates, attaching a real order FSN when one exists. */
+export async function buildBrandRateCardSet(pool = null, sellerAccount = 'all') {
+  const snapshot = await loadPublishedRateCardSnapshot(pool, sellerAccount);
+  return snapshot.cards;
 }

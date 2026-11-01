@@ -8,7 +8,7 @@ import XLSX from 'xlsx';
 import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
-import { getRealTimeBrandFsnSamples, buildBrandRateCardSet } from './brandRateCardService.js';
+import { loadPublishedRateCardSnapshot } from './brandRateCardService.js';
 import { getPool } from '../db/index.js';
 
 function resolveDefaultExcelPath() {
@@ -22,8 +22,8 @@ export const DEFAULT_EXCEL_PATH = resolveDefaultExcelPath();
 export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_PATH, pool = null) {
   const p = pool || getPool();
 
-  // 1. Get real-time brand rate card set
-  const brandRateCards = await buildBrandRateCardSet(p);
+  // Rates and order samples come from the same PostgreSQL snapshot.
+  const { cards: brandRateCards, catalog } = await loadPublishedRateCardSnapshot(p);
 
   // 2. Prepare Data for Sheet 1: Brand_Commission_Summary
   const summaryRows = [];
@@ -93,7 +93,6 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
   ).values());
 
   // 7. Prepare Data for Sheet 6: Sample_FSN_Catalog
-  const catalog = await getRealTimeBrandFsnSamples(p);
   const catalogRows = catalog.map(c => ({
     'Marketplace': c.marketplace.toUpperCase(),
     'Seller Account': c.seller_account || 'default',

@@ -25,12 +25,14 @@ function fixturePool() {
   };
   const query = vi.fn(async sql => {
     const text = String(sql);
+    if (/^(BEGIN|COMMIT|ROLLBACK)/.test(text)) return { rows: [] };
     if (text.includes('FROM orders')) return { rows: samples };
     const table = Object.keys(tables).find(name => text.includes(`FROM ${name}`));
     if (table) return { rows: tables[table] };
     throw new Error(`Unexpected SQL: ${text}`);
   });
-  return { query };
+  const client = { query, release: vi.fn() };
+  return { query, client, connect: vi.fn(async () => client) };
 }
 
 describe('Read-only brand/category rate-card catalog', () => {
@@ -42,6 +44,9 @@ describe('Read-only brand/category rate-card catalog', () => {
     expect(query).toContain("UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'");
     expect(query).toContain('COALESCE(NULLIF(TRIM(brand_name), \'\'), NULLIF(TRIM(brand), \'\'), \'General\')');
     expect(query).toContain("PARTITION BY marketplace, category,");
+    expect(query).toContain("ORDER BY CASE WHEN UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$' THEN 0 ELSE 1 END, id DESC");
+    expect(query).toContain('COUNT(*) OVER (');
+    expect(query).toContain("WHERE rn = 1 AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'");
     expect(query).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default')");
     expect(params).toEqual([]);
   });
@@ -71,18 +76,26 @@ describe('Read-only brand/category rate-card catalog', () => {
     expect(cards.find(card => card.marketplace === 'flipkart' && card.fixedFees.length).fixedFees[0].rate).toBe(10);
     expect(cards.find(card => card.marketplace === 'shopsy').commissions[0].rate).toBe(0);
     expect(cards.some(card => card.category === 'no_fsn_category')).toBe(false);
-    expect(pool.query.mock.calls.filter(([sql]) => !String(sql).includes('FROM orders')).every(([sql]) =>
+    expect(pool.connect).toHaveBeenCalledOnce();
+    expect(pool.client.release).toHaveBeenCalledOnce();
+    expect(String(pool.query.mock.calls[0][0])).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    expect(String(pool.query.mock.calls.at(-1)[0])).toBe('COMMIT');
+    expect(pool.query.mock.calls.filter(([sql]) => String(sql).trimStart().startsWith('SELECT') && !String(sql).includes('FROM orders')).every(([sql]) =>
       String(sql).includes('start_date <= $1::date') && String(sql).includes('end_date >= $1::date'))).toBe(true);
   });
 
   it('exports published database rows without generating guessed fee slabs', async () => {
     const outputPath = path.join(process.cwd(), 'test_brandwise_ratecard.xlsx');
+    const pool = fixturePool();
     try {
-      const result = await generateBrandwiseRateCardExcel(outputPath, fixturePool());
+      const result = await generateBrandwiseRateCardExcel(outputPath, pool);
       expect(result.sheetsCount).toBe(6);
       expect(result.sheets).toContain('Flipkart_Rates');
       expect(result.sheets).toContain('Shopsy_Rates');
       expect(result.sheets).toContain('Sample_FSN_Catalog');
+      expect(pool.connect).toHaveBeenCalledOnce();
+      expect(String(pool.query.mock.calls[0][0])).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      expect(String(pool.query.mock.calls.at(-1)[0])).toBe('COMMIT');
       expect((await fs.stat(outputPath)).size).toBeGreaterThan(1000);
     } finally {
       await fs.unlink(outputPath).catch(() => null);
