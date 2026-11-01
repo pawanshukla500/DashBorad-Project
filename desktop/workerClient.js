@@ -123,6 +123,7 @@ export async function fetchConfiguredVerticals(session, marketplace = 'both', se
   const lists = await Promise.all(channels.map(async channel => {
     const tables = await Promise.all(configTypes.map(async type => {
       const query = new URLSearchParams({ marketplace: channel, seller_account: normalizedSellerAccount, active_only: 'true' });
+      if (normalizedSellerAccount !== 'default') query.set('include_defaults', 'true');
       const res = await safeFetch(`${baseUrl}/api/rate-card/config/${type}?${query}`, {
         headers: getHeaders(session?.idToken, baseUrl)
       });

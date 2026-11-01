@@ -264,6 +264,8 @@ test('configured category discovery normalizes marketplace before selecting chan
       'all six configured fee tables are scoped to the selected seller account');
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('active_only=true')).length,6,
       'the current marketplace discovery requests only current rate periods');
+    assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('seller_account=seller_ej')&&url.includes('include_defaults=true')).length,6,
+      'named accounts include inherited default categories in extraction discovery');
     assert.equal(requested.some(url=>url.endsWith('marketplace=shopsy')),false,'Flipkart extraction must not add Shopsy categories');
     assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},' ShOpSy '),['shopsy_kurta','shopsy_sari']);
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('marketplace=shopsy')).length,6,

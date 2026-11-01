@@ -22,13 +22,16 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount 
   if (!account) throw new Error('A seller account is required to verify rate-card coverage.');
   if (!client || typeof client.query !== 'function') throw new Error('Rate-card coverage database is unavailable.');
 
+  const sellerAccountFilter = account === 'default'
+    ? "COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"
+    : "(COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2 OR COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = 'default')";
   const configured = new Set();
   for (const table of RATE_CARD_CONFIG_TABLES) {
     let result;
     try {
       result = await client.query(
         `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1
-          AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
+          AND ${sellerAccountFilter}
           AND (start_date IS NULL OR start_date <= CURRENT_DATE)
           AND (end_date IS NULL OR end_date >= CURRENT_DATE)`,
         [channel, account],

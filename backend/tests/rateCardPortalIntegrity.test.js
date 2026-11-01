@@ -287,6 +287,30 @@ describe('Portal observations and reviewed publication', () => {
       query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"))).toBe(true);
   });
 
+  it('includes inherited default categories for named accounts while keeping FSNs account-scoped', async () => {
+    const queries = [];
+    const client = { query: vi.fn(async (sql, params) => {
+      const text = String(sql);
+      queries.push({ sql: text, params });
+      if (text.includes('FROM orders')) {
+        return { rows: [
+          { category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' },
+          { category: 'Saree', fsn: 'QRSTUVWXYZABCDEF' },
+        ] };
+      }
+      if (text.includes('FROM rc_commission')) return { rows: [{ category: 'Kurta' }, { category: 'Saree' }] };
+      return { rows: [{ category: 'Kurta' }] };
+    }) };
+    const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'seller_ej' });
+    expect(coverage.configuredCategories).toEqual(['kurta', 'sari']);
+    expect(coverage.missingFsnCategories).toEqual([]);
+    const configReads = queries.filter(query => !query.sql.includes('FROM orders'));
+    expect(configReads.every(query => query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2 OR COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = 'default"))).toBe(true);
+    const catalogRead = queries.find(query => query.sql.includes('FROM orders'));
+    expect(catalogRead.params).toEqual(['flipkart', 'seller_ej']);
+    expect(catalogRead.sql).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
+  });
+
   it('fails closed when a configuration table is missing', async () => {
     const client = { query: vi.fn(async sql => {
       if (String(sql).includes('FROM rc_fixed_fee')) throw new Error('relation does not exist');

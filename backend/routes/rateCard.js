@@ -379,11 +379,18 @@ router.get('/config/:type', async (req, res) => {
       ? `AND (start_date IS NULL OR start_date <= CURRENT_DATE)
          AND (end_date IS NULL OR end_date >= CURRENT_DATE)`
       : '';
+    // Desktop extraction follows the same default-rate fallback used by fee
+    // calculations. Keep ordinary configuration reads account-exact unless
+    // the worker explicitly requests inherited defaults.
+    const includeDefaults = req.query.include_defaults === 'true' && sellerAccount !== 'default';
+    const sellerAccountFilter = includeDefaults
+      ? `(${DEFAULT_SELLER_ACCOUNT_SQL} = $2 OR ${DEFAULT_SELLER_ACCOUNT_SQL} = 'default')`
+      : `${DEFAULT_SELLER_ACCOUNT_SQL} = $2`;
     const { rows } = await pool.query(
       `SELECT id, category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date,
               marketplace, seller_account, ${TABLE_EXTRA_COLUMNS[req.params.type].join(', ')}
        FROM ${table}
-       WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2 ${activePeriodFilter}
+       WHERE marketplace = $1 AND ${sellerAccountFilter} ${activePeriodFilter}
        ORDER BY category, ${TABLE_EXTRA_COLUMNS[req.params.type].includes('brand_name') ? "NULLIF(brand_name,'') NULLS LAST, " : ""} price_min ${TABLE_EXTRA_COLUMNS[req.params.type].includes('weight_slab') ? ", weight_slab" : ""}`,
       [marketplace, sellerAccount],
     );
