@@ -35,17 +35,22 @@ export function resolveVisibleBrowserViewport({
   availableWidth = 0,
   availableHeight = 0
 } = {}) {
-  if (currentWidth >= 1280 && currentHeight >= 760) return null;
-
   const screenWidth = Number(availableWidth) || 1472;
   const screenHeight = Number(availableHeight) || 980;
+  const maxWidth = Math.min(1440, Math.max(1, Math.floor(screenWidth - 32)));
+  const maxHeight = Math.min(900, Math.max(1, Math.floor(screenHeight - 80)));
+  const minimumWidth = Math.min(1280, maxWidth);
+  const minimumHeight = Math.min(760, maxHeight);
+  if (currentWidth >= minimumWidth && currentHeight >= minimumHeight &&
+      currentWidth <= maxWidth && currentHeight <= maxHeight) return null;
+
   return {
     // Puppeteer can keep its default 800x600 CSS viewport even when the Chrome
     // window itself is maximized. Seller Hub hides the existing-seller Login
     // control at that breakpoint, so use the largest desktop viewport that
     // leaves room for the browser chrome while keeping smaller displays usable.
-    width: Math.max(1280, Math.min(1440, Math.floor(screenWidth - 32))),
-    height: Math.max(760, Math.min(900, Math.floor(screenHeight - 80)))
+    width: maxWidth,
+    height: maxHeight
   };
 }
 

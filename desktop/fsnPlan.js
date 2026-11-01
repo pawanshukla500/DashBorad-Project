@@ -56,6 +56,12 @@ export function resolveFsnBackedScrapeVerticals({
   const configured = normalize(configuredVerticals);
   const available = catalogVerticals(catalog, { marketplace, brand });
   const explicit = requested.length > 0;
+  const unavailableRequestedVerticals = explicit
+    ? requested.filter(category => !available.includes(category))
+    : [];
+  if (unavailableRequestedVerticals.length) {
+    throw new Error(`Selected categories have no database FSNs for the selected marketplace and brand: ${unavailableRequestedVerticals.join(', ')}. Nothing was scraped.`);
+  }
   if (!explicit && !configured.length) {
     throw new Error('No configured rate-card categories were returned. Extraction was not started.');
   }

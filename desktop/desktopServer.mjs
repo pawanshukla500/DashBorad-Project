@@ -748,7 +748,7 @@ const server = http.createServer(async (req, res) => {
         const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
         const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
         return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards,
-          canSync: stagedExtraction.cards.length > 0 && missingCategories.length === 0,
+          canSync: stagedExtraction.cards.length > 0 && filteredRateCards.length > 0 && missingCategories.length === 0,
           coverage: stagedExtraction.coverage, missingFsnCategories: missingCategories });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });

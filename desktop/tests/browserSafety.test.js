@@ -358,9 +358,11 @@ test('default extraction does not scrape unconfigured order-history categories o
 
 test('explicit missing category remains a hard failure while a brand scope ignores unrelated FSN gaps', () => {
   const catalog=[{marketplace:'flipkart',category:'kurta',brand:'Sangria',sample_fsn:'ABCDEFGHIJKLMNOP'}];
-  const explicit=resolveFsnBackedScrapeVerticals({requestedVerticals:['blouse'],configuredVerticals:['blouse'],catalog,brand:'all'});
-  assert.deepEqual(explicit.scopeVerticals,['blouse']);
-  assert.throws(()=>buildFsnPlan(catalog,{verticals:explicit.scopeVerticals,requiredVerticals:explicit.requiredVerticals}),/No database FSN/);
+  assert.throws(
+    ()=>resolveFsnBackedScrapeVerticals({requestedVerticals:['blouse'],configuredVerticals:['blouse'],catalog,brand:'all'}),
+    /Selected categories have no database FSNs.*blouse.*Nothing was scraped/,
+    'an explicitly selected category without an FSN stops before the browser is opened'
+  );
 
   const brandScope=resolveFsnBackedScrapeVerticals({configuredVerticals:['kurta','lehenga_choli'],catalog,brand:'Sangria'});
   assert.deepEqual(brandScope.scopeVerticals,['kurta']);
@@ -482,6 +484,10 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   assert.match(server,/scopeVerticals:\s*targetVerticals/,'the standalone scrape route passes its selected verticals to the scraper');
   assert.match(server,/fetchConfiguredVerticals\(loadAuthSession\(\),\s*normalizedChannel,\s*\[\],\s*sellerAccount\)/,'the standalone route scopes category discovery to its seller account');
   assert.match(server,/fetchBrandCatalogFromApi\(loadAuthSession\(\),\s*\{\s*marketplace:\s*normalizedChannel,\s*sellerAccount\s*\}\)/,'the standalone route scopes real FSN discovery to the same seller account');
+  assert.match(main,/canSync:\s*stagedExtraction\.cards\.length > 0 && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
+    'the desktop review cannot publish an empty marketplace preview');
+  assert.match(server,/canSync:\s*stagedExtraction\.cards\.length > 0 && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
+    'the standalone review cannot publish an empty marketplace preview');
   const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
   assert.match(renderer,/for\s*\(const fee of pickPackFees\)/,'unchanged observed FBF pick-and-pack fees are visible in review');
 });

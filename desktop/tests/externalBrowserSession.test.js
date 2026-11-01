@@ -296,4 +296,11 @@ test('compact visible browser view expands to Seller Hub desktop navigation befo
   ]);
   assert.equal(resolveVisibleBrowserViewport({ currentWidth: 1440, currentHeight: 880 }), null,
     'a desktop-sized browser viewport is left unchanged');
+
+  assert.deepEqual(resolveVisibleBrowserViewport({
+    currentWidth: 800, currentHeight: 600, availableWidth: 1024, availableHeight: 720
+  }), { width: 992, height: 640 }, 'compact displays receive the largest viewport that fits their available area');
+  assert.deepEqual(resolveVisibleBrowserViewport({
+    currentWidth: 1400, currentHeight: 800, availableWidth: 1280, availableHeight: 720
+  }), { width: 1248, height: 640 }, 'a display resize clamps an existing desktop viewport instead of overflowing');
 });

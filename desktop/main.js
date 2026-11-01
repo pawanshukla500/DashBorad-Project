@@ -2121,7 +2121,7 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
     return {
       success: true,
       rateCards: filteredRateCards,
-      canSync: stagedExtraction.cards.length > 0 && missingCategories.length === 0,
+      canSync: stagedExtraction.cards.length > 0 && filteredRateCards.length > 0 && missingCategories.length === 0,
       coverage: stagedExtraction.coverage,
       missingFsnCategories: missingCategories
     };
