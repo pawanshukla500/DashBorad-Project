@@ -20,7 +20,7 @@ import {
 import { verifyDesktopTokenAuthorization } from './authValidation.js';
 import { focusBrowserPage, getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
-import { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
+import { beginStagedRateReview, createStagedExtractionState, isCurrentStagedRateReview, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards, stageRateReviewIfCurrent } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { createStructuredLogger } from './structuredLogger.js';
@@ -106,7 +106,7 @@ function persistReview(cards, session, coverage = null) {
     { coverage, seller_account: cards[0].seller_account || 'default' });
   stagedExtraction.cards = cards;
   stagedExtraction.coverage = coverage;
-  stagedExtraction.review = null;
+  stagedExtraction.invalidateReview();
 }
 
 const FIREBASE_API_KEY = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
@@ -734,7 +734,7 @@ async function checkDailySchedule() {
       // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
       stagedExtraction.cards = [];
       stagedExtraction.coverage = null;
-      stagedExtraction.review = null;
+      stagedExtraction.invalidateReview();
       supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
       const jobAuthGeneration = stagedExtraction.authGeneration;
       const result = await withBrowserTask(() => executeScrapeProcess(config, (msg) => {
@@ -2034,7 +2034,7 @@ registerHandler('start-scrape', async (e, options) => {
   // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
   stagedExtraction.cards = [];
   stagedExtraction.coverage = null;
-  stagedExtraction.review = null;
+  stagedExtraction.invalidateReview();
   supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
   const jobAuthGeneration = stagedExtraction.authGeneration;
   const result = await withBrowserTask(() => executeScrapeProcess(mergedOptions, (msg) => {
@@ -2100,6 +2100,7 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
     if (review) {
       stagedExtraction.cards = review.cards;
       stagedExtraction.coverage = review.coverage || null;
+      stagedExtraction.invalidateReview();
     }
   }
   if (!stagedExtraction.cards.length) {
@@ -2152,12 +2153,12 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
   let sellerAccount;
   try { sellerAccount = resolveSellerAccountForRateCards(cards, options.seller_account); }
   catch (err) { return { success: false, error: err.message }; }
+  const reviewRequest = beginStagedRateReview(stagedExtraction, cards, sellerAccount);
   try {
     const result = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
-    stagedExtraction.review = {
-      payload: JSON.stringify(cards), sellerAccount,
-      fingerprints: result.fingerprints, publishable: result.publishable
-    };
+    if (!stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, result)) {
+      return { success: false, stale: true, error: 'This comparison was superseded by a newer preview. Refresh the PostgreSQL comparison.' };
+    }
     desktopLogger.info('rate-review.compared', 'PostgreSQL comparison completed.', {
       marketplace: cards[0].marketplace, cardCount: cards.length,
       changeCount: result.changesCount, anomalyCount: result.anomaliesCount,
@@ -2165,7 +2166,9 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
     });
     return { success: true, ...result };
   } catch (err) {
-    stagedExtraction.review = null;
+    if (isCurrentStagedRateReview(stagedExtraction, reviewRequest, cards, sellerAccount)) {
+      stagedExtraction.invalidateReview();
+    }
     desktopLogger.error('rate-review.comparison_failed', err);
     return { success: true, changes: [], changesCount: 0, anomaliesCount: 0, dbAvailable: false, comparisonError: err.message };
   }
@@ -2173,9 +2176,11 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
 
 registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   const authGeneration = stagedExtraction.authGeneration;
-  const isCurrent = () => authGeneration === stagedExtraction.authGeneration;
   const cards = selectStagedCards(stagedExtraction.cards, submitted);
   const review = stagedExtraction.review;
+  const reviewGeneration = stagedExtraction.reviewGeneration;
+  const isCurrent = () => authGeneration === stagedExtraction.authGeneration &&
+    reviewGeneration === stagedExtraction.reviewGeneration && stagedExtraction.review === review;
   const uncoveredCategories = blockingUncoveredCategoriesForMarketplace(stagedExtraction.coverage, cards?.[0]?.marketplace);
   const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, cards?.[0]?.marketplace);
   let sellerAccount;
@@ -2196,7 +2201,7 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   }
   try {
     const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount, isCurrent);
-    stagedExtraction.review = null;
+    stagedExtraction.invalidateReview();
     desktopLogger.info(result.updated ? 'rate-review.published' : 'rate-review.unchanged',
       result.message || 'Reviewed rates are unchanged.', {
         marketplace: cards[0].marketplace, cardCount: cards.length,

@@ -34,7 +34,7 @@ import {
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
-import { captureScrapeAuthContext, createStagedExtractionState, isScrapeAuthContextCurrent, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
+import { beginStagedRateReview, captureScrapeAuthContext, createStagedExtractionState, isCurrentStagedRateReview, isScrapeAuthContextCurrent, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards, stageRateReviewIfCurrent } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import {
   authorizeDesktopRequest, bindBrowserSession, expiredBrowserCookie,
@@ -724,6 +724,7 @@ const server = http.createServer(async (req, res) => {
           if (review) {
             stagedExtraction.cards = review.cards;
             stagedExtraction.coverage = review.coverage || null;
+            stagedExtraction.invalidateReview();
           }
         }
         if (!stagedExtraction.cards.length) {
@@ -1258,21 +1259,31 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/detect-changes' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
       let body = null;
+      let cards = null;
+      let sellerAccount = null;
+      let reviewRequest = null;
       let reviewRequestValidated = false;
       try {
         body = await parseJsonBody();
-        const cards = selectStagedCards(stagedExtraction.cards, body.rateCards);
+        cards = selectStagedCards(stagedExtraction.cards, body.rateCards);
         if (!cards) return sendJson(409, { success: false, error: 'Review a successful staged extraction first.' });
         if (new Set(cards.map(card => card.marketplace)).size !== 1) {
           return sendJson(400, { success: false, error: 'Review Flipkart and Shopsy separately.' });
         }
-        const sellerAccount = resolveSellerAccountForRateCards(cards, body.options?.seller_account);
+        sellerAccount = resolveSellerAccountForRateCards(cards, body.options?.seller_account);
         reviewRequestValidated = true;
+        reviewRequest = beginStagedRateReview(stagedExtraction, cards, sellerAccount);
         const review = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
-        stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: review.fingerprints };
+        if (!stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, review)) {
+          return sendJson(409, { success: false, stale: true, error: 'This comparison was superseded by a newer preview. Refresh the PostgreSQL comparison.' });
+        }
         return sendJson(200, { success: true, ...review, dbAvailable: true });
       } catch (err) {
         if (!reviewRequestValidated) return sendJson(400, { success: false, error: err.message });
+        if (!reviewRequest || !isCurrentStagedRateReview(stagedExtraction, reviewRequest, cards, sellerAccount)) {
+          return sendJson(409, { success: false, stale: true, error: 'This comparison was superseded by a newer preview. Refresh the PostgreSQL comparison.' });
+        }
+        stagedExtraction.invalidateReview();
         // /api/preview can serve staged cards without a database; change
         // detection cannot. Keep the staged review visible with an explicit
         // dbAvailable:false (diffs unknowable, commit disabled) instead of
@@ -1289,7 +1300,11 @@ const server = http.createServer(async (req, res) => {
       const authSession = await requireDesktopAuth(true);
       if (!authSession) return;
       const authGeneration = stagedExtraction.authGeneration;
-      const isCurrent = () => authGeneration === stagedExtraction.authGeneration;
+      const reviewGeneration = stagedExtraction.reviewGeneration;
+      let reviewSnapshot = null;
+      const isCurrent = () => authGeneration === stagedExtraction.authGeneration &&
+        reviewGeneration === stagedExtraction.reviewGeneration &&
+        (!reviewSnapshot || stagedExtraction.review === reviewSnapshot);
       try {
         const body = await parseJsonBody();
         if (!stagedExtraction.cards.length) {
@@ -1316,11 +1331,15 @@ const server = http.createServer(async (req, res) => {
             error: `Publication blocked: configured categories were not included in this extraction: ${uncoveredCategories.join(', ')}.` });
         }
         const review = stagedExtraction.review;
+        reviewSnapshot = review;
         if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== sellerAccount) {
           return sendJson(409, { success: false, error: 'Refresh the PostgreSQL comparison and review it before publication.' });
         }
+        if (!review.publishable || !review.fingerprints?.[cardsToSync[0].marketplace]) {
+          return sendJson(409, { success: false, error: 'Publication is disabled because the backend did not return a review fingerprint. Refresh after the backend review update.' });
+        }
         const result = await publishReviewedRatesViaApi(authSession, cardsToSync, review.fingerprints, review.sellerAccount, isCurrent);
-        stagedExtraction.review = null;
+        stagedExtraction.invalidateReview();
         broadcastProgress(`✓ ${result.message}`);
         return sendJson(200, { success: true, result });
       } catch (err) {
@@ -1412,7 +1431,7 @@ const server = http.createServer(async (req, res) => {
       }
       stagedExtraction.cards = [];
       stagedExtraction.coverage = null;
-      stagedExtraction.review = null;
+      stagedExtraction.invalidateReview();
       supersedeReviews(getStagingDb(USER_DATA_DIR), requestAuthContext.userId);
 
       activeScrapeJob = {
@@ -1496,7 +1515,7 @@ const server = http.createServer(async (req, res) => {
                 { coverage: verticalSelection, seller_account: sellerAccount });
               stagedExtraction.cards = cards;
               stagedExtraction.coverage = verticalSelection;
-              stagedExtraction.review = null;
+              stagedExtraction.invalidateReview();
               result.rateCards = stagedExtraction.cards;
             } catch (stageErr) {
               result.success = false;

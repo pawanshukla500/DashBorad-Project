@@ -1381,7 +1381,7 @@ function setupEventListeners() {
       appendTerminalLine(`Database sync failed: ${err.message}`);
       alert(`Database sync failed: ${err.message}`);
     } finally {
-      btnCommitDb.disabled = false;
+      btnCommitDb.disabled = !currentCanSync;
       btnCommitDb.innerText = '✓ Commit & Auto-Close in Database';
     }
   });

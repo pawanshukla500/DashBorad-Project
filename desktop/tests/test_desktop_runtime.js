@@ -49,7 +49,7 @@ assert.deepStrictEqual = function(actual, expected, message) {
 // ── Module loading ────────────────────────────────────────────────────────────
 const { getBrowserRuntime, requireChromeExecutable, withBrowserTask } = await import('../browserRuntime.js');
 const { publicSession, createSessionAccess } = await import('../sessionAccess.js');
-const { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } = await import('../scrapeResults.js');
+const { beginStagedRateReview, createStagedExtractionState, isCurrentStagedRateReview, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards, stageRateReviewIfCurrent } = await import('../scrapeResults.js');
 const {
   isDesktopReachableDbUrl,
   sanitizeSavedDbUrl,
@@ -297,6 +297,26 @@ async function runTests() {
     state.resetForAuthChange();
     assert(state.cards.length === 0, 'auth change must clear staged cards');
     assert(state.authGeneration === jobGeneration + 1, 'auth change must invalidate in-flight jobs');
+  });
+
+  await runTest('stale overlapping rate comparisons cannot replace the newest staged review', async () => {
+    const state = createStagedExtractionState();
+    const olderCards = [{ marketplace: 'flipkart', category: 'kurta' }];
+    const newerCards = [{ marketplace: 'shopsy', category: 'shopsy_kurta' }];
+    const olderRequest = beginStagedRateReview(state, olderCards, 'default');
+    const newerRequest = beginStagedRateReview(state, newerCards, 'default');
+    const newerResult = { fingerprints: { shopsy: 'b'.repeat(64) }, publishable: true };
+    const olderResult = { fingerprints: { flipkart: 'a'.repeat(64) }, publishable: true };
+
+    assert(!isCurrentStagedRateReview(state, olderRequest, olderCards, 'default'), 'newer comparison must invalidate the older request');
+    assert(stageRateReviewIfCurrent(state, newerRequest, newerCards, 'default', newerResult), 'latest comparison may stage its review');
+    assert(!stageRateReviewIfCurrent(state, olderRequest, olderCards, 'default', olderResult), 'late older response must not overwrite the latest review');
+    assert.strictEqual(state.review.payload, JSON.stringify(newerCards), 'latest reviewed payload must remain staged');
+    assert.strictEqual(state.review.fingerprints.shopsy, 'b'.repeat(64), 'latest marketplace fingerprint must remain staged');
+
+    const pendingRequest = beginStagedRateReview(state, newerCards, 'default');
+    state.invalidateReview();
+    assert(!isCurrentStagedRateReview(state, pendingRequest, newerCards, 'default'), 'a new extraction must invalidate an in-flight comparison');
   });
 
   // ── scrapeResults ───────────────────────────────────────────────────────────
@@ -2064,9 +2084,14 @@ async function runTests() {
   await runTest('review UI shows diffs but disables publishing when a backend fingerprint is missing', async () => {
     const renderer = fs.readFileSync(path.join(desktopDir, 'ui/renderer.js'), 'utf8');
     const main = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+    const standaloneServer = fs.readFileSync(path.join(desktopDir, 'desktopServer.mjs'), 'utf8');
     assert(renderer.includes('diffRes.publishable !== false'), 'renderer must gate the commit button on review publishability');
     assert(renderer.includes('PostgreSQL diffs are visible'), 'renderer must explain missing-fingerprint review state');
+    assert(/finally\s*\{\s*btnCommitDb\.disabled = !currentCanSync;/.test(renderer), 'commit cleanup must preserve a disabled review state');
     assert(main.includes('if (!review.publishable || !review.fingerprints?.[cards[0].marketplace])'), 'main process must enforce the fingerprint gate');
+    assert(main.includes('stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, result)'), 'Electron main must reject superseded review responses');
+    assert(standaloneServer.includes('stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, review)'), 'standalone app server must reject superseded review responses');
+    assert(standaloneServer.includes('if (!review.publishable || !review.fingerprints?.[cardsToSync[0].marketplace])'), 'standalone sync must enforce the fingerprint gate');
   });
 
   console.log('\n=================================================================');
