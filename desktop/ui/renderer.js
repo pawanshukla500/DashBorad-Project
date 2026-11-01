@@ -72,6 +72,7 @@ if (!window.ratecardAPI) {
 let currentCatalog = [];
 let currentRateCards = [];
 let currentChanges = [];
+let currentComparisonAvailable = false;
 let activeDiffFilter = 'all';
 let currentUserSession = null;
 let currentCanSync = false;
@@ -737,6 +738,7 @@ async function loadRateCardPreview() {
     currentCanSync = false;
     currentRateCards = [];
     currentChanges = [];
+    currentComparisonAvailable = false;
     const commitBtn = document.getElementById('btn-commit-db');
     if (commitBtn) commitBtn.disabled = true;
     const changesBadge = document.getElementById('changes-badge');
@@ -749,14 +751,28 @@ async function loadRateCardPreview() {
       if (!diffRes?.success) throw new Error(diffRes?.error || 'Change detection failed.');
       currentRateCards = res.rateCards;
       currentChanges = diffRes.changes || [];
-      // Without a reachable database the staged review still renders, but
-      // nothing may be committed: diffs are unknowable and sync would fail.
-      currentCanSync = Boolean(res.canSync) && diffRes.dbAvailable !== false;
+      currentComparisonAvailable = diffRes.dbAvailable !== false;
+      // Keep the local extraction visible when the PostgreSQL comparison is
+      // unavailable, but never leave publication enabled without that review.
+      currentCanSync = Boolean(res.canSync) && currentComparisonAvailable;
+      if (!currentComparisonAvailable) {
+        appendTerminalLine(`⚠️ Local extraction is available, but PostgreSQL comparison failed: ${diffRes.comparisonError || 'the backend comparison is unavailable'}. Publication is disabled.`);
+      }
+      if (res.missingFsnCategories?.length) {
+        appendTerminalLine(`⚠️ ${selectedChannel} review is local-only: configured categories have no database FSNs (${res.missingFsnCategories.join(', ')}). Add real catalog FSNs and rerun before publishing.`);
+      }
+      if (res.coverageKnown === false) {
+        appendTerminalLine(`⚠️ ${selectedChannel} extraction coverage is unknown. Run a fresh extraction with the current app before publishing.`);
+      }
       if (commitBtn) {
         commitBtn.disabled = !currentCanSync;
-        commitBtn.title = !currentCanSync && diffRes.dbAvailable === false
-          ? 'Database not reachable. Configure the PostgreSQL URL in Settings to detect changes and commit.'
-          : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.');
+        commitBtn.title = !currentCanSync && !currentComparisonAvailable
+          ? `PostgreSQL comparison unavailable: ${diffRes.comparisonError || 'check the backend connection or version'}. Publication is disabled.`
+          : (res.missingFsnCategories?.length
+            ? `Publication blocked until these configured categories have real database FSNs: ${res.missingFsnCategories.join(', ')}`
+            : (res.coverageKnown === false
+              ? 'Publication blocked because extraction coverage is unknown. Run a fresh extraction with the current app.'
+              : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.')));
       }
 
       // Update badges & anomaly banner
@@ -813,10 +829,11 @@ async function loadRateCardPreview() {
       }
 
       renderDiffTable();
-      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${diffRes.dbAvailable === false ? 'database not reachable — change detection skipped' : currentChanges.length + ' diffs detected, ' + anomaliesCount + ' anomalies'}).`);
+      appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${currentComparisonAvailable ? `${currentChanges.length} diffs detected, ${anomaliesCount} anomalies` : 'PostgreSQL comparison unavailable — staged values shown, publication disabled'}).`);
     } else {
       currentRateCards = [];
       currentChanges = [];
+      currentComparisonAvailable = false;
       const badge = document.getElementById('changes-badge');
       if (badge) badge.style.display = 'none';
       const anomaliesBadge = document.getElementById('anomalies-badge');
@@ -844,6 +861,7 @@ async function loadRateCardPreview() {
     currentCanSync = false;
     currentRateCards = [];
     currentChanges = [];
+    currentComparisonAvailable = false;
     const commitBtn = document.getElementById('btn-commit-db');
     if (commitBtn) commitBtn.disabled = true;
     const anomaliesBadge = document.getElementById('anomalies-badge');
@@ -905,9 +923,9 @@ function renderDiffTable() {
           category,
           brand,
           slab: c.price_max >= 999990 ? `≥ ₹${c.price_min}` : `₹${c.price_min} - ₹${c.price_max}`,
-          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(4)}%` : (change ? '—' : 'Active / Matched'),
+          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(4)}%` : (change ? '—' : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared')),
           newRate: `${(c.rate * 100).toFixed(4)}%`,
-          status: change ? (change.reason || 'Modified') : 'Active',
+          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
           anomaly: Boolean(change?.anomaly),
           anomalySeverity: change?.anomalySeverity
         });
@@ -931,9 +949,9 @@ function renderDiffTable() {
           category,
           brand: 'All / Tier',
           slab: `${f.fulfilment_type} (₹${f.price_min} - ₹${f.price_max})`,
-          oldRate: change?.oldRate != null ? `₹${change.oldRate}` : (change ? '—' : `₹${f.rate}`),
+          oldRate: change?.oldRate != null ? `₹${change.oldRate}` : (change ? '—' : (currentComparisonAvailable ? `₹${f.rate}` : 'Uncompared')),
           newRate: `₹${f.rate}`,
-          status: change ? (change.reason || 'Modified') : 'Active',
+          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
           anomaly: Boolean(change?.anomaly),
           anomalySeverity: change?.anomalySeverity
         });
@@ -957,9 +975,9 @@ function renderDiffTable() {
           category,
           brand: 'All',
           slab: cf.price_max >= 999990 ? `≥ ₹${cf.price_min}` : `₹${cf.price_min} - ₹${cf.price_max}`,
-          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : 'Active / Matched'),
+          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared')),
           newRate: change?.newRate != null ? change.newRate : `Prepaid ${fmtColl(cf.prepaid, cf.prepaid_type)} / Postpaid ${fmtColl(cf.postpaid, cf.postpaid_type)}`,
-          status: change ? (change.reason || 'Modified') : 'Active',
+          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
           anomaly: Boolean(change?.anomaly),
           anomalySeverity: change?.anomalySeverity
         });
@@ -983,9 +1001,9 @@ function renderDiffTable() {
           category,
           brand: 'Standard',
           slab: `${r.weight_slab} (₹${r.price_min} - ₹${r.price_max})`,
-          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}`),
+          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : (currentComparisonAvailable ? `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}` : 'Uncompared')),
           newRate: `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}; above ${r.base_weight}kg add L/Z/N ₹${r.local_additional_fee}/${r.zonal_additional_fee}/${r.national_additional_fee} per ${r.increment_weight}kg`,
-          status: change ? (change.reason || 'Modified') : 'Active',
+          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
           anomaly: Boolean(change?.anomaly),
           anomalySeverity: change?.anomalySeverity
         });
@@ -1003,9 +1021,9 @@ function renderDiffTable() {
         rows.push({
           type: 'FBF Pick & Pack', marketplace: marketplace.toUpperCase(), category, brand: 'All',
           slab: `${fee.fulfilment_type} · ${fee.weight_min}-${fee.weight_max}kg · ${fee.price_scope === 'all' ? 'all prices' : `₹${fee.price_min}-₹${fee.price_max}`}`,
-          oldRate: change ? (change.oldRow ? describeRateRecord('rc_pick_pack', change.oldRow) : '—') : 'Active / Matched',
+          oldRate: change ? (change.oldRow ? describeRateRecord('rc_pick_pack', change.oldRow) : '—') : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared'),
           newRate: describeRateRecord('rc_pick_pack', fee),
-          status: change ? (change.reason || 'Modified') : 'Active',
+          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
           anomaly: Boolean(change?.anomaly), anomalySeverity: change?.anomalySeverity
         });
       }

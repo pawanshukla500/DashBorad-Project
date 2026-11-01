@@ -121,6 +121,17 @@ describe('Brand-Wise & FSN-Driven Rate Card System', () => {
       expect(catalog[1].brand).toBe('Sangria');
       expect(catalog[2].marketplace).toBe('shopsy');
     });
+
+    it('scopes sample FSNs to the requested marketplace and seller account', async () => {
+      const mockPool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+
+      await getRealTimeBrandFsnSamples(mockPool, { marketplace: 'flipkart', sellerAccount: 'seller_ej' });
+
+      const [query, params] = mockPool.query.mock.calls[0];
+      expect(query).toContain('marketplace = $1');
+      expect(query).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
+      expect(params).toEqual(['flipkart', 'seller_ej']);
+    });
   });
 
   describe('Change Detection & Idempotent Database Sync', () => {

@@ -170,9 +170,11 @@ export function saveStagedObservations(db, jobId, observations) {
   persist(targetDb, currentDbPath);
 }
 
-export function stageReview(db, jobId, owner, marketplace, cards) {
+export function stageReview(db, jobId, owner, marketplace, cards, metadata = {}) {
   if (!owner) throw new Error('Verified review owner is required.');
-  saveStagedJob(db, { id: jobId, marketplace, status: 'staging', parameters: { owner } });
+  const sellerAccount = metadata.seller_account || cards?.[0]?.seller_account || 'default';
+  saveStagedJob(db, { id: jobId, marketplace, seller_account: sellerAccount, status: 'staging',
+    parameters: { ...metadata, seller_account: sellerAccount, owner } });
   saveStagedObservations(db, jobId, cards);
   markStagedJobStatus(db, jobId, 'review');
 }
@@ -188,11 +190,13 @@ export function recoverReview(db, owner) {
   // write leaves a complete recoverable job in `staging`.
   const rows = db.exec("SELECT id, parameters, status FROM staged_jobs WHERE status IN ('review', 'staging') ORDER BY created_at DESC, rowid DESC");
   for (const [id, parameters, status] of rows[0]?.values || []) {
-    if (JSON.parse(parameters || '{}').owner !== owner) continue;
+    const metadata = JSON.parse(parameters || '{}');
+    if (metadata.owner !== owner) continue;
     const cards = getStagedObservations(db, id).map(({ _staged_id, _created_at, ...card }) => card);
     if (!cards.length) continue;
     if (status === 'staging') markStagedJobStatus(db, id, 'review');
-    return { id, cards };
+    return { id, cards, coverage: metadata.coverage || null,
+      sellerAccount: metadata.seller_account || cards[0].seller_account || 'default' };
   }
   return null;
 }

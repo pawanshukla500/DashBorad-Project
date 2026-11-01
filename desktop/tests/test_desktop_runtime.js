@@ -49,7 +49,7 @@ assert.deepStrictEqual = function(actual, expected, message) {
 // ── Module loading ────────────────────────────────────────────────────────────
 const { getBrowserRuntime, requireChromeExecutable, withBrowserTask } = await import('../browserRuntime.js');
 const { publicSession, createSessionAccess } = await import('../sessionAccess.js');
-const { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } = await import('../scrapeResults.js');
+const { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } = await import('../scrapeResults.js');
 const {
   isDesktopReachableDbUrl,
   sanitizeSavedDbUrl,
@@ -322,6 +322,7 @@ async function runTests() {
     ]);
     assert(merged.length === 1 && merged[0].commissions.length === 1, 'agreeing modes must merge into one card');
     assert(merged[0].fulfilmentModes.join(',') === 'NON_FBF,FBF', 'card must record which modes were merged');
+    assert.strictEqual(merged[0].seller_account,'default','cards preserve the account searched by the scraper');
 
     let error = null;
     try {
@@ -331,6 +332,14 @@ async function runTests() {
       ]);
     } catch (err) { error = err; }
     assert(error && /different commissions for NON_FBF and FBF/.test(error.message), `conflicting modes must be refused (${error?.message})`);
+  });
+
+  await runTest('seller-account review derives the scraped account and rejects a different one', async () => {
+    const cards=normalizeScrapedCards([{marketplace:'flipkart',vertical:'Kurta',seller_account:'seller-ej',commissions:[{price_min:0,price_max:500,rate:0.15}]}]);
+    assert.strictEqual(resolveSellerAccountForRateCards(cards),'seller-ej','review defaults to the account recorded on the card');
+    let error=null;
+    try { resolveSellerAccountForRateCards(cards,'default'); } catch(err) { error=err; }
+    assert(error && /does not match/.test(error.message),'a review cannot use a different seller account');
   });
 
   await runTest('normalizeScrapedCards refuses fee tables missing from one fulfilment mode', async () => {
@@ -738,7 +747,7 @@ async function runTests() {
     const rendererSource = fs.readFileSync(path.join(desktopDir, 'ui', 'renderer.js'), 'utf8');
     const fnIdx = rendererSource.indexOf('async function loadRateCardPreview');
     assert(fnIdx !== -1, 'loadRateCardPreview not found');
-    const fnWindow = rendererSource.slice(fnIdx, fnIdx + 7000);
+    const fnWindow = rendererSource.slice(fnIdx, fnIdx + 9000);
     assert(fnWindow.includes('requestId = ++previewRequestSeq'), 'each preview must claim a generation');
     const guardCount = (fnWindow.match(/requestId !== previewRequestSeq/g) || []).length;
     assert(guardCount >= 3, `stale responses must be dropped after each await, including the catch path (found ${guardCount} guards)`);
@@ -1645,6 +1654,7 @@ async function runTests() {
 
   await runTest('portalScraper triggers onSessionExpiry when session check fails (stage 3)', async () => {
     const { scrapeFlipkartRateCards } = await import('../portalScraper.js');
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-session-expiry-'));
     let sessionExpiryTriggered = false;
     let authChecked = false;
 
@@ -1671,19 +1681,30 @@ async function runTests() {
       partition: 'persist:test'
     };
 
-    await scrapeFlipkartRateCards({ marketplace: 'flipkart' }, {
-      runtime: fakeRuntime,
-      onProgress: () => {},
-      delay: () => {},
-      onSessionExpiry: async (page) => {
-        sessionExpiryTriggered = true;
-        assert(page === fakePage, 'onSessionExpiry must receive active page');
-        return true;
-      }
-    }).catch(() => null);
+    try {
+      const result = await scrapeFlipkartRateCards({ marketplace: 'flipkart' }, {
+        runtime: fakeRuntime,
+        onProgress: () => {},
+        delay: () => {},
+        cookiesPath: path.join(tempDir, 'cookies.json'),
+        fallbackCookiesPath: path.join(tempDir, 'fallback-cookies.json'),
+        stagingDir: path.join(tempDir, 'staging'),
+        onSessionExpiry: async (activePage) => {
+          sessionExpiryTriggered = true;
+          assert(activePage && typeof activePage.url === 'function' && activePage.url() === fakePage.url(),
+            'onSessionExpiry must receive the active paced page');
+          assert(activePage !== fakePage, 'portal interactions must use the pacing wrapper');
+          return true;
+        }
+      });
 
-    assert(authChecked, 'checkSession must be called on home page');
-    assert(sessionExpiryTriggered, 'onSessionExpiry must be invoked when checkSession fails');
+      assert(authChecked, 'checkSession must be called on home page');
+      assert(sessionExpiryTriggered, 'onSessionExpiry must be invoked when checkSession fails');
+      assert.strictEqual(result.success, false);
+      assert(/did not establish an authenticated dashboard session/.test(result.error), result.error);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   await runTest('executeScrapeProcess implements 2-attempt retry loop with backoff (stage 3)', async () => {

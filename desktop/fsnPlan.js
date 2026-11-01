@@ -15,6 +15,106 @@ export function resolveScrapeVerticals({ requestedVerticals, configuredVerticals
   };
 }
 
+function catalogVerticals(catalog, { marketplace = 'both', brand = 'all' } = {}) {
+  if (!Array.isArray(catalog)) return [];
+  const selectedMarketplace = String(marketplace || 'both').trim().toLowerCase();
+  const selectedBrand = String(brand || 'all').trim().toLowerCase();
+  const available = new Set();
+  for (const item of catalog) {
+    const rawCategory = String(item?.category || '').trim();
+    const itemMarketplace = String(item?.marketplace || '').trim().toLowerCase();
+    const isShopsy = itemMarketplace === 'shopsy' || rawCategory.toLowerCase().startsWith('shopsy_');
+    const channel = isShopsy ? 'shopsy' : itemMarketplace;
+    if (!['flipkart', 'shopsy'].includes(channel)) continue;
+    if (['flipkart', 'shopsy'].includes(selectedMarketplace) && selectedMarketplace !== channel) continue;
+    if (selectedBrand !== 'all' && String(item?.brand || '').trim().toLowerCase() !== selectedBrand) continue;
+    const category = isShopsy && !rawCategory.toLowerCase().startsWith('shopsy_')
+      ? `shopsy_${rawCategory}`
+      : rawCategory;
+    if (category) available.add(category);
+  }
+  return [...available];
+}
+
+/**
+ * Resolve the extraction scope against categories that have real database FSNs.
+ * Unselected categories from the rate-card tables are reported as unavailable;
+ * they are never represented by fabricated sample FSNs. Explicit category
+ * selections remain strict and are validated by buildFsnPlan before browsing.
+ */
+export function resolveFsnBackedScrapeVerticals({
+  requestedVerticals,
+  configuredVerticals = [],
+  catalog,
+  marketplace = 'both',
+  brand = 'all'
+} = {}) {
+  const normalize = values => Array.isArray(values)
+    ? [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))]
+    : [];
+  const requested = normalize(requestedVerticals);
+  const configured = normalize(configuredVerticals);
+  const available = catalogVerticals(catalog, { marketplace, brand });
+  const explicit = requested.length > 0;
+  const availableAcrossBrands = explicit
+    ? catalogVerticals(catalog, { marketplace, brand: 'all' })
+    : available;
+  if (!configured.length) {
+    throw new Error('No configured rate-card categories were returned. Extraction was not started.');
+  }
+  const unavailableRequestedVerticals = explicit
+    ? requested.filter(category => !available.includes(category))
+    : [];
+  if (unavailableRequestedVerticals.length) {
+    throw new Error(`Selected categories have no database FSNs for the selected marketplace and brand: ${unavailableRequestedVerticals.join(', ')}. Nothing was scraped.`);
+  }
+  const scopeVerticals = explicit ? requested : configured.filter(category => available.includes(category));
+  if (!explicit && !scopeVerticals.length) {
+    throw new Error('No configured rate-card category has a database FSN for the selected marketplace and brand. Extraction was not started.');
+  }
+  const requiredVerticals = explicit ? requested : scopeVerticals;
+  const unavailableConfiguredVerticals = explicit
+    ? configured.filter(category => !availableAcrossBrands.includes(category))
+    : (brand && brand !== 'all')
+    ? []
+    : configured.filter(category => !available.includes(category));
+  const incompleteByMarketplace = { flipkart: [], shopsy: [] };
+  for (const category of unavailableConfiguredVerticals) {
+    const channel = category.toLowerCase().startsWith('shopsy_') ? 'shopsy' : 'flipkart';
+    incompleteByMarketplace[channel].push(category);
+  }
+  return {
+    scopeVerticals,
+    requiredVerticals,
+    configuredVerticals: configured,
+    availableVerticals: available,
+    unavailableConfiguredVerticals,
+    incompleteByMarketplace,
+    complete: unavailableConfiguredVerticals.length === 0
+  };
+}
+
+export function missingFsnCategoriesForMarketplace(coverage, marketplace) {
+  const target = String(marketplace || '').trim().toLowerCase();
+  const byMarketplace = coverage?.incompleteByMarketplace;
+  if (target === 'flipkart' || target === 'shopsy') {
+    return Array.isArray(byMarketplace?.[target]) ? byMarketplace[target] : [];
+  }
+  if (!byMarketplace || typeof byMarketplace !== 'object') return [];
+  return [...new Set(['flipkart', 'shopsy'].flatMap(channel =>
+    Array.isArray(byMarketplace[channel]) ? byMarketplace[channel] : []
+  ))];
+}
+
+export function hasKnownMarketplaceFsnCoverage(coverage, marketplace) {
+  const target = String(marketplace || '').trim().toLowerCase();
+  if (!['flipkart', 'shopsy'].includes(target)) return false;
+  return Array.isArray(coverage?.configuredVerticals) && coverage.configuredVerticals.length > 0 &&
+    Array.isArray(coverage?.scopeVerticals) &&
+    Array.isArray(coverage?.incompleteByMarketplace?.[target]) &&
+    typeof coverage.complete === 'boolean';
+}
+
 export function buildFsnPlan(catalog, { marketplace = 'both', brand = 'all', verticals, requiredVerticals } = {}) {
   if (!Array.isArray(catalog) || !catalog.length) throw new Error('No database FSNs are available for extraction.');
   const required = requiredVerticals ?? (brand && brand !== 'all' ? [] : verticals);

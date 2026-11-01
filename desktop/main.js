@@ -20,7 +20,7 @@ import {
 import { verifyDesktopTokenAuthorization } from './authValidation.js';
 import { focusBrowserPage, getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
-import { createStagedExtractionState, normalizeScrapedCards, selectStagedCards } from './scrapeResults.js';
+import { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { createStructuredLogger } from './structuredLogger.js';
@@ -34,7 +34,7 @@ import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { createExternalBrowserSession } from './externalBrowserSession.js';
-import { resolveScrapeVerticals } from './fsnPlan.js';
+import { hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from './fsnPlan.js';
 import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 import {
   getActiveBackendUrl,
@@ -99,10 +99,12 @@ const desktopLogger = createStructuredLogger(DIAGNOSTICS_DIR);
 desktopLogger.installConsoleBridge();
 desktopLogger.info('app.started', 'Desktop worker started.', { version: app.getVersion(), platform: process.platform });
 
-function persistReview(cards, session) {
+function persistReview(cards, session, coverage = null) {
   const id = `review-${Date.now()}-${require('crypto').randomUUID()}`;
-  stageReview(getStagingDb(USER_DATA_DIR), id, session.user.firebase_uid, cards[0].marketplace, cards);
+  stageReview(getStagingDb(USER_DATA_DIR), id, session.user.firebase_uid, cards[0].marketplace, cards,
+    { coverage, seller_account: cards[0].seller_account || 'default' });
   stagedExtraction.cards = cards;
+  stagedExtraction.coverage = coverage;
   stagedExtraction.review = null;
 }
 
@@ -640,8 +642,10 @@ async function executeBackgroundWorkerJob(session, job) {
     const scrapeRes = await withBrowserTask(async () => {
       return await executeScrapeProcess({
         marketplace: job.marketplace,
+        seller_account: job.seller_account || job.parameters?.seller_account || 'default',
         scopeVerticals: job.parameters?.verticals,
         brand: job.parameters?.brand,
+        requireCompleteCoverage: true,
         // Remote jobs use the persistent visible Chrome profile too, so an
         // expired Seller Hub session can be completed manually in-place.
         visible: true
@@ -659,6 +663,9 @@ async function executeBackgroundWorkerJob(session, job) {
 
     if (!scrapeRes.success) {
       throw new Error(scrapeRes.error || 'Scrape failed');
+    }
+    if (scrapeRes.coverage?.complete === false) {
+      throw new Error(`Remote worker results were not submitted because configured categories have no database FSNs: ${scrapeRes.coverage.unavailableConfiguredVerticals.join(', ')}.`);
     }
 
     const normalizedCards = normalizeScrapedCards(scrapeRes.data);
@@ -724,6 +731,7 @@ async function checkDailySchedule() {
       }
       // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
       stagedExtraction.cards = [];
+      stagedExtraction.coverage = null;
       stagedExtraction.review = null;
       supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
       const jobAuthGeneration = stagedExtraction.authGeneration;
@@ -735,7 +743,7 @@ async function checkDailySchedule() {
       // generation: an account switch during that await must discard the results.
       const sessionStillValid = result.success && result.data?.length > 0 ? await authorizeSession() : false;
       if (sessionStillValid && jobAuthGeneration === stagedExtraction.authGeneration) {
-        persistReview(normalizeScrapedCards(result.data), sessionStillValid);
+        persistReview(normalizeScrapedCards(result.data), sessionStillValid, result.coverage || null);
         if (mainWindow) mainWindow.webContents.send('scrape-progress', 'Scheduled extraction staged. Review the results before database sync.');
       } else if (result.success && mainWindow) {
         mainWindow.webContents.send('scrape-progress', 'Scheduled extraction discarded: the account changed or the session ended during the run. Nothing was staged.');
@@ -1089,7 +1097,13 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       // Seller Hub pages can keep long-polling connections open. Wait for the
       // document to load, then let the explicit authentication check drive the
       // manual sign-in lifecycle.
-      await focusBrowserPage(page);
+      await focusBrowserPage(page, {
+        onViewport: viewport => desktopLogger.info(
+          'portal.browser.viewport_adjusted',
+          'Expanded the visible browser viewport for marketplace navigation.',
+          { marketplace: mpConfig.id, engine: 'external', ...viewport }
+        )
+      });
       await page.goto(manualLoginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     } catch (gotoErr) {
       if (!String(gotoErr?.message || '').includes('ERR_ABORTED')) throw gotoErr;
@@ -1114,7 +1128,13 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
           profileDir
         })
       });
-      if (authenticatedPage !== page) await focusBrowserPage(authenticatedPage);
+      if (authenticatedPage !== page) await focusBrowserPage(authenticatedPage, {
+        onViewport: viewport => desktopLogger.info(
+          'portal.browser.viewport_adjusted',
+          'Expanded the visible browser viewport for Seller Hub navigation.',
+          { marketplace: mpConfig.id, engine: 'external', ...viewport }
+        )
+      });
       if (!externalBrowserSession.selectPage(profileDir, authenticatedPage)) {
         throw new Error('Seller Hub verified a different Chrome tab, but it could not be selected for the persistent session.');
       }
@@ -1216,6 +1236,7 @@ function isPermanentScrapeError(err) {
 async function executeScrapeProcess(config, onProgress) {
   let effectiveConfig = { ...loadConfig(), ...config };
   const session = loadAuthSession();
+  const sellerAccount = String(effectiveConfig.seller_account || effectiveConfig.sellerAccount || 'default').trim() || 'default';
   // Keep the user's original selection stable across retries. Discovered
   // backend categories are written to effectiveConfig for the scraper, but
   // must not become explicit selections on the next attempt.
@@ -1235,20 +1256,37 @@ async function executeScrapeProcess(config, onProgress) {
     try {
       // Keep API dataset discovery inside the retry boundary so transient
       // backend failures can use the configured second attempt.
-      const configuredVerticalsPromise = requestedVerticals.length
-        ? Promise.resolve([])
-        : fetchConfiguredVerticals(session, effectiveConfig.marketplace);
+      const configuredVerticalsPromise = fetchConfiguredVerticals(session, effectiveConfig.marketplace, [], sellerAccount);
       const [catalogResult, configuredVerticals] = await Promise.all([
-        fetchBrandCatalogFromApi(session), configuredVerticalsPromise
+        fetchBrandCatalogFromApi(session, { marketplace: effectiveConfig.marketplace, sellerAccount }), configuredVerticalsPromise
       ]);
-      const verticalSelection = resolveScrapeVerticals({
+      const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals,
         configuredVerticals,
+        catalog: catalogResult.catalog,
+        marketplace: effectiveConfig.marketplace,
         brand: effectiveConfig.brand || 'all'
       });
       effectiveConfig.fsnCatalog = catalogResult.catalog;
       effectiveConfig.requiredVerticals = verticalSelection.requiredVerticals;
       effectiveConfig.scopeVerticals = verticalSelection.scopeVerticals;
+      effectiveConfig.extractionCoverage = verticalSelection;
+      if (verticalSelection.unavailableConfiguredVerticals.length) {
+        desktopLogger.warn('scrape.catalog_categories_without_fsns',
+          'Configured rate-card categories without database FSNs were excluded from the extraction and cannot be published.', {
+            marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
+            brand: effectiveConfig.brand || 'all',
+            configuredCategories: verticalSelection.configuredVerticals,
+            availableCategories: verticalSelection.availableVerticals,
+            selectedCategories: verticalSelection.scopeVerticals,
+            categories: verticalSelection.unavailableConfiguredVerticals,
+            availableCategoryCount: verticalSelection.availableVerticals.length
+          });
+        onProgress(`⚠️ Configured categories without database FSNs were skipped and will block publication: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}.`);
+      }
+      if (effectiveConfig.requireCompleteCoverage && !verticalSelection.complete) {
+        throw new Error(`Extraction cannot start: configured categories have no database FSNs: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}. Nothing was scraped or submitted.`);
+      }
 
       if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
         broadcastMonitorState({
@@ -1325,7 +1363,7 @@ async function executeScrapeProcess(config, onProgress) {
           activeEmbeddedPage = null;
           broadcastMonitorState({ active: false, status: scrapeRes.success ? 'completed' : 'error' });
           if (!scrapeRes.success && /HTTP 5\d\d|ERR_|timed? out|renderer|Missing rate responses/i.test(scrapeRes.error)) throw new Error(scrapeRes.error);
-          return scrapeRes;
+          return { ...scrapeRes, coverage: verticalSelection };
         } catch (err) {
           activeEmbeddedPage = null;
           broadcastMonitorState({ active: false, status: 'error', error: err.message });
@@ -1423,7 +1461,7 @@ async function executeScrapeProcess(config, onProgress) {
         error: externalResult.success ? '' : externalResult.error
       });
       if (!externalResult.success && /HTTP 5\d\d|ERR_|timed? out|renderer|Missing rate responses/i.test(externalResult.error)) throw new Error(externalResult.error);
-      return externalResult;
+      return { ...externalResult, coverage: verticalSelection };
     } catch (err) {
       lastErr = err;
       if (attempt === MAX_ATTEMPTS || isPermanentScrapeError(err)) {
@@ -1990,6 +2028,7 @@ registerHandler('start-scrape', async (e, options) => {
   }
   // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
   stagedExtraction.cards = [];
+  stagedExtraction.coverage = null;
   stagedExtraction.review = null;
   supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
   const jobAuthGeneration = stagedExtraction.authGeneration;
@@ -2016,7 +2055,7 @@ registerHandler('start-scrape', async (e, options) => {
     };
   }
   try {
-    persistReview(normalizeScrapedCards(result.data), sessionStillValid);
+    persistReview(normalizeScrapedCards(result.data), sessionStillValid, result.coverage || null);
   } catch (stageErr) {
     desktopLogger.error('scrape.staging_failed', stageErr, {
       marketplace: mergedOptions.marketplace, observationCount: result.data?.length || 0,
@@ -2026,7 +2065,9 @@ registerHandler('start-scrape', async (e, options) => {
   }
   desktopLogger.info('scrape.staged', 'Extraction passed validation and was saved for review.', {
     marketplace: mergedOptions.marketplace, observationCount: result.data?.length || 0,
-    cardCount: stagedExtraction.cards.length, durationMs: Date.now() - startedAt
+    cardCount: stagedExtraction.cards.length, durationMs: Date.now() - startedAt,
+    coverageComplete: result.coverage?.complete ?? false,
+    unavailableConfiguredVerticals: result.coverage?.unavailableConfiguredVerticals || []
   });
   return { ...result, rateCards: stagedExtraction.cards };
 });
@@ -2051,7 +2092,10 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
   if (!stagedExtraction.cards.length) {
     const session = loadAuthSession();
     const review = recoverReview(getStagingDb(USER_DATA_DIR), session.user.firebase_uid);
-    if (review) stagedExtraction.cards = review.cards;
+    if (review) {
+      stagedExtraction.cards = review.cards;
+      stagedExtraction.coverage = review.coverage || null;
+    }
   }
   if (!stagedExtraction.cards.length) {
     return {
@@ -2062,17 +2106,26 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
     };
   }
   try {
-    const sellerAccount = String(options.seller_account || 'default').trim() || 'default';
+    const sellerAccount = resolveSellerAccountForRateCards(stagedExtraction.cards, options.seller_account);
     if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
       return { success: false, error: 'Choose one valid seller account for the rate review.' };
     }
-    const rateCards = stagedExtraction.cards;
+    const rateCards = stagedExtraction.cards.filter(card => (card.seller_account || 'default') === sellerAccount);
     const targetMp = String(options.marketplace || options.channel || 'flipkart').toLowerCase().trim();
     if (!['flipkart', 'shopsy'].includes(targetMp)) {
       return { success: false, error: 'Choose Flipkart or Shopsy for a separate rate review.' };
     }
     const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
-    return { success: true, rateCards: filteredRateCards, canSync: stagedExtraction.cards.length > 0 };
+    const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
+    const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, targetMp);
+    return {
+      success: true,
+      rateCards: filteredRateCards,
+      canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0,
+      coverage: stagedExtraction.coverage,
+      coverageKnown,
+      missingFsnCategories: missingCategories
+    };
   } catch (err) {
     desktopLogger.error('rate-review.preview_failed', err, {
       marketplace: options.marketplace || options.channel || 'flipkart'
@@ -2088,8 +2141,10 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
   if (new Set(cards.map(card => card.marketplace)).size !== 1) {
     return { success: false, error: 'Review Flipkart and Shopsy separately.' };
   }
+  let sellerAccount;
+  try { sellerAccount = resolveSellerAccountForRateCards(cards, options.seller_account); }
+  catch (err) { return { success: false, error: err.message }; }
   try {
-    const sellerAccount = options.seller_account || 'default';
     const result = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
     stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: result.fingerprints };
     desktopLogger.info('rate-review.compared', 'PostgreSQL comparison completed.', {
@@ -2100,7 +2155,7 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
   } catch (err) {
     stagedExtraction.review = null;
     desktopLogger.error('rate-review.comparison_failed', err);
-    return { success: false, error: err.message };
+    return { success: true, changes: [], changesCount: 0, anomaliesCount: 0, dbAvailable: false, comparisonError: err.message };
   }
 });
 
@@ -2109,9 +2164,20 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   const isCurrent = () => authGeneration === stagedExtraction.authGeneration;
   const cards = selectStagedCards(stagedExtraction.cards, submitted);
   const review = stagedExtraction.review;
+  const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, cards?.[0]?.marketplace);
+  const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, cards?.[0]?.marketplace);
+  let sellerAccount;
+  try { sellerAccount = resolveSellerAccountForRateCards(cards, options.seller_account); }
+  catch (err) { return { success: false, error: err.message }; }
   if (!cards || new Set(cards.map(card => card.marketplace)).size !== 1 ||
-      !review || review.payload !== JSON.stringify(cards) || review.sellerAccount !== (options.seller_account || 'default')) {
+      !review || review.payload !== JSON.stringify(cards) || review.sellerAccount !== sellerAccount) {
     return { success: false, error: 'Review the selected staged cards against PostgreSQL before committing.' };
+  }
+  if (!coverageKnown) {
+    return { success: false, error: 'Publication blocked: extraction coverage is unknown. Run a fresh extraction with the current app.' };
+  }
+  if (missingCategories.length) {
+    return { success: false, error: `Publication blocked: configured categories have no database FSNs and were not extracted: ${missingCategories.join(', ')}.` };
   }
   try {
     const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount, isCurrent);
