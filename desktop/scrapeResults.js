@@ -11,14 +11,57 @@ const sameSlabs = (a, b) => Array.isArray(a) && Array.isArray(b)
  * consistent between the Electron and standalone-server flows.
  */
 export function createStagedExtractionState() {
-  const state = { cards: [], coverage: null, authGeneration: 0 };
+  const state = { cards: [], coverage: null, authGeneration: 0, reviewGeneration: 0, review: null, publicationInProgress: false };
+  state.invalidateReview = () => {
+    state.reviewGeneration += 1;
+    state.review = null;
+    return state.reviewGeneration;
+  };
+  state.beginPublication = () => {
+    if (state.publicationInProgress) return false;
+    state.publicationInProgress = true;
+    return true;
+  };
+  state.endPublication = () => {
+    state.publicationInProgress = false;
+  };
   state.resetForAuthChange = () => {
     state.cards = [];
     state.coverage = null;
-    state.review = null;
+    state.invalidateReview();
     state.authGeneration += 1;
   };
   return state;
+}
+
+export function beginStagedRateReview(state, cards, sellerAccount) {
+  if (state.publicationInProgress) throw new Error('Rate publication is in progress. Wait for it to finish before starting another comparison.');
+  const generation = state.invalidateReview();
+  return Object.freeze({
+    generation,
+    authGeneration: state.authGeneration,
+    payload: JSON.stringify(cards),
+    sellerAccount
+  });
+}
+
+export function isCurrentStagedRateReview(state, request, cards, sellerAccount) {
+  return Number.isInteger(request?.generation) &&
+    request.generation === state.reviewGeneration &&
+    request.authGeneration === state.authGeneration &&
+    request.payload === JSON.stringify(cards) &&
+    request.sellerAccount === sellerAccount;
+}
+
+export function stageRateReviewIfCurrent(state, request, cards, sellerAccount, result) {
+  if (!isCurrentStagedRateReview(state, request, cards, sellerAccount)) return false;
+  state.review = {
+    payload: request.payload,
+    sellerAccount,
+    fingerprints: result?.fingerprints,
+    publishable: result?.publishable
+  };
+  return true;
 }
 
 export function captureScrapeAuthContext(state, session) {

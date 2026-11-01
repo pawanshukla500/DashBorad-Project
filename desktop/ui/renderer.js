@@ -754,12 +754,15 @@ async function loadRateCardPreview() {
       currentComparisonAvailable = diffRes.dbAvailable !== false;
       // Keep the local extraction visible when the PostgreSQL comparison is
       // unavailable, but never leave publication enabled without that review.
-      currentCanSync = Boolean(res.canSync) && currentComparisonAvailable;
+      currentCanSync = Boolean(res.canSync) && currentComparisonAvailable && diffRes.publishable !== false;
       const missingFsnCategories = Array.isArray(res.missingFsnCategories) ? res.missingFsnCategories : [];
       const uncoveredCategories = Array.isArray(res.uncoveredCategories) ? res.uncoveredCategories : [];
       const omittedCategories = uncoveredCategories.filter(category => !missingFsnCategories.includes(category));
       if (!currentComparisonAvailable) {
         appendTerminalLine(`⚠️ Local extraction is available, but PostgreSQL comparison failed: ${diffRes.comparisonError || 'the backend comparison is unavailable'}. Publication is disabled.`);
+      }
+      if (currentComparisonAvailable && diffRes.publishable === false) {
+        appendTerminalLine(`⚠️ PostgreSQL diffs are visible, but the backend did not return a review fingerprint. Publication is disabled until the backend review update is available.`);
       }
       if (missingFsnCategories.length) {
         appendTerminalLine(`⚠️ ${selectedChannel} skipped configured categories without database FSNs (${missingFsnCategories.join(', ')}). Review covers categories with real FSNs only.`);
@@ -772,13 +775,15 @@ async function loadRateCardPreview() {
       }
       if (commitBtn) {
         commitBtn.disabled = !currentCanSync;
-        commitBtn.title = !currentCanSync && !currentComparisonAvailable
+        commitBtn.title = !currentComparisonAvailable
           ? `PostgreSQL comparison unavailable: ${diffRes.comparisonError || 'check the backend connection or version'}. Publication is disabled.`
-          : (omittedCategories.length
+          : (diffRes.publishable === false
+            ? 'Publication is disabled because the backend did not return a review fingerprint.'
+            : (omittedCategories.length
               ? `Publication blocked because this extraction omitted configured categories: ${omittedCategories.join(', ')}`
             : (res.coverageKnown === false
               ? 'Publication blocked because extraction coverage is unknown. Run a fresh extraction with the current app.'
-              : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.')));
+              : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.'))));
       }
 
       // Update badges & anomaly banner
@@ -1368,15 +1373,21 @@ function setupEventListeners() {
         }
         alert('Database synchronization completed successfully!');
         await loadRateCardPreview();
+      } else if (res.success) {
+        const message = res.result?.message || 'Database is already in sync.';
+        appendTerminalLine(`Database sync result: ${message}`);
+        alert(message);
+        await loadRateCardPreview();
       } else {
-        appendTerminalLine(`Database sync result: ${res.result?.message || 'Up to date'}`);
-        alert(res.result?.message || 'Database is already in sync.');
+        const message = res.error || res.result?.message || 'Database synchronization failed.';
+        appendTerminalLine(`Database sync failed: ${message}`);
+        alert(message);
       }
     } catch (err) {
       appendTerminalLine(`Database sync failed: ${err.message}`);
       alert(`Database sync failed: ${err.message}`);
     } finally {
-      btnCommitDb.disabled = false;
+      btnCommitDb.disabled = !currentCanSync;
       btnCommitDb.innerText = '✓ Commit & Auto-Close in Database';
     }
   });

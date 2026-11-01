@@ -20,7 +20,7 @@ import {
 import { verifyDesktopTokenAuthorization } from './authValidation.js';
 import { focusBrowserPage, getBrowserRuntime, requireChromeExecutable, withBrowserTask } from './browserRuntime.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
-import { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
+import { beginStagedRateReview, createStagedExtractionState, isCurrentStagedRateReview, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards, stageRateReviewIfCurrent } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import { closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { createStructuredLogger } from './structuredLogger.js';
@@ -106,7 +106,7 @@ function persistReview(cards, session, coverage = null) {
     { coverage, seller_account: cards[0].seller_account || 'default' });
   stagedExtraction.cards = cards;
   stagedExtraction.coverage = coverage;
-  stagedExtraction.review = null;
+  stagedExtraction.invalidateReview();
 }
 
 const FIREBASE_API_KEY = process.env.VITE_FIREBASE_API_KEY || 'AIzaSyD3FSzQXK7MACZOJR9tz_N7tnQ40QLMchs';
@@ -727,6 +727,10 @@ async function checkDailySchedule() {
     }
 
     try {
+      if (stagedExtraction.publicationInProgress) {
+        if (mainWindow) mainWindow.webContents.send('scrape-progress', '⏰ Scheduled scrape skipped: rate publication is in progress.');
+        return;
+      }
       if (withBrowserTask.busy) {
         if (mainWindow) mainWindow.webContents.send('scrape-progress', '⏰ Scheduled scrape skipped: another browser task is running.');
         return;
@@ -734,7 +738,7 @@ async function checkDailySchedule() {
       // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
       stagedExtraction.cards = [];
       stagedExtraction.coverage = null;
-      stagedExtraction.review = null;
+      stagedExtraction.invalidateReview();
       supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
       const jobAuthGeneration = stagedExtraction.authGeneration;
       const result = await withBrowserTask(() => executeScrapeProcess(config, (msg) => {
@@ -2001,6 +2005,7 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
 });
 
 registerHandler('start-scrape', async (e, options) => {
+  if (stagedExtraction.publicationInProgress) return { success: false, error: 'Rate publication is in progress. Wait for it to finish before starting another extraction.' };
   if (withBrowserTask.busy) return { success: false, error: 'A browser task is already running.' };
   const startedAt = Date.now();
   const config = loadConfig();
@@ -2034,7 +2039,7 @@ registerHandler('start-scrape', async (e, options) => {
   // A new run supersedes the previous staging; a failed run must not leave old cards syncable.
   stagedExtraction.cards = [];
   stagedExtraction.coverage = null;
-  stagedExtraction.review = null;
+  stagedExtraction.invalidateReview();
   supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
   const jobAuthGeneration = stagedExtraction.authGeneration;
   const result = await withBrowserTask(() => executeScrapeProcess(mergedOptions, (msg) => {
@@ -2100,6 +2105,7 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
     if (review) {
       stagedExtraction.cards = review.cards;
       stagedExtraction.coverage = review.coverage || null;
+      stagedExtraction.invalidateReview();
     }
   }
   if (!stagedExtraction.cards.length) {
@@ -2152,16 +2158,25 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
   let sellerAccount;
   try { sellerAccount = resolveSellerAccountForRateCards(cards, options.seller_account); }
   catch (err) { return { success: false, error: err.message }; }
+  if (stagedExtraction.publicationInProgress) {
+    return { success: false, error: 'Rate publication is in progress. Wait for it to finish before starting another comparison.' };
+  }
+  const reviewRequest = beginStagedRateReview(stagedExtraction, cards, sellerAccount);
   try {
     const result = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
-    stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: result.fingerprints };
+    if (!stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, result)) {
+      return { success: false, stale: true, error: 'This comparison was superseded by a newer preview. Refresh the PostgreSQL comparison.' };
+    }
     desktopLogger.info('rate-review.compared', 'PostgreSQL comparison completed.', {
       marketplace: cards[0].marketplace, cardCount: cards.length,
-      changeCount: result.changesCount, anomalyCount: result.anomaliesCount
+      changeCount: result.changesCount, anomalyCount: result.anomaliesCount,
+      publishable: result.publishable
     });
     return { success: true, ...result };
   } catch (err) {
-    stagedExtraction.review = null;
+    if (isCurrentStagedRateReview(stagedExtraction, reviewRequest, cards, sellerAccount)) {
+      stagedExtraction.invalidateReview();
+    }
     desktopLogger.error('rate-review.comparison_failed', err);
     return { success: true, changes: [], changesCount: 0, anomaliesCount: 0, dbAvailable: false, comparisonError: err.message };
   }
@@ -2169,9 +2184,11 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
 
 registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   const authGeneration = stagedExtraction.authGeneration;
-  const isCurrent = () => authGeneration === stagedExtraction.authGeneration;
   const cards = selectStagedCards(stagedExtraction.cards, submitted);
   const review = stagedExtraction.review;
+  const reviewGeneration = stagedExtraction.reviewGeneration;
+  const isCurrent = () => authGeneration === stagedExtraction.authGeneration &&
+    reviewGeneration === stagedExtraction.reviewGeneration && stagedExtraction.review === review;
   const uncoveredCategories = blockingUncoveredCategoriesForMarketplace(stagedExtraction.coverage, cards?.[0]?.marketplace);
   const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, cards?.[0]?.marketplace);
   let sellerAccount;
@@ -2181,15 +2198,21 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
       !review || review.payload !== JSON.stringify(cards) || review.sellerAccount !== sellerAccount) {
     return { success: false, error: 'Review the selected staged cards against PostgreSQL before committing.' };
   }
+  if (!review.publishable || !review.fingerprints?.[cards[0].marketplace]) {
+    return { success: false, error: 'Publication is disabled because the backend did not return a review fingerprint. Refresh after the backend review update.' };
+  }
   if (!coverageKnown) {
     return { success: false, error: 'Publication blocked: extraction coverage is unknown. Run a fresh extraction with the current app.' };
   }
   if (uncoveredCategories.length) {
     return { success: false, error: `Publication blocked: configured categories were not included in this extraction: ${uncoveredCategories.join(', ')}.` };
   }
+  if (!stagedExtraction.beginPublication()) {
+    return { success: false, error: 'Another rate publication is already in progress. Wait for it to finish.' };
+  }
   try {
     const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount, isCurrent);
-    stagedExtraction.review = null;
+    stagedExtraction.invalidateReview();
     desktopLogger.info(result.updated ? 'rate-review.published' : 'rate-review.unchanged',
       result.message || 'Reviewed rates are unchanged.', {
         marketplace: cards[0].marketplace, cardCount: cards.length,
@@ -2199,6 +2222,8 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   } catch (err) {
     desktopLogger.error('rate-review.publish_failed', err, { marketplace: cards[0].marketplace });
     return { success: false, error: err.message };
+  } finally {
+    stagedExtraction.endPublication();
   }
 });
 

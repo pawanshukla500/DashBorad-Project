@@ -49,7 +49,7 @@ assert.deepStrictEqual = function(actual, expected, message) {
 // ── Module loading ────────────────────────────────────────────────────────────
 const { getBrowserRuntime, requireChromeExecutable, withBrowserTask } = await import('../browserRuntime.js');
 const { publicSession, createSessionAccess } = await import('../sessionAccess.js');
-const { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } = await import('../scrapeResults.js');
+const { beginStagedRateReview, createStagedExtractionState, isCurrentStagedRateReview, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards, stageRateReviewIfCurrent } = await import('../scrapeResults.js');
 const {
   isDesktopReachableDbUrl,
   sanitizeSavedDbUrl,
@@ -297,6 +297,33 @@ async function runTests() {
     state.resetForAuthChange();
     assert(state.cards.length === 0, 'auth change must clear staged cards');
     assert(state.authGeneration === jobGeneration + 1, 'auth change must invalidate in-flight jobs');
+  });
+
+  await runTest('stale overlapping rate comparisons cannot replace the newest staged review', async () => {
+    const state = createStagedExtractionState();
+    const olderCards = [{ marketplace: 'flipkart', category: 'kurta' }];
+    const newerCards = [{ marketplace: 'shopsy', category: 'shopsy_kurta' }];
+    const olderRequest = beginStagedRateReview(state, olderCards, 'default');
+    const newerRequest = beginStagedRateReview(state, newerCards, 'default');
+    const newerResult = { fingerprints: { shopsy: 'b'.repeat(64) }, publishable: true };
+    const olderResult = { fingerprints: { flipkart: 'a'.repeat(64) }, publishable: true };
+
+    assert(!isCurrentStagedRateReview(state, olderRequest, olderCards, 'default'), 'newer comparison must invalidate the older request');
+    assert(stageRateReviewIfCurrent(state, newerRequest, newerCards, 'default', newerResult), 'latest comparison may stage its review');
+    assert(!stageRateReviewIfCurrent(state, olderRequest, olderCards, 'default', olderResult), 'late older response must not overwrite the latest review');
+    assert.strictEqual(state.review.payload, JSON.stringify(newerCards), 'latest reviewed payload must remain staged');
+    assert.strictEqual(state.review.fingerprints.shopsy, 'b'.repeat(64), 'latest marketplace fingerprint must remain staged');
+
+    const pendingRequest = beginStagedRateReview(state, newerCards, 'default');
+    state.invalidateReview();
+    assert(!isCurrentStagedRateReview(state, pendingRequest, newerCards, 'default'), 'a new extraction must invalidate an in-flight comparison');
+    assert(state.beginPublication(), 'publication lock must start once');
+    assert(!state.beginPublication(), 'overlapping publications must be rejected');
+    let comparisonBlocked = false;
+    try { beginStagedRateReview(state, newerCards, 'default'); } catch (error) { comparisonBlocked = /publication is in progress/i.test(error.message); }
+    assert(comparisonBlocked, 'a new comparison must not invalidate review state during publication');
+    state.endPublication();
+    assert(!state.publicationInProgress, 'publication lock must always be releasable');
   });
 
   // ── scrapeResults ───────────────────────────────────────────────────────────
@@ -2007,6 +2034,80 @@ async function runTests() {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  await runTest('backend diffs remain reviewable without a fingerprint while publication stays blocked', async () => {
+    const { reviewRatesViaApi, publishReviewedRatesViaApi, clearCachedActiveServer } = await import('../workerClient.js');
+    const savedFetch = globalThis.fetch;
+    const savedNodeEnv = process.env.NODE_ENV;
+    const savedApiUrl = process.env.API_SERVER_URL;
+    const comparisons = [];
+    process.env.NODE_ENV = 'test';
+    process.env.API_SERVER_URL = 'http://127.0.0.1:43119';
+    clearCachedActiveServer();
+    globalThis.fetch = async (url, options = {}) => {
+      const target = new URL(url);
+      if (target.pathname === '/api/health') {
+        return new Response(JSON.stringify({ dataSource: 'sql' }), { status: 200 });
+      }
+      if (target.pathname === '/api/rate-card/detect-changes') {
+        const request = JSON.parse(options.body);
+        comparisons.push(request.marketplace);
+        return new Response(JSON.stringify({
+          hasChanges: true,
+          diffCount: 1,
+          diffs: [{ table: 'rc_commission', category: request.marketplace, changeType: 'MODIFIED', details: 'Fixture rate change' }],
+          summary: { added: 0, modified: 1, removed: 0, unchanged: 0, totalChecked: 1 }
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected test request: ${target.pathname}`);
+    };
+    try {
+      const cards = [
+        { marketplace: 'flipkart', category: 'kurta', seller_account: 'default' },
+        { marketplace: 'shopsy', category: 'shopsy_kurta', seller_account: 'default' }
+      ];
+      const review = await reviewRatesViaApi({ idToken: 'test-token', user: { role: 'admin' } }, cards, 'default');
+      assert.strictEqual(review.changesCount, 2, 'both marketplace diffs must be returned for review');
+      assert.strictEqual(review.publishable, false, 'missing backend fingerprints must disable publication');
+      assert.deepStrictEqual(review.missingFingerprintMarketplaces, ['flipkart', 'shopsy']);
+      assert.deepStrictEqual(comparisons, ['flipkart', 'shopsy'], 'each marketplace must be compared separately');
+
+      let publishBlocked = false;
+      try {
+        await publishReviewedRatesViaApi({ idToken: 'test-token', user: { role: 'admin' } }, [cards[0]], review.fingerprints);
+      } catch (error) {
+        publishBlocked = /Review the current PostgreSQL comparison/.test(error.message);
+      }
+      assert(publishBlocked, 'publication must stay blocked without a review fingerprint');
+    } finally {
+      globalThis.fetch = savedFetch;
+      if (savedNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = savedNodeEnv;
+      if (savedApiUrl === undefined) delete process.env.API_SERVER_URL; else process.env.API_SERVER_URL = savedApiUrl;
+      clearCachedActiveServer();
+    }
+  });
+
+  await runTest('review UI shows diffs but disables publishing when a backend fingerprint is missing', async () => {
+    const renderer = fs.readFileSync(path.join(desktopDir, 'ui/renderer.js'), 'utf8');
+    const main = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+    const standaloneServer = fs.readFileSync(path.join(desktopDir, 'desktopServer.mjs'), 'utf8');
+    assert(renderer.includes('diffRes.publishable !== false'), 'renderer must gate the commit button on review publishability');
+    assert(renderer.includes('PostgreSQL diffs are visible'), 'renderer must explain missing-fingerprint review state');
+    assert(/finally\s*\{\s*btnCommitDb\.disabled = !currentCanSync;/.test(renderer), 'commit cleanup must preserve a disabled review state');
+    assert(main.includes('if (!review.publishable || !review.fingerprints?.[cards[0].marketplace])'), 'main process must enforce the fingerprint gate');
+    assert(main.includes('stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, result)'), 'Electron main must reject superseded review responses');
+    assert(main.includes('if (stagedExtraction.publicationInProgress) return { success: false, error: \'Rate publication is in progress.'), 'Electron main must prevent a new scrape during rate publication');
+    assert(main.includes('stagedExtraction.beginPublication()') && main.includes('stagedExtraction.endPublication()'), 'Electron main must hold and release the publication lock');
+    assert(standaloneServer.includes('stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, review)'), 'standalone app server must reject superseded review responses');
+    assert(standaloneServer.includes('if (!review.publishable || !review.fingerprints?.[cardsToSync[0].marketplace])'), 'standalone sync must enforce the fingerprint gate');
+    assert(standaloneServer.includes('if (stagedExtraction.publicationInProgress)'), 'standalone server must guard concurrent publication, comparison, and scrape requests');
+    const syncHandlerStart = renderer.indexOf('// Commit to Database');
+    const syncHandlerEnd = renderer.indexOf('// Excel Actions', syncHandlerStart);
+    const syncHandler = renderer.slice(syncHandlerStart, syncHandlerEnd);
+    assert(syncHandler.includes('else if (res.success)'), 'unchanged successful syncs must follow the success path');
+    assert((syncHandler.match(/await loadRateCardPreview\(\);/g) || []).length >= 2, 'changed and unchanged successful syncs must both refresh the staged review');
+    assert(syncHandler.includes('res.error || res.result?.message'), 'failed sync responses must display an error instead of an up-to-date message');
   });
 
   console.log('\n=================================================================');
