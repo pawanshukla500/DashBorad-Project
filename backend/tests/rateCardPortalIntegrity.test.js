@@ -126,7 +126,84 @@ describe('Portal observations and reviewed publication', () => {
     const review=await compare(db);
     await publishRateCardObservations(cards(),{pool:db.pool,publishedBy:'fixture',reviewFingerprint:review.fingerprint});
     expect(mutations(db).some(([sql])=>sql.startsWith('INSERT INTO rc_commission'))).toBe(false);
-    expect(mutations(db).find(([sql])=>sql.startsWith('UPDATE rc_commission'))[0]).not.toContain('end_date');
+    expect(mutations(db).find(([sql])=>sql.startsWith('UPDATE rc_commission'))[0]).toContain('end_date = $2');
+    expect(mutations(db).find(([sql])=>sql.startsWith('UPDATE rc_commission'))[1][1]).toBeNull();
+  });
+
+  it('bounds a changed same-day row before an existing future period', async () => {
+    const db = database();
+    db.tables.rc_commission[0].start_date = date;
+    db.tables.rc_commission[0].rate = 0.25;
+    const future = { ...db.tables.rc_commission[0], id: 901, start_date: '2026-12-01', end_date: null, rate: 0.18 };
+    const originalQuery = db.client.query.getMockImplementation();
+    db.client.query.mockImplementation(async (sql, params) => {
+      if (String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission')) return { rows: [future] };
+      return originalQuery(sql, params);
+    });
+
+    const review = await compare(db);
+    await publishRateCardObservations(cards(), {
+      pool: db.pool, publishedBy: 'fixture', effectiveDate: date, reviewFingerprint: review.fingerprint,
+    });
+
+    const futureRead = db.client.query.mock.calls.find(([sql]) => String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission'));
+    expect(futureRead[1]).toEqual(['flipkart', 'default', date]);
+    const update = mutations(db).find(([sql]) => sql.startsWith('UPDATE rc_commission'));
+    expect(update[0]).toContain('end_date = $2');
+    expect(update[1].slice(0, 2)).toEqual([db.tables.rc_commission[0].id, '2026-11-30']);
+  });
+
+  it('loads future periods once per changed table per review and publication pass', async () => {
+    const first = cards()[0];
+    const second = { ...structuredClone(first), brand: 'Sangria' };
+    const observations = [first, second];
+    const db = database([]);
+    const review = await compare(db, observations);
+    const reviewFutureReads = db.client.query.mock.calls.filter(([sql]) => String(sql).includes('start_date > $3'));
+    expect(reviewFutureReads).toHaveLength(RATE_TABLES.length);
+
+    await publishRateCardObservations(observations, {
+      pool: db.pool, publishedBy: 'fixture', effectiveDate: date, reviewFingerprint: review.fingerprint,
+    });
+
+    const futureReads = db.client.query.mock.calls.filter(([sql]) => String(sql).includes('start_date > $3'));
+    const futureTables = futureReads.map(([sql]) => RATE_TABLES.find(item => String(sql).includes(`FROM ${item.table}`))?.table);
+    expect(futureReads).toHaveLength(RATE_TABLES.length * 2);
+    expect(new Set(futureTables.slice(0, RATE_TABLES.length)).size).toBe(RATE_TABLES.length);
+    expect(new Set(futureTables.slice(RATE_TABLES.length)).size).toBe(RATE_TABLES.length);
+  });
+
+  it('invalidates review when the matching future period boundary changes', async () => {
+    const db = database();
+    db.tables.rc_commission[0].rate = 0.25;
+    let future = { ...db.tables.rc_commission[0], id: 902, start_date: '2026-12-01', end_date: null, rate: 0.18 };
+    const originalQuery = db.client.query.getMockImplementation();
+    db.client.query.mockImplementation(async (sql, params) => {
+      if (String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission')) return { rows: [future] };
+      return originalQuery(sql, params);
+    });
+
+    const review = await compare(db);
+    expect(review.diffs.find(diff => diff.table === 'rc_commission').nextPeriodStart).toBe('2026-12-01');
+    future = { ...future, start_date: '2026-12-15' };
+
+    await expect(publishRateCardObservations(cards(), {
+      pool: db.pool, publishedBy: 'fixture', effectiveDate: date, reviewFingerprint: review.fingerprint,
+    })).rejects.toThrow(/REVIEW_STALE/);
+    expect(mutations(db)).toEqual([]);
+  });
+
+  it('rejects observations from another seller account before opening a publish transaction', async () => {
+    const db = database();
+    const observations = cards();
+    observations[0].seller_account = 'seller_ej';
+
+    await expect(publishRateCardObservations(observations, {
+      pool: db.pool, marketplace: 'flipkart', sellerAccount: 'default', publishedBy: 'fixture',
+      reviewFingerprint: 'a'.repeat(64),
+    })).rejects.toThrow(/seller account does not match/i);
+
+    expect(db.client.query).not.toHaveBeenCalled();
   });
 
   it('closes a changed current row before a future period stored under a legacy category alias', async () => {

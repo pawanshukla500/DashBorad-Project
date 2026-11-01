@@ -1620,7 +1620,8 @@ router.post('/detect-changes', async (req, res) => {
     const diffResult = await compareScrapedRatesWithActive(scrapedData, { marketplace, sellerAccount: seller_account });
     res.json(diffResult);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const status = err.code === 'SELLER_ACCOUNT_MISMATCH' ? 409 : 500;
+    res.status(status).json({ error: err.message, code: err.code });
   }
 });
 

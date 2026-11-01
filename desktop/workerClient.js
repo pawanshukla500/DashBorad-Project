@@ -321,7 +321,8 @@ export async function reviewRatesViaApi(session, cards, sellerAccount = 'default
       if (!diff || typeof diff !== 'object' || Array.isArray(diff) || !Object.prototype.hasOwnProperty.call(types, diff.table)) {
         throw new Error('Backend comparison response contains an unsupported rate table; no rates were published.');
       }
-      changes.push({ ...diff, marketplace, brand: diff.brand_name || 'General', type: types[diff.table], reason: diff.details,
+      const periodNote = diff.nextPeriodStart ? `; next scheduled period starts ${diff.nextPeriodStart}` : '';
+      changes.push({ ...diff, marketplace, brand: diff.brand_name || 'General', type: types[diff.table], reason: `${diff.details || 'Rate change'}${periodNote}`,
         fulfilmentType: diff.fulfilment_type, weightSlab: (diff.newRow || diff.oldRow)?.weight_slab,
         priceMin: (diff.newRow || diff.oldRow)?.price_min, priceMax: (diff.newRow || diff.oldRow)?.price_max,
         weightMin: (diff.newRow || diff.oldRow)?.weight_min, weightMax: (diff.newRow || diff.oldRow)?.weight_max });

@@ -5,7 +5,7 @@ export const rateDiffFingerprint = (diffs, effectiveDate) => createHash('sha256'
   effectiveDate: effectiveDate || null,
   diffs: diffs.map(d => {
   const descriptor = RATE_TABLES.find(t => t.table === d.table);
-  return [d.table, d.category, d.changeType,
+  return [d.table, d.category, d.changeType, d.nextPeriodStart || null,
     d.oldRow ? [d.oldRow.id, String(d.oldRow.start_date), String(d.oldRow.end_date), normalizeObservationRow(descriptor, d.oldRow)] : null,
     d.newRow ? normalizeObservationRow(descriptor, d.newRow) : null];
   }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
@@ -85,12 +85,19 @@ export function normalizeObservationRow(descriptor, row, observation = {}) {
   return result;
 }
 
-export function validateRateObservations(observations, { marketplace, complete = false, expectedVerticals = [] } = {}) {
+export function validateRateObservations(observations, { marketplace, sellerAccount, complete = false, expectedVerticals = [] } = {}) {
   if (!Array.isArray(observations) || !observations.length) throw new Error('Non-empty rate observations are required.');
   const categories = new Set();
   const identities = new Map();
   for (const observation of observations) {
     if (observation.marketplace && observation.marketplace !== marketplace) throw new Error('Mixed marketplace observations are not allowed.');
+    const observedAccount = observation.seller_account ?? observation.sellerAccount;
+    if (sellerAccount != null && observedAccount != null &&
+        (String(observedAccount).trim() || 'default') !== (String(sellerAccount).trim() || 'default')) {
+      const error = new Error('Observation seller account does not match the worker job account.');
+      error.code = 'SELLER_ACCOUNT_MISMATCH';
+      throw error;
+    }
     const category = categoryKey(observation.vertical || observation.category, marketplace);
     categories.add(category);
     if (complete && (observation.source !== 'seller_portal' ||
@@ -143,12 +150,13 @@ const rawScope = (descriptor, row, marketplace) => JSON.stringify([
   categoryKey(row.category, marketplace || row.marketplace),
   descriptor.table === 'rc_commission' ? keyValue('brand_name', brand(row.brand_name)) : null
 ]);
+const dateOnly = value => value instanceof Date ? value.toISOString().slice(0, 10) : String(value || '').slice(0, 10);
 const display = (descriptor, row) => !row ? null : descriptor.table === 'rc_collection_fee'
   ? `Prepaid: ${row.prepaid} ${row.prepaid_type}, Postpaid: ${row.postpaid} ${row.postpaid_type}`
   : descriptor.table === 'rc_reverse_shipping' ? `L:₹${row.local_fee}/Z:₹${row.zonal_fee}/N:₹${row.national_fee}` : row.rate;
 
 export async function planRateCardChanges(client, observations, { marketplace, sellerAccount, effectiveDate }) {
-  validateRateObservations(observations, { marketplace });
+  validateRateObservations(observations, { marketplace, sellerAccount });
   const diffs = [];
   let unchanged = 0;
   for (const descriptor of RATE_TABLES) {
@@ -186,6 +194,20 @@ export async function planRateCardChanges(client, observations, { marketplace, s
       existing.delete(key);
     }
     for (const previous of existing.values()) push('REMOVED', previous, null);
+
+    const changedRows = diffs.filter(diff => diff.table === descriptor.table && diff.newRow);
+    if (changedRows.length) {
+      const future = await client.query(`SELECT * FROM ${descriptor.table}
+        WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
+          AND start_date > $3`, [marketplace, sellerAccount, effectiveDate]);
+      for (const diff of changedRows) {
+        const nextPeriod = (future.rows || []).filter(raw => dateOnly(raw.start_date) > effectiveDate &&
+          normalizeMarketplaceCategory(raw.category, marketplace) === diff.category &&
+          rateRowIdentity(descriptor, normalizeObservationRow(descriptor, raw)) === rateRowIdentity(descriptor, diff.newRow))
+          .map(raw => dateOnly(raw.start_date)).sort()[0] || null;
+        diff.nextPeriodStart = nextPeriod;
+      }
+    }
   }
   return { hasChanges: diffs.length > 0, diffCount: diffs.length, diffs, fingerprint: rateDiffFingerprint(diffs, effectiveDate),
     summary: { added: diffs.filter(d => d.changeType === 'ADDED').length,

@@ -2056,7 +2056,7 @@ async function runTests() {
         return new Response(JSON.stringify({
           hasChanges: true,
           diffCount: 1,
-          diffs: [{ table: 'rc_commission', category: request.marketplace, changeType: 'MODIFIED', details: 'Fixture rate change' }],
+          diffs: [{ table: 'rc_commission', category: request.marketplace, changeType: 'MODIFIED', details: 'Fixture rate change', nextPeriodStart: '2026-12-01' }],
           summary: { added: 0, modified: 1, removed: 0, unchanged: 0, totalChecked: 1 }
         }), { status: 200 });
       }
@@ -2069,6 +2069,8 @@ async function runTests() {
       ];
       const review = await reviewRatesViaApi({ idToken: 'test-token', user: { role: 'admin' } }, cards, 'default');
       assert.strictEqual(review.changesCount, 2, 'both marketplace diffs must be returned for review');
+      assert(review.changes.every(change => change.reason.includes('next scheduled period starts 2026-12-01')),
+        'review details must show when the changed period is bounded by a scheduled future rate');
       assert.strictEqual(review.publishable, false, 'missing backend fingerprints must disable publication');
       assert.deepStrictEqual(review.missingFingerprintMarketplaces, ['flipkart', 'shopsy']);
       assert.deepStrictEqual(comparisons, ['flipkart', 'shopsy'], 'each marketplace must be compared separately');

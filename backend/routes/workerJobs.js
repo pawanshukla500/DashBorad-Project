@@ -419,12 +419,13 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
     let coverage;
     let expectedVerticals;
     try {
+      validateRateObservations(normalizedResults, { marketplace: job.marketplace, sellerAccount: job.seller_account });
       // Coverage comes from this marketplace/account's real PostgreSQL
       // configuration and FSN catalog. Job parameters are client supplied and
       // must never be allowed to narrow the completeness requirement.
       coverage = await loadRateCardCoverage(pool, { marketplace: job.marketplace, sellerAccount: job.seller_account, effectiveDate: scrapeEffectiveDate });
       expectedVerticals = assertRateObservationCoverage(normalizedResults, coverage);
-      validateRateObservations(normalizedResults, { marketplace: job.marketplace, complete: true,
+      validateRateObservations(normalizedResults, { marketplace: job.marketplace, sellerAccount: job.seller_account, complete: true,
         expectedVerticals });
     } catch (err) {
       console.warn('[Worker API] Rate-card extraction rejected', JSON.stringify({
@@ -554,9 +555,10 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
       (job.created_at ? new Date(job.created_at).toISOString().slice(0, 10) : null) ||
       new Date().toISOString().slice(0, 10));
 
+    validateRateObservations(job.results, { marketplace: job.marketplace, sellerAccount: job.seller_account });
     const coverage = await loadRateCardCoverage(pool, { marketplace: job.marketplace, sellerAccount: job.seller_account, effectiveDate });
     const expectedVerticals = assertRateObservationCoverage(job.results, coverage);
-    validateRateObservations(job.results, { marketplace: job.marketplace, complete: true, expectedVerticals });
+    validateRateObservations(job.results, { marketplace: job.marketplace, sellerAccount: job.seller_account, complete: true, expectedVerticals });
 
     const publishResult = await publishRateCardObservations(job.results, {
       marketplace: job.marketplace,
@@ -576,7 +578,8 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
     console.error('[Worker API] Publish job error:', err.message);
     const status = err.code === 'RATE_CARD_COVERAGE_UNAVAILABLE' ? 503
       : ['RATE_CARD_COVERAGE_INCOMPLETE', 'RATE_CARD_NO_FSN_BACKED_CATEGORIES'].includes(err.code) ? 409
-        : err.code === 'INVALID_EFFECTIVE_DATE' ? 400 : 500;
+        : err.code === 'INVALID_EFFECTIVE_DATE' ? 400
+          : err.code === 'SELLER_ACCOUNT_MISMATCH' ? 409 : 500;
     res.status(status).json({ error: 'Failed to publish rate card changes', details: err.message, code: err.code });
   }
 });
