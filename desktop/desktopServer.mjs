@@ -487,10 +487,8 @@ const DEFAULT_CONFIG = {
   scheduledMinute: 0,
   notificationEmail: 'payments@youthnic.shop',
   selectedBrands: ['Ethnic Junction', 'Youthnic', 'Sangria', 'Divastri', 'General'],
-  selectedVerticals: [
-    'ethnic_set', 'kurta', 'sari', 'top', 'dress', 'dupatta', 'fabric',
-    'blouse', 'lehenga_choli', 'gown', 'shopsy_kurta', 'shopsy_ethnic_set'
-  ],
+  // Category scope is discovered from the authenticated backend at run time.
+  selectedVerticals: [],
   accounts: {
     flipkart_shopsy: { email: 'Vbexports@outlook.com', portalUrl: 'https://seller.flipkart.com' },
     myntra_vb: { email: 'returnorders@vbexports.co.in', sellerId: '10708', portalUrl: 'https://partnerportal.myntra.com' },
@@ -712,7 +710,16 @@ const server = http.createServer(async (req, res) => {
         if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
           return sendJson(400, { success: false, error: 'Choose one valid seller account for the rate review.' });
         }
-        const rateCards = stagedExtraction.cards.length ? stagedExtraction.cards : await buildBrandRateCardSet(getPool(), sellerAccount);
+        if (!stagedExtraction.cards.length) {
+          return sendJson(409, {
+            success: false,
+            count: 0,
+            rateCards: [],
+            canSync: false,
+            error: 'No successful local extraction is staged. Run the scraper before reviewing rate changes.'
+          });
+        }
+        const rateCards = stagedExtraction.cards;
         const targetMp = (urlObj.searchParams.get('marketplace') || urlObj.searchParams.get('channel') || 'flipkart').toLowerCase().trim();
         if (!['flipkart', 'shopsy'].includes(targetMp)) {
           return sendJson(400, { success: false, error: 'Choose Flipkart or Shopsy for a separate rate review.' });
@@ -1316,9 +1323,13 @@ const server = http.createServer(async (req, res) => {
       const isVisible = body.mode === 'visible' || body.visible === true;
       const targetBrands = body.brands || config.selectedBrands;
       const selectedBrand = body.brand || 'all';
+      const requestedVerticals = Array.isArray(body.verticals) ? body.verticals : [];
+      const configuredVerticals = requestedVerticals.length
+        ? []
+        : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel);
       const verticalSelection = resolveScrapeVerticals({
-        requestedVerticals: body.verticals,
-        savedVerticals: config.selectedVerticals,
+        requestedVerticals,
+        configuredVerticals,
         brand: selectedBrand
       });
       const targetVerticals = verticalSelection.scopeVerticals;

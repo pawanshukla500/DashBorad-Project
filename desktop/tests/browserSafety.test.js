@@ -222,6 +222,30 @@ test('real HTTP worker registration and initial claim complete within five secon
     await new Promise(resolve=>server.close(resolve));}
 });
 
+test('configured category discovery normalizes marketplace before selecting channels', async () => {
+  const requested=[];
+  const server=http.createServer((req,res)=>{
+    requested.push(req.url);res.setHeader('Content-Type','application/json');
+    if(req.url==='/api/health')return res.end(JSON.stringify({dataSource:'sql'}));
+    res.end(JSON.stringify({categories:['kurta','shopsy_kurta']}));
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const previous={node:process.env.NODE_ENV,api:process.env.API_SERVER_URL},originalFetch=globalThis.fetch;
+  process.env.NODE_ENV='test';process.env.API_SERVER_URL=`http://127.0.0.1:${server.address().port}`;
+  globalThis.fetch=(url,options)=>String(url).startsWith(process.env.API_SERVER_URL)?originalFetch(url,options):Promise.reject(new Error('External network disabled in fixture test'));
+  const client=await import('../workerClient.js');client.clearCachedActiveServer();
+  try {
+    assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},'  FLIPKART '),['kurta']);
+    assert.ok(requested.includes('/api/rate-card/config/categories?marketplace=flipkart'));
+    assert.equal(requested.some(url=>url.endsWith('marketplace=shopsy')),false,'Flipkart extraction must not add Shopsy categories');
+  } finally {
+    client.clearCachedActiveServer();globalThis.fetch=originalFetch;
+    if(previous.node===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=previous.node;
+    if(previous.api===undefined)delete process.env.API_SERVER_URL;else process.env.API_SERVER_URL=previous.api;
+    await new Promise(resolve=>server.close(resolve));
+  }
+});
+
 test('database FSN plan covers every brand/category/channel without static vertical aliases', () => {
   const catalog=[
     {marketplace:'flipkart',category:'kurta',brand:'Sangria',sample_fsn:'ABCDEFGHIJKLMNOP'},
@@ -236,12 +260,15 @@ test('database FSN plan covers every brand/category/channel without static verti
   assert.equal(buildFsnPlan(catalog,{brand:'sangria'}).length,1);
   assert.equal(buildFsnPlan(catalog,{brand:'sangria',verticals:['kurta','dress']}).length,1,
     'selecting a brand does not require it to have an FSN in every configured category');
-  assert.deepEqual(resolveScrapeVerticals({savedVerticals:['kurta','dress'],brand:'all'}),
+  assert.deepEqual(resolveScrapeVerticals({configuredVerticals:['kurta','dress'],brand:'all'}),
     {scopeVerticals:['kurta','dress'],requiredVerticals:['kurta','dress']});
-  assert.deepEqual(resolveScrapeVerticals({savedVerticals:['kurta','dress'],brand:'sangria'}),
+  assert.deepEqual(resolveScrapeVerticals({configuredVerticals:['kurta','dress'],brand:'sangria'}),
     {scopeVerticals:['kurta','dress'],requiredVerticals:[]});
-  assert.deepEqual(resolveScrapeVerticals({requestedVerticals:['kurta'],savedVerticals:['dress'],brand:'sangria'}),
+  assert.deepEqual(resolveScrapeVerticals({requestedVerticals:['kurta'],configuredVerticals:['dress'],brand:'sangria'}),
     {scopeVerticals:['kurta'],requiredVerticals:['kurta']});
+  assert.deepEqual(resolveScrapeVerticals({configuredVerticals:[' kurta ', 'kurta', 'dress'], savedVerticals:['blouse'], brand:'all'}),
+    {scopeVerticals:['kurta','dress'],requiredVerticals:['kurta','dress']},
+    'live backend categories replace stale category defaults from older worker configs');
   assert.throws(()=>buildFsnPlan(catalog,{verticals:['missing']}),/No database FSN/);
   assert.throws(()=>buildFsnPlan([{...catalog[0],sample_fsn:''}]),/invalid real FSN/);
   const raw=catalog.slice(0,2).flatMap(t=>['FBF','NON_FBF'].map(fulfilment_type=>({...t,vertical:t.category,fulfilment_type,commissions:[{price_min:0,price_max:500,rate:t.brand==='Sangria'?0.12:0.15}]})));
@@ -362,6 +389,7 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   assert.ok(start>=0 && loop>start && catalog>loop,'catalog lookup is inside the extraction retry loop');
   const server=fs.readFileSync(new URL('../desktopServer.mjs',import.meta.url),'utf8');
   assert.match(server,/scopeVerticals:\s*targetVerticals/,'the standalone scrape route passes its selected verticals to the scraper');
+  assert.match(server,/fetchConfiguredVerticals\(loadAuthSession\(\),\s*normalizedChannel\)/,'the standalone route uses its normalized marketplace for category discovery');
   const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
   assert.match(renderer,/for\s*\(const fee of pickPackFees\)/,'unchanged observed FBF pick-and-pack fees are visible in review');
 });

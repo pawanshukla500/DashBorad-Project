@@ -404,9 +404,11 @@ async function runTests() {
     const authedCardsMatch = authedPreviewCards.every(rc => (
       String(rc.marketplace || '').toLowerCase() === 'flipkart'
     ));
-    // Template previews (no staged extraction yet) must be read-only: canSync false
-    const isPreviewIsolated = authedPreviewRes.status === 200 && authedCardsMatch && authedPreviewData.canSync === false;
-    console.log(`  • Channel-filtered preview isolation when authorized (HTTP ${authedPreviewRes.status}, count: ${authedPreviewCards.length}, leak-free: ${authedCardsMatch}): Passed = ${isPreviewIsolated}`);
+    // Empty previews must not synthesize database-derived rates or attempt a
+    // direct PostgreSQL read. Review starts only after local extraction exists.
+    const isPreviewIsolated = authedPreviewRes.status === 409 && authedPreviewCards.length === 0 && authedCardsMatch &&
+      authedPreviewData.canSync === false && authedPreviewData.error?.includes('No successful local extraction is staged');
+    console.log(`  • Empty preview is safely gated when authorized (HTTP ${authedPreviewRes.status}, no cards: ${authedPreviewCards.length === 0}): Passed = ${isPreviewIsolated}`);
 
     const authedMpRes = await fetch(`${testBase}/api/desktop/marketplaces`, {
       headers: { 'Authorization': `Bearer ${fakeIdToken}` }

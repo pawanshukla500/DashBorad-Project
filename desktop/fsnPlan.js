@@ -1,11 +1,17 @@
-// Discovery data comes from the authenticated backend's real orders catalog.
-// There is no static category list, invented FSN or fee-policy fallback.
-export function resolveScrapeVerticals({ requestedVerticals, savedVerticals = [], brand = 'all' } = {}) {
-  const hasExplicitVerticals = Array.isArray(requestedVerticals) && requestedVerticals.length > 0;
-  const scopeVerticals = hasExplicitVerticals ? requestedVerticals : (Array.isArray(savedVerticals) ? savedVerticals : []);
+// Discovery data comes from the authenticated backend's category and orders
+// catalogs. Persisted defaults from older app versions are intentionally not
+// accepted here: they can name categories that no longer have real FSN samples.
+export function resolveScrapeVerticals({ requestedVerticals, configuredVerticals = [], brand = 'all' } = {}) {
+  const normalize = values => Array.isArray(values)
+    ? [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))]
+    : [];
+  const requested = normalize(requestedVerticals);
+  const configured = normalize(configuredVerticals);
+  const hasExplicitVerticals = requested.length > 0;
+  const scopeVerticals = hasExplicitVerticals ? requested : configured;
   return {
     scopeVerticals,
-    requiredVerticals: hasExplicitVerticals ? requestedVerticals : (brand && brand !== 'all' ? [] : scopeVerticals)
+    requiredVerticals: hasExplicitVerticals ? requested : (brand && brand !== 'all' ? [] : scopeVerticals)
   };
 }
 

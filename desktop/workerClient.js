@@ -112,7 +112,8 @@ async function safeFetch(url, { timeoutMs = 3000, ...options } = {}) {
 
 export async function fetchConfiguredVerticals(session, marketplace = 'both', selected = []) {
   const baseUrl = await getActiveBackendUrl();
-  const channels = marketplace === 'flipkart' ? ['flipkart'] : marketplace === 'shopsy' ? ['shopsy'] : ['flipkart', 'shopsy'];
+  const normalizedMarketplace = String(marketplace || 'both').trim().toLowerCase();
+  const channels = normalizedMarketplace === 'flipkart' ? ['flipkart'] : normalizedMarketplace === 'shopsy' ? ['shopsy'] : ['flipkart', 'shopsy'];
   const lists = await Promise.all(channels.map(async channel => {
     const res = await safeFetch(`${baseUrl}/api/rate-card/config/categories?marketplace=${channel}`, {
       headers: getHeaders(session?.idToken, baseUrl)
