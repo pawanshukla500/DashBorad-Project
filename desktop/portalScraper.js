@@ -48,7 +48,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
   delay = wait,
   onSessionExpiry,
   canShowBrowser = canOpenVisibleBrowser,
-  browserRecoveryRegistry
+  browserRecoveryRegistry,
+  onCookieDiagnostics = () => {}
 } = {}) {
   const marketplace = config.marketplace || 'both';
   if (!['both', 'flipkart_shopsy', 'flipkart', 'shopsy'].includes(marketplace)) {
@@ -63,6 +64,23 @@ export async function scrapeFlipkartRateCards(config = {}, {
   const context = { marketplace, stage: 'launch' };
   try {
     const profileDir = browserProfileDir;
+    const wrapPage = rawPage => new Proxy(rawPage, { get(target, key) {
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      if (!['goto', 'reload', 'evaluate', 'waitForSelector', 'type', 'setCookie'].includes(key)) return value.bind(target);
+      return async (...args) => { await delay(1000); return value.apply(target, args); };
+    }});
+    const attachPage = rawPage => {
+      captureHandle?.detach?.();
+      currentPage = rawPage;
+      captureHandle = attachRateCardCapture(rawPage);
+      page = wrapPage(rawPage);
+    };
+    const readCookieSnapshot = file => loadEncryptedCookies(file, {
+      onInvalidRecords: discardedRecords => {
+        try { onCookieDiagnostics({ sourceFile: path.basename(file), discardedRecords }); } catch {}
+      }
+    });
     // Chromium creates cookie/local-storage files before a seller signs in.
     // Only a verified profile session or an explicit sign-out can suppress
     // cookie handoff. This also migrates older initialized profiles and allows
@@ -83,15 +101,13 @@ export async function scrapeFlipkartRateCards(config = {}, {
         ]
       });
       browserRecoveryLease = browserRecoveryRegistry?.track(browser, profileDir);
-      const rawPage = (await browser.pages())[0] || await browser.newPage();
-      currentPage = rawPage;
-      captureHandle = attachRateCardCapture(rawPage);
-      page = new Proxy(rawPage, { get(target, key) {
-        const value = target[key];
-        if (typeof value !== 'function') return value;
-        if (!['goto', 'reload', 'evaluate', 'waitForSelector', 'type', 'setCookie'].includes(key)) return value.bind(target);
-        return async (...args) => { await delay(1000); return value.apply(target, args); };
-      }});
+      let preferredPage = null;
+      try { preferredPage = await runtime?.getPage?.(browser); } catch {}
+      const pages = await browser.pages();
+      const preferredIsOpen = preferredPage && pages.includes(preferredPage) &&
+        !(typeof preferredPage.isClosed === 'function' && preferredPage.isClosed());
+      const rawPage = preferredIsOpen ? preferredPage : (pages[0] || await browser.newPage());
+      attachPage(rawPage);
       if (visible) await focusBrowserPage(rawPage, { delay });
       safeGoto = async (targetUrl, options = {}) => {
         try {
@@ -115,7 +131,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
     // restore encrypted cookies even if Chromium initialized generic stores.
     let snapshotImported = false;
     if (!runtime?.partition && ['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(cookieFile)) {
-      const cookies = loadEncryptedCookies(cookieFile);
+      const cookies = readCookieSnapshot(cookieFile);
       if (cookies?.length) {
         await page.setCookie(...cookies);
         snapshotImported = true;
@@ -170,7 +186,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
       }
       const resumed = await onSessionExpiry(page, { visible: visibleForLogin });
       if (!resumed) throw new Error('Manual Seller Hub login is incomplete. Nothing was staged.');
-      const refreshedCookies = loadEncryptedCookies(cookiesPath) || loadEncryptedCookies(fallbackCookiesPath);
+      const resumedPage = resumed && typeof resumed === 'object'
+        ? (typeof resumed.goto === 'function' ? resumed : resumed.page)
+        : null;
+      if (resumedPage && resumedPage !== currentPage) attachPage(resumedPage);
+      const refreshedCookies = readCookieSnapshot(cookiesPath) || readCookieSnapshot(fallbackCookiesPath);
       if (refreshedCookies?.length) await page.setCookie(...refreshedCookies);
       await safeGoto(FLIPKART_DASHBOARD_URL, { waitUntil: 'load', timeout: 35000 });
       ({ authenticated, inspection: sessionInspection } = await waitForSellerHubDashboard(page, delay));

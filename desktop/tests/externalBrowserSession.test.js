@@ -9,16 +9,18 @@ class FakeBrowser {
     this.id = id;
     this.closed = false;
     this.listeners = new Map();
-    this.page = {
-      isClosed: () => this.closed,
-      url: () => `https://seller.flipkart.com/${this.id}`
-    };
+    this.extraPages = [];
+    this.page = this.createPage(`https://seller.flipkart.com/${this.id}`);
+  }
+
+  createPage(url) {
+    return { browser: () => this, isClosed: () => this.closed, url: () => url };
   }
 
   isConnected() { return !this.closed; }
   on(event, callback) { this.listeners.set(event, callback); }
-  async pages() { return this.closed ? [] : [this.page]; }
-  async newPage() { this.page = { isClosed: () => false, url: () => 'about:blank' }; return this.page; }
+  async pages() { return this.closed ? [] : [this.page, ...this.extraPages]; }
+  async newPage() { const page = this.createPage('about:blank'); this.extraPages.push(page); return page; }
   async close() {
     this.closed = true;
     this.listeners.get('disconnected')?.();
@@ -70,6 +72,27 @@ test('manual login browser is reused by extraction and closes only on explicit t
   assert.equal(runtime.browsers[0].closed, true);
   assert.equal(session.hasBrowser(), false);
   assert.equal(pages.at(-1), null, 'teardown clears the live page reference');
+});
+
+test('the authenticated Seller Hub tab stays selected when sign-in opens a second tab', async () => {
+  const runtime = fakeRuntime();
+  const session = createExternalBrowserSession();
+  const login = await session.acquire(runtime, { headless: false, userDataDir: 'profile-flipkart' }, {
+    profileKey: 'profile-flipkart', keepOpen: true
+  });
+  const authenticatedPage = await login.browser.newPage();
+
+  assert.equal(session.selectPage('another-profile', authenticatedPage), false);
+  assert.equal(session.selectPage('profile-flipkart', authenticatedPage), true);
+  assert.equal(session.getPage('profile-flipkart'), authenticatedPage);
+
+  const scrape = await session.acquire(runtime, { headless: 'new', userDataDir: 'profile-flipkart' }, {
+    profileKey: 'profile-flipkart', keepOpen: false
+  });
+  assert.equal(scrape.reused, true);
+  assert.equal(scrape.page, authenticatedPage, 'reopening the retained browser must return its verified Seller Hub tab');
+  assert.equal(runtime.browsers.length, 1);
+  await session.close();
 });
 
 test('a headless scrape browser is released while a visible browser is retained', async () => {

@@ -127,6 +127,20 @@ function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
   return path.join(dir, `cookies_${safeId}.json`);
 }
 
+function loadMarketplaceCookieSnapshot(filePath, marketplace, operation) {
+  return loadEncryptedCookies(filePath, {
+    onInvalidRecords: discardedRecords => console.warn(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'warn',
+      event: 'portal.cookies.invalid_records_skipped',
+      marketplace,
+      operation,
+      sourceFile: path.basename(filePath),
+      discardedRecords
+    }))
+  });
+}
+
 function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
   if (['flipkart','shopsy','both','flipkart_shopsy'].includes(marketplace)) marketplace = 'flipkart_shopsy';
   const safeId = String(marketplace).toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -383,6 +397,12 @@ const serverWorker = createWorkerEngine({
         onProgress: broadcastProgress,
         browserProfileDir: profileDir,
         browserRecoveryRegistry: standaloneBrowserRecovery,
+        onCookieDiagnostics: ({ sourceFile, discardedRecords }) => {
+          const entry = { timestamp: new Date().toISOString(), level: 'warn', event: 'portal.cookies.invalid_records_skipped',
+            marketplace: job.marketplace, operation: 'worker_job', sourceFile, discardedRecords };
+          console.warn(JSON.stringify(entry));
+          broadcastProgress(`Ignored ${discardedRecords} malformed saved cookie records while restoring the Seller Hub session.`);
+        },
         onSessionExpiry: async page => {
           if (!canOpenVisibleBrowser()) return false;
           broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible Chrome window at seller.flipkart.com.');
@@ -404,7 +424,7 @@ const serverWorker = createWorkerEngine({
             broadcastProgress(cookies.length
               ? `Seller Hub login verified. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile will be reused.`
               : 'Seller Hub login verified without cookies. Removed stale cookie snapshots; the persistent Chrome profile will be reused.');
-            return true;
+            return authPage;
           } catch (loginError) {
             broadcastProgress(`Manual Seller Hub sign-in did not complete: ${loginError.message}`);
             return false;
@@ -1041,7 +1061,7 @@ const server = http.createServer(async (req, res) => {
         let cookieCount = 0;
         let lastSavedAt = null;
         try {
-          const stored = loadEncryptedCookies(cookiesPath);
+          const stored = loadMarketplaceCookieSnapshot(cookiesPath, m.id, 'session_status');
           cookieCount = Array.isArray(stored) ? stored.length : 0;
           if (fs.existsSync(cookiesPath)) lastSavedAt = fs.statSync(cookiesPath).mtime.toISOString();
         } catch {}
@@ -1349,6 +1369,12 @@ const server = http.createServer(async (req, res) => {
               onProgress: broadcastProgress,
               browserProfileDir: profileDir,
               browserRecoveryRegistry: standaloneBrowserRecovery,
+              onCookieDiagnostics: ({ sourceFile, discardedRecords }) => {
+                const entry = { timestamp: new Date().toISOString(), level: 'warn', event: 'portal.cookies.invalid_records_skipped',
+                  marketplace: normalizedChannel, operation: 'manual_scrape', sourceFile, discardedRecords };
+                console.warn(JSON.stringify(entry));
+                broadcastProgress(`Ignored ${discardedRecords} malformed saved cookie records while restoring the Seller Hub session.`);
+              },
               onSessionExpiry: async page => {
                 if (!isVisible) {
                   broadcastProgress('Seller Hub session expired. Open Seller Hub Sign-in, complete login manually, then run the worker again.');
@@ -1366,7 +1392,7 @@ const server = http.createServer(async (req, res) => {
                   saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
                   saveEncryptedCookies(COOKIES_PATH, cookies);
                   broadcastProgress(`Seller Hub login verified. Saved ${cookies.length} encrypted cookies and retained the persistent browser profile.`);
-                  return true;
+                  return authPage;
                 } catch (loginError) {
                   broadcastProgress(`Manual Seller Hub sign-in did not complete: ${loginError.message}`);
                   return false;
@@ -1484,12 +1510,12 @@ const server = http.createServer(async (req, res) => {
 
             // Load existing encrypted session cookies if present
             if (['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(cookiesPath)) {
-              const existing = loadEncryptedCookies(cookiesPath);
+              const existing = loadMarketplaceCookieSnapshot(cookiesPath, mpConfig.id, 'manual_login');
               if (existing && Array.isArray(existing) && existing.length > 0) {
                 await page.setCookie(...existing);
               }
             } else if (['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
-              const existing = loadEncryptedCookies(COOKIES_PATH);
+              const existing = loadMarketplaceCookieSnapshot(COOKIES_PATH, mpConfig.id, 'manual_login');
               if (existing && Array.isArray(existing) && existing.length > 0) {
                 await page.setCookie(...existing);
               }
