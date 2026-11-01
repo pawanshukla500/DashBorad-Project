@@ -29,7 +29,7 @@ const decimal = (value, name, precision) => {
   return Number(Number(value).toFixed(precision));
 };
 
-export function normalizeObservationRow(descriptor, row, observation = {}) {
+function normalizeObservationIdentity(descriptor, row, observation = {}) {
   row = { ...row };
   const result = { category: categoryKey(observation.vertical || observation.category || row.category, observation.marketplace || row.marketplace) };
   if (typeof result.category !== 'string' || !result.category.trim()) throw new Error('Missing category.');
@@ -57,6 +57,15 @@ export function normalizeObservationRow(descriptor, row, observation = {}) {
     row.weight_min ??= 0; row.weight_max ??= 999999;
     result.weight_min = decimal(row.weight_min, 'weight_min', 3);
     result.weight_max = decimal(row.weight_max, 'weight_max', 3);
+  }
+  return { row, identity: result };
+}
+
+export function normalizeObservationRow(descriptor, row, observation = {}) {
+  const normalized = normalizeObservationIdentity(descriptor, row, observation);
+  row = normalized.row;
+  const result = normalized.identity;
+  if (descriptor.table === 'rc_pick_pack') {
     row.price_scope ??= 'range';
     row.rate ??= row.local_fee;
     row.local_fee ??= row.rate; row.zonal_fee ??= row.rate; row.national_fee ??= row.rate;
@@ -143,6 +152,8 @@ export function validateRateObservations(observations, { marketplace, sellerAcco
 }
 
 export const rateRowIdentity = (descriptor, row) => JSON.stringify([row.category, ...descriptor.keys.map(k => keyValue(k, row[k]))]);
+const rateRowIdentityFromRaw = (descriptor, row, marketplace) =>
+  rateRowIdentity(descriptor, normalizeObservationIdentity(descriptor, row, { marketplace }).identity);
 const identity = rateRowIdentity;
 const value = (descriptor, row) => JSON.stringify(descriptor.values.map(k => row[k]));
 const scope = (descriptor, row, marketplace) => JSON.stringify([categoryKey(row.category, marketplace), descriptor.table === 'rc_commission' ? keyValue('brand_name', row.brand_name) : null]);
@@ -204,7 +215,7 @@ export async function planRateCardChanges(client, observations, { marketplace, s
         const targetScope = scope(descriptor, diff.newRow, marketplace);
         const nextPeriod = (future.rows || []).filter(raw => dateOnly(raw.start_date) > effectiveDate &&
           rawScope(descriptor, raw, marketplace) === targetScope &&
-          rateRowIdentity(descriptor, normalizeObservationRow(descriptor, raw)) === rateRowIdentity(descriptor, diff.newRow))
+          rateRowIdentityFromRaw(descriptor, raw, marketplace) === rateRowIdentity(descriptor, diff.newRow))
           .map(raw => dateOnly(raw.start_date)).sort()[0] || null;
         diff.nextPeriodStart = nextPeriod;
       }

@@ -173,6 +173,26 @@ describe('Portal observations and reviewed publication', () => {
     expect(insert[1][3]).toBe('2026-11-15');
   });
 
+  it('matches future commission periods by identity without validating another slab rate', async () => {
+    const db = database();
+    db.tables.rc_commission[0].rate = 0.25;
+    const active = db.tables.rc_commission[0];
+    const otherSlab = { ...active, id: 904, start_date: '2026-11-15', price_min: Number(active.price_max) + 1,
+      price_max: Number(active.price_max) + 500, rate: 14 };
+    const matchingSlab = { ...active, id: 905, start_date: '2026-12-01', end_date: null, rate: 0.18 };
+    const originalQuery = db.client.query.getMockImplementation();
+    db.client.query.mockImplementation(async (sql, params) => {
+      if (String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission')) {
+        return { rows: [otherSlab, matchingSlab] };
+      }
+      return originalQuery(sql, params);
+    });
+
+    const review = await compare(db);
+    const commissionChange = review.diffs.find(diff => diff.table === 'rc_commission');
+    expect(commissionChange.nextPeriodStart).toBe('2026-12-01');
+  });
+
   it('loads future periods once per changed table per review and publication pass', async () => {
     const first = cards()[0];
     const second = { ...structuredClone(first), brand: 'Sangria' };
