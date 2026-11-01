@@ -388,10 +388,11 @@ const serverWorker = createWorkerEngine({
     const db = getStagingDb(USER_DATA_DIR), id = `job-${job.id}`;
     const authGeneration = stagedExtraction.authGeneration;
     const sellerAccount = String(job.seller_account || job.parameters?.seller_account || 'default').trim() || 'default';
+    const effectiveDate = new Date().toISOString().slice(0, 10);
     try {
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, seller_account: sellerAccount, parameters: job.parameters });
       const fsnCatalog = (await fetchBrandCatalogFromApi(session, { marketplace: job.marketplace, sellerAccount })).catalog;
-      const configuredVerticals = await fetchConfiguredVerticals(session, job.marketplace, [], sellerAccount);
+      const configuredVerticals = await fetchConfiguredVerticals(session, job.marketplace, [], sellerAccount, effectiveDate);
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals: job.parameters?.verticals,
         configuredVerticals,
@@ -407,7 +408,7 @@ const serverWorker = createWorkerEngine({
       const profileDir = getMarketplaceBrowserProfilePath(job.marketplace);
       const result = await withBrowserTask(async () => {
         await standaloneBrowserRecovery.closeProfile(profileDir);
-        return scrapeFlipkartRateCards({ marketplace: job.marketplace, seller_account: sellerAccount, fsnCatalog,
+        return scrapeFlipkartRateCards({ marketplace: job.marketplace, seller_account: sellerAccount, fsnCatalog, effectiveDate,
           scopeVerticals: verticalSelection.scopeVerticals, brand: job.parameters?.brand,
           requiredVerticals: verticalSelection.requiredVerticals, visible: canOpenVisibleBrowser(), browserProfileDir: profileDir }, {
         onProgress: broadcastProgress,
@@ -1380,6 +1381,7 @@ const server = http.createServer(async (req, res) => {
       const selectedBrand = body.brand || 'all';
       const requestedVerticals = Array.isArray(body.verticals) ? body.verticals : [];
       const sellerAccount = String(body.seller_account || body.options?.seller_account || config.seller_account || 'default').trim() || 'default';
+      const effectiveDate = new Date().toISOString().slice(0, 10);
       if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
         return sendJson(400, { success: false, error: 'Choose one valid seller account before starting a rate-card extraction.' });
       }
@@ -1387,7 +1389,7 @@ const server = http.createServer(async (req, res) => {
       if (!isRequestAuthCurrent()) {
         return sendJson(409, { success: false, error: 'The ReconCentral account changed during FSN discovery. Start the extraction again.' });
       }
-      const configuredVerticals = await fetchConfiguredVerticals(requestSession, normalizedChannel, [], sellerAccount);
+      const configuredVerticals = await fetchConfiguredVerticals(requestSession, normalizedChannel, [], sellerAccount, effectiveDate);
       if (!isRequestAuthCurrent()) {
         return sendJson(409, { success: false, error: 'The ReconCentral account changed during category discovery. Start the extraction again.' });
       }
@@ -1442,6 +1444,7 @@ const server = http.createServer(async (req, res) => {
             {
               marketplace: normalizedChannel,
               seller_account: sellerAccount,
+              effectiveDate,
               visible: isVisible,
               fsnCatalog,
               scopeVerticals: targetVerticals,

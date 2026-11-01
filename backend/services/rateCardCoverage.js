@@ -1,4 +1,5 @@
 import { normalizeMarketplaceCategory } from './rateCard.js';
+import { resolveRateCardEffectiveDate } from '../utils/rateCardDate.js';
 
 // Keep this allowlist aligned with the rate-card configuration API. Identifiers
 // are constants; marketplace and seller account values remain parameters.
@@ -13,7 +14,7 @@ export const RATE_CARD_CONFIG_TABLES = [
 
 const normalizeMarketplace = value => String(value || '').trim().toLowerCase();
 
-export async function loadRateCardCoverage(client, { marketplace, sellerAccount } = {}) {
+export async function loadRateCardCoverage(client, { marketplace, sellerAccount, effectiveDate } = {}) {
   const channel = normalizeMarketplace(marketplace);
   const account = String(sellerAccount || '').trim();
   if (!['flipkart', 'shopsy'].includes(channel)) {
@@ -21,6 +22,7 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount 
   }
   if (!account) throw new Error('A seller account is required to verify rate-card coverage.');
   if (!client || typeof client.query !== 'function') throw new Error('Rate-card coverage database is unavailable.');
+  const activeDate = resolveRateCardEffectiveDate(effectiveDate);
 
   const sellerAccountFilter = account === 'default'
     ? "COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"
@@ -32,9 +34,9 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount 
       result = await client.query(
         `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1
           AND ${sellerAccountFilter}
-          AND (start_date IS NULL OR start_date <= CURRENT_DATE)
-          AND (end_date IS NULL OR end_date >= CURRENT_DATE)`,
-        [channel, account],
+          AND (start_date IS NULL OR start_date <= $3::date)
+          AND (end_date IS NULL OR end_date >= $3::date)`,
+        [channel, account, activeDate],
       );
     } catch (cause) {
       const error = new Error(`Rate-card coverage is unavailable because ${table} could not be read.`);

@@ -1228,6 +1228,10 @@ async function executeScrapeProcess(config, onProgress) {
   let effectiveConfig = { ...loadConfig(), ...config };
   const session = loadAuthSession();
   const sellerAccount = String(effectiveConfig.seller_account || effectiveConfig.sellerAccount || 'default').trim() || 'default';
+  // Freeze one UTC rate-card date for category discovery, Seller Hub queries,
+  // backend comparison, and any retry in this extraction.
+  const effectiveDate = new Date().toISOString().slice(0, 10);
+  effectiveConfig.effectiveDate = effectiveDate;
   // Keep the user's original selection stable across retries. Discovered
   // backend categories are written to effectiveConfig for the scraper, but
   // must not become explicit selections on the next attempt.
@@ -1247,7 +1251,7 @@ async function executeScrapeProcess(config, onProgress) {
     try {
       // Keep API dataset discovery inside the retry boundary so transient
       // backend failures can use the configured second attempt.
-      const configuredVerticalsPromise = fetchConfiguredVerticals(session, effectiveConfig.marketplace, [], sellerAccount);
+      const configuredVerticalsPromise = fetchConfiguredVerticals(session, effectiveConfig.marketplace, [], sellerAccount, effectiveDate);
       const [catalogResult, configuredVerticals] = await Promise.all([
         fetchBrandCatalogFromApi(session, { marketplace: effectiveConfig.marketplace, sellerAccount }), configuredVerticalsPromise
       ]);

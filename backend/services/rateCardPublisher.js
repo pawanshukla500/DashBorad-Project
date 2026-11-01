@@ -27,7 +27,7 @@ export async function publishRateCardObservations(observations, options = {}) {
     await client.query("SELECT set_config('statement_timeout', '60s', true)");
     await client.query("SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))");
     if (options.requireConfiguredCoverage) {
-      const coverage = await loadRateCardCoverage(client, { marketplace, sellerAccount });
+      const coverage = await loadRateCardCoverage(client, { marketplace, sellerAccount, effectiveDate });
       const expectedVerticals = assertRateObservationCoverage(observations, coverage);
       validateRateObservations(observations, { marketplace, complete: true, expectedVerticals });
     }

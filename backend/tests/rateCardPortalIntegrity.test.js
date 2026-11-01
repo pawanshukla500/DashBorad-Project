@@ -242,14 +242,15 @@ describe('Portal observations and reviewed publication', () => {
       if (String(sql).includes('FROM orders')) return { rows: [{ category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' }] };
       throw new Error(`Unexpected query: ${sql}`);
     }) };
-    const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'seller_ej' });
+    const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'seller_ej', effectiveDate: date });
     expect(coverage.configuredCategories).toEqual(['kurta']);
     expect(coverage.missingFsnCategories).toEqual([]);
     expect(queries).toHaveLength(7);
     expect(queries.every(query => query.params?.[1] === 'seller_ej')).toBe(true);
+    expect(queries.filter(query => !query.sql.includes('FROM orders')).every(query => query.params?.[2] === date)).toBe(true);
     expect(queries.every(query => query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"))).toBe(true);
     expect(queries.filter(query => !query.sql.includes('FROM orders')).every(query =>
-      query.sql.includes('start_date <= CURRENT_DATE') && query.sql.includes('end_date >= CURRENT_DATE'))).toBe(true);
+      query.sql.includes('start_date <= $3::date') && query.sql.includes('end_date >= $3::date'))).toBe(true);
     expect(assertRateObservationCoverage(cards(), coverage)).toEqual(['kurta']);
   });
 

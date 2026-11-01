@@ -23,6 +23,7 @@ import {
 } from '../services/brandRateCardService.js';
 import { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } from '../services/brandwiseExcelExport.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
+import { resolveRateCardEffectiveDate } from '../utils/rateCardDate.js';
 
 const router = express.Router();
 
@@ -375,9 +376,10 @@ router.get('/config/:type', async (req, res) => {
     const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.query.marketplace, req.query.seller_account);
     const pool = getPool();
     const activeOnly = req.query.active_only === 'true';
+    const activeDate = activeOnly ? resolveRateCardEffectiveDate(req.query.active_date) : null;
     const activePeriodFilter = activeOnly
-      ? `AND (start_date IS NULL OR start_date <= CURRENT_DATE)
-         AND (end_date IS NULL OR end_date >= CURRENT_DATE)`
+      ? `AND (start_date IS NULL OR start_date <= $3::date)
+         AND (end_date IS NULL OR end_date >= $3::date)`
       : '';
     // Desktop extraction follows the same default-rate fallback used by fee
     // calculations. Keep ordinary configuration reads account-exact unless
@@ -392,7 +394,7 @@ router.get('/config/:type', async (req, res) => {
        FROM ${table}
        WHERE marketplace = $1 AND ${sellerAccountFilter} ${activePeriodFilter}
        ORDER BY category, ${TABLE_EXTRA_COLUMNS[req.params.type].includes('brand_name') ? "NULLIF(brand_name,'') NULLS LAST, " : ""} price_min ${TABLE_EXTRA_COLUMNS[req.params.type].includes('weight_slab') ? ", weight_slab" : ""}`,
-      [marketplace, sellerAccount],
+      activeOnly ? [marketplace, sellerAccount, activeDate] : [marketplace, sellerAccount],
     );
     // Legacy rows can contain display aliases (for example "salwar suit").
     // The desktop worker matches configured categories to the FSN catalog, so

@@ -256,7 +256,7 @@ test('configured category discovery normalizes marketplace before selecting chan
   globalThis.fetch=(url,options)=>String(url).startsWith(process.env.API_SERVER_URL)?originalFetch(url,options):Promise.reject(new Error('External network disabled in fixture test'));
   const client=await import('../workerClient.js');client.clearCachedActiveServer();
   try {
-    assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},'  FLIPKART ',[],'seller_ej'),
+    assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},'  FLIPKART ',[],'seller_ej','2026-10-30'),
       ['kurta','dress','sari','gown','top','fabric']);
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('marketplace=flipkart')).length,6,
       'all six configured fee tables are read through the authenticated API');
@@ -264,6 +264,8 @@ test('configured category discovery normalizes marketplace before selecting chan
       'all six configured fee tables are scoped to the selected seller account');
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('active_only=true')).length,6,
       'the current marketplace discovery requests only current rate periods');
+    assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('active_date=2026-10-30')).length,6,
+      'every rate-card table is filtered using the extraction effective date');
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('seller_account=seller_ej')&&url.includes('include_defaults=true')).length,6,
       'named accounts include inherited default categories in extraction discovery');
     assert.equal(requested.some(url=>url.endsWith('marketplace=shopsy')),false,'Flipkart extraction must not add Shopsy categories');
@@ -554,20 +556,20 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   const scrapeRoute=server.slice(scrapeRouteStart,scrapeRouteEnd);
   assert.ok(scrapeRoute.indexOf('captureScrapeAuthContext(stagedExtraction, requestSession)') < scrapeRoute.indexOf('await parseJsonBody()'),
     'the standalone route captures the authorized account before request-body and API awaits');
-  assert.match(scrapeRoute,/fetchConfiguredVerticals\(requestSession,\s*normalizedChannel,\s*\[\],\s*sellerAccount\)/,'the standalone route uses the captured session for category discovery');
+  assert.match(scrapeRoute,/fetchConfiguredVerticals\(requestSession,\s*normalizedChannel,\s*\[\],\s*sellerAccount,\s*effectiveDate\)/,'the standalone route uses one extraction date for category discovery');
   assert.match(scrapeRoute,/fetchBrandCatalogFromApi\(requestSession,\s*\{\s*marketplace:\s*normalizedChannel,\s*sellerAccount\s*\}\)/,'the standalone route uses the captured session for FSN discovery');
   assert.match(scrapeRoute,/supersedeReviews\(getStagingDb\(USER_DATA_DIR\),\s*requestAuthContext\.userId\)/,'the standalone route supersedes reviews only for the captured account');
   assert.match(scrapeRoute,/stageReview\(getStagingDb\(USER_DATA_DIR\),\s*`review-\$\{Date\.now\(\)\}`,\s*requestAuthContext\.userId/,'the standalone route stages results under the captured account');
   assert.ok(scrapeRoute.indexOf('if (!isRequestAuthCurrent())') < scrapeRoute.indexOf('supersedeReviews('),
     'the standalone route rechecks account identity before invalidating prior staging');
-  assert.match(main,/const configuredVerticalsPromise = fetchConfiguredVerticals\(session, effectiveConfig\.marketplace, \[\], sellerAccount\)/,
+  assert.match(main,/const configuredVerticalsPromise = fetchConfiguredVerticals\(session, effectiveConfig\.marketplace, \[\], sellerAccount, effectiveDate\)/,
     'explicit category runs still discover all configured categories for completeness checks');
-  assert.match(scrapeRoute,/const configuredVerticals = await fetchConfiguredVerticals\(requestSession, normalizedChannel, \[\], sellerAccount\)/,
+  assert.match(scrapeRoute,/const configuredVerticals = await fetchConfiguredVerticals\(requestSession, normalizedChannel, \[\], sellerAccount, effectiveDate\)/,
     'the standalone route discovers configured categories even for explicit requests');
   const workerStart=server.indexOf('const serverWorker = createWorkerEngine');
   const workerEnd=server.indexOf('const sseClients = new Set()',workerStart);
   const worker=server.slice(workerStart,workerEnd);
-  assert.match(worker,/const configuredVerticals = await fetchConfiguredVerticals\(session, job\.marketplace, \[\], sellerAccount\)/,
+  assert.match(worker,/const configuredVerticals = await fetchConfiguredVerticals\(session, job\.marketplace, \[\], sellerAccount, effectiveDate\)/,
     'standalone claimed jobs discover configured categories even when verticals are explicit');
   assert.match(worker,/scrapeFlipkartRateCards\(\{ marketplace: job\.marketplace, seller_account: sellerAccount,/,
     'standalone claimed jobs preserve the selected seller account in extracted observations');
