@@ -546,7 +546,10 @@ async function loadSessionStatusUI() {
       const el = document.getElementById(elementId);
       const mp = marketplaces.find(m => m.id === channelId);
       if (!el || !mp) continue;
-      if (mp.hasCookies) {
+      if (mp.profileState === 'signed_out') {
+        el.innerText = 'Signed Out — Sign In';
+        el.style.color = '#f59e0b';
+      } else if (mp.hasCookies) {
         el.innerText = `Session Saved (${mp.cookieCount ?? '?'} cookies)`;
         el.style.color = '#10b981';
       } else if (mp.profileState === 'authenticated') {
@@ -563,7 +566,11 @@ async function loadSessionStatusUI() {
     const channel = selectEl?.value || 'flipkart_shopsy';
     const current = marketplaces.find(m => m.id === channel) || marketplaces.find(m => m.id === 'flipkart_shopsy');
     if (statusEl && subEl) {
-      if (current?.hasCookies) {
+      if (current?.profileState === 'signed_out') {
+        statusEl.innerText = 'Signed Out';
+        statusEl.style.color = '#f59e0b';
+        subEl.innerText = `Seller Hub confirmed sign-out for ${current.name || channel}; sign in again to continue`;
+      } else if (current?.hasCookies) {
         statusEl.innerText = 'Session Saved';
         statusEl.style.color = '#10b981';
         const savedAt = current.lastSavedAt ? new Date(current.lastSavedAt).toLocaleString() : '';

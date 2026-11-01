@@ -1678,6 +1678,10 @@ async function runTests() {
     assert(rendererContent.includes('refreshBrowserMonitorState()'), 'renderer.js must have refreshBrowserMonitorState');
     assert(/window\.addEventListener\('focus',[\s\S]*?loadSessionStatusUI\(\)/.test(rendererContent),
       'returning from the manual Seller Hub window refreshes the saved session status');
+    assert(/if \(mp\.profileState === 'signed_out'\)[\s\S]*?else if \(mp\.hasCookies\)/.test(rendererContent),
+      'a confirmed Seller Hub sign-out takes precedence over a retained encrypted cookie snapshot');
+    assert(/if \(current\?\.profileState === 'signed_out'\)[\s\S]*?else if \(current\?\.hasCookies\)/.test(rendererContent),
+      'the dashboard KPI does not show a green saved-session state after confirmed sign-out');
     assert(rendererContent.includes('Saved Browser Profile — Recheck'),
       'a last-authenticated Chromium profile is shown as needing a live recheck, not as logged out');
     assert(!rendererContent.includes('setBrowserVisibility('), 'external Chrome visibility is controlled by its own window, not an embedded viewport');
