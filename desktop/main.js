@@ -1216,6 +1216,12 @@ function isPermanentScrapeError(err) {
 async function executeScrapeProcess(config, onProgress) {
   let effectiveConfig = { ...loadConfig(), ...config };
   const session = loadAuthSession();
+  // Keep the user's original selection stable across retries. Discovered
+  // backend categories are written to effectiveConfig for the scraper, but
+  // must not become explicit selections on the next attempt.
+  const requestedVerticals = Array.isArray(effectiveConfig.scopeVerticals)
+    ? [...effectiveConfig.scopeVerticals]
+    : [];
   const MAX_ATTEMPTS = 2;
   let lastErr;
 
@@ -1229,9 +1235,6 @@ async function executeScrapeProcess(config, onProgress) {
     try {
       // Keep API dataset discovery inside the retry boundary so transient
       // backend failures can use the configured second attempt.
-      const requestedVerticals = Array.isArray(effectiveConfig.scopeVerticals)
-        ? effectiveConfig.scopeVerticals
-        : [];
       const configuredVerticalsPromise = requestedVerticals.length
         ? Promise.resolve([])
         : fetchConfiguredVerticals(session, effectiveConfig.marketplace);
@@ -1244,9 +1247,7 @@ async function executeScrapeProcess(config, onProgress) {
         brand: effectiveConfig.brand || 'all'
       });
       effectiveConfig.fsnCatalog = catalogResult.catalog;
-      effectiveConfig.requiredVerticals = Array.isArray(effectiveConfig.requiredVerticals) && effectiveConfig.requiredVerticals.length
-        ? effectiveConfig.requiredVerticals
-        : verticalSelection.requiredVerticals;
+      effectiveConfig.requiredVerticals = verticalSelection.requiredVerticals;
       effectiveConfig.scopeVerticals = verticalSelection.scopeVerticals;
 
       if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
