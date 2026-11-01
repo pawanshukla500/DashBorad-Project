@@ -21,6 +21,18 @@ export function createStagedExtractionState() {
   return state;
 }
 
+export function captureScrapeAuthContext(state, session) {
+  const userId = String(session?.user?.firebase_uid || '').trim();
+  if (!userId) throw new Error('An authenticated ReconCentral account is required to start a scrape.');
+  return Object.freeze({ authGeneration: state.authGeneration, userId });
+}
+
+export function isScrapeAuthContextCurrent(state, context, session) {
+  const userId = String(session?.user?.firebase_uid || '').trim();
+  return Boolean(context?.userId) && context.userId === userId &&
+    context.authGeneration === state.authGeneration;
+}
+
 export function resolveSellerAccountForRateCards(cards, requestedAccount) {
   if (!Array.isArray(cards) || cards.length === 0) throw new Error('No rate cards are available for seller-account review.');
   const accounts = [...new Set(cards.map(card => String(card.seller_account || 'default').trim() || 'default'))];
@@ -92,7 +104,7 @@ export function normalizeScrapedCards(items) {
     if (item.marketplace === 'shopsy' && (item.commissions || []).some(row => row.rate !== 0)) {
       throw new Error('Unexpected nonzero Shopsy commission. Review the actual portal response; no rates were staged.');
     }
-    const sellerAccount = item.seller_account || item.sellerAccount || 'default';
+    const sellerAccount = String(item.seller_account || item.sellerAccount || 'default').trim() || 'default';
     const key = JSON.stringify([item.marketplace, item.vertical, item.brand || 'General', item.sample_fsn || null, sellerAccount]);
     if (!groups.has(key)) groups.set(key, new Map());
     const byMode = groups.get(key);

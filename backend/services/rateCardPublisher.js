@@ -1,8 +1,9 @@
 import { getPool } from '../db/index.js';
-import { clearRateCardCache } from './rateCard.js';
+import { clearRateCardCache, normalizeMarketplaceCategory } from './rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
 import { RATE_TABLES, validateRateObservations, normalizeObservationRow, rateRowIdentity } from './rateCardObservationPlan.js';
+import { assertRateObservationCoverage, loadRateCardCoverage } from './rateCardCoverage.js';
 
 const before = date => {
   const value = new Date(`${date}T00:00:00Z`);
@@ -14,7 +15,7 @@ const iso = date => date instanceof Date ? date.toISOString().slice(0, 10) : dat
 export async function publishRateCardObservations(observations, options = {}) {
   const { marketplace = 'flipkart', sellerAccount = 'default', publishedBy,
     effectiveDate = observations?.[0]?.effectiveDate, jobId = null } = options;
-  validateRateObservations(observations, { marketplace, complete: true, expectedVerticals: options.expectedVerticals });
+  validateRateObservations(observations, { marketplace, complete: true });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate || '') ||
       new Date(`${effectiveDate}T00:00:00Z`).toISOString().slice(0, 10) !== effectiveDate ||
       observations.some(o => o.effectiveDate !== effectiveDate)) throw new Error('One valid extraction date is required.');
@@ -25,6 +26,11 @@ export async function publishRateCardObservations(observations, options = {}) {
     await client.query("SELECT set_config('lock_timeout', '5s', true)");
     await client.query("SELECT set_config('statement_timeout', '60s', true)");
     await client.query("SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))");
+    if (options.requireConfiguredCoverage) {
+      const coverage = await loadRateCardCoverage(client, { marketplace, sellerAccount, effectiveDate });
+      const expectedVerticals = assertRateObservationCoverage(observations, coverage);
+      validateRateObservations(observations, { marketplace, complete: true, expectedVerticals });
+    }
     const plan = await compareScrapedRatesWithActive(observations, { marketplace, sellerAccount, effectiveDate, dbClient: client });
     if (!options.reviewFingerprint || plan.fingerprint !== options.reviewFingerprint) throw new Error('REVIEW_STALE: rates changed since review. Refresh and review again.');
     if (!plan.hasChanges) {
@@ -56,12 +62,16 @@ export async function publishRateCardObservations(observations, options = {}) {
       if (!diff.newRow || sameDay) continue;
       const row = diff.newRow;
       const keys = ['category', ...descriptor.keys];
-      // Respect already scheduled periods for the exact same identity.
+      // Category normalization accepts arbitrary space/hyphen variants, so a
+      // finite SQL alias list can miss future rows. Restrict this read to the
+      // marketplace/account's future periods, then canonicalize before row matching.
       const future = await client.query(`SELECT * FROM ${descriptor.table}
-        WHERE marketplace = $1 AND seller_account = $2 AND start_date > $3 AND category = $4`,
-        [marketplace, sellerAccount, effectiveDate, row.category]);
+        WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
+          AND start_date > $3`,
+        [marketplace, sellerAccount, effectiveDate]);
       const identity = rateRowIdentity(descriptor, row);
       const next = future.rows.filter(raw => iso(raw.start_date) > effectiveDate &&
+        normalizeMarketplaceCategory(raw.category, marketplace) === row.category &&
         rateRowIdentity(descriptor, normalizeObservationRow(descriptor, raw)) === identity)
         .map(raw => iso(raw.start_date)).sort()[0];
       const endDate = next ? before(next) : (iso(diff.oldRow?.end_date) || null);

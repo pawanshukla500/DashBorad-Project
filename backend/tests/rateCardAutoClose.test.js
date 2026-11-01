@@ -71,6 +71,25 @@ describe('desktop category discovery API', () => {
     expect(response.status).toBe(200);
     expect(read.params).toEqual(['flipkart', 'seller_ej']);
     expect(body.rows[0].category).toBe('salwar_kurta_dupatta');
+    expect(read.sql).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
+  });
+
+  it('normalizes an empty seller account to default and includes legacy default rows', async () => {
+    const response = await fetch(`${baseUrl}/config/commission?marketplace=flipkart&seller_account=`);
+    const read = statements.find(statement => statement.sql.startsWith('SELECT id, category, TO_CHAR'));
+    expect(response.status).toBe(200);
+    expect(read.params).toEqual(['flipkart', 'default']);
+    expect(read.sql).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
+  });
+
+  it('includes inherited default rows only when the worker requests them for an account', async () => {
+    const response = await fetch(`${baseUrl}/config/commission?marketplace=flipkart&seller_account=seller_ej&active_only=true&active_date=2026-10-30&include_defaults=true`);
+    const read = statements.find(statement => statement.sql.startsWith('SELECT id, category, TO_CHAR'));
+    expect(response.status).toBe(200);
+    expect(read.params).toEqual(['flipkart', 'seller_ej', '2026-10-30']);
+    expect(read.sql).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2 OR COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = 'default'");
+    expect(read.sql).toContain('start_date <= $3::date');
+    expect(read.sql).toContain('end_date >= $3::date');
   });
 
   it('returns an account-scoped FSN catalog with canonical category keys', async () => {
@@ -81,6 +100,22 @@ describe('desktop category discovery API', () => {
     expect(response.status).toBe(200);
     expect(read.params).toEqual(['flipkart', 'seller_ej']);
     expect(body.catalog[0].category).toBe('salwar_kurta_dupatta');
+  });
+
+  it('filters active-only discovery to the supplied UTC extraction date', async () => {
+    const response = await fetch(`${baseUrl}/config/commission?marketplace=flipkart&seller_account=seller_ej&active_only=true&active_date=2026-10-30`);
+    expect(response.status).toBe(200);
+    const read = statements.find(statement => statement.sql.startsWith('SELECT id, category, TO_CHAR'));
+    expect(read.params).toEqual(['flipkart', 'seller_ej', '2026-10-30']);
+    expect(read.sql).toContain('start_date <= $3::date');
+    expect(read.sql).toContain('end_date >= $3::date');
+  });
+
+  it('rejects invalid active dates before reading rate-card tables', async () => {
+    const response = await fetch(`${baseUrl}/config/commission?marketplace=flipkart&seller_account=seller_ej&active_only=true&active_date=2026-02-30`);
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/real date/);
+    expect(statements).toEqual([]);
   });
 });
 

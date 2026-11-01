@@ -34,7 +34,7 @@ import {
   FIREBASE_ROLE_CLAIM 
 } from './authValidation.js';
 import { createSessionAccess, publicSession } from './sessionAccess.js';
-import { createStagedExtractionState, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
+import { captureScrapeAuthContext, createStagedExtractionState, isScrapeAuthContextCurrent, normalizeScrapedCards, resolveSellerAccountForRateCards, selectStagedCards } from './scrapeResults.js';
 import { isDesktopReachableDbUrl, sanitizeSavedDbUrl, selectDesktopDatabaseUrlForSession, storedDatabaseUrlForRole } from './dbUrlGuard.js';
 import {
   authorizeDesktopRequest, bindBrowserSession, expiredBrowserCookie,
@@ -42,7 +42,7 @@ import {
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
-import { hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
+import { describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
 import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createWorkerEngine } from './workerEngine.js';
@@ -388,10 +388,11 @@ const serverWorker = createWorkerEngine({
     const db = getStagingDb(USER_DATA_DIR), id = `job-${job.id}`;
     const authGeneration = stagedExtraction.authGeneration;
     const sellerAccount = String(job.seller_account || job.parameters?.seller_account || 'default').trim() || 'default';
+    const effectiveDate = new Date().toISOString().slice(0, 10);
     try {
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, seller_account: sellerAccount, parameters: job.parameters });
       const fsnCatalog = (await fetchBrandCatalogFromApi(session, { marketplace: job.marketplace, sellerAccount })).catalog;
-      const configuredVerticals = await fetchConfiguredVerticals(session, job.marketplace, [], sellerAccount);
+      const configuredVerticals = await fetchConfiguredVerticals(session, job.marketplace, [], sellerAccount, effectiveDate);
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals: job.parameters?.verticals,
         configuredVerticals,
@@ -400,14 +401,14 @@ const serverWorker = createWorkerEngine({
         brand: job.parameters?.brand || 'all'
       });
       if (!verticalSelection.complete) {
-        throw new Error(`Worker job is incomplete: configured categories have no database FSNs: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}. Nothing was submitted.`);
+        throw new Error(`Worker job is incomplete: ${describeCoverageBlockers(verticalSelection, job.marketplace)}. Nothing was submitted.`);
       }
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, seller_account: sellerAccount,
         parameters: { ...job.parameters, coverage: verticalSelection } });
       const profileDir = getMarketplaceBrowserProfilePath(job.marketplace);
       const result = await withBrowserTask(async () => {
         await standaloneBrowserRecovery.closeProfile(profileDir);
-        return scrapeFlipkartRateCards({ marketplace: job.marketplace, seller_account: sellerAccount, fsnCatalog,
+        return scrapeFlipkartRateCards({ marketplace: job.marketplace, seller_account: sellerAccount, fsnCatalog, effectiveDate,
           scopeVerticals: verticalSelection.scopeVerticals, brand: job.parameters?.brand,
           requiredVerticals: verticalSelection.requiredVerticals, visible: canOpenVisibleBrowser(), browserProfileDir: profileDir }, {
         onProgress: broadcastProgress,
@@ -746,10 +747,11 @@ const server = http.createServer(async (req, res) => {
         }
         const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
         const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
+        const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
         const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, targetMp);
         return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards,
-          canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0,
-          coverage: stagedExtraction.coverage, coverageKnown, missingFsnCategories: missingCategories });
+          canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0 && uncoveredCategories.length === 0,
+          coverage: stagedExtraction.coverage, coverageKnown, missingFsnCategories: missingCategories, uncoveredCategories });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
@@ -1312,6 +1314,11 @@ const server = http.createServer(async (req, res) => {
           return sendJson(409, { success: false,
             error: `Publication blocked: configured categories have no database FSNs and were not extracted: ${missingCategories.join(', ')}.` });
         }
+        const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, cardsToSync[0].marketplace);
+        if (uncoveredCategories.length) {
+          return sendJson(409, { success: false,
+            error: `Publication blocked: configured categories were not included in this extraction: ${uncoveredCategories.join(', ')}.` });
+        }
         const review = stagedExtraction.review;
         if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== sellerAccount) {
           return sendJson(409, { success: false, error: 'Refresh the PostgreSQL comparison and review it before publication.' });
@@ -1328,7 +1335,15 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/scrape/start
     if (pathname === '/api/scrape/start' && req.method === 'POST') {
-      if (!(await requireDesktopAuth())) return;
+      const requestSession = await requireDesktopAuth();
+      if (!requestSession) return;
+      let requestAuthContext;
+      try {
+        requestAuthContext = captureScrapeAuthContext(stagedExtraction, requestSession);
+      } catch (error) {
+        return sendJson(401, { success: false, authenticated: false, error: error.message });
+      }
+      const isRequestAuthCurrent = () => isScrapeAuthContextCurrent(stagedExtraction, requestAuthContext, loadAuthSession());
       if (activeScrapeJob.running) {
         return sendJson(409, { success: false, error: 'A scraping job is already running.' });
       }
@@ -1339,6 +1354,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await parseJsonBody();
+      if (!isRequestAuthCurrent()) {
+        return sendJson(409, { success: false, error: 'The ReconCentral account changed while the scrape request was being prepared. Start the extraction again.' });
+      }
       const config = loadConfig();
       const targetMp = body.marketplace || config.marketplace || 'both';
       const normalizedChannel = String(targetMp).toLowerCase().trim();
@@ -1363,11 +1381,18 @@ const server = http.createServer(async (req, res) => {
       const selectedBrand = body.brand || 'all';
       const requestedVerticals = Array.isArray(body.verticals) ? body.verticals : [];
       const sellerAccount = String(body.seller_account || body.options?.seller_account || config.seller_account || 'default').trim() || 'default';
+      const effectiveDate = new Date().toISOString().slice(0, 10);
       if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
         return sendJson(400, { success: false, error: 'Choose one valid seller account before starting a rate-card extraction.' });
       }
-      const fsnCatalog = (await fetchBrandCatalogFromApi(loadAuthSession(), { marketplace: normalizedChannel, sellerAccount })).catalog;
-      const configuredVerticals = await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel, [], sellerAccount);
+      const fsnCatalog = (await fetchBrandCatalogFromApi(requestSession, { marketplace: normalizedChannel, sellerAccount })).catalog;
+      if (!isRequestAuthCurrent()) {
+        return sendJson(409, { success: false, error: 'The ReconCentral account changed during FSN discovery. Start the extraction again.' });
+      }
+      const configuredVerticals = await fetchConfiguredVerticals(requestSession, normalizedChannel, [], sellerAccount, effectiveDate);
+      if (!isRequestAuthCurrent()) {
+        return sendJson(409, { success: false, error: 'The ReconCentral account changed during category discovery. Start the extraction again.' });
+      }
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals,
         configuredVerticals,
@@ -1386,11 +1411,13 @@ const server = http.createServer(async (req, res) => {
 
       // A new run supersedes the previous staging; a failed run must not leave
       // old cards syncable. Wipe only once the request has been fully accepted.
+      if (!isRequestAuthCurrent()) {
+        return sendJson(409, { success: false, error: 'The ReconCentral account changed before the extraction started. Start the extraction again.' });
+      }
       stagedExtraction.cards = [];
       stagedExtraction.coverage = null;
       stagedExtraction.review = null;
-      supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
-      const jobAuthGeneration = stagedExtraction.authGeneration;
+      supersedeReviews(getStagingDb(USER_DATA_DIR), requestAuthContext.userId);
 
       activeScrapeJob = {
         running: true,
@@ -1417,6 +1444,7 @@ const server = http.createServer(async (req, res) => {
             {
               marketplace: normalizedChannel,
               seller_account: sellerAccount,
+              effectiveDate,
               visible: isVisible,
               fsnCatalog,
               scopeVerticals: targetVerticals,
@@ -1462,13 +1490,13 @@ const server = http.createServer(async (req, res) => {
           });
 
           result.coverage = verticalSelection;
-          if (result.success && jobAuthGeneration !== stagedExtraction.authGeneration) {
+          if (result.success && !isRequestAuthCurrent()) {
             result.success = false;
             result.error = 'The account changed while the extraction was running. Results were discarded; run the extraction again.';
           } else if (result.success) {
             try {
               const cards = normalizeScrapedCards(result.data);
-              stageReview(getStagingDb(USER_DATA_DIR), `review-${Date.now()}`, loadAuthSession().user.firebase_uid, cards[0].marketplace, cards,
+              stageReview(getStagingDb(USER_DATA_DIR), `review-${Date.now()}`, requestAuthContext.userId, cards[0].marketplace, cards,
                 { coverage: verticalSelection, seller_account: sellerAccount });
               stagedExtraction.cards = cards;
               stagedExtraction.coverage = verticalSelection;

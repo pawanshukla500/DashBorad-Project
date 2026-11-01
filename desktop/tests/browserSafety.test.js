@@ -1,5 +1,5 @@
-import { buildFsnPlan, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from '../fsnPlan.js';
-import { normalizeScrapedCards, resolveSellerAccountForRateCards } from '../scrapeResults.js';
+import { buildFsnPlan, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, normalizeScrapeVertical, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals, uncoveredCategoriesForMarketplace } from '../fsnPlan.js';
+import { captureScrapeAuthContext, createStagedExtractionState, isScrapeAuthContextCurrent, normalizeScrapedCards, resolveSellerAccountForRateCards } from '../scrapeResults.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,6 +11,7 @@ import { inspectFlipkartLoginState, isFlipkartAuthenticated, portalPartition } f
 import { createRateCardCapture } from '../rateCardCapture.js';
 import { parsePortalRateSnapshot } from '../portalRates.js';
 import { createWorkerEngine } from '../workerEngine.js';
+import { isPermanentScrapeError, permanentScrapeError } from '../scrapeErrors.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
 import { buildBrandRateCardSet } from '../rateCardService.js';
 import { captureScrapeFailure } from '../scrapeDiagnostics.js';
@@ -126,6 +127,10 @@ test('response capture rejects stale category/mode/date data and incomplete resp
   assert.deepEqual(snapshot.missing,[]);
   const parsed=parsePortalRateSnapshot(snapshot,{vertical:'kurta',marketplace:'flipkart',fulfilment:'FBF',effectiveDate:'2026-10-30',portalVertical:'kurta',sellerAccount:'seller-ej'});
   assert.equal(parsed.seller_account,'seller-ej','the account selected for FSN discovery stays attached to Seller Hub observations');
+  const whitespaceAccount=parsePortalRateSnapshot(snapshot,{vertical:'kurta',marketplace:'flipkart',fulfilment:'FBF',effectiveDate:'2026-10-30',sellerAccount:' seller-ej '});
+  assert.equal(whitespaceAccount.seller_account,'seller-ej','scraped account metadata matches the trimmed account used for discovery');
+  assert.equal(normalizeScrapedCards([{...whitespaceAccount, seller_account:' seller-ej '}])[0].seller_account,'seller-ej',
+    'the shared staging boundary also canonicalizes account metadata from queued observations');
   assert.equal(parsed.reverseShipping[0].national_additional_fee,4);
   assert.equal(parsed.commissions[0].price_max,10000000);
   const changed=structuredClone(fixture.fees.platformFee);changed.slabs.asp[0].agreementParameters.fixedRate='13%';
@@ -148,7 +153,7 @@ test('SQLite review survives restart, rejects a different owner and rolls back a
     saveStagedObservations(db,'interrupted',[{category:'shopsy_kurta',commissions:[{rate:0}]}]);
     closeStagingDb();db=getStagingDb(dir);
     assert.equal(recoverReview(db,'recovery-owner').cards[0].category,'shopsy_kurta','complete observations survive a crash before the final review status write');
-    const coverage={complete:false,configuredVerticals:['kurta','lehenga_choli'],scopeVerticals:['kurta'],unavailableConfiguredVerticals:['lehenga_choli'],incompleteByMarketplace:{flipkart:['lehenga_choli'],shopsy:[]}};
+    const coverage={complete:false,configuredVerticals:['kurta','lehenga_choli'],scopeVerticals:['kurta'],unavailableConfiguredVerticals:['lehenga_choli'],incompleteByMarketplace:{flipkart:['lehenga_choli'],shopsy:[]},uncoveredByMarketplace:{flipkart:['lehenga_choli'],shopsy:[]}};
     stageReview(db,'review','owner','flipkart',[{category:'kurta',commissions:[{rate:0.1}]}],{coverage});
     assert.throws(()=>saveStagedObservations(db,'review',[{category:'dress'},null]));
     assert.equal(getStagedObservations(db,'review')[0].category,'kurta');
@@ -251,12 +256,18 @@ test('configured category discovery normalizes marketplace before selecting chan
   globalThis.fetch=(url,options)=>String(url).startsWith(process.env.API_SERVER_URL)?originalFetch(url,options):Promise.reject(new Error('External network disabled in fixture test'));
   const client=await import('../workerClient.js');client.clearCachedActiveServer();
   try {
-    assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},'  FLIPKART ',[],'seller_ej'),
+    assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},'  FLIPKART ',[],'seller_ej','2026-10-30'),
       ['kurta','dress','sari','gown','top','fabric']);
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('marketplace=flipkart')).length,6,
       'all six configured fee tables are read through the authenticated API');
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('seller_account=seller_ej')).length,6,
       'all six configured fee tables are scoped to the selected seller account');
+    assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('active_only=true')).length,6,
+      'the current marketplace discovery requests only current rate periods');
+    assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('active_date=2026-10-30')).length,6,
+      'every rate-card table is filtered using the extraction effective date');
+    assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('seller_account=seller_ej')&&url.includes('include_defaults=true')).length,6,
+      'named accounts include inherited default categories in extraction discovery');
     assert.equal(requested.some(url=>url.endsWith('marketplace=shopsy')),false,'Flipkart extraction must not add Shopsy categories');
     assert.deepEqual(await client.fetchConfiguredVerticals({idToken:'fixture'},' ShOpSy '),['shopsy_kurta','shopsy_sari']);
     assert.equal(requested.filter(url=>url.includes('/api/rate-card/config/')&&url.includes('marketplace=shopsy')).length,6,
@@ -322,6 +333,18 @@ test('database FSN plan covers every brand/category/channel without static verti
     'live backend categories replace stale category defaults from older worker configs');
   assert.throws(()=>buildFsnPlan(catalog,{verticals:['missing']}),/No database FSN/);
   assert.throws(()=>buildFsnPlan([{...catalog[0],sample_fsn:''}]),/invalid real FSN/);
+  assert.equal(normalizeScrapeVertical('salwar suit'), 'salwar_kurta_dupatta');
+  assert.equal(normalizeScrapeVertical('shopsy_saree'), 'shopsy_sari');
+  assert.equal(normalizeScrapeVertical('saree', 'shopsy'), 'shopsy_sari');
+  const legacyAlias = buildFsnPlan([{marketplace:'flipkart',category:'salwar kurta dupatta',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP'}],
+    {marketplace:'flipkart',verticals:['salwar suit'],requiredVerticals:['salwar suit']});
+  assert.equal(legacyAlias[0].category,'salwar_kurta_dupatta','legacy selected categories match canonical FSN keys');
+  const legacyShopsy = buildFsnPlan([{marketplace:'flipkart',category:'shopsy_saree',brand:'Youthnic',sample_fsn:'QRSTUVWXYZ123456'}],
+    {marketplace:'shopsy',verticals:['shopsy_sari'],requiredVerticals:['shopsy_saree']});
+  assert.equal(legacyShopsy[0].category,'shopsy_sari','legacy Shopsy categories keep their separate namespace');
+  const legacySpacedShopsy = buildFsnPlan([{marketplace:'flipkart',category:'Shopsy Saree',brand:'Youthnic',sample_fsn:'QRSTUVWX12345678'}],
+    {marketplace:'shopsy',verticals:['shopsy_sari'],requiredVerticals:['shopsy_saree']});
+  assert.equal(legacySpacedShopsy[0].category,'shopsy_sari','space-separated Shopsy aliases use the same channel and canonical category');
   const raw=catalog.slice(0,2).flatMap(t=>['FBF','NON_FBF'].map(fulfilment_type=>({...t,vertical:t.category,fulfilment_type,commissions:[{price_min:0,price_max:500,rate:t.brand==='Sangria'?0.12:0.15}]})));
   const cards=normalizeScrapedCards(raw);
   assert.equal(cards.length,2);
@@ -343,6 +366,8 @@ test('default extraction scope uses real FSN-backed categories and blocks incomp
   assert.deepEqual(coverage.unavailableConfiguredVerticals,['blouse','lehenga_choli','shopsy_fabric']);
   assert.deepEqual(missingFsnCategoriesForMarketplace(coverage,'flipkart'),['blouse','lehenga_choli']);
   assert.deepEqual(missingFsnCategoriesForMarketplace(coverage,'shopsy'),['shopsy_fabric']);
+  assert.deepEqual(uncoveredCategoriesForMarketplace(coverage,'flipkart'),['blouse','lehenga_choli']);
+  assert.equal(describeCoverageBlockers(coverage,'flipkart'),'categories without database FSNs: blouse, lehenga_choli');
   assert.equal(coverage.complete,false);
   assert.equal(buildFsnPlan(catalog,{verticals:coverage.scopeVerticals,requiredVerticals:coverage.requiredVerticals}).length,2,
     'only configured verticals with real FSNs are targets; unconfigured order-history categories stay out');
@@ -360,7 +385,7 @@ test('default extraction does not scrape unconfigured order-history categories o
   assert.throws(()=>resolveFsnBackedScrapeVerticals({configuredVerticals:['blouse'],catalog,brand:'all'}),/No configured rate-card category has a database FSN/);
 });
 
-test('explicit missing category remains a hard failure while a brand scope ignores unrelated FSN gaps', () => {
+test('explicit missing categories fail and filtered scopes cannot publish incomplete configured coverage', () => {
   const catalog=[{marketplace:'flipkart',category:'kurta',brand:'Sangria',sample_fsn:'ABCDEFGHIJKLMNOP'}];
   assert.throws(
     ()=>resolveFsnBackedScrapeVerticals({requestedVerticals:['blouse'],configuredVerticals:['blouse'],catalog,brand:'all'}),
@@ -374,10 +399,24 @@ test('explicit missing category remains a hard failure while a brand scope ignor
   assert.deepEqual(missingFsnCategoriesForMarketplace(explicitSubset,'flipkart'),['lehenga_choli']);
   assert.equal(explicitSubset.complete,false);
 
+  const omittedScope=resolveFsnBackedScrapeVerticals({requestedVerticals:['kurta'],configuredVerticals:['kurta','blouse'],catalog:[...catalog,{marketplace:'flipkart',category:'blouse',brand:'Sangria',sample_fsn:'QRSTUVWXYZ123456'}],brand:'all'});
+  assert.deepEqual(uncoveredCategoriesForMarketplace(omittedScope,'flipkart'),['blouse']);
+  assert.equal(describeCoverageBlockers(omittedScope,'flipkart'),'configured categories omitted from this extraction: blouse');
+
   const brandScope=resolveFsnBackedScrapeVerticals({configuredVerticals:['kurta','lehenga_choli'],catalog,brand:'Sangria'});
   assert.deepEqual(brandScope.scopeVerticals,['kurta']);
   assert.deepEqual(brandScope.requiredVerticals,['kurta']);
-  assert.equal(brandScope.complete,true,'categories without a sample for the selected brand are outside that brand scope');
+  assert.equal(brandScope.complete,false,'categories omitted by a brand filter cannot be treated as a complete all-category extraction');
+});
+
+test('permanent coverage failures do not trigger transient extraction retries', () => {
+  assert.equal(isPermanentScrapeError(permanentScrapeError('configured categories have no database FSNs: dress')), true);
+  assert.equal(isPermanentScrapeError(new Error('ECONNRESET')), false);
+});
+
+test('extracted portal evidence retains the Seller Hub vertical used for the FSN search', () => {
+  const source = fs.readFileSync(new URL('../portalScraper.js', import.meta.url), 'utf8');
+  assert.match(source, /portalVertical:\s*vertical/);
 });
 
 test('seller-account selection is derived from staged cards and rejects cross-account review', () => {
@@ -492,6 +531,18 @@ test('scrape diagnostics skip screenshots when editable controls cannot be redac
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
+test('standalone scrape auth context rejects stale account and generation results', () => {
+  const state = createStagedExtractionState();
+  const session = { user: { firebase_uid: 'user-1' } };
+  const context = captureScrapeAuthContext(state, session);
+  assert.equal(isScrapeAuthContextCurrent(state, context, session), true);
+  assert.throws(() => captureScrapeAuthContext(state, { user: null }), /authenticated ReconCentral account/);
+
+  state.resetForAuthChange();
+  assert.equal(isScrapeAuthContextCurrent(state, context, session), false, 'a same-user re-login still invalidates the in-flight request');
+  assert.equal(isScrapeAuthContextCurrent(state, context, { user: { firebase_uid: 'user-2' } }), false);
+});
+
 test('desktop fixes retry backend discovery and render unchanged pick-pack rows', () => {
   const main=fs.readFileSync(new URL('../main.js',import.meta.url),'utf8');
   const start=main.indexOf('async function executeScrapeProcess');
@@ -500,24 +551,35 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   assert.ok(start>=0 && loop>start && catalog>loop,'catalog lookup is inside the extraction retry loop');
   const server=fs.readFileSync(new URL('../desktopServer.mjs',import.meta.url),'utf8');
   assert.match(server,/scopeVerticals:\s*targetVerticals/,'the standalone scrape route passes its selected verticals to the scraper');
-  assert.match(server,/fetchConfiguredVerticals\(loadAuthSession\(\),\s*normalizedChannel,\s*\[\],\s*sellerAccount\)/,'the standalone route scopes category discovery to its seller account');
-  assert.match(server,/fetchBrandCatalogFromApi\(loadAuthSession\(\),\s*\{\s*marketplace:\s*normalizedChannel,\s*sellerAccount\s*\}\)/,'the standalone route scopes real FSN discovery to the same seller account');
-  assert.match(main,/const configuredVerticalsPromise = fetchConfiguredVerticals\(session, effectiveConfig\.marketplace, \[\], sellerAccount\)/,
+  const scrapeRouteStart=server.indexOf("if (pathname === '/api/scrape/start'");
+  const scrapeRouteEnd=server.indexOf('// GET /api/desktop/marketplaces',scrapeRouteStart);
+  const scrapeRoute=server.slice(scrapeRouteStart,scrapeRouteEnd);
+  assert.ok(scrapeRoute.indexOf('captureScrapeAuthContext(stagedExtraction, requestSession)') < scrapeRoute.indexOf('await parseJsonBody()'),
+    'the standalone route captures the authorized account before request-body and API awaits');
+  assert.match(scrapeRoute,/fetchConfiguredVerticals\(requestSession,\s*normalizedChannel,\s*\[\],\s*sellerAccount,\s*effectiveDate\)/,'the standalone route uses one extraction date for category discovery');
+  assert.match(scrapeRoute,/fetchBrandCatalogFromApi\(requestSession,\s*\{\s*marketplace:\s*normalizedChannel,\s*sellerAccount\s*\}\)/,'the standalone route uses the captured session for FSN discovery');
+  assert.match(scrapeRoute,/supersedeReviews\(getStagingDb\(USER_DATA_DIR\),\s*requestAuthContext\.userId\)/,'the standalone route supersedes reviews only for the captured account');
+  assert.match(scrapeRoute,/stageReview\(getStagingDb\(USER_DATA_DIR\),\s*`review-\$\{Date\.now\(\)\}`,\s*requestAuthContext\.userId/,'the standalone route stages results under the captured account');
+  assert.ok(scrapeRoute.indexOf('if (!isRequestAuthCurrent())') < scrapeRoute.indexOf('supersedeReviews('),
+    'the standalone route rechecks account identity before invalidating prior staging');
+  assert.match(main,/const configuredVerticalsPromise = fetchConfiguredVerticals\(session, effectiveConfig\.marketplace, \[\], sellerAccount, effectiveDate\)/,
     'explicit category runs still discover all configured categories for completeness checks');
-  assert.match(server,/const configuredVerticals = await fetchConfiguredVerticals\(loadAuthSession\(\), normalizedChannel, \[\], sellerAccount\)/,
+  assert.match(scrapeRoute,/const configuredVerticals = await fetchConfiguredVerticals\(requestSession, normalizedChannel, \[\], sellerAccount, effectiveDate\)/,
     'the standalone route discovers configured categories even for explicit requests');
   const workerStart=server.indexOf('const serverWorker = createWorkerEngine');
   const workerEnd=server.indexOf('const sseClients = new Set()',workerStart);
   const worker=server.slice(workerStart,workerEnd);
-  assert.match(worker,/const configuredVerticals = await fetchConfiguredVerticals\(session, job\.marketplace, \[\], sellerAccount\)/,
+  assert.match(worker,/const configuredVerticals = await fetchConfiguredVerticals\(session, job\.marketplace, \[\], sellerAccount, effectiveDate\)/,
     'standalone claimed jobs discover configured categories even when verticals are explicit');
   assert.match(worker,/scrapeFlipkartRateCards\(\{ marketplace: job\.marketplace, seller_account: sellerAccount,/,
     'standalone claimed jobs preserve the selected seller account in extracted observations');
-  assert.match(main,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
-    'the desktop review blocks empty, incomplete, or legacy unknown-coverage previews');
-  assert.match(server,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
-    'the standalone review blocks empty, incomplete, or legacy unknown-coverage previews');
+  assert.match(main,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0 && uncoveredCategories\.length === 0/,
+    'the desktop review blocks empty, incomplete, omitted-category, or legacy unknown-coverage previews');
+  assert.match(server,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0 && uncoveredCategories\.length === 0/,
+    'the standalone review blocks empty, incomplete, omitted-category, or legacy unknown-coverage previews');
   const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
+  assert.match(renderer,/extraction omitted configured categories/,
+    'review logs explain when a configured category was excluded from the selected extraction scope');
   assert.match(renderer,/Local extraction is available, but PostgreSQL comparison failed/,
     'a comparison contract failure keeps staged rate cards visible and explains the blocked publication');
   assert.match(renderer,/currentComparisonAvailable \? 'Active \/ Matched' : 'Uncompared'/,

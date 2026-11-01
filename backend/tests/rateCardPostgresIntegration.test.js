@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { publishRateCardObservations } from '../services/rateCardPublisher.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
+import { RATE_TABLES, normalizeObservationRow } from '../services/rateCardObservationPlan.js';
 import { parsePortalRateSnapshot } from '../../desktop/portalRates.js';
 import { normalizeScrapedCards } from '../../desktop/scrapeResults.js';
 import { rateFixture } from '../../desktop/tests/fixtures/portalRateFixture.js';
@@ -69,6 +70,29 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
       const result=await client.query("SELECT TO_CHAR(end_date,'YYYY-MM-DD') AS end_date FROM rc_commission WHERE category='future_case' AND start_date='2026-10-30'");
       expect(result.rows[0].end_date).toBe('2026-11-30');
     } finally {client.release();}
+  });
+
+  it('compares NULL and blank legacy account rows as default without inserting duplicates',async()=>{
+    const observations = ['legacy_null', 'legacy_blank'].flatMap((category, index) =>
+      cards().map(card => ({ ...card, vertical: category, category })));
+    const client = await scoped.connect();
+    try {
+      for (const observation of observations) for (const descriptor of RATE_TABLES) {
+        for (const source of observation[descriptor.field] || []) {
+          const row = normalizeObservationRow(descriptor, source, observation);
+          const columns = ['marketplace','seller_account','category','start_date','end_date',...descriptor.keys,...descriptor.values];
+          const values = ['flipkart', observation.vertical === 'legacy_null' ? null : '  ', row.category,
+            '2026-10-01', null, ...descriptor.keys.map(key => row[key]), ...descriptor.values.map(key => row[key])];
+          await client.query(`INSERT INTO ${descriptor.table} (${columns.join(',')}) VALUES (${values.map((_,i)=>`$${i+1}`).join(',')})`, values);
+        }
+      }
+      const review = await compareScrapedRatesWithActive(observations, { marketplace: 'flipkart', sellerAccount: 'default', dbClient: client });
+      expect(review.diffCount).toBe(0);
+      expect(review.summary.unchanged).toBeGreaterThan(0);
+      const result = await publishRateCardObservations(observations, { pool: scoped, marketplace: 'flipkart', sellerAccount: 'default', publishedBy: 'integration-fixture', reviewFingerprint: review.fingerprint });
+      expect(result.published).toBe(false);
+      expect((await client.query("SELECT COUNT(*)::int AS count FROM rc_commission WHERE category IN ('legacy_null','legacy_blank')")).rows[0].count).toBe(2);
+    } finally { client.release(); }
   });
 
 });

@@ -21,13 +21,20 @@ export async function getRealTimeBrandFsnSamples(pool = null, { marketplace = nu
   const p = pool || getPool();
   const filters = [
     "(marketplace ILIKE '%flipkart%' OR marketplace ILIKE '%shopsy%')",
-    "fsn IS NOT NULL AND fsn != ''",
+    "fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'",
     "category IS NOT NULL AND category != ''"
   ];
   const params = [];
   if (marketplace) {
     params.push(marketplace);
-    filters.push(`marketplace = $${params.length}`);
+    const marketplaceParam = `$${params.length}`;
+    if (marketplace === 'shopsy') {
+      filters.push(`(LOWER(TRIM(marketplace)) = ${marketplaceParam} OR (LOWER(TRIM(marketplace)) = 'flipkart' AND LOWER(TRIM(category)) ~ '^shopsy([[:space:]_-]+)'))`);
+    } else if (marketplace === 'flipkart') {
+      filters.push(`(LOWER(TRIM(marketplace)) = ${marketplaceParam} AND LOWER(TRIM(category)) !~ '^shopsy([[:space:]_-]+)')`);
+    } else {
+      filters.push(`LOWER(TRIM(marketplace)) = ${marketplaceParam}`);
+    }
   }
   if (sellerAccount) {
     params.push(sellerAccount);
@@ -39,7 +46,7 @@ export async function getRealTimeBrandFsnSamples(pool = null, { marketplace = nu
         marketplace,
         category,
         COALESCE(NULLIF(TRIM(brand), ''), 'General') as brand,
-        fsn,
+        UPPER(TRIM(fsn)) as fsn,
         sku,
         ROW_NUMBER() OVER (
           PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand), ''), 'General') 

@@ -117,6 +117,7 @@ async function runE2ETests() {
     const res = await scrapeFlipkartRateCards(
       {
         marketplace: 'both',
+        effectiveDate: '2026-10-30',
         fsnCatalog: [{marketplace:'flipkart',category:'kurta',brand:'Fixture',sample_fsn:'ABCDEFGHIJKLMNOP'},{marketplace:'shopsy',category:'shopsy_kurta',brand:'Fixture',sample_fsn:'QRSTUVWXYZ123456'}]
       },
       {
@@ -134,6 +135,8 @@ async function runE2ETests() {
 
     const stagedContent = JSON.parse(fs.readFileSync(res.stagingFile, 'utf8'));
     assert.strictEqual(stagedContent.length, 4);
+    assert(stagedContent.every(card => card.effectiveDate === '2026-10-30'),
+      'all Seller Hub requests and observations must keep the preselected effective date');
 
     // Verify Shopsy 0% policy invariance
     const shopsyCard = stagedContent.find(c => c.marketplace === 'shopsy');

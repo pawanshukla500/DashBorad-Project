@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { normalizeMarketplaceCategory } from './rateCard.js';
 // Explicit rc_* contract. Identifiers below are constants, never request data.
 export const rateDiffFingerprint = (diffs, effectiveDate) => createHash('sha256').update(JSON.stringify({
   effectiveDate: effectiveDate || null,
@@ -19,7 +20,7 @@ export const RATE_TABLES = [
 
 const brand = value => !String(value || '').trim() || ['general', 'all brands'].includes(String(value).trim().toLowerCase()) ? null : String(value).trim();
 const keyValue = (key, value) => key === 'brand_name' && value ? value.toLowerCase() : value;
-const categoryKey = value => String(value || '').trim().toLowerCase();
+const categoryKey = (value, marketplace) => normalizeMarketplaceCategory(value, marketplace);
 const mode = value => String(value || 'ALL').toUpperCase().replace(/[ -]/g, '_');
 const decimal = (value, name, precision) => {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean' || !Number.isFinite(Number(value)) || Number(value) < 0) {
@@ -30,7 +31,7 @@ const decimal = (value, name, precision) => {
 
 export function normalizeObservationRow(descriptor, row, observation = {}) {
   row = { ...row };
-  const result = { category: categoryKey(observation.vertical || observation.category || row.category) };
+  const result = { category: categoryKey(observation.vertical || observation.category || row.category, observation.marketplace || row.marketplace) };
   if (typeof result.category !== 'string' || !result.category.trim()) throw new Error('Missing category.');
   result.price_min = decimal(row.price_min, 'price_min', 2);
   result.price_max = decimal(row.price_max, 'price_max', 2);
@@ -90,7 +91,7 @@ export function validateRateObservations(observations, { marketplace, complete =
   const identities = new Map();
   for (const observation of observations) {
     if (observation.marketplace && observation.marketplace !== marketplace) throw new Error('Mixed marketplace observations are not allowed.');
-    const category = categoryKey(observation.vertical || observation.category);
+    const category = categoryKey(observation.vertical || observation.category, marketplace);
     categories.add(category);
     if (complete && (observation.source !== 'seller_portal' ||
         !['FBF', 'NON_FBF'].every(m => observation.fulfilmentModes?.includes(m)))) {
@@ -131,15 +132,15 @@ export function validateRateObservations(observations, { marketplace, complete =
       }
     }
   }
-  for (const category of expectedVerticals) if (!categories.has(categoryKey(category))) throw new Error(`Missing configured category: ${category}.`);
+  for (const category of expectedVerticals) if (!categories.has(categoryKey(category, marketplace))) throw new Error(`Missing configured category: ${category}.`);
 }
 
 export const rateRowIdentity = (descriptor, row) => JSON.stringify([row.category, ...descriptor.keys.map(k => keyValue(k, row[k]))]);
 const identity = rateRowIdentity;
 const value = (descriptor, row) => JSON.stringify(descriptor.values.map(k => row[k]));
-const scope = (descriptor, row) => JSON.stringify([categoryKey(row.category), descriptor.table === 'rc_commission' ? keyValue('brand_name', row.brand_name) : null]);
-const rawScope = (descriptor, row) => JSON.stringify([
-  categoryKey(row.category),
+const scope = (descriptor, row, marketplace) => JSON.stringify([categoryKey(row.category, marketplace), descriptor.table === 'rc_commission' ? keyValue('brand_name', row.brand_name) : null]);
+const rawScope = (descriptor, row, marketplace) => JSON.stringify([
+  categoryKey(row.category, marketplace || row.marketplace),
   descriptor.table === 'rc_commission' ? keyValue('brand_name', brand(row.brand_name)) : null
 ]);
 const display = (descriptor, row) => !row ? null : descriptor.table === 'rc_collection_fee'
@@ -153,16 +154,16 @@ export async function planRateCardChanges(client, observations, { marketplace, s
   for (const descriptor of RATE_TABLES) {
     const incoming = [...new Map(observations.flatMap(o => (o[descriptor.field] || []).map(row => normalizeObservationRow(descriptor, row, o))).map(row => [identity(descriptor, row), row])).values()];
     if (!incoming.length) continue;
-    const scopes = new Set(incoming.map(row => scope(descriptor, row)));
+    const scopes = new Set(incoming.map(row => scope(descriptor, row, marketplace)));
     const result = await client.query(`SELECT * FROM ${descriptor.table}
-      WHERE marketplace = $1 AND seller_account = $2
+      WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
         AND (start_date IS NULL OR start_date <= $3) AND (end_date IS NULL OR end_date >= $3)`, [marketplace, sellerAccount, effectiveDate]);
     const existing = new Map();
     for (const raw of result.rows) {
       // Filter irrelevant legacy records before normalizing fields that may be
       // absent on an unrelated category or brand.
-      if (!scopes.has(rawScope(descriptor, raw))) continue;
-      const row = normalizeObservationRow(descriptor, raw);
+      if (!scopes.has(rawScope(descriptor, raw, marketplace))) continue;
+      const row = normalizeObservationRow(descriptor, raw, { marketplace });
       const key = identity(descriptor, row);
       if (existing.has(key)) throw new Error(`Duplicate active ${descriptor.table} rows for ${row.category}. Publication requires database review.`);
       existing.set(key, { raw, row });

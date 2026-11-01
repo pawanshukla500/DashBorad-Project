@@ -128,9 +128,27 @@ describe('Brand-Wise & FSN-Driven Rate Card System', () => {
       await getRealTimeBrandFsnSamples(mockPool, { marketplace: 'flipkart', sellerAccount: 'seller_ej' });
 
       const [query, params] = mockPool.query.mock.calls[0];
-      expect(query).toContain('marketplace = $1');
+      expect(query).toContain('LOWER(TRIM(marketplace)) = $1');
       expect(query).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
       expect(params).toEqual(['flipkart', 'seller_ej']);
+    });
+
+    it('filters malformed FSNs before category ranking and normalizes valid lowercase values', async () => {
+      const mockPool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+      await getRealTimeBrandFsnSamples(mockPool, { marketplace: 'flipkart' });
+      const [query] = mockPool.query.mock.calls[0];
+      expect(query).toContain("fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'");
+      expect(query).toContain('UPPER(TRIM(fsn)) as fsn');
+      expect(query).toContain('ROW_NUMBER() OVER');
+    });
+
+    it('includes legacy Shopsy FSNs stored under Flipkart with a shopsy category prefix', async () => {
+      const mockPool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+      await getRealTimeBrandFsnSamples(mockPool, { marketplace: 'shopsy', sellerAccount: 'seller_ej' });
+      const [query, params] = mockPool.query.mock.calls[0];
+      expect(query).toContain("LOWER(TRIM(marketplace)) = $1 OR (LOWER(TRIM(marketplace)) = 'flipkart'");
+      expect(query).toContain("LOWER(TRIM(category)) ~ '^shopsy([[:space:]_-]+)'");
+      expect(params).toEqual(['shopsy', 'seller_ej']);
     });
   });
 

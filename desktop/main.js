@@ -29,12 +29,13 @@ import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
 import { invokeProgressSafely } from './safeProgress.js';
 import { createWorkerEngine } from './workerEngine.js';
+import { isPermanentScrapeError, permanentScrapeError } from './scrapeErrors.js';
 import { portalPartition, isFlipkartAuthenticated, FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { createExternalBrowserSession } from './externalBrowserSession.js';
-import { hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from './fsnPlan.js';
+import { describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from './fsnPlan.js';
 import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 import {
   getActiveBackendUrl,
@@ -1223,20 +1224,14 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
 }
 
 // ── Automated Scraper Process (Supports Embedded Engine, In-View 2FA & 2-Attempt Retry) ──
-function isPermanentScrapeError(err) {
-  if (!err || !err.message) return false;
-  const msg = err.message.toLowerCase();
-  return msg.includes('verticals selected') ||
-         msg.includes('not implemented for') ||
-         msg.includes('human login (2fa)') ||
-         msg.includes('user cancelled') ||
-         msg.includes('unauthorized');
-}
-
 async function executeScrapeProcess(config, onProgress) {
   let effectiveConfig = { ...loadConfig(), ...config };
   const session = loadAuthSession();
   const sellerAccount = String(effectiveConfig.seller_account || effectiveConfig.sellerAccount || 'default').trim() || 'default';
+  // Freeze one UTC rate-card date for category discovery, Seller Hub queries,
+  // backend comparison, and any retry in this extraction.
+  const effectiveDate = new Date().toISOString().slice(0, 10);
+  effectiveConfig.effectiveDate = effectiveDate;
   // Keep the user's original selection stable across retries. Discovered
   // backend categories are written to effectiveConfig for the scraper, but
   // must not become explicit selections on the next attempt.
@@ -1256,7 +1251,7 @@ async function executeScrapeProcess(config, onProgress) {
     try {
       // Keep API dataset discovery inside the retry boundary so transient
       // backend failures can use the configured second attempt.
-      const configuredVerticalsPromise = fetchConfiguredVerticals(session, effectiveConfig.marketplace, [], sellerAccount);
+      const configuredVerticalsPromise = fetchConfiguredVerticals(session, effectiveConfig.marketplace, [], sellerAccount, effectiveDate);
       const [catalogResult, configuredVerticals] = await Promise.all([
         fetchBrandCatalogFromApi(session, { marketplace: effectiveConfig.marketplace, sellerAccount }), configuredVerticalsPromise
       ]);
@@ -1284,8 +1279,16 @@ async function executeScrapeProcess(config, onProgress) {
           });
         onProgress(`⚠️ Configured categories without database FSNs were skipped and will block publication: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}.`);
       }
+      if (verticalSelection.uncoveredConfiguredVerticals.length && !verticalSelection.unavailableConfiguredVerticals.length) {
+        desktopLogger.warn('scrape.configured_categories_omitted',
+          'Configured categories outside this extraction scope will block publication for their marketplace.', {
+            marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
+            brand: effectiveConfig.brand || 'all',
+            categories: verticalSelection.uncoveredConfiguredVerticals
+          });
+      }
       if (effectiveConfig.requireCompleteCoverage && !verticalSelection.complete) {
-        throw new Error(`Extraction cannot start: configured categories have no database FSNs: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}. Nothing was scraped or submitted.`);
+        throw permanentScrapeError(`Extraction cannot start: ${describeCoverageBlockers(verticalSelection, effectiveConfig.marketplace)}. Nothing was scraped or submitted.`);
       }
 
       if (currentBrowserEngine === 'embedded' && mainWindow && !mainWindow.isDestroyed()) {
@@ -2004,7 +2007,8 @@ registerHandler('start-scrape', async (e, options) => {
   const verticalSelection = resolveScrapeVerticals({
     requestedVerticals: options?.verticals,
     configuredVerticals: [],
-    brand: selectedBrand
+    brand: selectedBrand,
+    marketplace: options?.marketplace || config.marketplace
   });
   const mergedOptions = {
     ...config,
@@ -2117,14 +2121,16 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
     }
     const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
     const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
+    const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
     const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, targetMp);
     return {
       success: true,
       rateCards: filteredRateCards,
-      canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0,
+      canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0 && uncoveredCategories.length === 0,
       coverage: stagedExtraction.coverage,
       coverageKnown,
-      missingFsnCategories: missingCategories
+      missingFsnCategories: missingCategories,
+      uncoveredCategories
     };
   } catch (err) {
     desktopLogger.error('rate-review.preview_failed', err, {
@@ -2165,6 +2171,7 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   const cards = selectStagedCards(stagedExtraction.cards, submitted);
   const review = stagedExtraction.review;
   const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, cards?.[0]?.marketplace);
+  const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, cards?.[0]?.marketplace);
   const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, cards?.[0]?.marketplace);
   let sellerAccount;
   try { sellerAccount = resolveSellerAccountForRateCards(cards, options.seller_account); }
@@ -2178,6 +2185,9 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   }
   if (missingCategories.length) {
     return { success: false, error: `Publication blocked: configured categories have no database FSNs and were not extracted: ${missingCategories.join(', ')}.` };
+  }
+  if (uncoveredCategories.length) {
+    return { success: false, error: `Publication blocked: configured categories were not included in this extraction: ${uncoveredCategories.join(', ')}.` };
   }
   try {
     const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount, isCurrent);

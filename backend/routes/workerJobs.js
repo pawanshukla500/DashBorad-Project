@@ -4,6 +4,8 @@ import { requireRole } from '../utils/authMiddleware.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { publishRateCardObservations } from '../services/rateCardPublisher.js';
 import { validateRateObservations } from '../services/rateCardObservationPlan.js';
+import { assertRateObservationCoverage, loadRateCardCoverage } from '../services/rateCardCoverage.js';
+import { resolveRateCardEffectiveDate } from '../utils/rateCardDate.js';
 
 export const workersRouter = express.Router();
 export const workerJobsRouter = express.Router();
@@ -379,10 +381,9 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
 
     const job = jobRes.rows[0];
 
-    try {
-      validateRateObservations(results, { marketplace: job.marketplace, complete: true,
-        expectedVerticals: job.parameters?.verticals || [] });
-    } catch (err) { return res.status(400).json({ error: err.message, code: 'INCOMPLETE_EXTRACTION' }); }
+    if (!['RATE_CARD_SCRAPE', 'RATE_CARD_SYNC'].includes(job.job_type)) {
+      return res.status(400).json({ error: 'This worker job does not accept rate-card observations.', code: 'UNSUPPORTED_JOB_TYPE' });
+    }
 
     // If assigned to a worker lease, strictly enforce lease ownership and expiry
     if (job.lease_worker_id) {
@@ -394,19 +395,58 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
       }
     }
 
-    // Determine effectiveDate from extraction or parameters
-    const scrapeEffectiveDate = effective_date ||
-      results.find(r => r.effectiveDate || r.source_effective_date)?.effectiveDate ||
-      results.find(r => r.source_effective_date)?.source_effective_date ||
-      job.parameters?.effectiveDate ||
-      new Date().toISOString().slice(0, 10);
+    // Use the extraction's effective date for both category discovery and the
+    // active-rate comparison. CURRENT_DATE can disagree with UTC at midnight.
+    let scrapeEffectiveDate;
+    try {
+      scrapeEffectiveDate = resolveRateCardEffectiveDate(effective_date ||
+        results.find(r => r.effectiveDate)?.effectiveDate ||
+        results.find(r => r.source_effective_date)?.source_effective_date ||
+        job.parameters?.effectiveDate);
+      if (results.some(row => (row.effectiveDate || row.source_effective_date) &&
+          (row.effectiveDate || row.source_effective_date) !== scrapeEffectiveDate)) {
+        throw Object.assign(new Error('All rate observations must share one effective date.'), { code: 'INVALID_EFFECTIVE_DATE', status: 400 });
+      }
+    } catch (err) {
+      return res.status(400).json({ error: err.message, code: err.code || 'INVALID_EFFECTIVE_DATE' });
+    }
+
+    // Store the resolved date with every observation. Review and publish read
+    // the saved payload later, so they must not infer a different date from
+    // job timestamps after midnight or when only source_effective_date arrived.
+    const normalizedResults = results.map(row => ({ ...row, effectiveDate: scrapeEffectiveDate }));
+
+    let coverage;
+    let expectedVerticals;
+    try {
+      // Coverage comes from this marketplace/account's real PostgreSQL
+      // configuration and FSN catalog. Job parameters are client supplied and
+      // must never be allowed to narrow the completeness requirement.
+      coverage = await loadRateCardCoverage(pool, { marketplace: job.marketplace, sellerAccount: job.seller_account, effectiveDate: scrapeEffectiveDate });
+      expectedVerticals = assertRateObservationCoverage(normalizedResults, coverage);
+      validateRateObservations(normalizedResults, { marketplace: job.marketplace, complete: true,
+        expectedVerticals });
+    } catch (err) {
+      console.warn('[Worker API] Rate-card extraction rejected', JSON.stringify({
+        event: 'worker_rate_card_coverage_rejected', jobId: id,
+        marketplace: job.marketplace, sellerAccount: job.seller_account,
+        code: err.code || 'INCOMPLETE_EXTRACTION', message: err.message,
+      }));
+      return res.status(err.code === 'RATE_CARD_COVERAGE_UNAVAILABLE' ? 503 : 400)
+        .json({ error: err.message, code: err.code || 'INCOMPLETE_EXTRACTION' });
+    }
 
     // Run canonical diff engine against active PostgreSQL rate cards
-    const diffResult = await compareScrapedRatesWithActive(results, {
+    const diffResult = await compareScrapedRatesWithActive(normalizedResults, {
       marketplace: job.marketplace,
       sellerAccount: job.seller_account,
       effectiveDate: scrapeEffectiveDate
     });
+    diffResult.coverage = {
+      configuredCategories: coverage.configuredCategories,
+      fsnCategories: coverage.fsnCategories,
+      complete: true,
+    };
     if (job.parameters?.reviewFingerprint && job.parameters.reviewFingerprint !== diffResult.fingerprint) {
       return res.status(409).json({ error: 'Rates changed since desktop review. Refresh and review again.', code: 'REVIEW_STALE' });
     }
@@ -425,7 +465,7 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
         AND status IN ('queued', 'claimed', 'running')
         AND (lease_worker_id IS NULL OR lease_worker_id = $4)
       RETURNING *
-    `, [JSON.stringify(results), JSON.stringify(diffResult), id, worker_id]);
+    `, [JSON.stringify(normalizedResults), JSON.stringify(diffResult), id, worker_id]);
 
     if (updateRes.rows.length === 0) {
       return res.status(409).json({ error: 'Job lease was reclaimed, cancelled, or expired before results could be saved', code: 'LEASE_LOST' });
@@ -494,18 +534,25 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
 
     const job = jobRes.rows[0];
     if (job.status !== 'completed') return res.status(409).json({ error: 'Only completed, reviewed extractions can be published.' });
+    if (!['RATE_CARD_SCRAPE', 'RATE_CARD_SYNC'].includes(job.job_type)) {
+      return res.status(400).json({ error: 'This worker job is not a rate-card extraction.', code: 'UNSUPPORTED_JOB_TYPE' });
+    }
     if (!job.results || !Array.isArray(job.results)) {
       return res.status(400).json({ error: 'Job does not contain valid extraction results to publish' });
     }
 
-    const effectiveDate = req.body?.effectiveDate ||
+    const effectiveDate = resolveRateCardEffectiveDate(req.body?.effectiveDate ||
       job.diff_summary?.effectiveDate ||
       job.results.find(r => r.effectiveDate || r.source_effective_date)?.effectiveDate ||
       job.results.find(r => r.source_effective_date)?.source_effective_date ||
       job.parameters?.effectiveDate ||
       (job.completed_at ? new Date(job.completed_at).toISOString().slice(0, 10) : null) ||
       (job.created_at ? new Date(job.created_at).toISOString().slice(0, 10) : null) ||
-      new Date().toISOString().slice(0, 10);
+      new Date().toISOString().slice(0, 10));
+
+    const coverage = await loadRateCardCoverage(pool, { marketplace: job.marketplace, sellerAccount: job.seller_account, effectiveDate });
+    const expectedVerticals = assertRateObservationCoverage(job.results, coverage);
+    validateRateObservations(job.results, { marketplace: job.marketplace, complete: true, expectedVerticals });
 
     const publishResult = await publishRateCardObservations(job.results, {
       marketplace: job.marketplace,
@@ -513,7 +560,7 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
       effectiveDate,
       jobId: job.id,
       publishedBy: req.user?.email,
-      expectedVerticals: job.parameters?.verticals || [],
+      requireConfiguredCoverage: true,
       reviewFingerprint: job.diff_summary?.fingerprint
     });
 
@@ -523,7 +570,10 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
     });
   } catch (err) {
     console.error('[Worker API] Publish job error:', err.message);
-    res.status(500).json({ error: 'Failed to publish rate card changes', details: err.message });
+    const status = err.code === 'RATE_CARD_COVERAGE_UNAVAILABLE' ? 503
+      : err.code === 'RATE_CARD_COVERAGE_INCOMPLETE' ? 409
+        : err.code === 'INVALID_EFFECTIVE_DATE' ? 400 : 500;
+    res.status(status).json({ error: 'Failed to publish rate card changes', details: err.message, code: err.code });
   }
 });
 

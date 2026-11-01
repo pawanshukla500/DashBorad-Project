@@ -211,7 +211,13 @@ export async function scrapeFlipkartRateCards(config = {}, {
       deleteEncryptedCookies(fallbackCookiesPath);
     }
     const plan = buildFsnPlan(config.fsnCatalog, { marketplace, brand: config.brand, verticals: config.scopeVerticals, requiredVerticals: config.requiredVerticals });
-    const effectiveDate = new Date().toISOString().slice(0, 10);
+    const effectiveDate = config.effectiveDate || new Date().toISOString().slice(0, 10);
+    const parsedEffectiveDate = /^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)
+      ? new Date(`${effectiveDate}T00:00:00Z`) : null;
+    if (!parsedEffectiveDate || Number.isNaN(parsedEffectiveDate.getTime()) ||
+        parsedEffectiveDate.toISOString().slice(0, 10) !== effectiveDate) {
+      throw new Error('The extraction effective date is invalid. Nothing was staged.');
+    }
     const capture = captureHandle.capture;
     const data = [];
     const searchSelector = 'input[placeholder="Search Product vertical or FSN"]';
@@ -275,7 +281,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
           }
         }
         if (snapshot.missing.length) throw new Error('Missing rate responses for ' + fsn + ' / ' + mode + ': ' + snapshot.missing.join(', ') + '. Nothing was staged.');
-        data.push(parsePortalRateSnapshot(snapshot, { vertical, marketplace: queryMarketplace, fulfilment: mode, effectiveDate, brand, fsn, sku: target.sample_sku, orderCount: target.order_count,
+        data.push(parsePortalRateSnapshot(snapshot, { vertical, portalVertical: vertical, marketplace: queryMarketplace, fulfilment: mode, effectiveDate, brand, fsn, sku: target.sample_sku, orderCount: target.order_count,
           sellerAccount: config.seller_account || config.sellerAccount || 'default' }));
       }
     }

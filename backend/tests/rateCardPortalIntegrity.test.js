@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { publishRateCardObservations } from '../services/rateCardPublisher.js';
 import { RATE_TABLES, normalizeObservationRow, validateRateObservations } from '../services/rateCardObservationPlan.js';
-import { calculateFees } from '../services/rateCard.js';
+import { calculateFees, normalizeCategory, normalizeMarketplaceCategory } from '../services/rateCard.js';
+import { assertRateObservationCoverage, loadRateCardCoverage, RATE_CARD_CONFIG_TABLES } from '../services/rateCardCoverage.js';
 import { parsePortalRateSnapshot } from '../../desktop/portalRates.js';
 import { normalizeScrapedCards } from '../../desktop/scrapeResults.js';
 import { rateFixture } from '../../desktop/tests/fixtures/portalRateFixture.js';
@@ -25,7 +26,7 @@ function database(observations = cards(), { ready = true } = {}) {
   }) };
   return { client, tables, pool: { connect: async () => client } };
 }
-const compare = (db, observations = cards(), effectiveDate = date) => compareScrapedRatesWithActive(observations, { marketplace:'flipkart',sellerAccount:'default',effectiveDate,dbClient:db.client });
+const compare = (db, observations = cards(), effectiveDate = date, marketplace = 'flipkart') => compareScrapedRatesWithActive(observations, { marketplace,sellerAccount:'default',effectiveDate,dbClient:db.client });
 const mutations = db => db.client.query.mock.calls.filter(([sql]) => /^(UPDATE|INSERT|DELETE)/.test(sql));
 
 describe('Portal observations and reviewed publication', () => {
@@ -127,6 +128,27 @@ describe('Portal observations and reviewed publication', () => {
     expect(mutations(db).some(([sql])=>sql.startsWith('INSERT INTO rc_commission'))).toBe(false);
     expect(mutations(db).find(([sql])=>sql.startsWith('UPDATE rc_commission'))[0]).not.toContain('end_date');
   });
+
+  it('closes a changed current row before a future period stored under a legacy category alias', async () => {
+    const observed = cards().map(card => ({ ...card, category: 'ethnic_set' }));
+    const db = database(observed);
+    db.tables.rc_commission[0].rate = 0.25;
+    const futureAlias = { ...db.tables.rc_commission[0], id: 900, category: 'ethnic-set',
+      start_date: '2026-12-01', end_date: null, rate: 0.18 };
+    const originalQuery = db.client.query.getMockImplementation();
+    db.client.query.mockImplementation(async (sql, params) => {
+      if (String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission')) return { rows: [futureAlias] };
+      return originalQuery(sql, params);
+    });
+    const review = await compare(db, observed);
+    await publishRateCardObservations(observed, { pool: db.pool, marketplace: 'flipkart', publishedBy: 'fixture',
+      effectiveDate: date, reviewFingerprint: review.fingerprint });
+    const futureQuery = db.client.query.mock.calls.find(([sql]) => String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission'));
+    expect(futureQuery[1]).toEqual(['flipkart', 'default', date]);
+    expect(normalizeMarketplaceCategory(futureAlias.category, 'flipkart')).toBe('ethnic_set');
+    const insert = mutations(db).find(([sql]) => sql.startsWith('INSERT INTO rc_commission'));
+    expect(insert[1][3]).toBe('2026-11-30');
+  });
   it('calculates incremental reverse and FBF pick/pack fees at exact and fractional weights', () => {
     const rc={commission:[],fixedFee:[],collectionFee:[],franchiseFee:[],pickAndPack:[{category:'kurta',fulfilmentType:'FBF',priceMin:0,priceMax:999999,weightMin:0,weightMax:50000,rate:14,local:14,zonal:14,national:14,baseWeight:1,incrementWeight:1,localAdditional:5,zonalAdditional:5,nationalAdditional:5}],reverseShipping:[{category:'kurta',priceMin:0,priceMax:500,weightSlab:'2kg-3kg',weightMin:2,weightMax:3,local:30,zonal:40,national:50,baseWeight:2,incrementWeight:0.5,localAdditional:4,zonalAdditional:5,nationalAdditional:6}]};
     const fees=calculateFees(rc,{category:'kurta',price:300,fulfilmentType:'FBF',weight:2.1,zone:'local',isReturn:true,orderDate:date});
@@ -201,6 +223,150 @@ describe('Portal observations and reviewed publication', () => {
     const db = database();
     for (const rows of Object.values(db.tables)) for (const row of rows) row.category = 'Kurta';
     expect((await compare(db)).diffCount).toBe(0);
+  });
+
+  it('canonicalizes legacy category aliases during active-row comparison', async () => {
+    const observed = cards().map(card => ({ ...card, vertical: 'salwar_kurta_dupatta' }));
+    const db = database(observed);
+    for (const rows of Object.values(db.tables)) for (const row of rows) row.category = 'salwar suit';
+    expect((await compare(db, observed)).diffCount).toBe(0);
+  });
+
+  it('normalizes Shopsy-prefixed category aliases consistently', () => {
+    expect(normalizeCategory('shopsy_saree')).toBe('shopsy_sari');
+    expect(normalizeCategory('Shopsy Saree')).toBe('shopsy_sari');
+    expect(normalizeMarketplaceCategory('saree', 'shopsy')).toBe('shopsy_sari');
+    expect(normalizeMarketplaceCategory('shopsy_kurta set', 'shopsy')).toBe('shopsy_salwar_kurta_dupatta');
+    const rc = { commission: [{ category: 'shopsy_sari', brandName: null, startDate: '2026-01-01', priceMin: 0, priceMax: 1000, rate: 0 }],
+      fixedFee: [], collectionFee: [], franchiseFee: [], pickAndPack: [], reverseShipping: [] };
+    expect(calculateFees(rc, { category: 'shopsy_saree', price: 100, orderDate: date }).category).toBe('shopsy_sari');
+    expect(calculateFees(rc, { category: 'shopsy_saree', price: 100, orderDate: date }).commissionRate).toBe(0);
+  });
+
+  it('matches Shopsy legacy aliases during rate-card comparison', async () => {
+    const observed = cards().map(card => ({ ...card, marketplace: 'shopsy', vertical: 'shopsy_sari' }));
+    const db = database(observed);
+    for (const rows of Object.values(db.tables)) for (const row of rows) {
+      row.category = 'shopsy_saree';
+      row.marketplace = 'shopsy';
+    }
+    expect((await compare(db, observed, date, 'shopsy')).diffCount).toBe(0);
+  });
+
+  it('requires server-derived configured categories and account-scoped real FSNs', async () => {
+    const rowsByTable = Object.fromEntries(RATE_CARD_CONFIG_TABLES.map(table => [table, [{ category: 'Kurta' }]]));
+    const queries = [];
+    const client = { query: vi.fn(async (sql, params) => {
+      queries.push({ sql: String(sql), params });
+      const configTable = RATE_CARD_CONFIG_TABLES.find(table => String(sql).includes(`FROM ${table}`));
+      if (configTable) return { rows: rowsByTable[configTable] };
+      if (String(sql).includes('FROM orders')) return { rows: [{ category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' }] };
+      throw new Error(`Unexpected query: ${sql}`);
+    }) };
+    const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'seller_ej', effectiveDate: date });
+    expect(coverage.configuredCategories).toEqual(['kurta']);
+    expect(coverage.missingFsnCategories).toEqual([]);
+    expect(queries).toHaveLength(7);
+    expect(queries.every(query => query.params?.[1] === 'seller_ej')).toBe(true);
+    expect(queries.filter(query => !query.sql.includes('FROM orders')).every(query => query.params?.[2] === date)).toBe(true);
+    expect(queries.every(query => query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"))).toBe(true);
+    expect(queries.filter(query => !query.sql.includes('FROM orders')).every(query =>
+      query.sql.includes('start_date <= $3::date') && query.sql.includes('end_date >= $3::date'))).toBe(true);
+    expect(assertRateObservationCoverage(cards(), coverage)).toEqual(['kurta']);
+  });
+
+  it('maps legacy Shopsy FSNs stored under Flipkart into the separate Shopsy namespace', async () => {
+    const rowsByTable = Object.fromEntries(RATE_CARD_CONFIG_TABLES.map(table => [table, [{ category: 'saree' }]]));
+    let catalogQuery = '';
+    const client = { query: vi.fn(async sql => {
+      const text = String(sql);
+      const configTable = RATE_CARD_CONFIG_TABLES.find(table => text.includes(`FROM ${table}`));
+      if (configTable) return { rows: rowsByTable[configTable] };
+      catalogQuery = text;
+      return { rows: [{ marketplace: 'flipkart', category: 'Shopsy Saree', fsn: 'ABCDEFGHIJKLMNOP' }] };
+    }) };
+    const coverage = await loadRateCardCoverage(client, { marketplace: 'shopsy', sellerAccount: 'seller_ej' });
+    expect(coverage.configuredCategories).toEqual(['shopsy_sari']);
+    expect(coverage.fsnCategories).toEqual(['shopsy_sari']);
+    expect(coverage.missingFsnCategories).toEqual([]);
+    expect(catalogQuery).toContain("LOWER(TRIM(marketplace)) = 'flipkart'");
+    expect(catalogQuery).toContain("LOWER(TRIM(category)) ~ '^shopsy([[:space:]_-]+)'");
+  });
+
+  it('includes NULL and blank legacy rate-card accounts in the default category scope', async () => {
+    const queries = [];
+    const client = { query: vi.fn(async (sql, params) => {
+      queries.push({ sql: String(sql), params });
+      if (String(sql).includes('FROM orders')) return { rows: [{ category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' }] };
+      return { rows: [{ category: 'Kurta' }] };
+    }) };
+    const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'default' });
+    expect(coverage.configuredCategories).toEqual(['kurta']);
+    expect(coverage.missingFsnCategories).toEqual([]);
+    const configReads = queries.filter(query => !query.sql.includes('FROM orders'));
+    expect(configReads).toHaveLength(RATE_CARD_CONFIG_TABLES.length);
+    expect(configReads.every(query => query.params[1] === 'default' &&
+      query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"))).toBe(true);
+  });
+
+  it('includes inherited default categories for named accounts while keeping FSNs account-scoped', async () => {
+    const queries = [];
+    const client = { query: vi.fn(async (sql, params) => {
+      const text = String(sql);
+      queries.push({ sql: text, params });
+      if (text.includes('FROM orders')) {
+        return { rows: [
+          { category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' },
+          { category: 'Saree', fsn: 'QRSTUVWXYZABCDEF' },
+        ] };
+      }
+      if (text.includes('FROM rc_commission')) return { rows: [{ category: 'Kurta' }, { category: 'Saree' }] };
+      return { rows: [{ category: 'Kurta' }] };
+    }) };
+    const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'seller_ej' });
+    expect(coverage.configuredCategories).toEqual(['kurta', 'sari']);
+    expect(coverage.missingFsnCategories).toEqual([]);
+    const configReads = queries.filter(query => !query.sql.includes('FROM orders'));
+    expect(configReads.every(query => query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2 OR COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = 'default"))).toBe(true);
+    const catalogRead = queries.find(query => query.sql.includes('FROM orders'));
+    expect(catalogRead.params).toEqual(['flipkart', 'seller_ej']);
+    expect(catalogRead.sql).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
+  });
+
+  it('fails closed when a configuration table is missing', async () => {
+    const client = { query: vi.fn(async sql => {
+      if (String(sql).includes('FROM rc_fixed_fee')) throw new Error('relation does not exist');
+      return { rows: [{ category: 'kurta' }] };
+    }) };
+    await expect(loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'default' }))
+      .rejects.toMatchObject({ code: 'RATE_CARD_COVERAGE_UNAVAILABLE', message: expect.stringContaining('rc_fixed_fee') });
+  });
+
+  it('rejects partial and unconfigured category sets even if job parameters claim a smaller scope', async () => {
+    const coverage = { marketplace: 'flipkart', configuredCategories: ['kurta', 'dress'], fsnCategories: ['kurta', 'dress'], missingFsnCategories: [] };
+    expect(() => assertRateObservationCoverage(cards(), coverage)).toThrow(/Missing configured rate-card categories: dress/);
+    expect(() => assertRateObservationCoverage([...cards(), { ...cards()[0], vertical: 'blouse' }], {
+      ...coverage, configuredCategories: ['kurta'], fsnCategories: ['kurta']
+    })).toThrow(/unconfigured rate-card categories: blouse/);
+  });
+
+  it('blocks publisher coverage bypass before any rate-table writes', async () => {
+    const db = database();
+    const originalQuery = db.client.query.getMockImplementation();
+    db.client.query.mockImplementation(async (sql, params) => {
+      const text = String(sql);
+      const configTable = RATE_CARD_CONFIG_TABLES.find(table => text.includes(`FROM ${table}`));
+      if (configTable) return { rows: [{ category: 'kurta' }, { category: 'dress' }] };
+      if (text.includes('FROM orders')) return { rows: [
+        { category: 'kurta', fsn: 'ABCDEFGHIJKLMNOP' }, { category: 'dress', fsn: 'QRSTUVWXYZ123456' }
+      ] };
+      return originalQuery(sql, params);
+    });
+    await expect(publishRateCardObservations(cards(), {
+      pool: db.pool, marketplace: 'flipkart', sellerAccount: 'default', publishedBy: 'fixture',
+      requireConfiguredCoverage: true, reviewFingerprint: 'caller-supplied-review'
+    })).rejects.toThrow(/Missing configured rate-card categories: dress/);
+    expect(mutations(db)).toEqual([]);
   });
 
 });

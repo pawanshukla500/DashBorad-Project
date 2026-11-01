@@ -46,7 +46,23 @@ const CAT_MAP = {
 export function normalizeCategory(cat) {
   if (!cat) return '';
   const c = (cat + '').toLowerCase().trim();
+  // Shopsy stores its categories in a separate namespace. Normalize the
+  // suffix as well, so legacy values such as `shopsy_saree` match the
+  // canonical `shopsy_sari` key used by FSN discovery and fee calculation.
+  const shopsyPrefix = c.match(/^shopsy[_\s-]+(.+)$/);
+  if (shopsyPrefix) {
+    const suffix = normalizeCategory(shopsyPrefix[1]);
+    return suffix ? `shopsy_${suffix}` : '';
+  }
   return CAT_MAP[c] || c.replace(/[\s-]+/g, '_');
+}
+
+export function normalizeMarketplaceCategory(category, marketplace) {
+  const normalized = normalizeCategory(category);
+  if (!normalized) return '';
+  return String(marketplace || '').trim().toLowerCase() === 'shopsy' && !normalized.startsWith('shopsy_')
+    ? `shopsy_${normalized}`
+    : normalized;
 }
 
 export const ALL_CATEGORIES = [
@@ -160,30 +176,31 @@ async function loadFromDb(marketplace = 'flipkart', sellerAccount = 'default') {
     // Account-specific rows first; then, when two periods of a category
     // overlap (an earlier one that was never closed), the later start wins —
     // the same rule as the SQL report paths. find() takes the first match.
+    const accountSql = "COALESCE(NULLIF(TRIM(seller_account), ''), 'default')";
     const orderBy = accounts.length > 1
-      ? `(CASE WHEN seller_account = $2[1] THEN 0 ELSE 1 END), start_date DESC NULLS LAST, id DESC`
+      ? `(CASE WHEN ${accountSql} = $2[1] THEN 0 ELSE 1 END), start_date DESC NULLS LAST, id DESC`
       : `start_date DESC NULLS LAST, id DESC`;
 
     // During rolling PostgreSQL schema upgrades, keep current rate-card
     // calculations working until the optional price-band columns are visible.
     const reverseShippingQuery = pool.query(
-      `SELECT *, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date FROM rc_reverse_shipping WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, price_min, weight_slab`,
+      `SELECT *, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date FROM rc_reverse_shipping WHERE marketplace = $1 AND ${accountSql} = ANY($2) ORDER BY ${orderBy}, category, price_min, weight_slab`,
       [marketplace, accounts]
     ).catch(async error => {
       if (!/price_(?:min|max)/i.test(error.message || '')) throw error;
       return pool.query(
-        `SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, seller_account, weight_slab, local_fee, zonal_fee, national_fee FROM rc_reverse_shipping WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, weight_slab`,
+        `SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, seller_account, weight_slab, local_fee, zonal_fee, national_fee FROM rc_reverse_shipping WHERE marketplace = $1 AND ${accountSql} = ANY($2) ORDER BY ${orderBy}, category, weight_slab`,
         [marketplace, accounts]
       );
     });
 
     const [commRes, fixRes, colRes, ppRes, revRes, franRes] = await Promise.all([
-      pool.query(`SELECT category, COALESCE(brand_name, '') AS brand_name, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, rate FROM rc_commission WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, NULLIF(brand_name,'') NULLS LAST, price_min`, [marketplace, accounts]),
-      pool.query(`SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, fulfilment_type, price_min, price_max, rate FROM rc_fixed_fee WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, price_min`, [marketplace, accounts]),
-      pool.query(`SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, prepaid, postpaid, COALESCE(prepaid_type,'pct') AS prepaid_type, COALESCE(postpaid_type,'pct') AS postpaid_type FROM rc_collection_fee WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, price_min`, [marketplace, accounts]),
-      pool.query(`SELECT *, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, COALESCE(fulfilment_type,'ALL') AS fulfilment_type FROM rc_pick_pack WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, price_min`, [marketplace, accounts]),
+      pool.query(`SELECT category, COALESCE(brand_name, '') AS brand_name, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, rate FROM rc_commission WHERE marketplace = $1 AND ${accountSql} = ANY($2) ORDER BY ${orderBy}, category, NULLIF(brand_name,'') NULLS LAST, price_min`, [marketplace, accounts]),
+      pool.query(`SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, fulfilment_type, price_min, price_max, rate FROM rc_fixed_fee WHERE marketplace = $1 AND ${accountSql} = ANY($2) ORDER BY ${orderBy}, category, price_min`, [marketplace, accounts]),
+      pool.query(`SELECT category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, prepaid, postpaid, COALESCE(prepaid_type,'pct') AS prepaid_type, COALESCE(postpaid_type,'pct') AS postpaid_type FROM rc_collection_fee WHERE marketplace = $1 AND ${accountSql} = ANY($2) ORDER BY ${orderBy}, category, price_min`, [marketplace, accounts]),
+      pool.query(`SELECT *, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, COALESCE(fulfilment_type,'ALL') AS fulfilment_type FROM rc_pick_pack WHERE marketplace = $1 AND ${accountSql} = ANY($2) ORDER BY ${orderBy}, category, price_min`, [marketplace, accounts]),
       reverseShippingQuery,
-      pool.query(`SELECT category, COALESCE(brand_name,'') AS brand_name, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, rate FROM rc_franchise_fee WHERE marketplace = $1 AND seller_account = ANY($2) ORDER BY ${orderBy}, category, NULLIF(brand_name,'') NULLS LAST, price_min`, [marketplace, accounts]).catch(() => ({ rows: [] })),
+      pool.query(`SELECT category, COALESCE(brand_name,'') AS brand_name, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, rate FROM rc_franchise_fee WHERE marketplace = $1 AND ${accountSql} = ANY($2) ORDER BY ${orderBy}, category, NULLIF(brand_name,'') NULLS LAST, price_min`, [marketplace, accounts]).catch(() => ({ rows: [] })),
     ]);
     // normalizeCategory so DB categories match lookup keys regardless of stored case
     const commission      = commRes.rows.map(r => ({ category: normalizeCategory(r.category), brandName: r.brand_name || null, startDate: r.start_date, endDate: r.end_date, priceMin: +r.price_min, priceMax: +r.price_max, rate: +r.rate }));

@@ -8,7 +8,7 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
-import { normalizeCategory, clearRateCardCache } from '../services/rateCard.js';
+import { normalizeCategory, normalizeMarketplaceCategory, clearRateCardCache } from '../services/rateCard.js';
 import { getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
 import { detectRateChanges, syncRateCardsToDatabase } from '../services/rateCardSyncEngine.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
@@ -23,6 +23,7 @@ import {
 } from '../services/brandRateCardService.js';
 import { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } from '../services/brandwiseExcelExport.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
+import { resolveRateCardEffectiveDate } from '../utils/rateCardDate.js';
 
 const router = express.Router();
 
@@ -35,6 +36,7 @@ const TABLE_MAP = {
   reverse_shipping:'rc_reverse_shipping',
   franchise_fee:   'rc_franchise_fee',
 };
+const DEFAULT_SELLER_ACCOUNT_SQL = "COALESCE(NULLIF(TRIM(seller_account), ''), 'default')";
 
 // Columns that vary per table (beyond id, category, start_date, end_date, marketplace, seller_account, updated_at)
 const TABLE_EXTRA_COLUMNS = {
@@ -184,7 +186,7 @@ export function parseRateCardRow(type, row) {
 
 export function resolveMarketplaceAndAccount(rawMarketplace, rawSellerAccount) {
   let marketplace = String(rawMarketplace || 'flipkart').trim().toLowerCase();
-  let sellerAccount = String(rawSellerAccount || 'default').trim();
+  let sellerAccount = String(rawSellerAccount || 'default').trim() || 'default';
   if (marketplace === 'myntra_vb') {
     marketplace = 'myntra';
     sellerAccount = 'myntra_vb';
@@ -278,27 +280,25 @@ router.get('/config/categories', async (req, res) => {
     const results = await Promise.all(
       Object.values(TABLE_MAP).map(table =>
         pool.query(
-          `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1 AND seller_account = $2`,
+          `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2`,
           [marketplace, sellerAccount],
         ).catch(() => ({ rows: [] })),
       ),
     );
     const cats = new Set();
     for (const { rows } of results) {
-      for (const r of rows) cats.add(normalizeCategory(r.category));
+      for (const r of rows) cats.add(normalizeMarketplaceCategory(r.category, marketplace));
     }
 
     // Also pull categories from orders for this marketplace & account
     try {
-      const orderCond = sellerAccount !== 'default'
-        ? `marketplace = $1 AND seller_account = $2`
-        : `marketplace = $1`;
-      const orderParams = sellerAccount !== 'default' ? [marketplace, sellerAccount] : [marketplace];
+      const orderCond = `marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2`;
+      const orderParams = [marketplace, sellerAccount];
       const { rows: orderCats } = await pool.query(
         `SELECT DISTINCT COALESCE(vb_export_category, category) AS category FROM orders WHERE ${orderCond} AND COALESCE(vb_export_category, category) IS NOT NULL AND COALESCE(vb_export_category, category) != ''`,
         orderParams,
       );
-      for (const r of orderCats) cats.add(normalizeCategory(r.category));
+      for (const r of orderCats) cats.add(normalizeMarketplaceCategory(r.category, marketplace));
     } catch { /* ignore */ }
 
     const categories = [...cats].sort();
@@ -308,7 +308,7 @@ router.get('/config/categories', async (req, res) => {
       try {
         const { rows: brandRows } = await pool.query(
           `SELECT DISTINCT brand_name FROM rc_commission 
-           WHERE marketplace = $1 AND seller_account = $2 AND brand_name IS NOT NULL AND brand_name != ''`,
+           WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2 AND brand_name IS NOT NULL AND brand_name != ''`,
           [marketplace, sellerAccount],
         );
         const brands = brandRows.map(r => r.brand_name).filter(Boolean).sort();
@@ -332,7 +332,7 @@ router.get('/config-status', async (req, res) => {
     const results = await Promise.all(
       Object.entries(TABLE_MAP).map(async ([type, table]) => {
         const { rows } = await pool.query(
-          `SELECT COUNT(*) AS cnt FROM ${table} WHERE marketplace = $1 AND seller_account = $2`,
+          `SELECT COUNT(*) AS cnt FROM ${table} WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2`,
           [marketplace, sellerAccount],
         );
         return { type, count: Number(rows[0]?.cnt || 0) };
@@ -375,18 +375,31 @@ router.get('/config/:type', async (req, res) => {
     const table = resolveTable(req.params.type);
     const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.query.marketplace, req.query.seller_account);
     const pool = getPool();
+    const activeOnly = req.query.active_only === 'true';
+    const activeDate = activeOnly ? resolveRateCardEffectiveDate(req.query.active_date) : null;
+    const activePeriodFilter = activeOnly
+      ? `AND (start_date IS NULL OR start_date <= $3::date)
+         AND (end_date IS NULL OR end_date >= $3::date)`
+      : '';
+    // Desktop extraction follows the same default-rate fallback used by fee
+    // calculations. Keep ordinary configuration reads account-exact unless
+    // the worker explicitly requests inherited defaults.
+    const includeDefaults = req.query.include_defaults === 'true' && sellerAccount !== 'default';
+    const sellerAccountFilter = includeDefaults
+      ? `(${DEFAULT_SELLER_ACCOUNT_SQL} = $2 OR ${DEFAULT_SELLER_ACCOUNT_SQL} = 'default')`
+      : `${DEFAULT_SELLER_ACCOUNT_SQL} = $2`;
     const { rows } = await pool.query(
       `SELECT id, category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date,
               marketplace, seller_account, ${TABLE_EXTRA_COLUMNS[req.params.type].join(', ')}
        FROM ${table}
-       WHERE marketplace = $1 AND seller_account = $2
+       WHERE marketplace = $1 AND ${sellerAccountFilter} ${activePeriodFilter}
        ORDER BY category, ${TABLE_EXTRA_COLUMNS[req.params.type].includes('brand_name') ? "NULLIF(brand_name,'') NULLS LAST, " : ""} price_min ${TABLE_EXTRA_COLUMNS[req.params.type].includes('weight_slab') ? ", weight_slab" : ""}`,
-      [marketplace, sellerAccount],
+      activeOnly ? [marketplace, sellerAccount, activeDate] : [marketplace, sellerAccount],
     );
     // Legacy rows can contain display aliases (for example "salwar suit").
     // The desktop worker matches configured categories to the FSN catalog, so
     // return the same canonical category key used by rate-card calculations.
-    res.json({ rows: rows.map(row => ({ ...row, category: normalizeCategory(row.category) })) });
+    res.json({ rows: rows.map(row => ({ ...row, category: normalizeMarketplaceCategory(row.category, marketplace) })) });
   } catch (e) {
     console.error('[rate-card/config]', e);
     res.status(e.status || 500).json({ error: e.message });
@@ -831,7 +844,7 @@ router.get('/versions', async (req, res) => {
       `SELECT id, version_name, status, effective_from, effective_to,
               created_at, published_at, created_by, published_by
        FROM rate_card_versions
-       WHERE marketplace = $1 AND seller_account = $2
+       WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2
        ORDER BY created_at DESC
        LIMIT 50`,
       [marketplace, sellerAccount],
@@ -856,7 +869,7 @@ router.post('/versions', async (req, res) => {
     const snapshot = {};
     for (const [type, table] of Object.entries(TABLE_MAP)) {
       const { rows } = await pool.query(
-        `SELECT * FROM ${table} WHERE marketplace = $1 AND seller_account = $2 ORDER BY category, price_min`,
+        `SELECT * FROM ${table} WHERE marketplace = $1 AND ${DEFAULT_SELLER_ACCOUNT_SQL} = $2 ORDER BY category, price_min`,
         [marketplace, sellerAccount],
       );
       snapshot[type] = rows;
@@ -1715,7 +1728,7 @@ router.get('/brand-fsn-catalog', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Choose one valid seller account for the FSN catalog.' });
     }
     const catalog = await getRealTimeBrandFsnSamples(pool, { marketplace, sellerAccount });
-    const canonicalCatalog = catalog.map(row => ({ ...row, category: normalizeCategory(row.category) }));
+    const canonicalCatalog = catalog.map(row => ({ ...row, category: normalizeMarketplaceCategory(row.category, row.marketplace) }));
     res.json({
       success: true,
       count: canonicalCatalog.length,
