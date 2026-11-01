@@ -65,6 +65,26 @@ export function normalizeMarketplaceCategory(category, marketplace) {
     : normalized;
 }
 
+// Legacy category labels must still match a canonical key when checking future
+// periods (for example `salwar suit` or `shopsy-saree`).
+export function marketplaceCategoryAliases(category, marketplace) {
+  const channel = String(marketplace || '').trim().toLowerCase();
+  const normalized = normalizeMarketplaceCategory(category, channel);
+  if (!normalized) return [];
+  const base = channel === 'shopsy' && normalized.startsWith('shopsy_')
+    ? normalized.slice('shopsy_'.length) : normalized;
+  const aliases = Object.keys(CAT_MAP).filter(alias => normalizeCategory(alias) === base);
+  const candidates = new Set([String(category).trim().toLowerCase(), normalized, base, ...aliases]);
+  if (channel === 'shopsy') {
+    for (const alias of [base, ...aliases]) {
+      candidates.add(`shopsy_${alias}`);
+      candidates.add(`shopsy ${alias}`);
+      candidates.add(`shopsy-${alias}`);
+    }
+  }
+  return [...candidates].filter(Boolean);
+}
+
 export const ALL_CATEGORIES = [
   'ethnic_set','sari','kurta','top','fabric','dupatta',
   'shirt','dress','gown','apparel_set','salwar_kurta_dupatta',

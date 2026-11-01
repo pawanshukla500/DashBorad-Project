@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { publishRateCardObservations } from '../services/rateCardPublisher.js';
 import { RATE_TABLES, normalizeObservationRow, validateRateObservations } from '../services/rateCardObservationPlan.js';
-import { calculateFees, normalizeCategory, normalizeMarketplaceCategory } from '../services/rateCard.js';
+import { calculateFees, normalizeCategory, normalizeMarketplaceCategory, marketplaceCategoryAliases } from '../services/rateCard.js';
 import { assertRateObservationCoverage, loadRateCardCoverage, RATE_CARD_CONFIG_TABLES } from '../services/rateCardCoverage.js';
 import { parsePortalRateSnapshot } from '../../desktop/portalRates.js';
 import { normalizeScrapedCards } from '../../desktop/scrapeResults.js';
@@ -128,6 +128,26 @@ describe('Portal observations and reviewed publication', () => {
     expect(mutations(db).some(([sql])=>sql.startsWith('INSERT INTO rc_commission'))).toBe(false);
     expect(mutations(db).find(([sql])=>sql.startsWith('UPDATE rc_commission'))[0]).not.toContain('end_date');
   });
+
+  it('closes a changed current row before a future period stored under a legacy category alias', async () => {
+    const observed = cards().map(card => ({ ...card, category: 'salwar_kurta_dupatta' }));
+    const db = database(observed);
+    db.tables.rc_commission[0].rate = 0.25;
+    const futureAlias = { ...db.tables.rc_commission[0], id: 900, category: 'salwar suit',
+      start_date: '2026-12-01', end_date: null, rate: 0.18 };
+    const originalQuery = db.client.query.getMockImplementation();
+    db.client.query.mockImplementation(async (sql, params) => {
+      if (String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission')) return { rows: [futureAlias] };
+      return originalQuery(sql, params);
+    });
+    const review = await compare(db, observed);
+    await publishRateCardObservations(observed, { pool: db.pool, marketplace: 'flipkart', publishedBy: 'fixture',
+      effectiveDate: date, reviewFingerprint: review.fingerprint });
+    const futureQuery = db.client.query.mock.calls.find(([sql]) => String(sql).includes('start_date > $3') && String(sql).includes('FROM rc_commission'));
+    expect(futureQuery[1][3]).toContain('salwar suit');
+    const insert = mutations(db).find(([sql]) => sql.startsWith('INSERT INTO rc_commission'));
+    expect(insert[1][3]).toBe('2026-11-30');
+  });
   it('calculates incremental reverse and FBF pick/pack fees at exact and fractional weights', () => {
     const rc={commission:[],fixedFee:[],collectionFee:[],franchiseFee:[],pickAndPack:[{category:'kurta',fulfilmentType:'FBF',priceMin:0,priceMax:999999,weightMin:0,weightMax:50000,rate:14,local:14,zonal:14,national:14,baseWeight:1,incrementWeight:1,localAdditional:5,zonalAdditional:5,nationalAdditional:5}],reverseShipping:[{category:'kurta',priceMin:0,priceMax:500,weightSlab:'2kg-3kg',weightMin:2,weightMax:3,local:30,zonal:40,national:50,baseWeight:2,incrementWeight:0.5,localAdditional:4,zonalAdditional:5,nationalAdditional:6}]};
     const fees=calculateFees(rc,{category:'kurta',price:300,fulfilmentType:'FBF',weight:2.1,zone:'local',isReturn:true,orderDate:date});
@@ -216,6 +236,8 @@ describe('Portal observations and reviewed publication', () => {
     expect(normalizeCategory('Shopsy Saree')).toBe('shopsy_sari');
     expect(normalizeMarketplaceCategory('saree', 'shopsy')).toBe('shopsy_sari');
     expect(normalizeMarketplaceCategory('shopsy_kurta set', 'shopsy')).toBe('shopsy_salwar_kurta_dupatta');
+    expect(marketplaceCategoryAliases('shopsy_sari', 'shopsy')).toContain('shopsy-saree');
+    expect(marketplaceCategoryAliases('salwar_kurta_dupatta', 'flipkart')).toContain('salwar suit');
     const rc = { commission: [{ category: 'shopsy_sari', brandName: null, startDate: '2026-01-01', priceMin: 0, priceMax: 1000, rate: 0 }],
       fixedFee: [], collectionFee: [], franchiseFee: [], pickAndPack: [], reverseShipping: [] };
     expect(calculateFees(rc, { category: 'shopsy_saree', price: 100, orderDate: date }).category).toBe('shopsy_sari');

@@ -1,5 +1,5 @@
 import { getPool } from '../db/index.js';
-import { clearRateCardCache } from './rateCard.js';
+import { clearRateCardCache, marketplaceCategoryAliases } from './rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
 import { RATE_TABLES, validateRateObservations, normalizeObservationRow, rateRowIdentity } from './rateCardObservationPlan.js';
@@ -62,11 +62,13 @@ export async function publishRateCardObservations(observations, options = {}) {
       if (!diff.newRow || sameDay) continue;
       const row = diff.newRow;
       const keys = ['category', ...descriptor.keys];
-      // Respect already scheduled periods for the exact same identity.
+      // Legacy category labels may normalize to this row's canonical key.
+      // Fetch those aliases, then compare the full natural identity below.
       const future = await client.query(`SELECT * FROM ${descriptor.table}
         WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
-          AND start_date > $3 AND category = $4`,
-        [marketplace, sellerAccount, effectiveDate, row.category]);
+          AND start_date > $3 AND LOWER(TRIM(category)) = ANY($4::text[])`,
+        [marketplace, sellerAccount, effectiveDate,
+          marketplaceCategoryAliases(row.category, marketplace).map(value => value.toLowerCase())]);
       const identity = rateRowIdentity(descriptor, row);
       const next = future.rows.filter(raw => iso(raw.start_date) > effectiveDate &&
         rateRowIdentity(descriptor, normalizeObservationRow(descriptor, raw)) === identity)
