@@ -727,6 +727,10 @@ async function checkDailySchedule() {
     }
 
     try {
+      if (stagedExtraction.publicationInProgress) {
+        if (mainWindow) mainWindow.webContents.send('scrape-progress', '⏰ Scheduled scrape skipped: rate publication is in progress.');
+        return;
+      }
       if (withBrowserTask.busy) {
         if (mainWindow) mainWindow.webContents.send('scrape-progress', '⏰ Scheduled scrape skipped: another browser task is running.');
         return;
@@ -2001,6 +2005,7 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
 });
 
 registerHandler('start-scrape', async (e, options) => {
+  if (stagedExtraction.publicationInProgress) return { success: false, error: 'Rate publication is in progress. Wait for it to finish before starting another extraction.' };
   if (withBrowserTask.busy) return { success: false, error: 'A browser task is already running.' };
   const startedAt = Date.now();
   const config = loadConfig();
@@ -2153,6 +2158,9 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
   let sellerAccount;
   try { sellerAccount = resolveSellerAccountForRateCards(cards, options.seller_account); }
   catch (err) { return { success: false, error: err.message }; }
+  if (stagedExtraction.publicationInProgress) {
+    return { success: false, error: 'Rate publication is in progress. Wait for it to finish before starting another comparison.' };
+  }
   const reviewRequest = beginStagedRateReview(stagedExtraction, cards, sellerAccount);
   try {
     const result = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
@@ -2199,6 +2207,9 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   if (uncoveredCategories.length) {
     return { success: false, error: `Publication blocked: configured categories were not included in this extraction: ${uncoveredCategories.join(', ')}.` };
   }
+  if (!stagedExtraction.beginPublication()) {
+    return { success: false, error: 'Another rate publication is already in progress. Wait for it to finish.' };
+  }
   try {
     const result = await publishReviewedRatesViaApi(loadAuthSession(), cards, review.fingerprints, review.sellerAccount, isCurrent);
     stagedExtraction.invalidateReview();
@@ -2211,6 +2222,8 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   } catch (err) {
     desktopLogger.error('rate-review.publish_failed', err, { marketplace: cards[0].marketplace });
     return { success: false, error: err.message };
+  } finally {
+    stagedExtraction.endPublication();
   }
 });
 

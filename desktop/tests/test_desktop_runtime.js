@@ -317,6 +317,13 @@ async function runTests() {
     const pendingRequest = beginStagedRateReview(state, newerCards, 'default');
     state.invalidateReview();
     assert(!isCurrentStagedRateReview(state, pendingRequest, newerCards, 'default'), 'a new extraction must invalidate an in-flight comparison');
+    assert(state.beginPublication(), 'publication lock must start once');
+    assert(!state.beginPublication(), 'overlapping publications must be rejected');
+    let comparisonBlocked = false;
+    try { beginStagedRateReview(state, newerCards, 'default'); } catch (error) { comparisonBlocked = /publication is in progress/i.test(error.message); }
+    assert(comparisonBlocked, 'a new comparison must not invalidate review state during publication');
+    state.endPublication();
+    assert(!state.publicationInProgress, 'publication lock must always be releasable');
   });
 
   // ── scrapeResults ───────────────────────────────────────────────────────────
@@ -2090,8 +2097,11 @@ async function runTests() {
     assert(/finally\s*\{\s*btnCommitDb\.disabled = !currentCanSync;/.test(renderer), 'commit cleanup must preserve a disabled review state');
     assert(main.includes('if (!review.publishable || !review.fingerprints?.[cards[0].marketplace])'), 'main process must enforce the fingerprint gate');
     assert(main.includes('stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, result)'), 'Electron main must reject superseded review responses');
+    assert(main.includes('if (stagedExtraction.publicationInProgress) return { success: false, error: \'Rate publication is in progress.'), 'Electron main must prevent a new scrape during rate publication');
+    assert(main.includes('stagedExtraction.beginPublication()') && main.includes('stagedExtraction.endPublication()'), 'Electron main must hold and release the publication lock');
     assert(standaloneServer.includes('stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, review)'), 'standalone app server must reject superseded review responses');
     assert(standaloneServer.includes('if (!review.publishable || !review.fingerprints?.[cardsToSync[0].marketplace])'), 'standalone sync must enforce the fingerprint gate');
+    assert(standaloneServer.includes('if (stagedExtraction.publicationInProgress)'), 'standalone server must guard concurrent publication, comparison, and scrape requests');
     const syncHandlerStart = renderer.indexOf('// Commit to Database');
     const syncHandlerEnd = renderer.indexOf('// Excel Actions', syncHandlerStart);
     const syncHandler = renderer.slice(syncHandlerStart, syncHandlerEnd);

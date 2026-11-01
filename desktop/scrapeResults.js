@@ -11,11 +11,19 @@ const sameSlabs = (a, b) => Array.isArray(a) && Array.isArray(b)
  * consistent between the Electron and standalone-server flows.
  */
 export function createStagedExtractionState() {
-  const state = { cards: [], coverage: null, authGeneration: 0, reviewGeneration: 0, review: null };
+  const state = { cards: [], coverage: null, authGeneration: 0, reviewGeneration: 0, review: null, publicationInProgress: false };
   state.invalidateReview = () => {
     state.reviewGeneration += 1;
     state.review = null;
     return state.reviewGeneration;
+  };
+  state.beginPublication = () => {
+    if (state.publicationInProgress) return false;
+    state.publicationInProgress = true;
+    return true;
+  };
+  state.endPublication = () => {
+    state.publicationInProgress = false;
   };
   state.resetForAuthChange = () => {
     state.cards = [];
@@ -27,6 +35,7 @@ export function createStagedExtractionState() {
 }
 
 export function beginStagedRateReview(state, cards, sellerAccount) {
+  if (state.publicationInProgress) throw new Error('Rate publication is in progress. Wait for it to finish before starting another comparison.');
   const generation = state.invalidateReview();
   return Object.freeze({
     generation,

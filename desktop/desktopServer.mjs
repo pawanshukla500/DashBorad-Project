@@ -1258,6 +1258,9 @@ const server = http.createServer(async (req, res) => {
     // POST /api/detect-changes
     if (pathname === '/api/detect-changes' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
+      if (stagedExtraction.publicationInProgress) {
+        return sendJson(409, { success: false, error: 'Rate publication is in progress. Wait for it to finish before starting another comparison.' });
+      }
       let body = null;
       let cards = null;
       let sellerAccount = null;
@@ -1271,6 +1274,9 @@ const server = http.createServer(async (req, res) => {
           return sendJson(400, { success: false, error: 'Review Flipkart and Shopsy separately.' });
         }
         sellerAccount = resolveSellerAccountForRateCards(cards, body.options?.seller_account);
+        if (stagedExtraction.publicationInProgress) {
+          return sendJson(409, { success: false, error: 'Rate publication is in progress. Wait for it to finish before starting another comparison.' });
+        }
         reviewRequestValidated = true;
         reviewRequest = beginStagedRateReview(stagedExtraction, cards, sellerAccount);
         const review = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
@@ -1299,9 +1305,13 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/sync' && req.method === 'POST') {
       const authSession = await requireDesktopAuth(true);
       if (!authSession) return;
+      if (stagedExtraction.publicationInProgress) {
+        return sendJson(409, { success: false, error: 'Another rate publication is already in progress. Wait for it to finish.' });
+      }
       const authGeneration = stagedExtraction.authGeneration;
       const reviewGeneration = stagedExtraction.reviewGeneration;
       let reviewSnapshot = null;
+      let publicationStarted = false;
       const isCurrent = () => authGeneration === stagedExtraction.authGeneration &&
         reviewGeneration === stagedExtraction.reviewGeneration &&
         (!reviewSnapshot || stagedExtraction.review === reviewSnapshot);
@@ -1338,6 +1348,10 @@ const server = http.createServer(async (req, res) => {
         if (!review.publishable || !review.fingerprints?.[cardsToSync[0].marketplace]) {
           return sendJson(409, { success: false, error: 'Publication is disabled because the backend did not return a review fingerprint. Refresh after the backend review update.' });
         }
+        if (!stagedExtraction.beginPublication()) {
+          return sendJson(409, { success: false, error: 'Another rate publication is already in progress. Wait for it to finish.' });
+        }
+        publicationStarted = true;
         const result = await publishReviewedRatesViaApi(authSession, cardsToSync, review.fingerprints, review.sellerAccount, isCurrent);
         stagedExtraction.invalidateReview();
         broadcastProgress(`✓ ${result.message}`);
@@ -1345,6 +1359,8 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         broadcastProgress(`❌ Database sync failed: ${err.message}`);
         return sendJson(500, { success: false, error: err.message });
+      } finally {
+        if (publicationStarted) stagedExtraction.endPublication();
       }
     }
 
@@ -1352,6 +1368,9 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/scrape/start' && req.method === 'POST') {
       const requestSession = await requireDesktopAuth();
       if (!requestSession) return;
+      if (stagedExtraction.publicationInProgress) {
+        return sendJson(409, { success: false, error: 'Rate publication is in progress. Wait for it to finish before starting another extraction.' });
+      }
       let requestAuthContext;
       try {
         requestAuthContext = captureScrapeAuthContext(stagedExtraction, requestSession);
@@ -1420,8 +1439,10 @@ const server = http.createServer(async (req, res) => {
 
       // Re-check after the body await: a request that raced past the earlier
       // checks while this body was parsing must not overwrite the running job.
-      if (activeScrapeJob.running || withBrowserTask.busy) {
-        return sendJson(409, { success: false, error: 'A scraping job is already running.' });
+      if (activeScrapeJob.running || withBrowserTask.busy || stagedExtraction.publicationInProgress) {
+        return sendJson(409, { success: false, error: stagedExtraction.publicationInProgress
+          ? 'Rate publication is in progress. Wait for it to finish before starting another extraction.'
+          : 'A scraping job is already running.' });
       }
 
       // A new run supersedes the previous staging; a failed run must not leave
