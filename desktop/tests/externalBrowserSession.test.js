@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createExternalBrowserSession } from '../externalBrowserSession.js';
 import { createBrowserRecoveryRegistry } from '../browserRecoveryRegistry.js';
-import { focusBrowserPage } from '../browserRuntime.js';
+import { focusBrowserPage, resolveVisibleBrowserViewport } from '../browserRuntime.js';
 
 class FakeBrowser {
   constructor(id) {
@@ -264,4 +264,36 @@ test('interactive browser foregrounding is separated from navigation by one-seco
   assert.equal(await focusBrowserPage(page, { delay: async ms => actions.push(`wait:${ms}`) }), true);
   actions.push('navigate');
   assert.deepEqual(actions, ['wait:1000', 'foreground', 'wait:1000', 'navigate']);
+});
+
+test('compact visible browser view expands to Seller Hub desktop navigation before login', async () => {
+  const actions = [];
+  const viewport = resolveVisibleBrowserViewport({
+    currentWidth: 800,
+    currentHeight: 600,
+    availableWidth: 1536,
+    availableHeight: 960
+  });
+  assert.deepEqual(viewport, { width: 1440, height: 880 });
+
+  const page = {
+    evaluate: async () => {
+      actions.push('inspect');
+      return { currentWidth: 800, currentHeight: 600, availableWidth: 1536, availableHeight: 960 };
+    },
+    setViewport: async value => actions.push(`viewport:${value.width}x${value.height}`),
+    bringToFront: async () => actions.push('foreground')
+  };
+
+  assert.equal(await focusBrowserPage(page, {
+    delay: async ms => actions.push(`wait:${ms}`),
+    onViewport: viewport => actions.push(`logged:${viewport.width}x${viewport.height}`)
+  }), true);
+  actions.push('navigate');
+  assert.deepEqual(actions, [
+    'inspect', 'wait:1000', 'viewport:1440x880', 'logged:1440x880',
+    'wait:1000', 'foreground', 'wait:1000', 'navigate'
+  ]);
+  assert.equal(resolveVisibleBrowserViewport({ currentWidth: 1440, currentHeight: 880 }), null,
+    'a desktop-sized browser viewport is left unchanged');
 });

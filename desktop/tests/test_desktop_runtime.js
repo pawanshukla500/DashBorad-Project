@@ -1645,6 +1645,7 @@ async function runTests() {
 
   await runTest('portalScraper triggers onSessionExpiry when session check fails (stage 3)', async () => {
     const { scrapeFlipkartRateCards } = await import('../portalScraper.js');
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-session-expiry-'));
     let sessionExpiryTriggered = false;
     let authChecked = false;
 
@@ -1671,19 +1672,30 @@ async function runTests() {
       partition: 'persist:test'
     };
 
-    await scrapeFlipkartRateCards({ marketplace: 'flipkart' }, {
-      runtime: fakeRuntime,
-      onProgress: () => {},
-      delay: () => {},
-      onSessionExpiry: async (page) => {
-        sessionExpiryTriggered = true;
-        assert(page === fakePage, 'onSessionExpiry must receive active page');
-        return true;
-      }
-    }).catch(() => null);
+    try {
+      const result = await scrapeFlipkartRateCards({ marketplace: 'flipkart' }, {
+        runtime: fakeRuntime,
+        onProgress: () => {},
+        delay: () => {},
+        cookiesPath: path.join(tempDir, 'cookies.json'),
+        fallbackCookiesPath: path.join(tempDir, 'fallback-cookies.json'),
+        stagingDir: path.join(tempDir, 'staging'),
+        onSessionExpiry: async (activePage) => {
+          sessionExpiryTriggered = true;
+          assert(activePage && typeof activePage.url === 'function' && activePage.url() === fakePage.url(),
+            'onSessionExpiry must receive the active paced page');
+          assert(activePage !== fakePage, 'portal interactions must use the pacing wrapper');
+          return true;
+        }
+      });
 
-    assert(authChecked, 'checkSession must be called on home page');
-    assert(sessionExpiryTriggered, 'onSessionExpiry must be invoked when checkSession fails');
+      assert(authChecked, 'checkSession must be called on home page');
+      assert(sessionExpiryTriggered, 'onSessionExpiry must be invoked when checkSession fails');
+      assert.strictEqual(result.success, false);
+      assert(/did not establish an authenticated dashboard session/.test(result.error), result.error);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   await runTest('executeScrapeProcess implements 2-attempt retry loop with backoff (stage 3)', async () => {

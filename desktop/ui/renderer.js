@@ -752,11 +752,16 @@ async function loadRateCardPreview() {
       // Without a reachable database the staged review still renders, but
       // nothing may be committed: diffs are unknowable and sync would fail.
       currentCanSync = Boolean(res.canSync) && diffRes.dbAvailable !== false;
+      if (res.missingFsnCategories?.length) {
+        appendTerminalLine(`⚠️ ${selectedChannel} review is local-only: configured categories have no database FSNs (${res.missingFsnCategories.join(', ')}). Add real catalog FSNs and rerun before publishing.`);
+      }
       if (commitBtn) {
         commitBtn.disabled = !currentCanSync;
         commitBtn.title = !currentCanSync && diffRes.dbAvailable === false
           ? 'Database not reachable. Configure the PostgreSQL URL in Settings to detect changes and commit.'
-          : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.');
+          : (res.missingFsnCategories?.length
+            ? `Publication blocked until these configured categories have real database FSNs: ${res.missingFsnCategories.join(', ')}`
+            : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.'));
       }
 
       // Update badges & anomaly banner

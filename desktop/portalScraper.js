@@ -108,7 +108,12 @@ export async function scrapeFlipkartRateCards(config = {}, {
         !(typeof preferredPage.isClosed === 'function' && preferredPage.isClosed());
       const rawPage = preferredIsOpen ? preferredPage : (pages[0] || await browser.newPage());
       attachPage(rawPage);
-      if (visible) await focusBrowserPage(rawPage, { delay });
+      if (visible) await focusBrowserPage(rawPage, {
+        delay,
+        onViewport: viewport => onProgress(
+          `Expanded visible Seller Hub browser to ${viewport.width}x${viewport.height} for the desktop sign-in controls.`
+        )
+      });
       safeGoto = async (targetUrl, options = {}) => {
         try {
           return await page.goto(targetUrl, { waitUntil: 'load', timeout: 35000, ...options });

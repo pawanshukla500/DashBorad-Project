@@ -42,7 +42,7 @@ import {
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
-import { resolveScrapeVerticals } from './fsnPlan.js';
+import { missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
 import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createWorkerEngine } from './workerEngine.js';
@@ -390,10 +390,27 @@ const serverWorker = createWorkerEngine({
     try {
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, parameters: job.parameters });
       const fsnCatalog = (await fetchBrandCatalogFromApi(session)).catalog;
+      const configuredVerticals = job.parameters?.verticals?.length
+        ? []
+        : await fetchConfiguredVerticals(session, job.marketplace);
+      const verticalSelection = resolveFsnBackedScrapeVerticals({
+        requestedVerticals: job.parameters?.verticals,
+        configuredVerticals,
+        catalog: fsnCatalog,
+        marketplace: job.marketplace,
+        brand: job.parameters?.brand || 'all'
+      });
+      if (!verticalSelection.complete) {
+        throw new Error(`Worker job is incomplete: configured categories have no database FSNs: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}. Nothing was submitted.`);
+      }
+      saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace,
+        parameters: { ...job.parameters, coverage: verticalSelection } });
       const profileDir = getMarketplaceBrowserProfilePath(job.marketplace);
       const result = await withBrowserTask(async () => {
         await standaloneBrowserRecovery.closeProfile(profileDir);
-        return scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog, scopeVerticals: job.parameters?.verticals, brand: job.parameters?.brand, requiredVerticals: job.parameters?.verticals?.length ? job.parameters.verticals : await fetchConfiguredVerticals(session, job.marketplace), visible: canOpenVisibleBrowser(), browserProfileDir: profileDir }, {
+        return scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog,
+          scopeVerticals: verticalSelection.scopeVerticals, brand: job.parameters?.brand,
+          requiredVerticals: verticalSelection.requiredVerticals, visible: canOpenVisibleBrowser(), browserProfileDir: profileDir }, {
         onProgress: broadcastProgress,
         browserProfileDir: profileDir,
         browserRecoveryRegistry: standaloneBrowserRecovery,
@@ -704,7 +721,10 @@ const server = http.createServer(async (req, res) => {
       try {
         if (!stagedExtraction.cards.length) {
           const review = recoverReview(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
-          if (review) stagedExtraction.cards = review.cards;
+          if (review) {
+            stagedExtraction.cards = review.cards;
+            stagedExtraction.coverage = review.coverage || null;
+          }
         }
         const sellerAccount = String(urlObj.searchParams.get('seller_account') || 'default').trim() || 'default';
         if (!/^[a-z0-9][a-z0-9_-]{0,49}$/i.test(sellerAccount) || sellerAccount === 'all') {
@@ -725,7 +745,10 @@ const server = http.createServer(async (req, res) => {
           return sendJson(400, { success: false, error: 'Choose Flipkart or Shopsy for a separate rate review.' });
         }
         const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
-        return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards, canSync: stagedExtraction.cards.length > 0 });
+        const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
+        return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards,
+          canSync: stagedExtraction.cards.length > 0 && missingCategories.length === 0,
+          coverage: stagedExtraction.coverage, missingFsnCategories: missingCategories });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
@@ -1274,6 +1297,11 @@ const server = http.createServer(async (req, res) => {
         if (new Set(cardsToSync.map(card => card.marketplace)).size !== 1) {
           return sendJson(400, { success: false, error: 'Review Flipkart and Shopsy separately.' });
         }
+        const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, cardsToSync[0].marketplace);
+        if (missingCategories.length) {
+          return sendJson(409, { success: false,
+            error: `Publication blocked: configured categories have no database FSNs and were not extracted: ${missingCategories.join(', ')}.` });
+        }
         const review = stagedExtraction.review;
         if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== (body.options?.seller_account || 'default')) {
           return sendJson(409, { success: false, error: 'Refresh the PostgreSQL comparison and review it before publication.' });
@@ -1324,12 +1352,15 @@ const server = http.createServer(async (req, res) => {
       const targetBrands = body.brands || config.selectedBrands;
       const selectedBrand = body.brand || 'all';
       const requestedVerticals = Array.isArray(body.verticals) ? body.verticals : [];
+      const fsnCatalog = (await fetchBrandCatalogFromApi(loadAuthSession())).catalog;
       const configuredVerticals = requestedVerticals.length
         ? []
         : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel);
-      const verticalSelection = resolveScrapeVerticals({
+      const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals,
         configuredVerticals,
+        catalog: fsnCatalog,
+        marketplace: normalizedChannel,
         brand: selectedBrand
       });
       const targetVerticals = verticalSelection.scopeVerticals;
@@ -1344,6 +1375,7 @@ const server = http.createServer(async (req, res) => {
       // A new run supersedes the previous staging; a failed run must not leave
       // old cards syncable. Wipe only once the request has been fully accepted.
       stagedExtraction.cards = [];
+      stagedExtraction.coverage = null;
       stagedExtraction.review = null;
       supersedeReviews(getStagingDb(USER_DATA_DIR), loadAuthSession().user.firebase_uid);
       const jobAuthGeneration = stagedExtraction.authGeneration;
@@ -1363,6 +1395,9 @@ const server = http.createServer(async (req, res) => {
       (async () => {
         try {
           broadcastProgress(`🚀 Scraper job initiated (${targetMp.toUpperCase()} | Mode: ${isVisible ? 'Visible Chrome' : 'Stealth'})...`);
+          if (verticalSelection.unavailableConfiguredVerticals.length) {
+            broadcastProgress(`⚠️ Configured categories without database FSNs were skipped and will block publication: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}.`);
+          }
           const profileDir = getMarketplaceBrowserProfilePath(normalizedChannel);
           const result = await withBrowserTask(async () => {
             await standaloneBrowserRecovery.closeProfile(profileDir);
@@ -1370,7 +1405,7 @@ const server = http.createServer(async (req, res) => {
             {
               marketplace: normalizedChannel,
               visible: isVisible,
-              fsnCatalog: (await fetchBrandCatalogFromApi(loadAuthSession())).catalog,
+              fsnCatalog,
               scopeVerticals: targetVerticals,
               brand: selectedBrand,
               requiredVerticals,
@@ -1413,14 +1448,17 @@ const server = http.createServer(async (req, res) => {
           );
           });
 
+          result.coverage = verticalSelection;
           if (result.success && jobAuthGeneration !== stagedExtraction.authGeneration) {
             result.success = false;
             result.error = 'The account changed while the extraction was running. Results were discarded; run the extraction again.';
           } else if (result.success) {
             try {
               const cards = normalizeScrapedCards(result.data);
-              stageReview(getStagingDb(USER_DATA_DIR), `review-${Date.now()}`, loadAuthSession().user.firebase_uid, cards[0].marketplace, cards);
+              stageReview(getStagingDb(USER_DATA_DIR), `review-${Date.now()}`, loadAuthSession().user.firebase_uid, cards[0].marketplace, cards,
+                { coverage: verticalSelection });
               stagedExtraction.cards = cards;
+              stagedExtraction.coverage = verticalSelection;
               stagedExtraction.review = null;
               result.rateCards = stagedExtraction.cards;
             } catch (stageErr) {
@@ -1532,7 +1570,11 @@ const server = http.createServer(async (req, res) => {
               }
             }
 
-            await focusBrowserPage(page);
+            await focusBrowserPage(page, {
+              onViewport: viewport => broadcastProgress(
+                `Expanded visible ${mpConfig.name} Chrome viewport to ${viewport.width}x${viewport.height} for desktop navigation.`
+              )
+            });
             await page.goto(portalUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
             broadcastProgress(`✓ External Chrome opened at ${portalUrl}. Sign in manually. Its persistent profile will be reused by the worker.`);
@@ -1552,7 +1594,11 @@ const server = http.createServer(async (req, res) => {
                   broadcastProgress(`Seller Hub login state: ${state.stage}.`);
                 }
               });
-              if (authPage !== page) await focusBrowserPage(authPage);
+              if (authPage !== page) await focusBrowserPage(authPage, {
+                onViewport: viewport => broadcastProgress(
+                  `Expanded visible ${mpConfig.name} Chrome viewport to ${viewport.width}x${viewport.height} for dashboard navigation.`
+                )
+              });
             } else await page.waitForFunction((id) => {
               const href = window.location.href.toLowerCase();
               const body = document.body ? document.body.innerText.toLowerCase() : '';

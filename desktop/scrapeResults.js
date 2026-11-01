@@ -11,9 +11,10 @@ const sameSlabs = (a, b) => Array.isArray(a) && Array.isArray(b)
  * consistent between the Electron and standalone-server flows.
  */
 export function createStagedExtractionState() {
-  const state = { cards: [], authGeneration: 0 };
+  const state = { cards: [], coverage: null, authGeneration: 0 };
   state.resetForAuthChange = () => {
     state.cards = [];
+    state.coverage = null;
     state.review = null;
     state.authGeneration += 1;
   };

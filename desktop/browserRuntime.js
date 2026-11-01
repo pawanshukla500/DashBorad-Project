@@ -29,8 +29,58 @@ export function canOpenVisibleBrowser() {
   return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 }
 
-export async function focusBrowserPage(page, { delay = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+export function resolveVisibleBrowserViewport({
+  currentWidth = 0,
+  currentHeight = 0,
+  availableWidth = 0,
+  availableHeight = 0
+} = {}) {
+  if (currentWidth >= 1280 && currentHeight >= 760) return null;
+
+  const screenWidth = Number(availableWidth) || 1472;
+  const screenHeight = Number(availableHeight) || 980;
+  return {
+    // Puppeteer can keep its default 800x600 CSS viewport even when the Chrome
+    // window itself is maximized. Seller Hub hides the existing-seller Login
+    // control at that breakpoint, so use the largest desktop viewport that
+    // leaves room for the browser chrome while keeping smaller displays usable.
+    width: Math.max(1280, Math.min(1440, Math.floor(screenWidth - 32))),
+    height: Math.max(760, Math.min(900, Math.floor(screenHeight - 80)))
+  };
+}
+
+export async function ensureVisibleBrowserViewport(page, { delay = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  if (!page || typeof page.evaluate !== 'function' || typeof page.setViewport !== 'function') return false;
+  let metrics;
+  try {
+    metrics = await page.evaluate(() => ({
+      currentWidth: window.innerWidth,
+      currentHeight: window.innerHeight,
+      availableWidth: window.screen?.availWidth,
+      availableHeight: window.screen?.availHeight
+    }));
+  } catch {
+    return false;
+  }
+
+  const viewport = resolveVisibleBrowserViewport(metrics || {});
+  if (!viewport) return false;
+  // Keep the same minimum spacing used by the Seller Hub navigation and
+  // readiness checks when changing the page's visible layout.
+  await delay(1000);
+  await page.setViewport(viewport);
+  return viewport;
+}
+
+export async function focusBrowserPage(page, {
+  delay = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  onViewport = () => {}
+} = {}) {
   if (!page || typeof page.bringToFront !== 'function') return false;
+  const viewport = await ensureVisibleBrowserViewport(page, { delay });
+  if (viewport) {
+    try { await onViewport(viewport); } catch {}
+  }
   await delay(1000);
   await page.bringToFront();
   // Leave a full interaction interval before the caller navigates or polls.
