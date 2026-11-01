@@ -389,6 +389,7 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
   assert.ok(start>=0 && loop>start && catalog>loop,'catalog lookup is inside the extraction retry loop');
   const server=fs.readFileSync(new URL('../desktopServer.mjs',import.meta.url),'utf8');
   assert.match(server,/scopeVerticals:\s*targetVerticals/,'the standalone scrape route passes its selected verticals to the scraper');
+  assert.match(server,/fetchConfiguredVerticals\(loadAuthSession\(\),\s*normalizedChannel\)/,'the standalone route uses its normalized marketplace for category discovery');
   const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
   assert.match(renderer,/for\s*\(const fee of pickPackFees\)/,'unchanged observed FBF pick-and-pack fees are visible in review');
 });

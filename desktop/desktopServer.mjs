@@ -1326,7 +1326,7 @@ const server = http.createServer(async (req, res) => {
       const requestedVerticals = Array.isArray(body.verticals) ? body.verticals : [];
       const configuredVerticals = requestedVerticals.length
         ? []
-        : await fetchConfiguredVerticals(loadAuthSession(), targetMp);
+        : await fetchConfiguredVerticals(loadAuthSession(), normalizedChannel);
       const verticalSelection = resolveScrapeVerticals({
         requestedVerticals,
         configuredVerticals,
