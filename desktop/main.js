@@ -2154,10 +2154,14 @@ registerHandler('detect-brand-rate-changes', async (e, submitted, options = {}) 
   catch (err) { return { success: false, error: err.message }; }
   try {
     const result = await reviewRatesViaApi(loadAuthSession(), cards, sellerAccount);
-    stagedExtraction.review = { payload: JSON.stringify(cards), sellerAccount, fingerprints: result.fingerprints };
+    stagedExtraction.review = {
+      payload: JSON.stringify(cards), sellerAccount,
+      fingerprints: result.fingerprints, publishable: result.publishable
+    };
     desktopLogger.info('rate-review.compared', 'PostgreSQL comparison completed.', {
       marketplace: cards[0].marketplace, cardCount: cards.length,
-      changeCount: result.changesCount, anomalyCount: result.anomaliesCount
+      changeCount: result.changesCount, anomalyCount: result.anomaliesCount,
+      publishable: result.publishable
     });
     return { success: true, ...result };
   } catch (err) {
@@ -2180,6 +2184,9 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   if (!cards || new Set(cards.map(card => card.marketplace)).size !== 1 ||
       !review || review.payload !== JSON.stringify(cards) || review.sellerAccount !== sellerAccount) {
     return { success: false, error: 'Review the selected staged cards against PostgreSQL before committing.' };
+  }
+  if (!review.publishable || !review.fingerprints?.[cards[0].marketplace]) {
+    return { success: false, error: 'Publication is disabled because the backend did not return a review fingerprint. Refresh after the backend review update.' };
   }
   if (!coverageKnown) {
     return { success: false, error: 'Publication blocked: extraction coverage is unknown. Run a fresh extraction with the current app.' };

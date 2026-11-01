@@ -2009,6 +2009,66 @@ async function runTests() {
     }
   });
 
+  await runTest('backend diffs remain reviewable without a fingerprint while publication stays blocked', async () => {
+    const { reviewRatesViaApi, publishReviewedRatesViaApi, clearCachedActiveServer } = await import('../workerClient.js');
+    const savedFetch = globalThis.fetch;
+    const savedNodeEnv = process.env.NODE_ENV;
+    const savedApiUrl = process.env.API_SERVER_URL;
+    const comparisons = [];
+    process.env.NODE_ENV = 'test';
+    process.env.API_SERVER_URL = 'http://127.0.0.1:43119';
+    clearCachedActiveServer();
+    globalThis.fetch = async (url, options = {}) => {
+      const target = new URL(url);
+      if (target.pathname === '/api/health') {
+        return new Response(JSON.stringify({ dataSource: 'sql' }), { status: 200 });
+      }
+      if (target.pathname === '/api/rate-card/detect-changes') {
+        const request = JSON.parse(options.body);
+        comparisons.push(request.marketplace);
+        return new Response(JSON.stringify({
+          hasChanges: true,
+          diffCount: 1,
+          diffs: [{ table: 'rc_commission', category: request.marketplace, changeType: 'MODIFIED', details: 'Fixture rate change' }],
+          summary: { added: 0, modified: 1, removed: 0, unchanged: 0, totalChecked: 1 }
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected test request: ${target.pathname}`);
+    };
+    try {
+      const cards = [
+        { marketplace: 'flipkart', category: 'kurta', seller_account: 'default' },
+        { marketplace: 'shopsy', category: 'shopsy_kurta', seller_account: 'default' }
+      ];
+      const review = await reviewRatesViaApi({ idToken: 'test-token', user: { role: 'admin' } }, cards, 'default');
+      assert.strictEqual(review.changesCount, 2, 'both marketplace diffs must be returned for review');
+      assert.strictEqual(review.publishable, false, 'missing backend fingerprints must disable publication');
+      assert.deepStrictEqual(review.missingFingerprintMarketplaces, ['flipkart', 'shopsy']);
+      assert.deepStrictEqual(comparisons, ['flipkart', 'shopsy'], 'each marketplace must be compared separately');
+
+      let publishBlocked = false;
+      try {
+        await publishReviewedRatesViaApi({ idToken: 'test-token', user: { role: 'admin' } }, [cards[0]], review.fingerprints);
+      } catch (error) {
+        publishBlocked = /Review the current PostgreSQL comparison/.test(error.message);
+      }
+      assert(publishBlocked, 'publication must stay blocked without a review fingerprint');
+    } finally {
+      globalThis.fetch = savedFetch;
+      if (savedNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = savedNodeEnv;
+      if (savedApiUrl === undefined) delete process.env.API_SERVER_URL; else process.env.API_SERVER_URL = savedApiUrl;
+      clearCachedActiveServer();
+    }
+  });
+
+  await runTest('review UI shows diffs but disables publishing when a backend fingerprint is missing', async () => {
+    const renderer = fs.readFileSync(path.join(desktopDir, 'ui/renderer.js'), 'utf8');
+    const main = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');
+    assert(renderer.includes('diffRes.publishable !== false'), 'renderer must gate the commit button on review publishability');
+    assert(renderer.includes('PostgreSQL diffs are visible'), 'renderer must explain missing-fingerprint review state');
+    assert(main.includes('if (!review.publishable || !review.fingerprints?.[cards[0].marketplace])'), 'main process must enforce the fingerprint gate');
+  });
+
   console.log('\n=================================================================');
   console.log(` Results: ${passed} passed, ${failed} failed`);
   console.log('=================================================================');

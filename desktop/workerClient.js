@@ -304,22 +304,36 @@ export async function detectRateChangesViaApi(session, scrapedObservations, mark
 }
 
 export async function reviewRatesViaApi(session, cards, sellerAccount = 'default') {
+  if (!Array.isArray(cards) || cards.length === 0) throw new Error('No staged rate cards are available for PostgreSQL comparison.');
   const cardAccounts = [...new Set(cards.map(card => card.seller_account).filter(Boolean))];
   if (cardAccounts.length > 1 || (cardAccounts.length === 1 && cardAccounts[0] !== sellerAccount)) {
     throw new Error('Review one seller account at a time, matching the account on the rate cards.');
   }
-  const changes = [], fingerprints = {};
+  const changes = [], fingerprints = {}, missingFingerprintMarketplaces = [];
   const types = { rc_commission: 'commission', rc_fixed_fee: 'fixed_fee', rc_collection_fee: 'collection_fee', rc_reverse_shipping: 'reverse_shipping', rc_pick_pack: 'pick_pack' };
-  for (const marketplace of [...new Set(cards.map(c => c.marketplace))]) {
+  const marketplaces = [...new Set(cards.map(c => c.marketplace))];
+  for (const marketplace of marketplaces) {
     const result = await detectRateChangesViaApi(session, cards.filter(c => c.marketplace === marketplace), marketplace, sellerAccount);
-    if (!result.fingerprint) throw new Error('Backend review contract is unavailable; publication is disabled.');
-    fingerprints[marketplace] = result.fingerprint;
-    for (const diff of result.diffs) changes.push({ ...diff, marketplace, brand: diff.brand_name || 'General', type: types[diff.table], reason: diff.details,
-      fulfilmentType: diff.fulfilment_type, weightSlab: (diff.newRow || diff.oldRow)?.weight_slab,
-      priceMin: (diff.newRow || diff.oldRow)?.price_min, priceMax: (diff.newRow || diff.oldRow)?.price_max,
-      weightMin: (diff.newRow || diff.oldRow)?.weight_min, weightMax: (diff.newRow || diff.oldRow)?.weight_max });
+    if (typeof result.fingerprint === 'string' && /^[a-f\d]{64}$/i.test(result.fingerprint)) fingerprints[marketplace] = result.fingerprint;
+    else missingFingerprintMarketplaces.push(marketplace);
+    if (!Array.isArray(result.diffs)) throw new Error('Backend comparison response is invalid; no rates were published.');
+    for (const diff of result.diffs) {
+      if (!diff || typeof diff !== 'object' || Array.isArray(diff) || !Object.prototype.hasOwnProperty.call(types, diff.table)) {
+        throw new Error('Backend comparison response contains an unsupported rate table; no rates were published.');
+      }
+      changes.push({ ...diff, marketplace, brand: diff.brand_name || 'General', type: types[diff.table], reason: diff.details,
+        fulfilmentType: diff.fulfilment_type, weightSlab: (diff.newRow || diff.oldRow)?.weight_slab,
+        priceMin: (diff.newRow || diff.oldRow)?.price_min, priceMax: (diff.newRow || diff.oldRow)?.price_max,
+        weightMin: (diff.newRow || diff.oldRow)?.weight_min, weightMax: (diff.newRow || diff.oldRow)?.weight_max });
+    }
   }
-  return { changes, fingerprints, changesCount: changes.length, anomaliesCount: changes.filter(c => c.anomaly).length };
+  return {
+    changes, fingerprints,
+    changesCount: changes.length,
+    anomaliesCount: changes.filter(c => c.anomaly).length,
+    publishable: marketplaces.length > 0 && missingFingerprintMarketplaces.length === 0,
+    missingFingerprintMarketplaces
+  };
 }
 
 export async function publishReviewedRatesViaApi(session, cards, fingerprints, sellerAccount = 'default', isCurrent = () => true) {
