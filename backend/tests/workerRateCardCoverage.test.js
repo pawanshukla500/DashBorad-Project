@@ -146,4 +146,19 @@ describe('worker rate-card category coverage boundary', () => {
     expect(await response.json()).toMatchObject({ code: 'RATE_CARD_COVERAGE_INCOMPLETE' });
     expect(mockState.publish).not.toHaveBeenCalled();
   });
+
+  it('returns a coverage conflict when no configured category has an account FSN', async () => {
+    mockState.job = job({ status: 'completed' });
+    mockState.configRows = {
+      rc_commission: [{ category: 'kurta' }],
+      rc_fixed_fee: [], rc_collection_fee: [], rc_pick_pack: [],
+      rc_reverse_shipping: [], rc_franchise_fee: [],
+    };
+    mockState.fsnRows = [];
+
+    const response = await post(await listen(), 'rate-job-1/publish', { effectiveDate: '2026-10-30' });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: 'RATE_CARD_NO_FSN_BACKED_CATEGORIES' });
+    expect(mockState.publish).not.toHaveBeenCalled();
+  });
 });
