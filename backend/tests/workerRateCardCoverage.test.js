@@ -109,6 +109,29 @@ describe('worker rate-card category coverage boundary', () => {
     expect(mockState.compare).not.toHaveBeenCalled();
   });
 
+  it('persists the resolved UTC date on every result before review and publish', async () => {
+    mockState.job = job();
+    mockState.configRows = {
+      rc_commission: [{ category: 'kurta' }],
+      rc_fixed_fee: [], rc_collection_fee: [], rc_pick_pack: [],
+      rc_reverse_shipping: [], rc_franchise_fee: [],
+    };
+    mockState.fsnRows = [{ category: 'kurta', fsn: 'ABCDEFGHIJKLMNOP' }];
+    const withoutEffectiveDate = observations.map(row => {
+      const { effectiveDate: _effectiveDate, ...rest } = row;
+      return { ...rest, source_effective_date: '2026-10-30' };
+    });
+
+    const response = await post(await listen(), 'rate-job-1/results', { results: withoutEffectiveDate });
+    expect(response.status).toBe(200);
+    const completion = mockState.query.mock.calls.find(([sql]) => String(sql).includes("status = 'completed'"));
+    const saved = JSON.parse(completion[1][0]);
+    expect(saved.every(row => row.effectiveDate === '2026-10-30')).toBe(true);
+    expect(saved.every(row => row.source_effective_date === '2026-10-30')).toBe(true);
+    expect(mockState.compare.mock.calls[0][0].every(row => row.effectiveDate === '2026-10-30')).toBe(true);
+    expect(mockState.compare.mock.calls[0][1].effectiveDate).toBe('2026-10-30');
+  });
+
   it('rechecks actual configured coverage before publish and ignores a narrowed job parameter', async () => {
     mockState.job = job({ status: 'completed' });
     const response = await post(await listen(), 'rate-job-1/publish', { effectiveDate: '2026-10-30' });

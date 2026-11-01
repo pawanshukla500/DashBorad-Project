@@ -411,6 +411,11 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
       return res.status(400).json({ error: err.message, code: err.code || 'INVALID_EFFECTIVE_DATE' });
     }
 
+    // Store the resolved date with every observation. Review and publish read
+    // the saved payload later, so they must not infer a different date from
+    // job timestamps after midnight or when only source_effective_date arrived.
+    const normalizedResults = results.map(row => ({ ...row, effectiveDate: scrapeEffectiveDate }));
+
     let coverage;
     let expectedVerticals;
     try {
@@ -418,8 +423,8 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
       // configuration and FSN catalog. Job parameters are client supplied and
       // must never be allowed to narrow the completeness requirement.
       coverage = await loadRateCardCoverage(pool, { marketplace: job.marketplace, sellerAccount: job.seller_account, effectiveDate: scrapeEffectiveDate });
-      expectedVerticals = assertRateObservationCoverage(results, coverage);
-      validateRateObservations(results, { marketplace: job.marketplace, complete: true,
+      expectedVerticals = assertRateObservationCoverage(normalizedResults, coverage);
+      validateRateObservations(normalizedResults, { marketplace: job.marketplace, complete: true,
         expectedVerticals });
     } catch (err) {
       console.warn('[Worker API] Rate-card extraction rejected', JSON.stringify({
@@ -432,7 +437,7 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
     }
 
     // Run canonical diff engine against active PostgreSQL rate cards
-    const diffResult = await compareScrapedRatesWithActive(results, {
+    const diffResult = await compareScrapedRatesWithActive(normalizedResults, {
       marketplace: job.marketplace,
       sellerAccount: job.seller_account,
       effectiveDate: scrapeEffectiveDate
@@ -460,7 +465,7 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
         AND status IN ('queued', 'claimed', 'running')
         AND (lease_worker_id IS NULL OR lease_worker_id = $4)
       RETURNING *
-    `, [JSON.stringify(results), JSON.stringify(diffResult), id, worker_id]);
+    `, [JSON.stringify(normalizedResults), JSON.stringify(diffResult), id, worker_id]);
 
     if (updateRes.rows.length === 0) {
       return res.status(409).json({ error: 'Job lease was reclaimed, cancelled, or expired before results could be saved', code: 'LEASE_LOST' });
