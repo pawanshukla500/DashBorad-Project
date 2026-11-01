@@ -506,6 +506,13 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
     'explicit category runs still discover all configured categories for completeness checks');
   assert.match(server,/const configuredVerticals = await fetchConfiguredVerticals\(loadAuthSession\(\), normalizedChannel, \[\], sellerAccount\)/,
     'the standalone route discovers configured categories even for explicit requests');
+  const workerStart=server.indexOf('const serverWorker = createWorkerEngine');
+  const workerEnd=server.indexOf('const sseClients = new Set()',workerStart);
+  const worker=server.slice(workerStart,workerEnd);
+  assert.match(worker,/const configuredVerticals = await fetchConfiguredVerticals\(session, job\.marketplace, \[\], sellerAccount\)/,
+    'standalone claimed jobs discover configured categories even when verticals are explicit');
+  assert.match(worker,/scrapeFlipkartRateCards\(\{ marketplace: job\.marketplace, seller_account: sellerAccount,/,
+    'standalone claimed jobs preserve the selected seller account in extracted observations');
   assert.match(main,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0/,
     'the desktop review blocks empty, incomplete, or legacy unknown-coverage previews');
   assert.match(server,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0/,

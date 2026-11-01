@@ -391,9 +391,7 @@ const serverWorker = createWorkerEngine({
     try {
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, seller_account: sellerAccount, parameters: job.parameters });
       const fsnCatalog = (await fetchBrandCatalogFromApi(session, { marketplace: job.marketplace, sellerAccount })).catalog;
-      const configuredVerticals = job.parameters?.verticals?.length
-        ? []
-        : await fetchConfiguredVerticals(session, job.marketplace, [], sellerAccount);
+      const configuredVerticals = await fetchConfiguredVerticals(session, job.marketplace, [], sellerAccount);
       const verticalSelection = resolveFsnBackedScrapeVerticals({
         requestedVerticals: job.parameters?.verticals,
         configuredVerticals,
@@ -409,7 +407,7 @@ const serverWorker = createWorkerEngine({
       const profileDir = getMarketplaceBrowserProfilePath(job.marketplace);
       const result = await withBrowserTask(async () => {
         await standaloneBrowserRecovery.closeProfile(profileDir);
-        return scrapeFlipkartRateCards({ marketplace: job.marketplace, fsnCatalog,
+        return scrapeFlipkartRateCards({ marketplace: job.marketplace, seller_account: sellerAccount, fsnCatalog,
           scopeVerticals: verticalSelection.scopeVerticals, brand: job.parameters?.brand,
           requiredVerticals: verticalSelection.requiredVerticals, visible: canOpenVisibleBrowser(), browserProfileDir: profileDir }, {
         onProgress: broadcastProgress,
