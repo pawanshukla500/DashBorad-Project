@@ -122,7 +122,7 @@ export async function fetchConfiguredVerticals(session, marketplace = 'both', se
   const configTypes = ['commission', 'fixed_fee', 'collection_fee', 'pick_pack', 'reverse_shipping', 'franchise_fee'];
   const lists = await Promise.all(channels.map(async channel => {
     const tables = await Promise.all(configTypes.map(async type => {
-      const query = new URLSearchParams({ marketplace: channel, seller_account: normalizedSellerAccount });
+      const query = new URLSearchParams({ marketplace: channel, seller_account: normalizedSellerAccount, active_only: 'true' });
       const res = await safeFetch(`${baseUrl}/api/rate-card/config/${type}?${query}`, {
         headers: getHeaders(session?.idToken, baseUrl)
       });

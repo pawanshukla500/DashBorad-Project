@@ -8,7 +8,7 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
-import { normalizeCategory, clearRateCardCache } from '../services/rateCard.js';
+import { normalizeCategory, normalizeMarketplaceCategory, clearRateCardCache } from '../services/rateCard.js';
 import { getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
 import { detectRateChanges, syncRateCardsToDatabase } from '../services/rateCardSyncEngine.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
@@ -285,7 +285,7 @@ router.get('/config/categories', async (req, res) => {
     );
     const cats = new Set();
     for (const { rows } of results) {
-      for (const r of rows) cats.add(normalizeCategory(r.category));
+      for (const r of rows) cats.add(normalizeMarketplaceCategory(r.category, marketplace));
     }
 
     // Also pull categories from orders for this marketplace & account
@@ -298,7 +298,7 @@ router.get('/config/categories', async (req, res) => {
         `SELECT DISTINCT COALESCE(vb_export_category, category) AS category FROM orders WHERE ${orderCond} AND COALESCE(vb_export_category, category) IS NOT NULL AND COALESCE(vb_export_category, category) != ''`,
         orderParams,
       );
-      for (const r of orderCats) cats.add(normalizeCategory(r.category));
+      for (const r of orderCats) cats.add(normalizeMarketplaceCategory(r.category, marketplace));
     } catch { /* ignore */ }
 
     const categories = [...cats].sort();
@@ -375,18 +375,23 @@ router.get('/config/:type', async (req, res) => {
     const table = resolveTable(req.params.type);
     const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.query.marketplace, req.query.seller_account);
     const pool = getPool();
+    const activeOnly = req.query.active_only === 'true';
+    const activePeriodFilter = activeOnly
+      ? `AND (start_date IS NULL OR start_date <= CURRENT_DATE)
+         AND (end_date IS NULL OR end_date >= CURRENT_DATE)`
+      : '';
     const { rows } = await pool.query(
       `SELECT id, category, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date, TO_CHAR(end_date,'YYYY-MM-DD') AS end_date,
               marketplace, seller_account, ${TABLE_EXTRA_COLUMNS[req.params.type].join(', ')}
        FROM ${table}
-       WHERE marketplace = $1 AND seller_account = $2
+       WHERE marketplace = $1 AND seller_account = $2 ${activePeriodFilter}
        ORDER BY category, ${TABLE_EXTRA_COLUMNS[req.params.type].includes('brand_name') ? "NULLIF(brand_name,'') NULLS LAST, " : ""} price_min ${TABLE_EXTRA_COLUMNS[req.params.type].includes('weight_slab') ? ", weight_slab" : ""}`,
       [marketplace, sellerAccount],
     );
     // Legacy rows can contain display aliases (for example "salwar suit").
     // The desktop worker matches configured categories to the FSN catalog, so
     // return the same canonical category key used by rate-card calculations.
-    res.json({ rows: rows.map(row => ({ ...row, category: normalizeCategory(row.category) })) });
+    res.json({ rows: rows.map(row => ({ ...row, category: normalizeMarketplaceCategory(row.category, marketplace) })) });
   } catch (e) {
     console.error('[rate-card/config]', e);
     res.status(e.status || 500).json({ error: e.message });
@@ -1715,7 +1720,7 @@ router.get('/brand-fsn-catalog', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Choose one valid seller account for the FSN catalog.' });
     }
     const catalog = await getRealTimeBrandFsnSamples(pool, { marketplace, sellerAccount });
-    const canonicalCatalog = catalog.map(row => ({ ...row, category: normalizeCategory(row.category) }));
+    const canonicalCatalog = catalog.map(row => ({ ...row, category: normalizeMarketplaceCategory(row.category, row.marketplace) }));
     res.json({
       success: true,
       count: canonicalCatalog.length,

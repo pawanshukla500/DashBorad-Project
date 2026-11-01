@@ -755,11 +755,17 @@ async function loadRateCardPreview() {
       // Keep the local extraction visible when the PostgreSQL comparison is
       // unavailable, but never leave publication enabled without that review.
       currentCanSync = Boolean(res.canSync) && currentComparisonAvailable;
+      const missingFsnCategories = Array.isArray(res.missingFsnCategories) ? res.missingFsnCategories : [];
+      const uncoveredCategories = Array.isArray(res.uncoveredCategories) ? res.uncoveredCategories : [];
+      const omittedCategories = uncoveredCategories.filter(category => !missingFsnCategories.includes(category));
       if (!currentComparisonAvailable) {
         appendTerminalLine(`⚠️ Local extraction is available, but PostgreSQL comparison failed: ${diffRes.comparisonError || 'the backend comparison is unavailable'}. Publication is disabled.`);
       }
-      if (res.missingFsnCategories?.length) {
-        appendTerminalLine(`⚠️ ${selectedChannel} review is local-only: configured categories have no database FSNs (${res.missingFsnCategories.join(', ')}). Add real catalog FSNs and rerun before publishing.`);
+      if (missingFsnCategories.length) {
+        appendTerminalLine(`⚠️ ${selectedChannel} review is local-only: configured categories have no database FSNs (${missingFsnCategories.join(', ')}). Add real catalog FSNs and rerun before publishing.`);
+      }
+      if (omittedCategories.length) {
+        appendTerminalLine(`⚠️ ${selectedChannel} extraction omitted configured categories (${omittedCategories.join(', ')}). Run all configured categories before publishing.`);
       }
       if (res.coverageKnown === false) {
         appendTerminalLine(`⚠️ ${selectedChannel} extraction coverage is unknown. Run a fresh extraction with the current app before publishing.`);
@@ -768,11 +774,13 @@ async function loadRateCardPreview() {
         commitBtn.disabled = !currentCanSync;
         commitBtn.title = !currentCanSync && !currentComparisonAvailable
           ? `PostgreSQL comparison unavailable: ${diffRes.comparisonError || 'check the backend connection or version'}. Publication is disabled.`
-          : (res.missingFsnCategories?.length
-            ? `Publication blocked until these configured categories have real database FSNs: ${res.missingFsnCategories.join(', ')}`
+          : (missingFsnCategories.length
+            ? `Publication blocked until these configured categories have real database FSNs: ${missingFsnCategories.join(', ')}`
+            : (omittedCategories.length
+              ? `Publication blocked because this extraction omitted configured categories: ${omittedCategories.join(', ')}`
             : (res.coverageKnown === false
               ? 'Publication blocked because extraction coverage is unknown. Run a fresh extraction with the current app.'
-              : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.')));
+              : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.'))));
       }
 
       // Update badges & anomaly banner

@@ -46,7 +46,23 @@ const CAT_MAP = {
 export function normalizeCategory(cat) {
   if (!cat) return '';
   const c = (cat + '').toLowerCase().trim();
+  // Shopsy stores its categories in a separate namespace. Normalize the
+  // suffix as well, so legacy values such as `shopsy_saree` match the
+  // canonical `shopsy_sari` key used by FSN discovery and fee calculation.
+  const shopsyPrefix = c.match(/^shopsy[_\s-]+(.+)$/);
+  if (shopsyPrefix) {
+    const suffix = normalizeCategory(shopsyPrefix[1]);
+    return suffix ? `shopsy_${suffix}` : '';
+  }
   return CAT_MAP[c] || c.replace(/[\s-]+/g, '_');
+}
+
+export function normalizeMarketplaceCategory(category, marketplace) {
+  const normalized = normalizeCategory(category);
+  if (!normalized) return '';
+  return String(marketplace || '').trim().toLowerCase() === 'shopsy' && !normalized.startsWith('shopsy_')
+    ? `shopsy_${normalized}`
+    : normalized;
 }
 
 export const ALL_CATEGORIES = [

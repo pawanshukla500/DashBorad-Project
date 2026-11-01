@@ -82,6 +82,14 @@ describe('desktop category discovery API', () => {
     expect(read.params).toEqual(['flipkart', 'seller_ej']);
     expect(body.catalog[0].category).toBe('salwar_kurta_dupatta');
   });
+
+  it('filters active-only discovery to current rate periods', async () => {
+    const response = await fetch(`${baseUrl}/config/commission?marketplace=flipkart&seller_account=seller_ej&active_only=true`);
+    expect(response.status).toBe(200);
+    const read = statements.find(statement => statement.sql.startsWith('SELECT id, category, TO_CHAR'));
+    expect(read.sql).toContain('start_date <= CURRENT_DATE');
+    expect(read.sql).toContain('end_date >= CURRENT_DATE');
+  });
 });
 
 describe('save-period — auto-close the current active rate', () => {

@@ -132,6 +132,15 @@ describe('Brand-Wise & FSN-Driven Rate Card System', () => {
       expect(query).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
       expect(params).toEqual(['flipkart', 'seller_ej']);
     });
+
+    it('includes legacy Shopsy FSNs stored under Flipkart with a shopsy category prefix', async () => {
+      const mockPool = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+      await getRealTimeBrandFsnSamples(mockPool, { marketplace: 'shopsy', sellerAccount: 'seller_ej' });
+      const [query, params] = mockPool.query.mock.calls[0];
+      expect(query).toContain("marketplace = $1 OR (marketplace = 'flipkart'");
+      expect(query).toContain("LEFT(LOWER(TRIM(category)), 7) = 'shopsy_'");
+      expect(params).toEqual(['shopsy', 'seller_ej']);
+    });
   });
 
   describe('Change Detection & Idempotent Database Sync', () => {

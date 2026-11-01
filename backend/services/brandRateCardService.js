@@ -27,7 +27,14 @@ export async function getRealTimeBrandFsnSamples(pool = null, { marketplace = nu
   const params = [];
   if (marketplace) {
     params.push(marketplace);
-    filters.push(`marketplace = $${params.length}`);
+    const marketplaceParam = `$${params.length}`;
+    if (marketplace === 'shopsy') {
+      filters.push(`(marketplace = ${marketplaceParam} OR (marketplace = 'flipkart' AND LEFT(LOWER(TRIM(category)), 7) = 'shopsy_'))`);
+    } else if (marketplace === 'flipkart') {
+      filters.push(`(marketplace = ${marketplaceParam} AND LEFT(LOWER(TRIM(category)), 7) <> 'shopsy_')`);
+    } else {
+      filters.push(`marketplace = ${marketplaceParam}`);
+    }
   }
   if (sellerAccount) {
     params.push(sellerAccount);

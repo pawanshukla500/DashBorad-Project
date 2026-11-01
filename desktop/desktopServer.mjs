@@ -42,7 +42,7 @@ import {
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
-import { hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
+import { describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
 import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createWorkerEngine } from './workerEngine.js';
@@ -400,7 +400,7 @@ const serverWorker = createWorkerEngine({
         brand: job.parameters?.brand || 'all'
       });
       if (!verticalSelection.complete) {
-        throw new Error(`Worker job is incomplete: configured categories have no database FSNs: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}. Nothing was submitted.`);
+        throw new Error(`Worker job is incomplete: ${describeCoverageBlockers(verticalSelection, job.marketplace)}. Nothing was submitted.`);
       }
       saveStagedJob(db, { id, remote_job_id: job.id, marketplace: job.marketplace, seller_account: sellerAccount,
         parameters: { ...job.parameters, coverage: verticalSelection } });
@@ -746,10 +746,11 @@ const server = http.createServer(async (req, res) => {
         }
         const filteredRateCards = filterRateCardsByChannel(targetMp, rateCards);
         const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
+        const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
         const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, targetMp);
         return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards,
-          canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0,
-          coverage: stagedExtraction.coverage, coverageKnown, missingFsnCategories: missingCategories });
+          canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0 && uncoveredCategories.length === 0,
+          coverage: stagedExtraction.coverage, coverageKnown, missingFsnCategories: missingCategories, uncoveredCategories });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
       }
@@ -1311,6 +1312,11 @@ const server = http.createServer(async (req, res) => {
         if (missingCategories.length) {
           return sendJson(409, { success: false,
             error: `Publication blocked: configured categories have no database FSNs and were not extracted: ${missingCategories.join(', ')}.` });
+        }
+        const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, cardsToSync[0].marketplace);
+        if (uncoveredCategories.length) {
+          return sendJson(409, { success: false,
+            error: `Publication blocked: configured categories were not included in this extraction: ${uncoveredCategories.join(', ')}.` });
         }
         const review = stagedExtraction.review;
         if (!review || review.payload !== JSON.stringify(cardsToSync) || review.sellerAccount !== sellerAccount) {

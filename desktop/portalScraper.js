@@ -275,7 +275,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
           }
         }
         if (snapshot.missing.length) throw new Error('Missing rate responses for ' + fsn + ' / ' + mode + ': ' + snapshot.missing.join(', ') + '. Nothing was staged.');
-        data.push(parsePortalRateSnapshot(snapshot, { vertical, marketplace: queryMarketplace, fulfilment: mode, effectiveDate, brand, fsn, sku: target.sample_sku, orderCount: target.order_count,
+        data.push(parsePortalRateSnapshot(snapshot, { vertical, portalVertical: vertical, marketplace: queryMarketplace, fulfilment: mode, effectiveDate, brand, fsn, sku: target.sample_sku, orderCount: target.order_count,
           sellerAccount: config.seller_account || config.sellerAccount || 'default' }));
       }
     }
