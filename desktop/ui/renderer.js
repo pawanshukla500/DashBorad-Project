@@ -269,6 +269,9 @@ function setupNavigation() {
         syncMonitorDockBounds();
         refreshBrowserMonitorState();
       }
+      if (tabId === 'dashboard') {
+        loadSessionStatusUI();
+      }
 
       if (tabId === 'catalog' && currentCatalog.length === 0) {
         loadCatalogData();
@@ -418,6 +421,9 @@ function initBrowserMonitorListeners() {
   let pending = false;
   const syncLayout = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; syncMonitorDockBounds(); }); };
   window.addEventListener('resize', syncLayout);
+  // The manual Seller Hub window can finish sign-in while this window is
+  // unfocused. Refresh the vault when the user returns to the desktop app.
+  window.addEventListener('focus', () => { loadSessionStatusUI(); });
   document.addEventListener('scroll', syncLayout, true);
   const dock = document.getElementById('browser-view-dock');
   if (dock) new ResizeObserver(syncLayout).observe(dock);
@@ -540,9 +546,15 @@ async function loadSessionStatusUI() {
       const el = document.getElementById(elementId);
       const mp = marketplaces.find(m => m.id === channelId);
       if (!el || !mp) continue;
-      if (mp.hasCookies) {
+      if (mp.profileState === 'signed_out') {
+        el.innerText = 'Signed Out — Sign In';
+        el.style.color = '#f59e0b';
+      } else if (mp.hasCookies) {
         el.innerText = `Session Saved (${mp.cookieCount ?? '?'} cookies)`;
         el.style.color = '#10b981';
+      } else if (mp.profileState === 'authenticated') {
+        el.innerText = 'Saved Browser Profile — Recheck';
+        el.style.color = '#f59e0b';
       } else {
         el.innerText = channelId === 'flipkart_shopsy' ? 'No Seller Hub Session — Sign in' : 'No Session — 2FA Login';
         el.style.color = '#f59e0b';
@@ -554,11 +566,19 @@ async function loadSessionStatusUI() {
     const channel = selectEl?.value || 'flipkart_shopsy';
     const current = marketplaces.find(m => m.id === channel) || marketplaces.find(m => m.id === 'flipkart_shopsy');
     if (statusEl && subEl) {
-      if (current?.hasCookies) {
+      if (current?.profileState === 'signed_out') {
+        statusEl.innerText = 'Signed Out';
+        statusEl.style.color = '#f59e0b';
+        subEl.innerText = `Seller Hub confirmed sign-out for ${current.name || channel}; sign in again to continue`;
+      } else if (current?.hasCookies) {
         statusEl.innerText = 'Session Saved';
         statusEl.style.color = '#10b981';
         const savedAt = current.lastSavedAt ? new Date(current.lastSavedAt).toLocaleString() : '';
         subEl.innerText = `${current.cookieCount ?? 0} cookies for ${current.name || channel}${savedAt ? ' · saved ' + savedAt : ''}`;
+      } else if (current?.profileState === 'authenticated') {
+        statusEl.innerText = 'Saved Browser Profile';
+        statusEl.style.color = '#f59e0b';
+        subEl.innerText = `Last confirmed signed in for ${current.name || channel}; open Seller Hub to verify the session is still active`;
       } else {
         statusEl.innerText = 'No Session';
         statusEl.style.color = '#f59e0b';

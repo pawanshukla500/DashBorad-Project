@@ -416,7 +416,8 @@ async function runTests() {
     const authedMpData = await authedMpRes.json();
     const authedCatalogPhase2Gated = phase2Channels.every(ch => authedMpData.marketplaces?.find(m => m.id === ch)?.hasScraper === false);
     const authedFlipkartActive = authedMpData.marketplaces?.find(m => m.id === 'flipkart_shopsy')?.hasScraper === true;
-    const isMpListValid = authedMpRes.status === 200 && authedMpData.marketplaces?.length === 8 && authedCatalogPhase2Gated && authedFlipkartActive;
+    const hasSafeProfileState = authedMpData.marketplaces?.every(m => ['unknown', 'authenticated', 'signed_out', 'snapshot_available'].includes(m.profileState));
+    const isMpListValid = authedMpRes.status === 200 && authedMpData.marketplaces?.length === 8 && authedCatalogPhase2Gated && authedFlipkartActive && hasSafeProfileState;
     console.log(`  • Marketplaces catalog when authorized (8 channels, 7 gated Phase 2, 1 active): Passed = ${isMpListValid}`);
 
     resetDesktopTokenVerifier();

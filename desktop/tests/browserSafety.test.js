@@ -187,6 +187,61 @@ test('worker registers and polls immediately, coalesces duplicate starts and nev
   } finally {engine.stop();finish?.();}
 });
 
+test('idle worker records its first poll once without logging every empty polling interval', async () => {
+  const events = [];
+  const engine = createWorkerEngine({
+    getSession: async () => ({ idToken: 'fixture' }),
+    register: async () => {},
+    heartbeat: async () => {},
+    claim: async () => ({ success: true, job: null }),
+    execute: async () => {},
+    intervalMs: 5,
+    log: event => events.push(event)
+  });
+  try {
+    await engine.start();
+    await new Promise(resolve => setTimeout(resolve, 35));
+    assert.equal(events.filter(event => event.event === 'worker.first_poll').length, 1);
+    assert.equal(events[0].event, 'worker.first_poll');
+    assert.equal(events[0].jobAvailable, false);
+    assert.equal(events.some(event => event.event === 'worker_poll'), false);
+    engine.stop();
+    await engine.start();
+    assert.equal(events.filter(event => event.event === 'worker.first_poll').length, 2,
+      'each engine restart records its own first poll');
+  } finally {
+    engine.stop();
+  }
+});
+
+test('worker logs a repeated poll failure only once until the API recovers', async () => {
+  const events = [];
+  let shouldFail = true;
+  const engine = createWorkerEngine({
+    getSession: async () => ({ idToken: 'fixture' }),
+    register: async () => {},
+    heartbeat: async () => {},
+    claim: async () => {
+      if (shouldFail) throw new Error('backend unavailable');
+      return { success: true, job: null };
+    },
+    execute: async () => {},
+    intervalMs: 5,
+    log: event => events.push(event)
+  });
+  try {
+    await engine.start();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    shouldFail = false;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(events.filter(event => event.event === 'worker_poll_failed').length, 1);
+    assert.equal(events.filter(event => event.event === 'worker_poll_recovered').length, 1);
+    assert.equal(events.filter(event => event.event === 'worker.first_poll').length, 1);
+  } finally {
+    engine.stop();
+  }
+});
+
 test('stopping during a job claim prevents executing a late claim response', async () => {
   let finish,executed=false,released=null;
   const engine=createWorkerEngine({getSession:async()=>({idToken:'fixture'}),register:async()=>{},heartbeat:async()=>{},

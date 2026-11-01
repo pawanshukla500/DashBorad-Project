@@ -1858,6 +1858,7 @@ registerHandler('auth-login', async (e, { email, password, dbUrl }) => {
 registerHandler('get-marketplaces', () => {
   const list = SUPPORTED_MARKETPLACES.map(m => {
     const cookiesPath = getMarketplaceCookiesPath(m.id);
+    const profileDir = getMarketplaceBrowserProfilePath(m.id);
     let cookieCount = 0;
     let lastSavedAt = null;
     try {
@@ -1870,6 +1871,9 @@ registerHandler('get-marketplaces', () => {
       hasCookies: cookieCount > 0,
       cookieCount,
       lastSavedAt,
+      // This marker records the last app-confirmed state; the current portal
+      // session is only authoritative after Chromium is opened and inspected.
+      profileState: readSellerHubProfileState(profileDir),
       cookiesPath
     };
   });
