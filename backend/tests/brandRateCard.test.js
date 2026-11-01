@@ -14,6 +14,7 @@ function fixturePool() {
   const tables = {
     rc_commission: [
       { marketplace: 'flipkart', seller_account: 'default', category: 'kurta', brand_name: 'Youthnic', price_min: 0, price_max: 500, rate: '0.15' },
+      { marketplace: 'flipkart', seller_account: 'default', category: 'kurta', brand_name: null, price_min: 500, price_max: 1000, rate: '0.12' },
       { marketplace: 'flipkart', seller_account: 'seller_ej', category: 'kurta', brand_name: 'Youthnic', price_min: 0, price_max: 500, rate: '0.17' },
       { marketplace: 'shopsy', seller_account: 'default', category: 'shopsy_kurta', brand_name: 'Youthnic', price_min: 0, price_max: 999999, rate: '0.00' },
       { marketplace: 'flipkart', seller_account: 'default', category: 'no_fsn_category', brand_name: 'Youthnic', price_min: 0, price_max: 500, rate: '0.99' },
@@ -21,7 +22,10 @@ function fixturePool() {
     rc_fixed_fee: [
       { marketplace: 'flipkart', seller_account: 'default', category: 'kurta', fulfilment_type: 'NON_FBF', price_min: 0, price_max: 500, rate: '10' },
     ],
-    rc_collection_fee: [], rc_pick_pack: [], rc_reverse_shipping: [], rc_franchise_fee: [],
+    rc_collection_fee: [], rc_pick_pack: [], rc_reverse_shipping: [],
+    rc_franchise_fee: [
+      { marketplace: 'flipkart', seller_account: 'default', category: 'kurta', brand_name: 'All brands', price_min: 0, price_max: 999999, rate: '25' },
+    ],
   };
   const query = vi.fn(async sql => {
     const text = String(sql);
@@ -65,8 +69,9 @@ describe('Read-only brand/category rate-card catalog', () => {
   it('reads published rates only, keeps accounts and Shopsy separate, and skips profiles without an order FSN', async () => {
     const pool = fixturePool();
     const cards = await buildBrandRateCardSet(pool, 'all');
-    expect(cards).toHaveLength(4);
+    expect(cards).toHaveLength(5);
     expect(cards.map(card => [card.marketplace, card.seller_account, card.category]).sort()).toEqual([
+      ['flipkart', 'default', 'kurta'],
       ['flipkart', 'default', 'kurta'],
       ['flipkart', 'default', 'kurta'],
       ['flipkart', 'seller_ej', 'kurta'],
@@ -75,6 +80,10 @@ describe('Read-only brand/category rate-card catalog', () => {
     const defaultFlipkart = cards.find(card => card.marketplace === 'flipkart' && card.seller_account === 'default');
     expect(defaultFlipkart).toMatchObject({ source: 'published_database', sample_fsn: 'ABCDEFGHIJKLMNOP' });
     expect(defaultFlipkart.commissions[0].rate).toBe(0.15);
+    const genericFlipkart = cards.find(card => card.marketplace === 'flipkart' && card.seller_account === 'default' && card.brand === 'All brands');
+    expect(genericFlipkart).toMatchObject({ sample_fsn: 'ABCDEFGHIJKLMNOP', order_count: 6 });
+    expect(genericFlipkart.commissions[0].rate).toBe(0.12);
+    expect(genericFlipkart.franchiseFees[0].rate).toBe(25);
     expect(cards.find(card => card.marketplace === 'flipkart' && card.fixedFees.length).fixedFees[0].rate).toBe(10);
     expect(cards.find(card => card.marketplace === 'shopsy').commissions[0].rate).toBe(0);
     expect(cards.some(card => card.category === 'no_fsn_category')).toBe(false);

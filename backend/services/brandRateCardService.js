@@ -23,6 +23,7 @@ const NUMERIC_FIELDS = new Set([
 
 const normalized = value => String(value ?? '').trim().toLowerCase();
 const normalizedAccount = value => String(value ?? '').trim() || 'default';
+const isGenericRateBrand = value => !normalized(value) || ['general', 'all brands'].includes(normalized(value));
 
 function channelFor(marketplace, category) {
   const rawMarketplace = normalized(marketplace);
@@ -111,14 +112,21 @@ export async function loadPublishedRateCardSnapshot(pool = null, sellerAccount =
         if (!['flipkart', 'shopsy'].includes(channel)) continue;
         const category = normalizeMarketplaceCategory(row.category, channel);
         const account = normalizedAccount(row.seller_account);
-        const brand = brandSpecific ? (String(row.brand_name || '').trim() || 'General') : 'General';
-        const sample = (samples || []).find(item =>
+        const rawBrand = String(row.brand_name || '').trim();
+        const genericBrand = brandSpecific && isGenericRateBrand(rawBrand);
+        const brand = brandSpecific ? (genericBrand ? 'All brands' : rawBrand) : 'General';
+        const scopedSamples = (samples || []).filter(item =>
           channelFor(item.marketplace, item.category) === channel &&
           normalizeMarketplaceCategory(item.category, channel) === category &&
-          normalizedAccount(item.seller_account) === account &&
-          (!brandSpecific || normalized(item.brand || 'General') === normalized(brand))
+          normalizedAccount(item.seller_account) === account
         );
+        const sample = genericBrand || !brandSpecific
+          ? scopedSamples[0]
+          : scopedSamples.find(item => normalized(item.brand || 'General') === normalized(brand));
         if (!sample) continue;
+        const orderCount = genericBrand || !brandSpecific
+          ? scopedSamples.reduce((total, item) => total + Number(item.order_count || 0), 0)
+          : Number(sample.order_count || 0);
 
         const key = JSON.stringify([channel, account, category, brand]);
         if (!cards.has(key)) {
@@ -129,7 +137,7 @@ export async function loadPublishedRateCardSnapshot(pool = null, sellerAccount =
             brand,
             sample_fsn: sample.sample_fsn,
             sample_sku: sample.sample_sku,
-            order_count: Number(sample.order_count || 0),
+            order_count: orderCount,
             source: 'published_database',
             effectiveDate,
             commissions: [], fixedFees: [], collectionFees: [], pickPackFees: [],
