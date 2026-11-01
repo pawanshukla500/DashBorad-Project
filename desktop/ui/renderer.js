@@ -1373,9 +1373,15 @@ function setupEventListeners() {
         }
         alert('Database synchronization completed successfully!');
         await loadRateCardPreview();
+      } else if (res.success) {
+        const message = res.result?.message || 'Database is already in sync.';
+        appendTerminalLine(`Database sync result: ${message}`);
+        alert(message);
+        await loadRateCardPreview();
       } else {
-        appendTerminalLine(`Database sync result: ${res.result?.message || 'Up to date'}`);
-        alert(res.result?.message || 'Database is already in sync.');
+        const message = res.error || res.result?.message || 'Database synchronization failed.';
+        appendTerminalLine(`Database sync failed: ${message}`);
+        alert(message);
       }
     } catch (err) {
       appendTerminalLine(`Database sync failed: ${err.message}`);

@@ -2092,6 +2092,12 @@ async function runTests() {
     assert(main.includes('stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, result)'), 'Electron main must reject superseded review responses');
     assert(standaloneServer.includes('stageRateReviewIfCurrent(stagedExtraction, reviewRequest, cards, sellerAccount, review)'), 'standalone app server must reject superseded review responses');
     assert(standaloneServer.includes('if (!review.publishable || !review.fingerprints?.[cardsToSync[0].marketplace])'), 'standalone sync must enforce the fingerprint gate');
+    const syncHandlerStart = renderer.indexOf('// Commit to Database');
+    const syncHandlerEnd = renderer.indexOf('// Excel Actions', syncHandlerStart);
+    const syncHandler = renderer.slice(syncHandlerStart, syncHandlerEnd);
+    assert(syncHandler.includes('else if (res.success)'), 'unchanged successful syncs must follow the success path');
+    assert((syncHandler.match(/await loadRateCardPreview\(\);/g) || []).length >= 2, 'changed and unchanged successful syncs must both refresh the staged review');
+    assert(syncHandler.includes('res.error || res.result?.message'), 'failed sync responses must display an error instead of an up-to-date message');
   });
 
   console.log('\n=================================================================');
