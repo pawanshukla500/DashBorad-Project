@@ -201,7 +201,29 @@ export function areCookiesExpired(cookies, maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS,
   return false;
 }
 
-function extractValidCookies(parsed, statMtimeMs, maxAgeMs) {
+function normalizeCookieForImport(cookie) {
+  if (!cookie || typeof cookie.name !== 'string' || !cookie.name.trim() || typeof cookie.value !== 'string') return null;
+
+  const domain = typeof cookie?.domain === 'string' ? cookie.domain.trim().replace(/^\./, '') : '';
+  const validDomain = domain && /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/i.test(domain);
+  const urlValue = typeof cookie?.url === 'string' ? cookie.url.trim() : '';
+  let validUrl = '';
+  try {
+    const url = new URL(urlValue);
+    if (['http:', 'https:'].includes(url.protocol) && url.hostname && !url.username && !url.password) validUrl = urlValue;
+  } catch {}
+
+  if (!validDomain && !validUrl) return null;
+  const normalized = { ...cookie };
+  if (validDomain) normalized.domain = cookie.domain.trim();
+  else delete normalized.domain;
+  if (validUrl) normalized.url = validUrl;
+  else delete normalized.url;
+  if (typeof normalized.path === 'string' && !normalized.path.startsWith('/')) normalized.path = '/';
+  return normalized;
+}
+
+function extractValidCookies(parsed, statMtimeMs, maxAgeMs, onInvalidRecords = () => {}) {
   if (!parsed) return null;
   let cookies = null;
   let savedAt = null;
@@ -216,7 +238,14 @@ function extractValidCookies(parsed, statMtimeMs, maxAgeMs) {
   if (areCookiesExpired(cookies, maxAgeMs, savedAt)) {
     return null;
   }
-  return cookies.filter(c => c && (!c.expires || c.expires <= 0 || c.expires > Date.now() / 1000));
+  const unexpired = cookies.filter(c => c && (!c.expires || c.expires <= 0 || c.expires > Date.now() / 1000));
+  const normalized = unexpired.map(normalizeCookieForImport);
+  const valid = normalized.filter(Boolean);
+  const discardedRecords = normalized.length - valid.length;
+  if (discardedRecords > 0) {
+    try { onInvalidRecords(discardedRecords); } catch {}
+  }
+  return valid.length ? valid : null;
 }
 
 /**
@@ -279,7 +308,10 @@ function removePlaintextCookieFallbacks(filePath, candidates) {
  * Loads cookies with AES-256-GCM decryption, verifying expiration (30-day vault retention; portal expiry still applies).
  * Stale or expired cookies are purged immediately.
  */
-export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS } = {}) {
+export function loadEncryptedCookies(filePath, {
+  maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS,
+  onInvalidRecords = () => {}
+} = {}) {
   try {
     const candidates = legacyCookieCandidates(filePath);
     // Purge plaintext legacy files even if the requested encrypted target
@@ -302,7 +334,7 @@ export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_A
               const dec = decryptVaultData(raw);
               if (dec) fallbackData = JSON.parse(dec);
             } catch {}
-            const validCookies = extractValidCookies(fallbackData, stat?.mtimeMs || Date.now(), maxAgeMs);
+            const validCookies = extractValidCookies(fallbackData, stat?.mtimeMs || Date.now(), maxAgeMs, onInvalidRecords);
             if (!validCookies) continue;
             try { saveEncryptedCookies(filePath, validCookies); } catch {}
             return validCookies;
@@ -328,7 +360,7 @@ export function loadEncryptedCookies(filePath, { maxAgeMs = DEFAULT_MAX_COOKIE_A
       deleteEncryptedCookies(filePath);
       return null;
     }
-    const validCookies = extractValidCookies(parsed, stat?.mtimeMs || Date.now(), maxAgeMs);
+    const validCookies = extractValidCookies(parsed, stat?.mtimeMs || Date.now(), maxAgeMs, onInvalidRecords);
     if (!validCookies) {
       // Stale or expired: delete cookie file so it does not persist
       deleteEncryptedCookies(filePath);

@@ -336,6 +336,16 @@ function getMarketplaceCookiesPath(marketplace = 'flipkart_shopsy') {
   return path.join(dir, `cookies_${safeId}.json`);
 }
 
+function loadMarketplaceCookieSnapshot(filePath, marketplace, operation) {
+  return loadEncryptedCookies(filePath, {
+    onInvalidRecords: discardedRecords => desktopLogger.warn(
+      'portal.cookies.invalid_records_skipped',
+      'Ignored malformed saved cookie records before restoring the marketplace session.',
+      { marketplace, operation, sourceFile: path.basename(filePath), discardedRecords }
+    )
+  });
+}
+
 function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
   const normalized = ['flipkart', 'shopsy', 'both', 'flipkart_shopsy'].includes(marketplace)
     ? 'flipkart_shopsy'
@@ -536,8 +546,8 @@ app.whenReady().then(async () => {
   fs.mkdirSync(STAGING_DIR, { recursive: true });
   try {
     const defaultCookiesPath = getMarketplaceCookiesPath('flipkart_shopsy');
-    if (!fs.existsSync(defaultCookiesPath)) loadEncryptedCookies(defaultCookiesPath);
-    if (!fs.existsSync(COOKIES_PATH)) loadEncryptedCookies(COOKIES_PATH);
+    if (!fs.existsSync(defaultCookiesPath)) loadMarketplaceCookieSnapshot(defaultCookiesPath, 'flipkart_shopsy', 'startup_migration');
+    if (!fs.existsSync(COOKIES_PATH)) loadMarketplaceCookieSnapshot(COOKIES_PATH, 'flipkart_shopsy', 'startup_migration');
   } catch {}
 
   try {
@@ -937,10 +947,10 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     activeEmbeddedPage = page;
     try {
       if (fs.existsSync(cookiesPath)) {
-        const existing = loadEncryptedCookies(cookiesPath);
+        const existing = loadMarketplaceCookieSnapshot(cookiesPath, mpConfig.id, 'embedded_login');
         if (existing?.length) await page.setCookie(...existing);
       } else if (fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
-        const existing = loadEncryptedCookies(COOKIES_PATH);
+        const existing = loadMarketplaceCookieSnapshot(COOKIES_PATH, mpConfig.id, 'embedded_login');
         if (existing?.length) await page.setCookie(...existing);
       }
 
@@ -1065,12 +1075,12 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     desktopLogger.info('portal.login.started', 'Opened the manual sign-in browser.', { marketplace: mpConfig.id, url: manualLoginUrl });
 
     if (['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(cookiesPath)) {
-      const existing = loadEncryptedCookies(cookiesPath);
+      const existing = loadMarketplaceCookieSnapshot(cookiesPath, mpConfig.id, 'manual_login');
       if (existing && Array.isArray(existing) && existing.length > 0) {
         await page.setCookie(...existing);
       }
     } else if (['unknown', 'snapshot_available'].includes(profileSessionState) && fs.existsSync(COOKIES_PATH) && (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart')) {
-      const existing = loadEncryptedCookies(COOKIES_PATH);
+      const existing = loadMarketplaceCookieSnapshot(COOKIES_PATH, mpConfig.id, 'manual_login');
       if (existing && Array.isArray(existing) && existing.length > 0) {
         await page.setCookie(...existing);
       }
@@ -1107,6 +1117,9 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
         })
       });
       if (authenticatedPage !== page) await focusBrowserPage(authenticatedPage);
+      if (!externalBrowserSession.selectPage(profileDir, authenticatedPage)) {
+        throw new Error('Seller Hub verified a different Chrome tab, but it could not be selected for the persistent session.');
+      }
     } else await page.waitForFunction((id) => {
       const href = window.location.href.toLowerCase();
       const body = document.body ? document.body.innerText.toLowerCase() : '';
@@ -1303,6 +1316,11 @@ async function executeScrapeProcess(config, onProgress) {
             fallbackCookiesPath: COOKIES_PATH,
             stagingDir: STAGING_DIR,
             runtime,
+            onCookieDiagnostics: ({ sourceFile, discardedRecords }) => desktopLogger.warn(
+              'portal.cookies.invalid_records_skipped',
+              'Ignored malformed saved cookie records before restoring Seller Hub.',
+              { marketplace: 'flipkart_shopsy', operation: 'embedded_scrape', sourceFile, discardedRecords }
+            ),
             onSessionExpiry
           });
           activeEmbeddedPage = null;
@@ -1320,6 +1338,7 @@ async function executeScrapeProcess(config, onProgress) {
         if (!visible) return false;
         onProgress('🔐 Seller Hub sign-in is required. Complete it manually in the visible Seller Hub browser window.');
         try {
+          const profileDir = getMarketplaceBrowserProfilePath('flipkart_shopsy');
           const authPage = await waitForFlipkartAuthenticatedPage(page.browser(), {
             initialPage: page,
             timeoutMs: 30 * 60 * 1000,
@@ -1329,10 +1348,13 @@ async function executeScrapeProcess(config, onProgress) {
               marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
               operation: 'scrape_reauthentication',
               onProgress,
-              profileDir: getMarketplaceBrowserProfilePath('flipkart_shopsy')
+              profileDir
             })
           });
-          writeSellerHubProfileState(getMarketplaceBrowserProfilePath('flipkart_shopsy'), 'authenticated');
+          if (!externalBrowserSession.selectPage(profileDir, authPage)) {
+            throw new Error('Seller Hub verified a different Chrome tab, but it could not be selected for the persistent session.');
+          }
+          writeSellerHubProfileState(profileDir, 'authenticated');
           const cookies = await authPage.cookies();
           if (cookies.length) {
             saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
@@ -1343,7 +1365,7 @@ async function executeScrapeProcess(config, onProgress) {
             deleteEncryptedCookies(COOKIES_PATH);
             onProgress('✓ Seller Hub authentication verified without cookies. Removed stale cookie snapshots; the active browser session will continue.');
           }
-          return true;
+          return authPage;
         } catch (loginError) {
           onProgress(`Manual Seller Hub sign-in did not complete: ${loginError.message}`);
           return false;
@@ -1353,6 +1375,9 @@ async function executeScrapeProcess(config, onProgress) {
       const baseExternalRuntime = getBrowserRuntime();
       const externalRuntime = new Proxy(baseExternalRuntime, {
         get(target, property, receiver) {
+          if (property === 'getPage') {
+            return () => externalBrowserSession.getPage(getMarketplaceBrowserProfilePath('flipkart_shopsy'));
+          }
           if (property !== 'launch') return Reflect.get(target, property, receiver);
           return async options => {
             const profileDir = getMarketplaceBrowserProfilePath('flipkart_shopsy');
@@ -1384,6 +1409,11 @@ async function executeScrapeProcess(config, onProgress) {
         stagingDir: STAGING_DIR,
         runtime: externalRuntime,
         browserProfileDir: getMarketplaceBrowserProfilePath('flipkart_shopsy'),
+        onCookieDiagnostics: ({ sourceFile, discardedRecords }) => desktopLogger.warn(
+          'portal.cookies.invalid_records_skipped',
+          'Ignored malformed saved cookie records before restoring Seller Hub.',
+          { marketplace: 'flipkart_shopsy', operation: 'scrape', sourceFile, discardedRecords }
+        ),
         onSessionExpiry: externalSessionExpiry
       });
       broadcastMonitorState({
@@ -1786,7 +1816,7 @@ registerHandler('get-marketplaces', () => {
     let cookieCount = 0;
     let lastSavedAt = null;
     try {
-      const stored = loadEncryptedCookies(cookiesPath);
+      const stored = loadMarketplaceCookieSnapshot(cookiesPath, m.id, 'session_status');
       cookieCount = Array.isArray(stored) ? stored.length : 0;
       if (fs.existsSync(cookiesPath)) lastSavedAt = fs.statSync(cookiesPath).mtime.toISOString();
     } catch {}

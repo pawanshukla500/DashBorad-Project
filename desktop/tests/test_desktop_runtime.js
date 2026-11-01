@@ -1870,7 +1870,7 @@ async function runTests() {
       // 1. areCookiesExpired logic
       assert.strictEqual(areCookiesExpired(null), true);
       assert.strictEqual(areCookiesExpired([]), true);
-      const freshCookies = [{ name: 'session', value: '123', expires: (Date.now() / 1000) + 3600 }];
+      const freshCookies = [{ name: 'session', value: '123', domain: '.flipkart.com', path: '/', expires: (Date.now() / 1000) + 3600 }];
       assert.strictEqual(areCookiesExpired(freshCookies, 60000, Date.now()), false);
       // expired by TTL
       assert.strictEqual(areCookiesExpired(freshCookies, 1000, Date.now() - 5000), true);

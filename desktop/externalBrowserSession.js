@@ -16,12 +16,15 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     catch { return false; }
   };
 
-  const getPage = async browser => {
+  const pageIsOpen = page => {
+    try { return Boolean(page && (typeof page.isClosed !== 'function' || !page.isClosed())); }
+    catch { return false; }
+  };
+
+  const getPage = async (browser, preferredPage = null) => {
     const pages = await browser.pages();
-    const openPage = pages.find(candidate => {
-      try { return typeof candidate.isClosed !== 'function' || !candidate.isClosed(); }
-      catch { return false; }
-    });
+    if (pageIsOpen(preferredPage) && pages.includes(preferredPage)) return preferredPage;
+    const openPage = pages.find(pageIsOpen);
     return openPage || await browser.newPage();
   };
 
@@ -77,7 +80,7 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     if (retained && retained.profileKey === profileKey) {
       const entry = retained;
       try {
-        entry.page = await getPage(entry.browser);
+        entry.page = await getPage(entry.browser, entry.page);
       } catch (error) {
         try { await closeEntry(entry, 'page-acquisition-failed'); } catch {}
         throw error;
@@ -139,10 +142,30 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     return closed;
   }
 
+  function selectPage(profileKey, page) {
+    if (!retained || retained.profileKey !== profileKey || !isConnected(retained.browser) || !pageIsOpen(page)) return false;
+    try {
+      const pageBrowser = page.browser?.();
+      if (pageBrowser && pageBrowser !== retained.browser) return false;
+    } catch { return false; }
+    retained.page = page;
+    notify(onPage, page);
+    let url = '';
+    try { url = page.url?.() || ''; } catch {}
+    notify(onLifecycle, 'page-selected', { profileKey, url });
+    return true;
+  }
+
+  function getRetainedPage(profileKey) {
+    if (!retained || (profileKey && retained.profileKey !== profileKey) || !isConnected(retained.browser)) return null;
+    return pageIsOpen(retained.page) ? retained.page : null;
+  }
+
   return {
     acquire,
     close,
-    getPage: () => retained?.page || null,
+    getPage: getRetainedPage,
+    selectPage,
     getProfileKey: () => retained?.profileKey || null,
     hasBrowser: () => Boolean(
       (retained && isConnected(retained.browser)) ||

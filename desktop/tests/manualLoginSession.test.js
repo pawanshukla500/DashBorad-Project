@@ -10,7 +10,7 @@ import { waitForFlipkartAuthenticatedPage } from '../portalLoginWaiter.js';
 import { scrapeFlipkartRateCards } from '../portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from '../portalProfileState.js';
 import { invokeProgressSafely } from '../safeProgress.js';
-import { clearEncryptedCookieSnapshot, saveEncryptedCookies } from '../cookieVault.js';
+import { clearEncryptedCookieSnapshot, loadEncryptedCookies, saveEncryptedCookies } from '../cookieVault.js';
 import { persistDesktopUserDataDirChoice, resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from '../userDataPaths.js';
 
 test('desktop app and standalone login helper share one Windows Seller Hub profile', () => {
@@ -983,6 +983,74 @@ test('Electron cookies are normalized for encrypted snapshots without extending 
   assert.equal(normalized[1].sameSite, 'Lax');
 });
 
+test('encrypted cookie restore skips malformed entries that cannot be addressed by URL or domain', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-cookie-scope-'));
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  const invalidReports = [];
+  saveEncryptedCookies(cookiePath, [
+    { name: 'missing-scope', value: 'discard-me' },
+    { name: 'blank-domain', value: 'discard-me', domain: '   ' },
+    { name: 'seller-session', value: 'valid-domain', domain: '.flipkart.com', path: '/' },
+    { name: 'seller-url-session', value: 'valid-url', url: 'https://seller.flipkart.com/' }
+  ]);
+  try {
+    const restored = loadEncryptedCookies(cookiePath, { onInvalidRecords: count => invalidReports.push(count) });
+    assert.deepEqual(restored.map(cookie => cookie.name), ['seller-session', 'seller-url-session']);
+    assert.equal(restored[1].domain, undefined, 'an invalid domain is removed when a valid URL scope exists');
+    assert.deepEqual(invalidReports, [2]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('scraper starts on the authenticated Seller Hub tab selected by its retained browser session', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-selected-seller-tab-'));
+  const staleNavigations = [];
+  const authenticatedNavigations = [];
+  const makePage = (navigations, authenticated) => {
+    let currentUrl = 'about:blank';
+    return {
+      on() {}, off() {},
+      goto: async url => { currentUrl = url; navigations.push(url); },
+      evaluate: async fn => fn.name === 'inspectFlipkartLoginState'
+        ? { surface: 'flipkart', stage: authenticated ? 'authenticated' : 'public', authenticated, loginFormVisible: false, challengeVisible: false, publicLanding: !authenticated }
+        : false,
+      url: () => currentUrl,
+      title: () => 'Seller Hub',
+      isClosed: () => false,
+      cookies: async () => [],
+      screenshot: async () => Buffer.from('test screenshot')
+    };
+  };
+  const stalePage = makePage(staleNavigations, false);
+  const authenticatedPage = makePage(authenticatedNavigations, true);
+  const browser = { pages: async () => [stalePage, authenticatedPage], close: async () => {} };
+  const runtime = { launch: async () => browser, getPage: () => authenticatedPage };
+  try {
+    const result = await scrapeFlipkartRateCards({
+      marketplace: 'flipkart',
+      fsnCatalog: [],
+      scopeVerticals: [],
+      requiredVerticals: []
+    }, {
+      runtime,
+      executablePath: 'test-chrome',
+      browserProfileDir: path.join(tempDir, 'profile'),
+      cookiesPath: path.join(tempDir, 'cookies.json'),
+      fallbackCookiesPath: path.join(tempDir, 'fallback.json'),
+      stagingDir: path.join(tempDir, 'staging'),
+      delay: async () => {},
+      onProgress: () => {}
+    });
+
+    assert.deepEqual(staleNavigations, [], 'the stale public tab must not be reused for extraction');
+    assert.deepEqual(authenticatedNavigations, [FLIPKART_MANUAL_LOGIN_URL, FLIPKART_DASHBOARD_URL]);
+    assert.match(result.error, /No database FSNs are available/i, 'the fixture stops after proving the authenticated tab was chosen');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('scraping opens Seller Hub root, verifies dashboard session, and requires auth before extraction', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-manual-login-'));
   const cookiePath = path.join(tempDir, 'cookies.json');
@@ -1134,17 +1202,20 @@ test('visible external scraping activates its Seller Hub tab before navigating',
 test('headless session expiry reopens the same persistent Chrome profile visibly before manual sign-in', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-visible-reauth-'));
   const profileDir = path.join(tempDir, 'profile');
-  const urls = ['', ''];
-  const pages = urls.map((_url, index) => ({
+  const urls = ['', '', ''];
+  const makePage = index => ({
     on() {}, off() {},
     goto: async url => { urls[index] = url; },
     setCookie: async () => {},
-    evaluate: async fn => fn.name === 'isFlipkartAuthenticated' ? urls[index].includes('#dashboard') && index === 1 : [],
+    evaluate: async fn => fn.name === 'isFlipkartAuthenticated' ? urls[index].includes('#dashboard') && index > 0 : [],
     cookies: async () => [],
     url: () => urls[index],
     title: () => 'Seller Hub',
+    isClosed: () => false,
     screenshot: async () => Buffer.from('test screenshot')
-  }));
+  });
+  const pages = [makePage(0), makePage(1)];
+  const authenticatedTab = makePage(2);
   const browsers = pages.map(page => ({ pages: async () => [page], newPage: async () => page, close: async function () { this.closed = true; } }));
   const launchOptions = [];
   let callbackVisibility;
@@ -1169,7 +1240,8 @@ test('headless session expiry reopens the same persistent Chrome profile visibly
       onSessionExpiry: async (page, state) => {
         assert.equal(page.url(), FLIPKART_MANUAL_LOGIN_URL, 'manual sign-in must use the relaunched external Chrome page at the Seller Hub root');
         callbackVisibility = state.visible;
-        return true;
+        browsers[1].pages = async () => [pages[1], authenticatedTab];
+        return authenticatedTab;
       }
     });
     assert.equal(launchOptions.length, 2);
@@ -1178,7 +1250,8 @@ test('headless session expiry reopens the same persistent Chrome profile visibly
     assert.equal(launchOptions[0].userDataDir, profileDir);
     assert.equal(launchOptions[1].userDataDir, profileDir);
     assert.equal(callbackVisibility, true);
-    assert.equal(urls[1], FLIPKART_DASHBOARD_URL, 'the scraper should enter the dashboard only after the root-page sign-in callback succeeds');
+    assert.equal(urls[1], FLIPKART_MANUAL_LOGIN_URL, 'the stale public tab should remain unused after sign-in opens a second tab');
+    assert.equal(urls[2], FLIPKART_DASHBOARD_URL, 'the scraper should continue on the authenticated Seller Hub tab');
     assert.match(result.error, /No database FSNs are available/i, 'the test stops before scraping because it has no catalog rows');
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
