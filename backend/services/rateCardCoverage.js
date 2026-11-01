@@ -34,6 +34,7 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount,
       result = await client.query(
         `SELECT DISTINCT category FROM ${table} WHERE marketplace = $1
           AND ${sellerAccountFilter}
+          AND ($1 <> 'flipkart' OR LOWER(TRIM(category)) !~ '^shopsy([[:space:]_-]+)')
           AND (start_date IS NULL OR start_date <= $3::date)
           AND (end_date IS NULL OR end_date >= $3::date)`,
         [channel, account, activeDate],
@@ -59,7 +60,9 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount,
   let catalog;
   try {
     catalog = await client.query(`
-      SELECT DISTINCT category, fsn
+      SELECT category,
+        COUNT(*)::int AS order_rows,
+        COUNT(*) FILTER (WHERE fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$')::int AS valid_fsn_order_rows
       FROM orders
       WHERE (($1 = 'shopsy' AND (LOWER(TRIM(marketplace)) = 'shopsy'
                OR (LOWER(TRIM(marketplace)) = 'flipkart' AND LOWER(TRIM(category)) ~ '^shopsy([[:space:]_-]+)')))
@@ -67,7 +70,7 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount,
                AND LOWER(TRIM(category)) !~ '^shopsy([[:space:]_-]+)'))
         AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
         AND category IS NOT NULL AND TRIM(category) <> ''
-        AND fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'
+      GROUP BY category
     `, [channel, account]);
   } catch (cause) {
     const error = new Error('Rate-card coverage is unavailable because the account-scoped FSN catalog could not be read.');
@@ -77,20 +80,27 @@ export async function loadRateCardCoverage(client, { marketplace, sellerAccount,
   }
 
   const fsnCategories = new Set();
+  const orderCategories = new Set();
   for (const row of catalog.rows || []) {
     const category = normalizeMarketplaceCategory(row.category, channel);
-    const fsn = String(row.fsn || '').trim();
-    if (category && /^[A-Z0-9]{16}$/i.test(fsn)) fsnCategories.add(category);
+    if (!category) continue;
+    orderCategories.add(category);
+    const validFsnOrderRows = Number(row.valid_fsn_order_rows ?? row.validFsnOrderRows ?? 0);
+    if (validFsnOrderRows > 0) fsnCategories.add(category);
   }
 
   const configuredCategories = [...configured].sort();
   const missingFsnCategories = configuredCategories.filter(category => !fsnCategories.has(category));
+  const fsnBackedConfiguredCategories = configuredCategories.filter(category => fsnCategories.has(category));
   return {
     marketplace: channel,
     sellerAccount: account,
     configuredCategories,
     fsnCategories: [...fsnCategories].sort(),
+    fsnBackedConfiguredCategories,
     missingFsnCategories,
+    configuredCategoriesWithoutOrders: missingFsnCategories.filter(category => !orderCategories.has(category)),
+    configuredCategoriesWithOrdersButNoFsns: missingFsnCategories.filter(category => orderCategories.has(category)),
   };
 }
 
@@ -98,13 +108,16 @@ export function assertRateObservationCoverage(observations, coverage) {
   if (!coverage || !Array.isArray(coverage.configuredCategories) || !coverage.configuredCategories.length) {
     throw new Error('Configured rate-card category coverage is unavailable.');
   }
-  if (coverage.missingFsnCategories?.length) {
-    const error = new Error(`Configured rate-card categories have no account-scoped database FSN: ${coverage.missingFsnCategories.join(', ')}.`);
-    error.code = 'RATE_CARD_COVERAGE_INCOMPLETE';
+  const fsnBackedConfiguredCategories = Array.isArray(coverage.fsnBackedConfiguredCategories)
+    ? coverage.fsnBackedConfiguredCategories
+    : coverage.configuredCategories.filter(category => !(coverage.missingFsnCategories || []).includes(category));
+  if (!fsnBackedConfiguredCategories.length) {
+    const error = new Error('No configured rate-card category has an account-scoped database FSN. No extraction results can be accepted.');
+    error.code = 'RATE_CARD_NO_FSN_BACKED_CATEGORIES';
     throw error;
   }
 
-  const expected = new Set(coverage.configuredCategories.map(category =>
+  const expected = new Set(fsnBackedConfiguredCategories.map(category =>
     normalizeMarketplaceCategory(category, coverage.marketplace)));
   const actual = new Set((observations || []).map(observation =>
     normalizeMarketplaceCategory(observation.vertical || observation.category, coverage.marketplace)).filter(Boolean));

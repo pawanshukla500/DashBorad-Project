@@ -135,8 +135,15 @@ async function runWorker() {
       rateCards = rateCards.filter(r => r.brand.toLowerCase() === brandArg.toLowerCase());
     }
 
+    const withoutFsn = rateCards.filter(rateCard => !/^[A-Z0-9]{16}$/i.test(String(rateCard.sample_fsn || '').trim()));
+    if (withoutFsn.length) {
+      const skipped = [...new Set(withoutFsn.map(rateCard => `${rateCard.marketplace}:${rateCard.category}:${rateCard.brand}`))];
+      onProgress(`Skipping ${skipped.length} rate-card profile(s) without a valid 16-character database FSN: ${skipped.join(', ')}`);
+    }
+    rateCards = rateCards.filter(rateCard => /^[A-Z0-9]{16}$/i.test(String(rateCard.sample_fsn || '').trim()));
+
     if (rateCards.length === 0) {
-      onProgress(`No active rate cards configured for channel "${marketplaceArg}". Database sync skipped.`);
+      onProgress(`No active FSN-backed rate cards configured for channel "${marketplaceArg}". Database sync skipped.`);
       console.log(`\n✓ Staged 0 rate card profiles for ${marketplaceArg.toUpperCase()}.`);
       console.log('======================================================================');
       console.log('✓ Worker run completed successfully.');

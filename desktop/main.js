@@ -35,7 +35,7 @@ import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { createExternalBrowserSession } from './externalBrowserSession.js';
-import { describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from './fsnPlan.js';
+import { blockingUncoveredCategoriesForMarketplace, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from './fsnPlan.js';
 import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 import {
   getActiveBackendUrl,
@@ -665,8 +665,9 @@ async function executeBackgroundWorkerJob(session, job) {
     if (!scrapeRes.success) {
       throw new Error(scrapeRes.error || 'Scrape failed');
     }
-    if (scrapeRes.coverage?.complete === false) {
-      throw new Error(`Remote worker results were not submitted because configured categories have no database FSNs: ${scrapeRes.coverage.unavailableConfiguredVerticals.join(', ')}.`);
+    if (scrapeRes.coverage?.complete === false &&
+        blockingUncoveredCategoriesForMarketplace(scrapeRes.coverage, job.marketplace).length > 0) {
+      throw new Error(`Remote worker results were not submitted because ${describeCoverageBlockers(scrapeRes.coverage, job.marketplace)}.`);
     }
 
     const normalizedCards = normalizeScrapedCards(scrapeRes.data);
@@ -1268,7 +1269,7 @@ async function executeScrapeProcess(config, onProgress) {
       effectiveConfig.extractionCoverage = verticalSelection;
       if (verticalSelection.unavailableConfiguredVerticals.length) {
         desktopLogger.warn('scrape.catalog_categories_without_fsns',
-          'Configured rate-card categories without database FSNs were excluded from the extraction and cannot be published.', {
+          'Configured rate-card categories without database FSNs were skipped; only FSN-backed categories continue to review.', {
             marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
             brand: effectiveConfig.brand || 'all',
             configuredCategories: verticalSelection.configuredVerticals,
@@ -1277,9 +1278,9 @@ async function executeScrapeProcess(config, onProgress) {
             categories: verticalSelection.unavailableConfiguredVerticals,
             availableCategoryCount: verticalSelection.availableVerticals.length
           });
-        onProgress(`⚠️ Configured categories without database FSNs were skipped and will block publication: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}.`);
+        onProgress(`⚠️ Skipped categories without database FSNs: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}. FSN-backed categories can continue to review.`);
       }
-      if (verticalSelection.uncoveredConfiguredVerticals.length && !verticalSelection.unavailableConfiguredVerticals.length) {
+      if (verticalSelection.uncoveredConfiguredVerticals.length) {
         desktopLogger.warn('scrape.configured_categories_omitted',
           'Configured categories outside this extraction scope will block publication for their marketplace.', {
             marketplace: effectiveConfig.marketplace || 'flipkart_shopsy',
@@ -2126,7 +2127,8 @@ registerHandler('get-ratecard-preview', async (e, options = {}) => {
     return {
       success: true,
       rateCards: filteredRateCards,
-      canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0 && uncoveredCategories.length === 0,
+      canSync: coverageKnown && filteredRateCards.length > 0 &&
+        blockingUncoveredCategoriesForMarketplace(stagedExtraction.coverage, targetMp).length === 0,
       coverage: stagedExtraction.coverage,
       coverageKnown,
       missingFsnCategories: missingCategories,
@@ -2170,8 +2172,7 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   const isCurrent = () => authGeneration === stagedExtraction.authGeneration;
   const cards = selectStagedCards(stagedExtraction.cards, submitted);
   const review = stagedExtraction.review;
-  const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, cards?.[0]?.marketplace);
-  const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, cards?.[0]?.marketplace);
+  const uncoveredCategories = blockingUncoveredCategoriesForMarketplace(stagedExtraction.coverage, cards?.[0]?.marketplace);
   const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, cards?.[0]?.marketplace);
   let sellerAccount;
   try { sellerAccount = resolveSellerAccountForRateCards(cards, options.seller_account); }
@@ -2182,9 +2183,6 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
   }
   if (!coverageKnown) {
     return { success: false, error: 'Publication blocked: extraction coverage is unknown. Run a fresh extraction with the current app.' };
-  }
-  if (missingCategories.length) {
-    return { success: false, error: `Publication blocked: configured categories have no database FSNs and were not extracted: ${missingCategories.join(', ')}.` };
   }
   if (uncoveredCategories.length) {
     return { success: false, error: `Publication blocked: configured categories were not included in this extraction: ${uncoveredCategories.join(', ')}.` };

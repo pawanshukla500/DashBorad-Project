@@ -102,6 +102,16 @@ describe('desktop category discovery API', () => {
     expect(body.catalog[0].category).toBe('salwar_kurta_dupatta');
   });
 
+  it('retires the legacy static-rate sync without reading or writing PostgreSQL', async () => {
+    const response = await post('/sync-brand-rates', { forceUpdate: true });
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({
+      success: false,
+      code: 'RATE_CARD_ENDPOINT_RETIRED',
+    });
+    expect(statements).toEqual([]);
+  });
+
   it('filters active-only discovery to the supplied UTC extraction date', async () => {
     const response = await fetch(`${baseUrl}/config/commission?marketplace=flipkart&seller_account=seller_ej&active_only=true&active_date=2026-10-30`);
     expect(response.status).toBe(200);

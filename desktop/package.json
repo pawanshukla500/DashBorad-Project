@@ -21,7 +21,7 @@
     "test:runtime": "node tests/test_desktop_runtime.js",
     "test:auth": "node tests/test_desktop_auth.js",
     "test:e2e": "node tests/test_desktop_e2e.js",
-    "test": "node tests/test_local_staging.js && node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js && node --test tests/manualLoginSession.test.js tests/externalBrowserSession.test.js tests/browserSafety.test.js",
+    "test": "node tests/test_rate_card_catalog.js && node tests/test_local_staging.js && node tests/test_desktop_runtime.js && node tests/test_desktop_e2e.js && node --test tests/manualLoginSession.test.js tests/externalBrowserSession.test.js tests/browserSafety.test.js",
     "test:all": "npm test && node tests/test_desktop_auth.js"
   },
   "keywords": [

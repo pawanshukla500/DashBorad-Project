@@ -42,7 +42,7 @@ import {
 } from './httpAccess.js';
 import { scrapeFlipkartRateCards } from './portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
-import { describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
+import { blockingUncoveredCategoriesForMarketplace, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals } from './fsnPlan.js';
 import { FLIPKART_MANUAL_LOGIN_URL } from './portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createWorkerEngine } from './workerEngine.js';
@@ -750,7 +750,8 @@ const server = http.createServer(async (req, res) => {
         const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, targetMp);
         const coverageKnown = hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, targetMp);
         return sendJson(200, { success: true, count: filteredRateCards.length, rateCards: filteredRateCards,
-          canSync: coverageKnown && filteredRateCards.length > 0 && missingCategories.length === 0 && uncoveredCategories.length === 0,
+          canSync: coverageKnown && filteredRateCards.length > 0 &&
+            blockingUncoveredCategoriesForMarketplace(stagedExtraction.coverage, targetMp).length === 0,
           coverage: stagedExtraction.coverage, coverageKnown, missingFsnCategories: missingCategories, uncoveredCategories });
       } catch (err) {
         return sendJson(500, { success: false, error: err.message });
@@ -1309,12 +1310,7 @@ const server = http.createServer(async (req, res) => {
         if (!hasKnownMarketplaceFsnCoverage(stagedExtraction.coverage, cardsToSync[0].marketplace)) {
           return sendJson(409, { success: false, error: 'Publication blocked: extraction coverage is unknown. Run a fresh extraction with the current app.' });
         }
-        const missingCategories = missingFsnCategoriesForMarketplace(stagedExtraction.coverage, cardsToSync[0].marketplace);
-        if (missingCategories.length) {
-          return sendJson(409, { success: false,
-            error: `Publication blocked: configured categories have no database FSNs and were not extracted: ${missingCategories.join(', ')}.` });
-        }
-        const uncoveredCategories = uncoveredCategoriesForMarketplace(stagedExtraction.coverage, cardsToSync[0].marketplace);
+        const uncoveredCategories = blockingUncoveredCategoriesForMarketplace(stagedExtraction.coverage, cardsToSync[0].marketplace);
         if (uncoveredCategories.length) {
           return sendJson(409, { success: false,
             error: `Publication blocked: configured categories were not included in this extraction: ${uncoveredCategories.join(', ')}.` });
@@ -1435,7 +1431,7 @@ const server = http.createServer(async (req, res) => {
         try {
           broadcastProgress(`🚀 Scraper job initiated (${targetMp.toUpperCase()} | Mode: ${isVisible ? 'Visible Chrome' : 'Stealth'})...`);
           if (verticalSelection.unavailableConfiguredVerticals.length) {
-            broadcastProgress(`⚠️ Configured categories without database FSNs were skipped and will block publication: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}.`);
+            broadcastProgress(`⚠️ Skipped categories without database FSNs: ${verticalSelection.unavailableConfiguredVerticals.join(', ')}. FSN-backed categories can continue to review.`);
           }
           const profileDir = getMarketplaceBrowserProfilePath(normalizedChannel);
           const result = await withBrowserTask(async () => {

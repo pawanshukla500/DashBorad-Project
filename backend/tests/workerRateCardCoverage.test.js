@@ -60,8 +60,8 @@ beforeEach(() => {
     rc_collection_fee: [], rc_pick_pack: [], rc_reverse_shipping: [], rc_franchise_fee: [],
   };
   mockState.fsnRows = [
-    { category: 'kurta', fsn: 'ABCDEFGHIJKLMNOP' },
-    { category: 'dress', fsn: 'QRSTUVWXYZ123456' },
+    { category: 'kurta', order_rows: 1, valid_fsn_order_rows: 1 },
+    { category: 'dress', order_rows: 1, valid_fsn_order_rows: 1 },
   ];
   mockState.compare.mockResolvedValue({ fingerprint: 'server-fingerprint', effectiveDate: '2026-10-30', diffs: [], diffCount: 0, summary: {} });
   mockState.publish.mockResolvedValue({ published: true });
@@ -97,16 +97,23 @@ describe('worker rate-card category coverage boundary', () => {
     expect(mockState.query.mock.calls.some(([sql]) => String(sql).includes("status = 'completed'"))).toBe(false);
   });
 
-  it('rejects a configured category when the selected account has no valid database FSN for it', async () => {
+  it('skips a configured category without an account FSN and accepts the complete FSN-backed scope', async () => {
     mockState.job = job();
-    mockState.fsnRows = [{ category: 'kurta', fsn: 'ABCDEFGHIJKLMNOP' }];
+    mockState.fsnRows = [
+      { category: 'kurta', order_rows: 10, valid_fsn_order_rows: 10 },
+      { category: 'dress', order_rows: 2, valid_fsn_order_rows: 0 },
+    ];
     const response = await post(await listen(), 'rate-job-1/results', { results: observations });
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({
-      code: 'RATE_CARD_COVERAGE_INCOMPLETE',
-      error: expect.stringContaining('no account-scoped database FSN: dress'),
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.diffResult.coverage).toMatchObject({
+      configuredCategories: ['dress', 'kurta'],
+      fsnBackedConfiguredCategories: ['kurta'],
+      missingFsnCategories: ['dress'],
+      configuredCategoriesWithOrdersButNoFsns: ['dress'],
+      complete: true,
     });
-    expect(mockState.compare).not.toHaveBeenCalled();
+    expect(mockState.compare).toHaveBeenCalledOnce();
   });
 
   it('persists the resolved UTC date on every result before review and publish', async () => {
@@ -116,7 +123,7 @@ describe('worker rate-card category coverage boundary', () => {
       rc_fixed_fee: [], rc_collection_fee: [], rc_pick_pack: [],
       rc_reverse_shipping: [], rc_franchise_fee: [],
     };
-    mockState.fsnRows = [{ category: 'kurta', fsn: 'ABCDEFGHIJKLMNOP' }];
+    mockState.fsnRows = [{ category: 'kurta', order_rows: 1, valid_fsn_order_rows: 1 }];
     const withoutEffectiveDate = observations.map(row => {
       const { effectiveDate: _effectiveDate, ...rest } = row;
       return { ...rest, source_effective_date: '2026-10-30' };

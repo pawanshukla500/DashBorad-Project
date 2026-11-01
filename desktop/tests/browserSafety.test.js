@@ -1,4 +1,4 @@
-import { buildFsnPlan, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, normalizeScrapeVertical, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals, uncoveredCategoriesForMarketplace } from '../fsnPlan.js';
+import { blockingUncoveredCategoriesForMarketplace, buildFsnPlan, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, normalizeScrapeVertical, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals, uncoveredCategoriesForMarketplace } from '../fsnPlan.js';
 import { captureScrapeAuthContext, createStagedExtractionState, isScrapeAuthContextCurrent, normalizeScrapedCards, resolveSellerAccountForRateCards } from '../scrapeResults.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -162,7 +162,9 @@ test('SQLite review survives restart, rejects a different owner and rolls back a
     assert.deepEqual(recoverReview(db,'owner').coverage,coverage,'coverage gaps survive a restart with the staged review');
     assert.equal(recoverReview(db,'owner').sellerAccount,'default','the recovery metadata retains the seller account');
     assert.equal(hasKnownMarketplaceFsnCoverage(null,'flipkart'),false,'legacy SQLite reviews without coverage metadata cannot pass publication checks');
-    assert.equal(hasKnownMarketplaceFsnCoverage(coverage,'flipkart'),true,'current review metadata records a complete coverage shape even when it contains gaps');
+    assert.equal(hasKnownMarketplaceFsnCoverage(coverage,'flipkart'),true,'review metadata records the coverage shape and explicit skip reasons');
+    assert.deepEqual(blockingUncoveredCategoriesForMarketplace(coverage,'flipkart'),[],
+      'legacy coverage that marks a no-FSN category both unavailable and uncovered still permits the FSN-backed review');
     assert.equal(recoverReview(db,'another-owner'),null);
     saveStagedJob(db,{id:'stale-staging',marketplace:'flipkart',status:'staging',parameters:{owner:'owner'}});
     saveStagedObservations(db,'stale-staging',[{category:'dress',commissions:[{rate:0.2}]}]);
@@ -332,7 +334,8 @@ test('database FSN plan covers every brand/category/channel without static verti
     {scopeVerticals:['kurta','dress'],requiredVerticals:['kurta','dress']},
     'live backend categories replace stale category defaults from older worker configs');
   assert.throws(()=>buildFsnPlan(catalog,{verticals:['missing']}),/No database FSN/);
-  assert.throws(()=>buildFsnPlan([{...catalog[0],sample_fsn:''}]),/invalid real FSN/);
+  assert.deepEqual(buildFsnPlan([catalog[0],{...catalog[0],category:'fabric',sample_fsn:''}]).map(row=>row.category),['kurta'],
+    'malformed or missing FSNs are skipped when other real catalog FSNs are available');
   assert.equal(normalizeScrapeVertical('salwar suit'), 'salwar_kurta_dupatta');
   assert.equal(normalizeScrapeVertical('shopsy_saree'), 'shopsy_sari');
   assert.equal(normalizeScrapeVertical('saree', 'shopsy'), 'shopsy_sari');
@@ -351,24 +354,28 @@ test('database FSN plan covers every brand/category/channel without static verti
   assert.notEqual(cards[0].commissions[0].rate,cards[1].commissions[0].rate);
 });
 
-test('default extraction scope uses real FSN-backed categories and blocks incomplete publication', () => {
+test('default extraction skips categories without real FSNs and blocks omitted FSN-backed categories', () => {
   const catalog=[
     {marketplace:'flipkart',category:'kurta',brand:'Sangria',sample_fsn:'ABCDEFGHIJKLMNOP'},
     {marketplace:'flipkart',category:'shopsy_kurta',brand:'Youthnic',sample_fsn:'QRSTUVWXYZ123456'},
-    {marketplace:'flipkart',category:'legacy_orders_category',brand:'Youthnic',sample_fsn:'ABCDEF0123456789'}
+    {marketplace:'flipkart',category:'legacy_orders_category',brand:'Youthnic',sample_fsn:'ABCDEF0123456789'},
+    {marketplace:'flipkart',category:'invalid_order_fsn',brand:'Youthnic',sample_fsn:'SHORT'}
   ];
   const coverage=resolveFsnBackedScrapeVerticals({
     configuredVerticals:['kurta','blouse','lehenga_choli','shopsy_kurta','shopsy_fabric'],
     catalog,marketplace:'flipkart_shopsy',brand:'all'
   });
   assert.deepEqual(coverage.scopeVerticals,['kurta','shopsy_kurta']);
+  assert.equal(coverage.availableVerticals.includes('invalid_order_fsn'),false,
+    'a category with only malformed database FSNs is treated as unavailable');
   assert.deepEqual(coverage.requiredVerticals,['kurta','shopsy_kurta']);
   assert.deepEqual(coverage.unavailableConfiguredVerticals,['blouse','lehenga_choli','shopsy_fabric']);
   assert.deepEqual(missingFsnCategoriesForMarketplace(coverage,'flipkart'),['blouse','lehenga_choli']);
   assert.deepEqual(missingFsnCategoriesForMarketplace(coverage,'shopsy'),['shopsy_fabric']);
-  assert.deepEqual(uncoveredCategoriesForMarketplace(coverage,'flipkart'),['blouse','lehenga_choli']);
-  assert.equal(describeCoverageBlockers(coverage,'flipkart'),'categories without database FSNs: blouse, lehenga_choli');
-  assert.equal(coverage.complete,false);
+  assert.deepEqual(coverage.uncoveredConfiguredVerticals,[]);
+  assert.deepEqual(uncoveredCategoriesForMarketplace(coverage,'flipkart'),[]);
+  assert.equal(describeCoverageBlockers(coverage,'flipkart'),'all configured categories with database FSNs are included');
+  assert.equal(coverage.complete,true,'categories without FSNs are intentionally excluded from the eligible scrape scope');
   assert.equal(buildFsnPlan(catalog,{verticals:coverage.scopeVerticals,requiredVerticals:coverage.requiredVerticals}).length,2,
     'only configured verticals with real FSNs are targets; unconfigured order-history categories stay out');
 });
@@ -385,19 +392,25 @@ test('default extraction does not scrape unconfigured order-history categories o
   assert.throws(()=>resolveFsnBackedScrapeVerticals({configuredVerticals:['blouse'],catalog,brand:'all'}),/No configured rate-card category has a database FSN/);
 });
 
-test('explicit missing categories fail and filtered scopes cannot publish incomplete configured coverage', () => {
+test('explicit missing-FSN categories are skipped while omitted FSN-backed categories still block publication', () => {
   const catalog=[{marketplace:'flipkart',category:'kurta',brand:'Sangria',sample_fsn:'ABCDEFGHIJKLMNOP'}];
+  const explicitWithMissing = resolveFsnBackedScrapeVerticals({
+    requestedVerticals:['kurta','blouse'],configuredVerticals:['kurta','blouse'],catalog,brand:'all'
+  });
+  assert.deepEqual(explicitWithMissing.scopeVerticals,['kurta']);
+  assert.deepEqual(explicitWithMissing.unavailableRequestedVerticals,['blouse']);
+  assert.equal(explicitWithMissing.complete,true,'the no-FSN category is skipped without invalidating the remaining target');
   assert.throws(
     ()=>resolveFsnBackedScrapeVerticals({requestedVerticals:['blouse'],configuredVerticals:['blouse'],catalog,brand:'all'}),
-    /Selected categories have no database FSNs.*blouse.*Nothing was scraped/,
-    'an explicitly selected category without an FSN stops before the browser is opened'
+    /No selected category has a valid database FSN.*blouse/,
+    'a run with no FSN-backed target stops before browser navigation'
   );
 
   const explicitSubset=resolveFsnBackedScrapeVerticals({requestedVerticals:['kurta'],configuredVerticals:['kurta','lehenga_choli'],catalog,brand:'all'});
   assert.deepEqual(explicitSubset.unavailableConfiguredVerticals,['lehenga_choli'],
     'an explicit category request still discovers configured categories missing a real FSN');
   assert.deepEqual(missingFsnCategoriesForMarketplace(explicitSubset,'flipkart'),['lehenga_choli']);
-  assert.equal(explicitSubset.complete,false);
+  assert.equal(explicitSubset.complete,true,'a configured category with no database FSN is skipped');
 
   const omittedScope=resolveFsnBackedScrapeVerticals({requestedVerticals:['kurta'],configuredVerticals:['kurta','blouse'],catalog:[...catalog,{marketplace:'flipkart',category:'blouse',brand:'Sangria',sample_fsn:'QRSTUVWXYZ123456'}],brand:'all'});
   assert.deepEqual(uncoveredCategoriesForMarketplace(omittedScope,'flipkart'),['blouse']);
@@ -406,7 +419,15 @@ test('explicit missing categories fail and filtered scopes cannot publish incomp
   const brandScope=resolveFsnBackedScrapeVerticals({configuredVerticals:['kurta','lehenga_choli'],catalog,brand:'Sangria'});
   assert.deepEqual(brandScope.scopeVerticals,['kurta']);
   assert.deepEqual(brandScope.requiredVerticals,['kurta']);
-  assert.equal(brandScope.complete,false,'categories omitted by a brand filter cannot be treated as a complete all-category extraction');
+  assert.equal(brandScope.complete,true,'categories with no FSN in any brand are excluded from completeness');
+
+  const fsnBackedOtherBrand=resolveFsnBackedScrapeVerticals({
+    configuredVerticals:['kurta','blouse'],
+    catalog:[...catalog,{marketplace:'flipkart',category:'blouse',brand:'Youthnic',sample_fsn:'QRSTUVWXYZ123456'}],
+    brand:'Sangria'
+  });
+  assert.deepEqual(fsnBackedOtherBrand.uncoveredConfiguredVerticals,['blouse']);
+  assert.equal(fsnBackedOtherBrand.complete,false,'known FSN-backed categories omitted by a brand filter remain incomplete');
 });
 
 test('permanent coverage failures do not trigger transient extraction retries', () => {
@@ -573,10 +594,10 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
     'standalone claimed jobs discover configured categories even when verticals are explicit');
   assert.match(worker,/scrapeFlipkartRateCards\(\{ marketplace: job\.marketplace, seller_account: sellerAccount,/,
     'standalone claimed jobs preserve the selected seller account in extracted observations');
-  assert.match(main,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0 && uncoveredCategories\.length === 0/,
-    'the desktop review blocks empty, incomplete, omitted-category, or legacy unknown-coverage previews');
-  assert.match(server,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0 && uncoveredCategories\.length === 0/,
-    'the standalone review blocks empty, incomplete, omitted-category, or legacy unknown-coverage previews');
+  assert.match(main,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 &&\s*blockingUncoveredCategoriesForMarketplace\(stagedExtraction\.coverage, targetMp\)\.length === 0/,
+    'the desktop review skips no-FSN categories but blocks empty, omitted-category, or unknown-coverage previews');
+  assert.match(server,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 &&\s*blockingUncoveredCategoriesForMarketplace\(stagedExtraction\.coverage, targetMp\)\.length === 0/,
+    'the standalone review skips no-FSN categories but blocks empty, omitted-category, or unknown-coverage previews');
   const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
   assert.match(renderer,/extraction omitted configured categories/,
     'review logs explain when a configured category was excluded from the selected extraction scope');

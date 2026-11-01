@@ -445,6 +445,10 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
     diffResult.coverage = {
       configuredCategories: coverage.configuredCategories,
       fsnCategories: coverage.fsnCategories,
+      fsnBackedConfiguredCategories: coverage.fsnBackedConfiguredCategories,
+      missingFsnCategories: coverage.missingFsnCategories,
+      configuredCategoriesWithoutOrders: coverage.configuredCategoriesWithoutOrders,
+      configuredCategoriesWithOrdersButNoFsns: coverage.configuredCategoriesWithOrdersButNoFsns,
       complete: true,
     };
     if (job.parameters?.reviewFingerprint && job.parameters.reviewFingerprint !== diffResult.fingerprint) {

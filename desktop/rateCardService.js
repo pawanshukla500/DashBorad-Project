@@ -46,7 +46,7 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
         category,
         COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General') as brand,
         COALESCE(NULLIF(TRIM(seller_account), ''), 'default') as seller_account,
-        fsn,
+        UPPER(TRIM(fsn)) as fsn,
         sku,
         ROW_NUMBER() OVER (
           PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General'), COALESCE(NULLIF(TRIM(seller_account), ''), 'default')
@@ -57,8 +57,8 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
         ) as order_count
       FROM orders
       WHERE (marketplace ILIKE '%flipkart%' OR marketplace ILIKE '%shopsy%')
-        AND fsn IS NOT NULL AND fsn != ''
-        AND category IS NOT NULL AND category != ''
+        AND fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'
+        AND category IS NOT NULL AND TRIM(category) != ''
     )
     SELECT 
       marketplace, 
