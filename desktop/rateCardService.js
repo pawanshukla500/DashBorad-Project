@@ -82,22 +82,31 @@ export async function buildBrandRateCardSet(pool = null, sellerAccount = 'defaul
   const effectiveDate = new Date().toISOString().slice(0, 10);
   const samples = await getRealTimeBrandFsnSamples(p);
   const normalize = value => String(value || '').trim().toLowerCase();
-  const fields = [['rc_commission','commissions'],['rc_fixed_fee','fixedFees'],['rc_collection_fee','collectionFees'],['rc_reverse_shipping','reverseShipping'],['rc_pick_pack','pickPackFees']];
+  const normalizedAccount = value => String(value || '').trim() || 'default';
+  const isGenericRateBrand = value => !normalize(value) || ['general', 'all brands'].includes(normalize(value));
+  const fields = [['rc_commission','commissions',true],['rc_fixed_fee','fixedFees',false],['rc_collection_fee','collectionFees',false],['rc_reverse_shipping','reverseShipping',false],['rc_pick_pack','pickPackFees',false]];
   const cards = new Map();
-  for (const [table, field] of fields) {
+  for (const [table, field, brandSpecific] of fields) {
     const { rows } = await p.query(`SELECT * FROM ${table} WHERE marketplace IN ('flipkart','shopsy')
       AND ($2 = 'all' OR seller_account = $2)
       AND (start_date IS NULL OR start_date <= $1) AND (end_date IS NULL OR end_date >= $1) ORDER BY category, id`, [effectiveDate, sellerAccount]);
     for (const row of rows) {
-      const brand = row.brand_name || 'General';
-      const sellerAccount = row.seller_account || 'default';
-      const key = JSON.stringify([row.marketplace,sellerAccount,row.category,field === 'commissions' ? brand : 'General']);
+      const account = normalizedAccount(row.seller_account);
+      const genericBrand = brandSpecific && isGenericRateBrand(row.brand_name);
+      const brand = brandSpecific ? (genericBrand ? 'All brands' : String(row.brand_name).trim()) : 'General';
+      const scopedSamples = samples.filter(item => normalize(item.marketplace).includes(normalize(row.marketplace)) &&
+        normalize(item.category) === normalize(row.category) && normalizedAccount(item.seller_account) === account);
+      const sample = genericBrand || !brandSpecific
+        ? scopedSamples[0]
+        : scopedSamples.find(item => normalize(item.brand || 'General') === normalize(brand));
+      if (!sample) continue;
+      const orderCount = genericBrand || !brandSpecific
+        ? scopedSamples.reduce((total, item) => total + Number(item.order_count || 0), 0)
+        : Number(sample.order_count || 0);
+      const key = JSON.stringify([row.marketplace,account,row.category,brand]);
       if (!cards.has(key)) {
-        const sample = samples.find(item => normalize(item.marketplace).includes(normalize(row.marketplace)) &&
-          normalize(item.category) === normalize(row.category) && normalize(item.seller_account || 'default') === normalize(sellerAccount) &&
-          normalize(item.brand || 'General') === normalize(field === 'commissions' ? brand : 'General'));
-        cards.set(key, { marketplace: row.marketplace, seller_account: sellerAccount, category: row.category, brand,
-        ...(sample ? { sample_fsn: sample.sample_fsn, sample_sku: sample.sample_sku, order_count: Number(sample.order_count) } : {}),
+        cards.set(key, { marketplace: row.marketplace, seller_account: account, category: row.category, brand,
+        sample_fsn: sample.sample_fsn, sample_sku: sample.sample_sku, order_count: orderCount,
         source: 'published_database', effectiveDate, commissions: [], fixedFees: [], collectionFees: [], reverseShipping: [], pickPackFees: [] });
       }
       const slab = { ...row };

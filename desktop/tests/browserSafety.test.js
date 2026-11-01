@@ -14,6 +14,7 @@ import { createWorkerEngine } from '../workerEngine.js';
 import { isPermanentScrapeError, permanentScrapeError } from '../scrapeErrors.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
 import { buildBrandRateCardSet } from '../rateCardService.js';
+import { generateBrandwiseRateCardExcel } from '../excelExport.js';
 import { captureScrapeFailure } from '../scrapeDiagnostics.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from '../portalProfileState.js';
 import { rateFixture } from './fixtures/portalRateFixture.js';
@@ -472,6 +473,37 @@ test('rate-card snapshot keeps seller accounts in separate cards', async () => {
     [['default','ABCDEFGHIJKLMNOP','SKU-DEFAULT',6],['seller-b','QRSTUVWXYZ123456','SKU-B',3]]);
   const defaultCards=await buildBrandRateCardSet(pool);
   assert.ok(defaultCards.length>0 && defaultCards.every(card=>card.seller_account==='default'),'the visible review defaults to the same seller account used by publication');
+});
+
+test('desktop published-rate workbook includes generic commission rows with a real category FSN', async () => {
+  const commissionRows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:null,price_min:0,price_max:500,rate:0.12},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'All brands',price_min:500,price_max:999999,rate:0.13}
+  ];
+  const catalogRows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku:'SKU-DEFAULT',order_count:6},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Sangria',sample_fsn:'QRSTUVWXYZ123456',sample_sku:'SKU-SANGRIA',order_count:2}
+  ];
+  const pool={query:async sql=>({rows:String(sql).includes('FROM orders')?catalogRows:
+    String(sql).includes('FROM rc_commission')?commissionRows:[]})};
+  const outputPath=path.join(process.cwd(),'test_generic_brand_ratecard.xlsx');
+  try {
+    await generateBrandwiseRateCardExcel(outputPath,pool);
+    const xlsxModule=await import('xlsx');
+    const XLSX=xlsxModule.default||xlsxModule;
+    const workbook=XLSX.read(fs.readFileSync(outputPath),{type:'buffer'});
+    const summary=XLSX.utils.sheet_to_json(workbook.Sheets.Brand_Commission_Summary);
+    const catalog=XLSX.utils.sheet_to_json(workbook.Sheets.Sample_FSN_Catalog);
+    assert.deepEqual(summary.map(row=>[row['Brand Name'],row['Sample FSN'],row['Orders in DB'],row['Commission Rate (%)']]),[
+      ['All brands','ABCDEFGHIJKLMNOP',8,'12.00%'],
+      ['All brands','ABCDEFGHIJKLMNOP',8,'13.00%']
+    ]);
+    assert.deepEqual(catalog.map(row=>[row['Brand Name'],row['Sample FSN'],row['Orders in Database']]),[
+      ['All brands','ABCDEFGHIJKLMNOP',8]
+    ]);
+  } finally {
+    fs.rmSync(outputPath,{force:true});
+  }
 });
 
 test('standalone worker keeps requested published-rate workbook export when all profiles lack FSNs', () => {

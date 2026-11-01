@@ -167,7 +167,8 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
 
     // Ensure output directory exists
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    XLSX.writeFile(wb, outputPath);
+    const workbookBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
+    await fs.writeFile(outputPath, workbookBuffer);
 
     return {
       success: true,
