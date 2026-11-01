@@ -94,6 +94,21 @@ describe('Rate Card Automation & Sync Endpoints', () => {
     expect(body.error).toContain('scrapedData array is required');
   });
 
+  it('POST /api/rate-card/detect-changes rejects observations for another seller account', async () => {
+    const res = await fetch(`${baseUrl}/api/rate-card/detect-changes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marketplace: 'flipkart', seller_account: 'default', scrapedData: [
+        { marketplace: 'flipkart', seller_account: 'seller_ej', vertical: 'kurta' },
+      ] }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      code: 'SELLER_ACCOUNT_MISMATCH',
+      error: expect.stringContaining('seller account does not match'),
+    });
+  });
+
   it('GET /api/rate-card/unconfigured-categories returns list of unconfigured categories', async () => {
     const res = await fetch(`${baseUrl}/api/rate-card/unconfigured-categories`);
     expect(res.status).toBe(200);

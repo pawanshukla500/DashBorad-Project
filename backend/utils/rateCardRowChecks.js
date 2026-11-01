@@ -14,7 +14,7 @@
  * Warnings are values that can be stored but are implausible, most often a
  * percentage on the wrong scale. They never block a save: editing a period
  * re-sends its untouched rows, and legacy rows (such as a commission imported
- * as 14 rather than 0.14 by scripts/import_commissions.js) must stay editable.
+ * as 14 rather than 0.14 by an older workbook import) must stay editable.
  */
 
 // PostgreSQL NUMERIC(p, s) rounds to s decimals, then holds magnitudes below

@@ -93,6 +93,79 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
     } finally {client.release();}
   });
 
+  it('bounds a modified same-day row before a scheduled future period in PostgreSQL', async () => {
+    const observations = cards().map(card => ({ ...card, vertical: 'same_day_future', category: 'same_day_future' }));
+    const client = await scoped.connect();
+    try {
+      for (const observation of observations) for (const descriptor of RATE_TABLES) {
+        for (const source of observation[descriptor.field] || []) {
+          const row = normalizeObservationRow(descriptor, source, observation);
+          if (descriptor.table === 'rc_commission') row.rate = 0.2;
+          const columns = ['marketplace', 'seller_account', 'category', 'start_date', 'end_date', ...descriptor.keys, ...descriptor.values];
+          const values = ['flipkart', 'default', row.category, '2026-10-30', null,
+            ...descriptor.keys.map(key => row[key]), ...descriptor.values.map(key => row[key])];
+          await client.query(`INSERT INTO ${descriptor.table} (${columns.join(',')}) VALUES (${values.map((_, i) => `$${i + 1}`).join(',')})`, values);
+        }
+      }
+      const commission = normalizeObservationRow(RATE_TABLES.find(item => item.table === 'rc_commission'),
+        observations[0].commissions[0], observations[0]);
+      const descriptor = RATE_TABLES.find(item => item.table === 'rc_commission');
+      const futureValues = ['flipkart', 'default', commission.category, '2026-12-01', null,
+        ...descriptor.keys.map(key => commission[key]), 0.18];
+      const futureColumns = ['marketplace', 'seller_account', 'category', 'start_date', 'end_date', ...descriptor.keys, 'rate'];
+      await client.query(`INSERT INTO rc_commission (${futureColumns.join(',')}) VALUES (${futureValues.map((_, i) => `$${i + 1}`).join(',')})`, futureValues);
+
+      observations[0].commissions[0].rate = 0.15;
+      const review = await compareScrapedRatesWithActive(observations, {
+        marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30', dbClient: client,
+      });
+      expect(review.diffCount).toBe(1);
+      await publishRateCardObservations(observations, {
+        pool: scoped, marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30',
+        publishedBy: 'integration-fixture', reviewFingerprint: review.fingerprint,
+      });
+
+      const periods = await client.query(`SELECT TO_CHAR(start_date,'YYYY-MM-DD') AS start_date,
+          TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, rate FROM rc_commission
+        WHERE category = 'same_day_future' ORDER BY start_date`);
+      expect(periods.rows).toHaveLength(2);
+      expect(periods.rows[0]).toMatchObject({ start_date: '2026-10-30', end_date: '2026-11-30', rate: '0.150000' });
+      expect(periods.rows[1]).toMatchObject({ start_date: '2026-12-01', end_date: null, rate: '0.180000' });
+    } finally { client.release(); }
+  });
+
+  it('preserves the configured end date and gap before a later scheduled period in PostgreSQL', async () => {
+    const observations = cards().map(card => ({ ...card, vertical: 'intentional_gap', category: 'intentional_gap' }));
+    const client = await scoped.connect();
+    try {
+      const descriptor = RATE_TABLES.find(item => item.table === 'rc_commission');
+      const commission = normalizeObservationRow(descriptor, observations[0].commissions[0], observations[0]);
+      const columns = ['marketplace', 'seller_account', 'category', 'brand_name', 'start_date', 'end_date', 'price_min', 'price_max', 'rate'];
+      await client.query(`INSERT INTO rc_commission (${columns.join(',')}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        ['flipkart', 'default', commission.category, commission.brand_name, '2026-10-01', '2026-11-15', commission.price_min, commission.price_max, 0.2]);
+      await client.query(`INSERT INTO rc_commission (${columns.join(',')}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        ['flipkart', 'default', commission.category, commission.brand_name, '2026-12-01', null, commission.price_min, commission.price_max, 0.18]);
+
+      const review = await compareScrapedRatesWithActive(observations, {
+        marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30', dbClient: client,
+      });
+      await publishRateCardObservations(observations, {
+        pool: scoped, marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30',
+        publishedBy: 'integration-fixture', reviewFingerprint: review.fingerprint,
+      });
+
+      const periods = await client.query(`SELECT TO_CHAR(start_date,'YYYY-MM-DD') AS start_date,
+          TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, rate FROM rc_commission
+        WHERE category = 'intentional_gap' ORDER BY start_date`);
+      expect(periods.rows).toHaveLength(3);
+      expect(periods.rows.map(row => [row.start_date, row.end_date])).toEqual([
+        ['2026-10-01', '2026-10-29'],
+        ['2026-10-30', '2026-11-15'],
+        ['2026-12-01', null],
+      ]);
+    } finally { client.release(); }
+  });
+
   it('compares NULL and blank legacy account rows as default without inserting duplicates',async()=>{
     const observations = ['legacy_null', 'legacy_blank'].flatMap((category, index) =>
       cards().map(card => ({ ...card, vertical: category, category })));

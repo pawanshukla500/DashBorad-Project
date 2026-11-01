@@ -1,8 +1,8 @@
 import { getPool } from '../db/index.js';
-import { clearRateCardCache, normalizeMarketplaceCategory } from './rateCard.js';
+import { clearRateCardCache } from './rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
-import { RATE_TABLES, validateRateObservations, normalizeObservationRow, rateRowIdentity } from './rateCardObservationPlan.js';
+import { RATE_TABLES, validateRateObservations } from './rateCardObservationPlan.js';
 import { assertRateObservationCoverage, loadRateCardCoverage } from './rateCardCoverage.js';
 
 const before = date => {
@@ -11,11 +11,16 @@ const before = date => {
   return value.toISOString().slice(0, 10);
 };
 const iso = date => date instanceof Date ? date.toISOString().slice(0, 10) : date;
+const replacementEndDate = (existingEnd, nextStart) => {
+  const configuredEnd = iso(existingEnd) || null;
+  const scheduledEnd = nextStart ? before(nextStart) : null;
+  return scheduledEnd && (!configuredEnd || configuredEnd > scheduledEnd) ? scheduledEnd : configuredEnd;
+};
 
 export async function publishRateCardObservations(observations, options = {}) {
   const { marketplace = 'flipkart', sellerAccount = 'default', publishedBy,
     effectiveDate = observations?.[0]?.effectiveDate, jobId = null } = options;
-  validateRateObservations(observations, { marketplace, complete: true });
+  validateRateObservations(observations, { marketplace, sellerAccount, complete: true });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate || '') ||
       new Date(`${effectiveDate}T00:00:00Z`).toISOString().slice(0, 10) !== effectiveDate ||
       observations.some(o => o.effectiveDate !== effectiveDate)) throw new Error('One valid extraction date is required.');
@@ -29,7 +34,7 @@ export async function publishRateCardObservations(observations, options = {}) {
     if (options.requireConfiguredCoverage) {
       const coverage = await loadRateCardCoverage(client, { marketplace, sellerAccount, effectiveDate });
       const expectedVerticals = assertRateObservationCoverage(observations, coverage);
-      validateRateObservations(observations, { marketplace, complete: true, expectedVerticals });
+      validateRateObservations(observations, { marketplace, sellerAccount, complete: true, expectedVerticals });
     }
     const plan = await compareScrapedRatesWithActive(observations, { marketplace, sellerAccount, effectiveDate, dbClient: client });
     if (!options.reviewFingerprint || plan.fingerprint !== options.reviewFingerprint) throw new Error('REVIEW_STALE: rates changed since review. Refresh and review again.');
@@ -49,32 +54,24 @@ export async function publishRateCardObservations(observations, options = {}) {
     for (const diff of plan.diffs) {
       const descriptor = RATE_TABLES.find(t => t.table === diff.table);
       const sameDay = diff.oldRow && iso(diff.oldRow.start_date) === effectiveDate;
+      const row = diff.newRow;
+      const nextStart = diff.nextPeriodStart || null;
       if (diff.oldRow) {
         if (sameDay && !diff.newRow) {
           await client.query(`DELETE FROM ${descriptor.table} WHERE id = $1`, [diff.oldRow.id]);
         } else if (sameDay) {
-          await client.query(`UPDATE ${descriptor.table} SET ${descriptor.values.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = NOW() WHERE id = $1`,
-            [diff.oldRow.id, ...descriptor.values.map(k => diff.newRow[k])]);
+          const endDate = replacementEndDate(diff.oldRow.end_date, nextStart);
+          await client.query(`UPDATE ${descriptor.table} SET end_date = $2, ${descriptor.values.map((k, i) => `${k} = $${i + 3}`).join(', ')}, updated_at = NOW() WHERE id = $1`,
+            [diff.oldRow.id, endDate, ...descriptor.values.map(k => row[k])]);
         } else {
           await client.query(`UPDATE ${descriptor.table} SET end_date = $1, updated_at = NOW() WHERE id = $2`, [before(effectiveDate), diff.oldRow.id]);
         }
       }
       if (!diff.newRow || sameDay) continue;
-      const row = diff.newRow;
       const keys = ['category', ...descriptor.keys];
-      // Category normalization accepts arbitrary space/hyphen variants, so a
-      // finite SQL alias list can miss future rows. Restrict this read to the
-      // marketplace/account's future periods, then canonicalize before row matching.
-      const future = await client.query(`SELECT * FROM ${descriptor.table}
-        WHERE marketplace = $1 AND COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2
-          AND start_date > $3`,
-        [marketplace, sellerAccount, effectiveDate]);
-      const identity = rateRowIdentity(descriptor, row);
-      const next = future.rows.filter(raw => iso(raw.start_date) > effectiveDate &&
-        normalizeMarketplaceCategory(raw.category, marketplace) === row.category &&
-        rateRowIdentity(descriptor, normalizeObservationRow(descriptor, raw)) === identity)
-        .map(raw => iso(raw.start_date)).sort()[0];
-      const endDate = next ? before(next) : (iso(diff.oldRow?.end_date) || null);
+      // A scheduled gap is intentional: replacement rates inherit the prior
+      // row's configured end when it precedes the next scheduled period.
+      const endDate = replacementEndDate(diff.oldRow?.end_date, nextStart);
       const columns = ['marketplace', 'seller_account', 'start_date', 'end_date', ...keys, ...descriptor.values];
       const values = [marketplace, sellerAccount, effectiveDate, endDate, ...keys.map(k => row[k]), ...descriptor.values.map(k => row[k])];
       await client.query(`INSERT INTO ${descriptor.table} (${columns.join(', ')}) VALUES (${values.map((_, i) => `$${i + 1}`).join(', ')})`, values);

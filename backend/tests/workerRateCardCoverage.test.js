@@ -116,6 +116,20 @@ describe('worker rate-card category coverage boundary', () => {
     expect(mockState.compare).toHaveBeenCalledOnce();
   });
 
+  it('rejects observations tagged for a different seller account before comparison or storage', async () => {
+    observations[0].seller_account = 'seller_ej';
+
+    const response = await post(await listen(), 'rate-job-1/results', { results: observations });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      code: 'SELLER_ACCOUNT_MISMATCH',
+      error: expect.stringContaining('seller account does not match'),
+    });
+    expect(mockState.compare).not.toHaveBeenCalled();
+    expect(mockState.query.mock.calls.some(([sql]) => String(sql).includes("status = 'completed'"))).toBe(false);
+  });
+
   it('persists the resolved UTC date on every result before review and publish', async () => {
     mockState.job = job();
     mockState.configRows = {

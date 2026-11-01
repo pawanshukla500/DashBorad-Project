@@ -10,7 +10,6 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { normalizeCategory, normalizeMarketplaceCategory, clearRateCardCache } from '../services/rateCard.js';
 import { getFlipkartVerticals } from '../services/flipkartRateCardExtractor.js';
-import { detectRateChanges, syncRateCardsToDatabase } from '../services/rateCardSyncEngine.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
@@ -21,6 +20,23 @@ import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngi
 import { resolveRateCardEffectiveDate } from '../utils/rateCardDate.js';
 
 const router = express.Router();
+const RATE_CARD_PUBLISH_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))";
+
+async function withRateCardPublishLock(pool, work) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(RATE_CARD_PUBLISH_LOCK_SQL);
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 // ── Table mapping ────────────────────────────────────────────────────────────
 const TABLE_MAP = {
@@ -429,10 +445,10 @@ router.post('/config/:type', async (req, res) => {
     ];
     const placeholders = allCols.map((_, i) => `$${i + 1}`);
 
-    const { rows } = await pool.query(
+    const { rows } = await withRateCardPublishLock(pool, client => client.query(
       `INSERT INTO ${table} (${allCols.join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING *`,
       values,
-    );
+    ));
     clearRateCardCache();
     res.json({ ok: true, row: rows[0], warnings });
   } catch (e) {
@@ -470,10 +486,10 @@ router.put('/config/:type/:id', async (req, res) => {
     updates.push(`updated_at = NOW()`);
     values.push(req.params.id);
 
-    const { rows } = await pool.query(
+    const { rows } = await withRateCardPublishLock(pool, client => client.query(
       `UPDATE ${table} SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
       values,
-    );
+    ));
     clearRateCardCache();
     res.json({ ok: true, row: rows[0] || null, warnings });
   } catch (e) {
@@ -488,7 +504,7 @@ router.delete('/config/:type/:id', async (req, res) => {
   try {
     const table = resolveTable(req.params.type);
     const pool = getPool();
-    await pool.query(`DELETE FROM ${table} WHERE id = $1`, [req.params.id]);
+    await withRateCardPublishLock(pool, client => client.query(`DELETE FROM ${table} WHERE id = $1`, [req.params.id]));
     clearRateCardCache();
     res.json({ ok: true });
   } catch (e) {
@@ -562,7 +578,7 @@ router.post('/config/:type/save-period', async (req, res) => {
       await client.query('BEGIN');
       // Serialize every mutation with reviewed desktop publications so a
       // manual save cannot change rows between fingerprint review and publish.
-      await client.query("SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))");
+      await client.query(RATE_CARD_PUBLISH_LOCK_SQL);
       // One save per (fee type, marketplace, account, category) at a time:
       // two concurrent saves would otherwise each miss the other's new
       // period and both stay open.
@@ -712,31 +728,32 @@ router.post('/config/:type/auto-close-superseded', async (req, res) => {
     const table = resolveTable(req.params.type);
     const { marketplace, sellerAccount } = resolveMarketplaceAndAccount(req.body.marketplace, req.body.seller_account);
     const pool = getPool();
-
-    // Find all distinct periods per category
-    const { rows: periods } = await pool.query(
-      `SELECT category, TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date, TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date, COUNT(*) as cnt
-         FROM ${table}
-        WHERE marketplace = $1
-          AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = '')))
-        GROUP BY category, start_date, end_date
-        ORDER BY category, start_date ASC NULLS FIRST`,
-      [marketplace, sellerAccount],
-    );
-
-    const byCategory = {};
-    for (const p of periods) {
-      const cat = p.category;
-      if (!byCategory[cat]) byCategory[cat] = [];
-      byCategory[cat].push(p);
-    }
-
-    let closedCount = 0;
-    const resolved = [];
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Read the period set only after acquiring the same lock as publication;
+      // otherwise a concurrent insert could be absent from this closure pass.
+      await client.query(RATE_CARD_PUBLISH_LOCK_SQL);
+
+      const { rows: periods } = await client.query(
+        `SELECT category, TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date, TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date, COUNT(*) as cnt
+           FROM ${table}
+          WHERE marketplace = $1
+            AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = '')))
+          GROUP BY category, start_date, end_date
+          ORDER BY category, start_date ASC NULLS FIRST`,
+        [marketplace, sellerAccount],
+      );
+
+      const byCategory = {};
+      for (const p of periods) {
+        const cat = p.category;
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push(p);
+      }
+
+      let closedCount = 0;
+      const resolved = [];
       for (const [cat, catPeriods] of Object.entries(byCategory)) {
         for (let i = 0; i < catPeriods.length - 1; i++) {
           const cur = catPeriods[i];
@@ -806,7 +823,7 @@ router.post('/config/:type/close-period', async (req, res) => {
     if (endDate && closeOn >= endDate) {
       return res.status(400).json({ error: 'close_on must be earlier than the current end date' });
     }
-    const { rowCount } = await getPool().query(
+    const { rowCount } = await withRateCardPublishLock(getPool(), client => client.query(
       `UPDATE ${table}
          SET end_date = $6::date, updated_at = NOW()
        WHERE (category = $1 OR LOWER(TRIM(category)) = LOWER(TRIM($1)) OR category = $7 OR LOWER(TRIM(category)) = LOWER(TRIM($7)))
@@ -815,7 +832,7 @@ router.post('/config/:type/close-period', async (req, res) => {
          AND start_date IS NOT DISTINCT FROM $4::date
          AND end_date IS NOT DISTINCT FROM $5::date`,
       [category, marketplace, sellerAccount, startDate, endDate, closeOn, normalizedCategory],
-    );
+    ));
     if (!rowCount) return res.status(404).json({ error: 'Rate period not found' });
     clearRateCardCache();
     res.json({ ok: true, updated: rowCount, end_date: closeOn });
@@ -905,20 +922,24 @@ router.post('/versions/:id/rollback', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   try {
     const pool = getPool();
-    const { rows: versions } = await pool.query(
-      `SELECT * FROM rate_card_versions WHERE id = $1`,
-      [req.params.id],
-    );
-    if (!versions.length) return res.status(404).json({ error: 'Version not found' });
-    const version = versions[0];
-    const snapshot = version.snapshot;
-    if (!snapshot || typeof snapshot !== 'object') {
-      return res.status(400).json({ error: 'Version has no snapshot data' });
-    }
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query(RATE_CARD_PUBLISH_LOCK_SQL);
+      const { rows: versions } = await client.query(
+        `SELECT * FROM rate_card_versions WHERE id = $1`,
+        [req.params.id],
+      );
+      if (!versions.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Version not found' });
+      }
+      const version = versions[0];
+      const snapshot = version.snapshot;
+      if (!snapshot || typeof snapshot !== 'object') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Version has no snapshot data' });
+      }
       const mp = version.marketplace;
       const sa = version.seller_account;
 
@@ -1620,7 +1641,8 @@ router.post('/detect-changes', async (req, res) => {
     const diffResult = await compareScrapedRatesWithActive(scrapedData, { marketplace, sellerAccount: seller_account });
     res.json(diffResult);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const status = err.code === 'SELLER_ACCOUNT_MISMATCH' ? 409 : 500;
+    res.status(status).json({ error: err.message, code: err.code });
   }
 });
 
