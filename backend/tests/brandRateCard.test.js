@@ -47,6 +47,8 @@ describe('Read-only brand/category rate-card catalog', () => {
     expect(query).toContain("ORDER BY CASE WHEN UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$' THEN 0 ELSE 1 END, id DESC");
     expect(query).toContain('COUNT(*) OVER (');
     expect(query).toContain("WHERE rn = 1 AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'");
+    const orderScope = query.slice(query.indexOf('FROM orders'));
+    expect(orderScope).not.toContain("fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'");
     expect(query).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default')");
     expect(params).toEqual([]);
   });

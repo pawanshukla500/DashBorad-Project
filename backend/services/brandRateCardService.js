@@ -35,7 +35,6 @@ export async function getRealTimeBrandFsnSamples(pool = null, { marketplace = nu
   const p = pool || getPool();
   const filters = [
     "(marketplace ILIKE '%flipkart%' OR marketplace ILIKE '%shopsy%')",
-    "fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'",
     "category IS NOT NULL AND TRIM(category) <> ''",
   ];
   const params = [];
