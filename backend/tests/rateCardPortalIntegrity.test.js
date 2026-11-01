@@ -85,6 +85,34 @@ describe('Portal observations and reviewed publication', () => {
     expect(review.summary.removed).toBe(1);
     expect(review.summary.added).toBe(0);
   });
+  it('closes a replaced active price slab and inserts only the newly observed ranges', async () => {
+    const db = database();
+    const changed = cards();
+    const oldId = db.tables.rc_commission[0].id;
+    const original = changed[0].commissions[0];
+    changed[0].commissions = [
+      { ...original, price_max: 4999999 },
+      { ...original, price_min: 5000000 },
+    ];
+
+    const review = await compare(db, changed);
+    const commissionDiffs = review.diffs.filter(diff => diff.table === 'rc_commission');
+    expect(commissionDiffs.filter(diff => diff.changeType === 'REMOVED')).toHaveLength(1);
+    expect(commissionDiffs.filter(diff => diff.changeType === 'ADDED')).toHaveLength(2);
+
+    await publishRateCardObservations(changed, {
+      pool: db.pool, publishedBy: 'fixture-reviewer', effectiveDate: date, reviewFingerprint: review.fingerprint,
+    });
+
+    const writes = mutations(db);
+    const oldSlabClose = writes.find(([sql, params]) => sql.startsWith('UPDATE rc_commission') && params.at(-1) === oldId);
+    expect(oldSlabClose).toBeDefined();
+    expect(oldSlabClose[1]).toEqual(['2026-10-29', oldId]);
+    const insertedSlabs = writes.filter(([sql]) => sql.startsWith('INSERT INTO rc_commission'));
+    expect(insertedSlabs).toHaveLength(2);
+    expect(insertedSlabs.map(([, params]) => params.slice(6, 8))).toEqual([[0, 4999999], [5000000, 10000000]]);
+    expect(writes.some(([sql]) => /rc_fixed_fee|rc_collection_fee|rc_reverse_shipping|rc_pick_pack/.test(sql))).toBe(false);
+  });
   it('detects changes below four decimals and shipping range/increment changes', async () => {
     const db = database(); db.tables.rc_commission[0].rate -= 0.000001;
     db.tables.rc_reverse_shipping[0].national_additional_fee += 1;
