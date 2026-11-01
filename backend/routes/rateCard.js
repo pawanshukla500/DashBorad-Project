@@ -15,12 +15,7 @@ import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { checkRateRow } from '../utils/rateCardRowChecks.js';
-import { 
-  getRealTimeBrandFsnSamples, 
-  buildBrandRateCardSet, 
-  detectBrandRateChanges, 
-  syncBrandRateCardsToDatabase 
-} from '../services/brandRateCardService.js';
+import { getRealTimeBrandFsnSamples } from '../services/brandRateCardService.js';
 import { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } from '../services/brandwiseExcelExport.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { resolveRateCardEffectiveDate } from '../utils/rateCardDate.js';
@@ -1740,34 +1735,16 @@ router.get('/brand-fsn-catalog', async (req, res) => {
 });
 
 /**
- * POST /api/rate-card/sync-brand-rates
- * Brand-wise rate sync for Flipkart and Shopsy with real-time FSN sampling
+ * Retired: the legacy endpoint generated estimates from static fee tables and
+ * could write without a Seller Hub extraction review. Rates now publish only
+ * through the reviewed observation workflow.
  */
-router.post('/sync-brand-rates', async (req, res) => {
-  try {
-    const pool = getPool();
-    const { forceUpdate = false, effectiveDate, exportExcel = true } = req.body || {};
-
-    const brandRateCards = await buildBrandRateCardSet(pool);
-    const syncResult = await syncBrandRateCardsToDatabase(brandRateCards, {
-      forceUpdate,
-      effectiveDate: effectiveDate || new Date().toISOString().slice(0, 10)
-    }, pool);
-
-    let excelResult = null;
-    if (exportExcel) {
-      excelResult = await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
-    }
-
-    res.json({
-      success: true,
-      brandCount: brandRateCards.length,
-      syncResult,
-      excelExport: excelResult
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+router.post('/sync-brand-rates', async (_req, res) => {
+  res.status(410).json({
+    success: false,
+    code: 'RATE_CARD_ENDPOINT_RETIRED',
+    error: 'Direct brand-rate sync is retired. Extract rates from Seller Hub and publish only after the database comparison review.',
+  });
 });
 
 /**

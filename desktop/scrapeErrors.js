@@ -18,6 +18,7 @@ export function isPermanentScrapeError(error) {
     'no configured rate-card categories',
     'no configured rate-card category has a database fsn',
     'selected categories have no database fsns',
+    'no selected category has a valid database fsn',
     'no database fsn for configured categories',
   ].some(fragment => message.includes(fragment));
 }

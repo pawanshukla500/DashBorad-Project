@@ -260,7 +260,7 @@ describe('Portal observations and reviewed publication', () => {
       queries.push({ sql: String(sql), params });
       const configTable = RATE_CARD_CONFIG_TABLES.find(table => String(sql).includes(`FROM ${table}`));
       if (configTable) return { rows: rowsByTable[configTable] };
-      if (String(sql).includes('FROM orders')) return { rows: [{ category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' }] };
+      if (String(sql).includes('FROM orders')) return { rows: [{ category: 'Kurta', order_rows: 1, valid_fsn_order_rows: 1 }] };
       throw new Error(`Unexpected query: ${sql}`);
     }) };
     const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'seller_ej', effectiveDate: date });
@@ -272,6 +272,11 @@ describe('Portal observations and reviewed publication', () => {
     expect(queries.every(query => query.sql.includes("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2"))).toBe(true);
     expect(queries.filter(query => !query.sql.includes('FROM orders')).every(query =>
       query.sql.includes('start_date <= $3::date') && query.sql.includes('end_date >= $3::date'))).toBe(true);
+    expect(queries.filter(query => !query.sql.includes('FROM orders')).every(query =>
+      query.sql.includes("$1 <> 'flipkart' OR LOWER(TRIM(category)) !~ '^shopsy([[:space:]_-]+)'"))).toBe(true);
+    const catalogRead = queries.find(query => query.sql.includes('FROM orders'));
+    expect(catalogRead.sql).toContain('COUNT(*) FILTER (WHERE fsn IS NOT NULL AND UPPER(TRIM(fsn)) ~');
+    expect(catalogRead.sql).toContain('GROUP BY category');
     expect(assertRateObservationCoverage(cards(), coverage)).toEqual(['kurta']);
   });
 
@@ -283,7 +288,7 @@ describe('Portal observations and reviewed publication', () => {
       const configTable = RATE_CARD_CONFIG_TABLES.find(table => text.includes(`FROM ${table}`));
       if (configTable) return { rows: rowsByTable[configTable] };
       catalogQuery = text;
-      return { rows: [{ marketplace: 'flipkart', category: 'Shopsy Saree', fsn: 'ABCDEFGHIJKLMNOP' }] };
+      return { rows: [{ marketplace: 'flipkart', category: 'Shopsy Saree', order_rows: 1, valid_fsn_order_rows: 1 }] };
     }) };
     const coverage = await loadRateCardCoverage(client, { marketplace: 'shopsy', sellerAccount: 'seller_ej' });
     expect(coverage.configuredCategories).toEqual(['shopsy_sari']);
@@ -297,7 +302,7 @@ describe('Portal observations and reviewed publication', () => {
     const queries = [];
     const client = { query: vi.fn(async (sql, params) => {
       queries.push({ sql: String(sql), params });
-      if (String(sql).includes('FROM orders')) return { rows: [{ category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' }] };
+      if (String(sql).includes('FROM orders')) return { rows: [{ category: 'Kurta', order_rows: 1, valid_fsn_order_rows: 1 }] };
       return { rows: [{ category: 'Kurta' }] };
     }) };
     const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'default' });
@@ -316,8 +321,8 @@ describe('Portal observations and reviewed publication', () => {
       queries.push({ sql: text, params });
       if (text.includes('FROM orders')) {
         return { rows: [
-          { category: 'Kurta', fsn: 'ABCDEFGHIJKLMNOP' },
-          { category: 'Saree', fsn: 'QRSTUVWXYZABCDEF' },
+          { category: 'Kurta', order_rows: 1, valid_fsn_order_rows: 1 },
+          { category: 'Saree', order_rows: 1, valid_fsn_order_rows: 1 },
         ] };
       }
       if (text.includes('FROM rc_commission')) return { rows: [{ category: 'Kurta' }, { category: 'Saree' }] };
@@ -331,6 +336,38 @@ describe('Portal observations and reviewed publication', () => {
     const catalogRead = queries.find(query => query.sql.includes('FROM orders'));
     expect(catalogRead.params).toEqual(['flipkart', 'seller_ej']);
     expect(catalogRead.sql).toContain("COALESCE(NULLIF(TRIM(seller_account), ''), 'default') = $2");
+  });
+
+  it('skips configured categories with no order FSN and distinguishes absent orders from missing FSNs', async () => {
+    const client = { query: vi.fn(async sql => {
+      const text = String(sql);
+      if (text.includes('FROM orders')) return { rows: [
+        { category: 'Kurta', order_rows: 10, valid_fsn_order_rows: 10 },
+        { category: 'Dress', order_rows: 3, valid_fsn_order_rows: 0 },
+      ] };
+      if (text.includes('FROM rc_commission')) return { rows: [
+        { category: 'Kurta' }, { category: 'Dress' }, { category: 'Lehenga Choli' },
+      ] };
+      return { rows: [] };
+    }) };
+    const coverage = await loadRateCardCoverage(client, { marketplace: 'flipkart', sellerAccount: 'default' });
+    expect(coverage.fsnBackedConfiguredCategories).toEqual(['kurta']);
+    expect(coverage.missingFsnCategories).toEqual(['dress', 'lehenga_choli']);
+    expect(coverage.configuredCategoriesWithOrdersButNoFsns).toEqual(['dress']);
+    expect(coverage.configuredCategoriesWithoutOrders).toEqual(['lehenga_choli']);
+    expect(assertRateObservationCoverage([{ vertical: 'kurta' }], coverage)).toEqual(['kurta']);
+    expect(() => assertRateObservationCoverage([{ vertical: 'kurta' }, { vertical: 'dress' }], coverage))
+      .toThrow(/unconfigured rate-card categories: dress/);
+  });
+
+  it('does not accept extraction results when every configured category lacks a database FSN', () => {
+    expect(() => assertRateObservationCoverage([{ vertical: 'lehenga_choli' }], {
+      marketplace: 'flipkart',
+      configuredCategories: ['lehenga_choli'],
+      fsnCategories: [],
+      fsnBackedConfiguredCategories: [],
+      missingFsnCategories: ['lehenga_choli'],
+    })).toThrow(/No configured rate-card category has an account-scoped database FSN/);
   });
 
   it('fails closed when a configuration table is missing', async () => {
@@ -358,7 +395,8 @@ describe('Portal observations and reviewed publication', () => {
       const configTable = RATE_CARD_CONFIG_TABLES.find(table => text.includes(`FROM ${table}`));
       if (configTable) return { rows: [{ category: 'kurta' }, { category: 'dress' }] };
       if (text.includes('FROM orders')) return { rows: [
-        { category: 'kurta', fsn: 'ABCDEFGHIJKLMNOP' }, { category: 'dress', fsn: 'QRSTUVWXYZ123456' }
+        { category: 'kurta', order_rows: 1, valid_fsn_order_rows: 1 },
+        { category: 'dress', order_rows: 1, valid_fsn_order_rows: 1 }
       ] };
       return originalQuery(sql, params);
     });

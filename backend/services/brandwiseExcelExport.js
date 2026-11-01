@@ -8,7 +8,7 @@ import XLSX from 'xlsx';
 import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
-import { getRealTimeBrandFsnSamples, buildBrandRateCardSet } from './brandRateCardService.js';
+import { loadPublishedRateCardSnapshot } from './brandRateCardService.js';
 import { getPool } from '../db/index.js';
 
 function resolveDefaultExcelPath() {
@@ -22,8 +22,8 @@ export const DEFAULT_EXCEL_PATH = resolveDefaultExcelPath();
 export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_PATH, pool = null) {
   const p = pool || getPool();
 
-  // 1. Get real-time brand rate card set
-  const brandRateCards = await buildBrandRateCardSet(p);
+  // Rates and order samples come from the same PostgreSQL snapshot.
+  const { cards: brandRateCards, catalog } = await loadPublishedRateCardSnapshot(p);
 
   // 2. Prepare Data for Sheet 1: Brand_Commission_Summary
   const summaryRows = [];
@@ -31,6 +31,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     for (const comm of card.commissions) {
       summaryRows.push({
         'Marketplace': card.marketplace.toUpperCase(),
+        'Seller Account': card.seller_account || 'default',
         'Category / Vertical': card.category,
         'Brand Name': card.brand,
         'Sample FSN': card.sample_fsn,
@@ -57,6 +58,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     for (const f of card.fixedFees) {
       fixedFeeRows.push({
         'Marketplace': card.marketplace.toUpperCase(),
+        'Seller Account': card.seller_account || 'default',
         'Category': card.category,
         'Seller Tier': f.fulfilment_type,
         'Order Value Min (₹)': f.price_min,
@@ -67,7 +69,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
   }
   // Deduplicate fixed fees for readability (grouped by mp, category, tier, price)
   const uniqueFixedFees = Array.from(new Map(
-    fixedFeeRows.map(r => [`${r.Marketplace}_${r.Category}_${r['Seller Tier']}_${r['Order Value Min (₹)']}`, r])
+    fixedFeeRows.map(r => [`${r.Marketplace}_${r['Seller Account']}_${r.Category}_${r['Seller Tier']}_${r['Order Value Min (₹)']}`, r])
   ).values());
 
   // 6. Prepare Data for Sheet 5: Reverse_Shipping
@@ -76,6 +78,7 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     for (const r of card.reverseShipping) {
       revShippingRows.push({
         'Marketplace': card.marketplace.toUpperCase(),
+        'Seller Account': card.seller_account || 'default',
         'Category': card.category,
         'Weight Slab': r.weight_slab,
         'Price Range': `₹${r.price_min} - ₹${r.price_max === 999999 ? 'Above' : r.price_max}`,
@@ -86,13 +89,13 @@ export async function generateBrandwiseRateCardExcel(outputPath = DEFAULT_EXCEL_
     }
   }
   const uniqueRevShipping = Array.from(new Map(
-    revShippingRows.map(r => [`${r.Marketplace}_${r.Category}_${r['Weight Slab']}_${r['Price Range']}`, r])
+    revShippingRows.map(r => [`${r.Marketplace}_${r['Seller Account']}_${r.Category}_${r['Weight Slab']}_${r['Price Range']}`, r])
   ).values());
 
   // 7. Prepare Data for Sheet 6: Sample_FSN_Catalog
-  const catalog = await getRealTimeBrandFsnSamples(p);
   const catalogRows = catalog.map(c => ({
     'Marketplace': c.marketplace.toUpperCase(),
+    'Seller Account': c.seller_account || 'default',
     'Category': c.category,
     'Brand Name': c.brand,
     'Real-time Sample FSN': c.sample_fsn,

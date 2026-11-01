@@ -94,6 +94,17 @@ if (!SUPPORTED_WORKER_CHANNELS.includes(marketplaceArg)) {
 const brandArg = args.find(a => a.startsWith('--brand='))?.split('=')[1] || 'all';
 const customExcelPath = args.find(a => a.startsWith('--excel-path='))?.split('=')[1];
 
+async function exportPublishedWorkbook(pool, onProgress) {
+  if (!shouldExportExcel) return null;
+  onProgress('\nGenerating multi-sheet workbook from published database rates...');
+  const targetPath = customExcelPath || DEFAULT_EXCEL_PATH;
+  const result = await generateBrandwiseRateCardExcel(targetPath, pool);
+  console.log(`✓ Excel Workbook Generated: ${result.filePath}`);
+  console.log(`  Sheets: ${result.sheets?.join(', ') || 'All Sheets'}`);
+  console.log(`  Total Records: ${result.totalRecords ?? (result.commissionSlabs || 'N/A')}`);
+  return result;
+}
+
 async function runWorker() {
   console.log('======================================================================');
   console.log('⚡ ReconCentral Standalone RateCard Worker Engine');
@@ -135,9 +146,17 @@ async function runWorker() {
       rateCards = rateCards.filter(r => r.brand.toLowerCase() === brandArg.toLowerCase());
     }
 
+    const withoutFsn = rateCards.filter(rateCard => !/^[A-Z0-9]{16}$/i.test(String(rateCard.sample_fsn || '').trim()));
+    if (withoutFsn.length) {
+      const skipped = [...new Set(withoutFsn.map(rateCard => `${rateCard.marketplace}:${rateCard.category}:${rateCard.brand}`))];
+      onProgress(`Skipping ${skipped.length} rate-card profile(s) without a valid 16-character database FSN: ${skipped.join(', ')}`);
+    }
+    rateCards = rateCards.filter(rateCard => /^[A-Z0-9]{16}$/i.test(String(rateCard.sample_fsn || '').trim()));
+
     if (rateCards.length === 0) {
-      onProgress(`No active rate cards configured for channel "${marketplaceArg}". Database sync skipped.`);
+      onProgress(`No active FSN-backed rate cards configured for channel "${marketplaceArg}". Database sync skipped.`);
       console.log(`\n✓ Staged 0 rate card profiles for ${marketplaceArg.toUpperCase()}.`);
+      await exportPublishedWorkbook(pool, onProgress);
       console.log('======================================================================');
       console.log('✓ Worker run completed successfully.');
       console.log('======================================================================');
@@ -166,15 +185,9 @@ async function runWorker() {
       console.log('Review current Seller Hub extractions in the desktop app before publication.');
     }
 
-    // 5. Excel Export if requested
-    if (shouldExportExcel) {
-      onProgress('\nGenerating multi-sheet Excel workbook...');
-      const targetPath = customExcelPath || DEFAULT_EXCEL_PATH;
-      const excelRes = await generateBrandwiseRateCardExcel(targetPath, pool);
-      console.log(`✓ Excel Workbook Generated: ${excelRes.filePath}`);
-      console.log(`  Sheets: ${excelRes.sheets?.join(', ') || 'All Sheets'}`);
-      console.log(`  Total Records: ${excelRes.totalRecords ?? (excelRes.commissionSlabs || 'N/A')}`);
-    }
+    // 5. Excel Export if requested. This is a published-database snapshot,
+    // independent of whether the selected worker channel has FSN profiles.
+    await exportPublishedWorkbook(pool, onProgress);
 
     console.log('\n======================================================================');
     console.log('✓ Worker run completed successfully.');

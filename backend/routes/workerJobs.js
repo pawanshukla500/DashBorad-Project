@@ -445,6 +445,10 @@ workerJobsRouter.post('/:id/results', async (req, res) => {
     diffResult.coverage = {
       configuredCategories: coverage.configuredCategories,
       fsnCategories: coverage.fsnCategories,
+      fsnBackedConfiguredCategories: coverage.fsnBackedConfiguredCategories,
+      missingFsnCategories: coverage.missingFsnCategories,
+      configuredCategoriesWithoutOrders: coverage.configuredCategoriesWithoutOrders,
+      configuredCategoriesWithOrdersButNoFsns: coverage.configuredCategoriesWithOrdersButNoFsns,
       complete: true,
     };
     if (job.parameters?.reviewFingerprint && job.parameters.reviewFingerprint !== diffResult.fingerprint) {
@@ -571,7 +575,7 @@ workerJobsRouter.post('/:id/publish', requireRole('admin'), async (req, res) => 
   } catch (err) {
     console.error('[Worker API] Publish job error:', err.message);
     const status = err.code === 'RATE_CARD_COVERAGE_UNAVAILABLE' ? 503
-      : err.code === 'RATE_CARD_COVERAGE_INCOMPLETE' ? 409
+      : ['RATE_CARD_COVERAGE_INCOMPLETE', 'RATE_CARD_NO_FSN_BACKED_CATEGORIES'].includes(err.code) ? 409
         : err.code === 'INVALID_EFFECTIVE_DATE' ? 400 : 500;
     res.status(status).json({ error: 'Failed to publish rate card changes', details: err.message, code: err.code });
   }

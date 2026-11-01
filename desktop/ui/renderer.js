@@ -762,7 +762,7 @@ async function loadRateCardPreview() {
         appendTerminalLine(`⚠️ Local extraction is available, but PostgreSQL comparison failed: ${diffRes.comparisonError || 'the backend comparison is unavailable'}. Publication is disabled.`);
       }
       if (missingFsnCategories.length) {
-        appendTerminalLine(`⚠️ ${selectedChannel} review is local-only: configured categories have no database FSNs (${missingFsnCategories.join(', ')}). Add real catalog FSNs and rerun before publishing.`);
+        appendTerminalLine(`⚠️ ${selectedChannel} skipped configured categories without database FSNs (${missingFsnCategories.join(', ')}). Review covers categories with real FSNs only.`);
       }
       if (omittedCategories.length) {
         appendTerminalLine(`⚠️ ${selectedChannel} extraction omitted configured categories (${omittedCategories.join(', ')}). Run all configured categories before publishing.`);
@@ -774,13 +774,11 @@ async function loadRateCardPreview() {
         commitBtn.disabled = !currentCanSync;
         commitBtn.title = !currentCanSync && !currentComparisonAvailable
           ? `PostgreSQL comparison unavailable: ${diffRes.comparisonError || 'check the backend connection or version'}. Publication is disabled.`
-          : (missingFsnCategories.length
-            ? `Publication blocked until these configured categories have real database FSNs: ${missingFsnCategories.join(', ')}`
-            : (omittedCategories.length
+          : (omittedCategories.length
               ? `Publication blocked because this extraction omitted configured categories: ${omittedCategories.join(', ')}`
             : (res.coverageKnown === false
               ? 'Publication blocked because extraction coverage is unknown. Run a fresh extraction with the current app.'
-              : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.'))));
+              : (currentCanSync ? '' : 'Showing generated templates. Run a successful extraction to enable sync.')));
       }
 
       // Update badges & anomaly banner

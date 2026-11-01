@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { publishRateCardObservations } from '../services/rateCardPublisher.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { RATE_TABLES, normalizeObservationRow } from '../services/rateCardObservationPlan.js';
+import { getRealTimeBrandFsnSamples } from '../services/brandRateCardService.js';
 import { parsePortalRateSnapshot } from '../../desktop/portalRates.js';
 import { normalizeScrapedCards } from '../../desktop/scrapeResults.js';
 import { rateFixture } from '../../desktop/tests/fixtures/portalRateFixture.js';
@@ -30,10 +31,30 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
         ['rc_pick_pack','fulfilment_type TEXT, rate NUMERIC(12,2)']
       ]) await client.query(`CREATE TABLE ${table}(id SERIAL PRIMARY KEY,marketplace TEXT,seller_account TEXT,category TEXT,start_date DATE,end_date DATE,price_min NUMERIC(12,2),price_max NUMERIC(12,2),updated_at TIMESTAMPTZ DEFAULT now(),${extra})`);
       await client.query('CREATE TABLE rate_card_versions(id SERIAL PRIMARY KEY,marketplace TEXT,seller_account TEXT,version_name TEXT,status TEXT,effective_from DATE,snapshot JSONB,created_at TIMESTAMPTZ,published_at TIMESTAMPTZ)');
+      await client.query('CREATE TABLE orders(id SERIAL PRIMARY KEY,marketplace TEXT,seller_account TEXT,category TEXT,brand_name TEXT,brand TEXT,fsn TEXT,sku TEXT)');
       await client.query(fs.readFileSync(new URL('../db/migrations/2026-10-30-ratecard-portal-dimensions.sql',import.meta.url),'utf8'));
     } finally {client.release();}
   });
   afterAll(async()=>{if(pool){if(schema)await pool.query(`DROP SCHEMA ${schema} CASCADE`);await pool.end();}});
+
+  it('counts all matching orders while returning only a valid FSN sample', async () => {
+    const client = await scoped.connect();
+    try {
+      await client.query(`INSERT INTO orders(marketplace,seller_account,category,brand_name,fsn,sku) VALUES
+        ('flipkart','default','Women Kurtas','Youthnic','ABCDEFGHIJKLMNOP','SKU-VALID'),
+        ('flipkart','default','Women Kurtas','Youthnic',NULL,'SKU-NULL-FSN'),
+        ('flipkart','default','Women Kurtas','Youthnic','short','SKU-MALFORMED-FSN')`);
+
+      const samples = await getRealTimeBrandFsnSamples(client, { marketplace: 'flipkart', sellerAccount: 'default' });
+
+      expect(samples).toHaveLength(1);
+      expect(samples[0]).toMatchObject({
+        marketplace: 'flipkart', category: 'Women Kurtas', brand: 'Youthnic',
+        seller_account: 'default', sample_fsn: 'ABCDEFGHIJKLMNOP',
+        sample_sku: 'SKU-VALID', order_count: 3,
+      });
+    } finally { client.release(); }
+  });
 
   it('publishes full dimensions, blocks duplicate rows, preserves unchanged rows and is a zero-write replay',async()=>{
     const observations=cards();

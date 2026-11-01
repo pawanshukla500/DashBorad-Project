@@ -1,4 +1,4 @@
-import { buildFsnPlan, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, normalizeScrapeVertical, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals, uncoveredCategoriesForMarketplace } from '../fsnPlan.js';
+import { blockingUncoveredCategoriesForMarketplace, buildFsnPlan, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, normalizeScrapeVertical, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals, uncoveredCategoriesForMarketplace } from '../fsnPlan.js';
 import { captureScrapeAuthContext, createStagedExtractionState, isScrapeAuthContextCurrent, normalizeScrapedCards, resolveSellerAccountForRateCards } from '../scrapeResults.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +13,8 @@ import { parsePortalRateSnapshot } from '../portalRates.js';
 import { createWorkerEngine } from '../workerEngine.js';
 import { isPermanentScrapeError, permanentScrapeError } from '../scrapeErrors.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
-import { buildBrandRateCardSet } from '../rateCardService.js';
+import { buildBrandRateCardSet, detectBrandRateChanges } from '../rateCardService.js';
+import { generateBrandwiseRateCardExcel } from '../excelExport.js';
 import { captureScrapeFailure } from '../scrapeDiagnostics.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from '../portalProfileState.js';
 import { rateFixture } from './fixtures/portalRateFixture.js';
@@ -162,7 +163,9 @@ test('SQLite review survives restart, rejects a different owner and rolls back a
     assert.deepEqual(recoverReview(db,'owner').coverage,coverage,'coverage gaps survive a restart with the staged review');
     assert.equal(recoverReview(db,'owner').sellerAccount,'default','the recovery metadata retains the seller account');
     assert.equal(hasKnownMarketplaceFsnCoverage(null,'flipkart'),false,'legacy SQLite reviews without coverage metadata cannot pass publication checks');
-    assert.equal(hasKnownMarketplaceFsnCoverage(coverage,'flipkart'),true,'current review metadata records a complete coverage shape even when it contains gaps');
+    assert.equal(hasKnownMarketplaceFsnCoverage(coverage,'flipkart'),true,'review metadata records the coverage shape and explicit skip reasons');
+    assert.deepEqual(blockingUncoveredCategoriesForMarketplace(coverage,'flipkart'),[],
+      'legacy coverage that marks a no-FSN category both unavailable and uncovered still permits the FSN-backed review');
     assert.equal(recoverReview(db,'another-owner'),null);
     saveStagedJob(db,{id:'stale-staging',marketplace:'flipkart',status:'staging',parameters:{owner:'owner'}});
     saveStagedObservations(db,'stale-staging',[{category:'dress',commissions:[{rate:0.2}]}]);
@@ -332,7 +335,8 @@ test('database FSN plan covers every brand/category/channel without static verti
     {scopeVerticals:['kurta','dress'],requiredVerticals:['kurta','dress']},
     'live backend categories replace stale category defaults from older worker configs');
   assert.throws(()=>buildFsnPlan(catalog,{verticals:['missing']}),/No database FSN/);
-  assert.throws(()=>buildFsnPlan([{...catalog[0],sample_fsn:''}]),/invalid real FSN/);
+  assert.deepEqual(buildFsnPlan([catalog[0],{...catalog[0],category:'fabric',sample_fsn:''}]).map(row=>row.category),['kurta'],
+    'malformed or missing FSNs are skipped when other real catalog FSNs are available');
   assert.equal(normalizeScrapeVertical('salwar suit'), 'salwar_kurta_dupatta');
   assert.equal(normalizeScrapeVertical('shopsy_saree'), 'shopsy_sari');
   assert.equal(normalizeScrapeVertical('saree', 'shopsy'), 'shopsy_sari');
@@ -351,24 +355,28 @@ test('database FSN plan covers every brand/category/channel without static verti
   assert.notEqual(cards[0].commissions[0].rate,cards[1].commissions[0].rate);
 });
 
-test('default extraction scope uses real FSN-backed categories and blocks incomplete publication', () => {
+test('default extraction skips categories without real FSNs and blocks omitted FSN-backed categories', () => {
   const catalog=[
     {marketplace:'flipkart',category:'kurta',brand:'Sangria',sample_fsn:'ABCDEFGHIJKLMNOP'},
     {marketplace:'flipkart',category:'shopsy_kurta',brand:'Youthnic',sample_fsn:'QRSTUVWXYZ123456'},
-    {marketplace:'flipkart',category:'legacy_orders_category',brand:'Youthnic',sample_fsn:'ABCDEF0123456789'}
+    {marketplace:'flipkart',category:'legacy_orders_category',brand:'Youthnic',sample_fsn:'ABCDEF0123456789'},
+    {marketplace:'flipkart',category:'invalid_order_fsn',brand:'Youthnic',sample_fsn:'SHORT'}
   ];
   const coverage=resolveFsnBackedScrapeVerticals({
     configuredVerticals:['kurta','blouse','lehenga_choli','shopsy_kurta','shopsy_fabric'],
     catalog,marketplace:'flipkart_shopsy',brand:'all'
   });
   assert.deepEqual(coverage.scopeVerticals,['kurta','shopsy_kurta']);
+  assert.equal(coverage.availableVerticals.includes('invalid_order_fsn'),false,
+    'a category with only malformed database FSNs is treated as unavailable');
   assert.deepEqual(coverage.requiredVerticals,['kurta','shopsy_kurta']);
   assert.deepEqual(coverage.unavailableConfiguredVerticals,['blouse','lehenga_choli','shopsy_fabric']);
   assert.deepEqual(missingFsnCategoriesForMarketplace(coverage,'flipkart'),['blouse','lehenga_choli']);
   assert.deepEqual(missingFsnCategoriesForMarketplace(coverage,'shopsy'),['shopsy_fabric']);
-  assert.deepEqual(uncoveredCategoriesForMarketplace(coverage,'flipkart'),['blouse','lehenga_choli']);
-  assert.equal(describeCoverageBlockers(coverage,'flipkart'),'categories without database FSNs: blouse, lehenga_choli');
-  assert.equal(coverage.complete,false);
+  assert.deepEqual(coverage.uncoveredConfiguredVerticals,[]);
+  assert.deepEqual(uncoveredCategoriesForMarketplace(coverage,'flipkart'),[]);
+  assert.equal(describeCoverageBlockers(coverage,'flipkart'),'all configured categories with database FSNs are included');
+  assert.equal(coverage.complete,true,'categories without FSNs are intentionally excluded from the eligible scrape scope');
   assert.equal(buildFsnPlan(catalog,{verticals:coverage.scopeVerticals,requiredVerticals:coverage.requiredVerticals}).length,2,
     'only configured verticals with real FSNs are targets; unconfigured order-history categories stay out');
 });
@@ -385,19 +393,25 @@ test('default extraction does not scrape unconfigured order-history categories o
   assert.throws(()=>resolveFsnBackedScrapeVerticals({configuredVerticals:['blouse'],catalog,brand:'all'}),/No configured rate-card category has a database FSN/);
 });
 
-test('explicit missing categories fail and filtered scopes cannot publish incomplete configured coverage', () => {
+test('explicit missing-FSN categories are skipped while omitted FSN-backed categories still block publication', () => {
   const catalog=[{marketplace:'flipkart',category:'kurta',brand:'Sangria',sample_fsn:'ABCDEFGHIJKLMNOP'}];
+  const explicitWithMissing = resolveFsnBackedScrapeVerticals({
+    requestedVerticals:['kurta','blouse'],configuredVerticals:['kurta','blouse'],catalog,brand:'all'
+  });
+  assert.deepEqual(explicitWithMissing.scopeVerticals,['kurta']);
+  assert.deepEqual(explicitWithMissing.unavailableRequestedVerticals,['blouse']);
+  assert.equal(explicitWithMissing.complete,true,'the no-FSN category is skipped without invalidating the remaining target');
   assert.throws(
     ()=>resolveFsnBackedScrapeVerticals({requestedVerticals:['blouse'],configuredVerticals:['blouse'],catalog,brand:'all'}),
-    /Selected categories have no database FSNs.*blouse.*Nothing was scraped/,
-    'an explicitly selected category without an FSN stops before the browser is opened'
+    /No selected category has a valid database FSN.*blouse/,
+    'a run with no FSN-backed target stops before browser navigation'
   );
 
   const explicitSubset=resolveFsnBackedScrapeVerticals({requestedVerticals:['kurta'],configuredVerticals:['kurta','lehenga_choli'],catalog,brand:'all'});
   assert.deepEqual(explicitSubset.unavailableConfiguredVerticals,['lehenga_choli'],
     'an explicit category request still discovers configured categories missing a real FSN');
   assert.deepEqual(missingFsnCategoriesForMarketplace(explicitSubset,'flipkart'),['lehenga_choli']);
-  assert.equal(explicitSubset.complete,false);
+  assert.equal(explicitSubset.complete,true,'a configured category with no database FSN is skipped');
 
   const omittedScope=resolveFsnBackedScrapeVerticals({requestedVerticals:['kurta'],configuredVerticals:['kurta','blouse'],catalog:[...catalog,{marketplace:'flipkart',category:'blouse',brand:'Sangria',sample_fsn:'QRSTUVWXYZ123456'}],brand:'all'});
   assert.deepEqual(uncoveredCategoriesForMarketplace(omittedScope,'flipkart'),['blouse']);
@@ -406,7 +420,15 @@ test('explicit missing categories fail and filtered scopes cannot publish incomp
   const brandScope=resolveFsnBackedScrapeVerticals({configuredVerticals:['kurta','lehenga_choli'],catalog,brand:'Sangria'});
   assert.deepEqual(brandScope.scopeVerticals,['kurta']);
   assert.deepEqual(brandScope.requiredVerticals,['kurta']);
-  assert.equal(brandScope.complete,false,'categories omitted by a brand filter cannot be treated as a complete all-category extraction');
+  assert.equal(brandScope.complete,true,'categories with no FSN in any brand are excluded from completeness');
+
+  const fsnBackedOtherBrand=resolveFsnBackedScrapeVerticals({
+    configuredVerticals:['kurta','blouse'],
+    catalog:[...catalog,{marketplace:'flipkart',category:'blouse',brand:'Youthnic',sample_fsn:'QRSTUVWXYZ123456'}],
+    brand:'Sangria'
+  });
+  assert.deepEqual(fsnBackedOtherBrand.uncoveredConfiguredVerticals,['blouse']);
+  assert.equal(fsnBackedOtherBrand.complete,false,'known FSN-backed categories omitted by a brand filter remain incomplete');
 });
 
 test('permanent coverage failures do not trigger transient extraction retries', () => {
@@ -451,6 +473,105 @@ test('rate-card snapshot keeps seller accounts in separate cards', async () => {
     [['default','ABCDEFGHIJKLMNOP','SKU-DEFAULT',6],['seller-b','QRSTUVWXYZ123456','SKU-B',3]]);
   const defaultCards=await buildBrandRateCardSet(pool);
   assert.ok(defaultCards.length>0 && defaultCards.every(card=>card.seller_account==='default'),'the visible review defaults to the same seller account used by publication');
+});
+
+test('desktop Shopsy rate cards match real FSNs from legacy Flipkart Shopsy orders', async () => {
+  const commissionRows = [
+    {marketplace:'shopsy',seller_account:'default',category:'shopsy_saree',brand_name:'Youthnic',price_min:0,price_max:500,rate:0},
+    {marketplace:'flipkart',seller_account:'default',category:'sari',brand_name:'Youthnic',price_min:0,price_max:500,rate:0.1}
+  ];
+  const catalogRows = [
+    {marketplace:'flipkart',seller_account:'default',category:'Shopsy Saree',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku:'SKU-SHOPSY',order_count:4},
+    {marketplace:'flipkart',seller_account:'default',category:'Saree',brand:'Youthnic',sample_fsn:'QRSTUVWXYZ123456',sample_sku:'SKU-FLIPKART',order_count:7}
+  ];
+  const pool = {query:async sql => ({rows:String(sql).includes('FROM orders') ? catalogRows :
+    String(sql).includes('FROM rc_commission') ? commissionRows : []})};
+
+  const cards = await buildBrandRateCardSet(pool, 'default');
+
+  assert.deepEqual(cards.map(card=>[card.marketplace,card.category,card.sample_fsn,card.sample_sku,card.order_count]).sort(), [
+    ['flipkart','sari','QRSTUVWXYZ123456','SKU-FLIPKART',7],
+    ['shopsy','shopsy_saree','ABCDEFGHIJKLMNOP','SKU-SHOPSY',4]
+  ]);
+});
+
+test('desktop published-rate workbook includes generic commission rows with a real category FSN', async () => {
+  const commissionRows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:null,price_min:0,price_max:500,rate:0.12},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'All brands',price_min:500,price_max:999999,rate:0.13}
+  ];
+  const catalogRows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku:'SKU-DEFAULT',order_count:6},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Sangria',sample_fsn:'QRSTUVWXYZ123456',sample_sku:'SKU-SANGRIA',order_count:2}
+  ];
+  const pool={query:async sql=>({rows:String(sql).includes('FROM orders')?catalogRows:
+    String(sql).includes('FROM rc_commission')?commissionRows:[]})};
+  const outputPath=path.join(process.cwd(),'test_generic_brand_ratecard.xlsx');
+  try {
+    await generateBrandwiseRateCardExcel(outputPath,pool);
+    const xlsxModule=await import('xlsx');
+    const XLSX=xlsxModule.default||xlsxModule;
+    const workbook=XLSX.read(fs.readFileSync(outputPath),{type:'buffer'});
+    const summary=XLSX.utils.sheet_to_json(workbook.Sheets.Brand_Commission_Summary);
+    const catalog=XLSX.utils.sheet_to_json(workbook.Sheets.Sample_FSN_Catalog);
+    assert.deepEqual(summary.map(row=>[row['Brand Name'],row['Sample FSN'],row['Orders in DB'],row['Commission Rate (%)']]),[
+      ['All brands','ABCDEFGHIJKLMNOP',8,'12.00%'],
+      ['All brands','ABCDEFGHIJKLMNOP',8,'13.00%']
+    ]);
+    assert.deepEqual(catalog.map(row=>[row['Brand Name'],row['Sample FSN'],row['Orders in Database']]),[
+      ['All brands','ABCDEFGHIJKLMNOP',8]
+    ]);
+  } finally {
+    fs.rmSync(outputPath,{force:true});
+  }
+});
+
+test('generic commission cards compare against NULL, blank, General and All brands database rows', async () => {
+  const genericRows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:null,price_min:0,price_max:500,rate:0.12},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'',price_min:500,price_max:1000,rate:0.13},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'General',price_min:1000,price_max:1500,rate:0.14},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'All brands',price_min:1500,price_max:999999,rate:0.15}
+  ];
+  const samples=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku:'SKU-DEFAULT',order_count:6},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Sangria',sample_fsn:'QRSTUVWXYZ123456',sample_sku:'SKU-SANGRIA',order_count:2}
+  ];
+  let detectorSql='';
+  const pool={query:async (sql,params=[])=>{
+    const query=String(sql);
+    if (query.includes('FROM orders')) return {rows:samples};
+    if (query.includes('FROM rc_commission')) {
+      if (/AND\s+end_date\s+IS\s+NULL/i.test(query)) {
+        detectorSql=query;
+        const wantedBrand=String(params[2]||'').trim().toLowerCase();
+        const hasGenericMatcher=/LOWER\(TRIM\(\$3\)\)\s+IN\s+\('general',\s*'all brands'\)/i.test(query);
+        return {rows:genericRows.filter(row=>{
+          const storedBrand=String(row.brand_name||'').trim().toLowerCase();
+          return storedBrand===wantedBrand || (hasGenericMatcher && ['general','all brands'].includes(wantedBrand) &&
+            (!storedBrand || ['general','all brands'].includes(storedBrand)));
+        }).map(({price_min,price_max,rate})=>({price_min,price_max,rate}))};
+      }
+      return {rows:genericRows};
+    }
+    return {rows:[]};
+  }};
+  const cards=await buildBrandRateCardSet(pool,'default');
+  assert.equal(cards.length,1);
+  assert.equal(cards[0].brand,'All brands');
+  assert.equal(cards[0].commissions.length,4);
+  const changes=await detectBrandRateChanges(cards,pool);
+  assert.match(detectorSql,/LOWER\(TRIM\(\$3\)\)\s+IN\s+\('general',\s*'all brands'\)/i);
+  assert.deepEqual(changes.filter(change=>change.type==='commission'),[]);
+});
+
+test('standalone worker keeps requested published-rate workbook export when all profiles lack FSNs', () => {
+  const source = fs.readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
+  const emptyProfileBranch = source.slice(source.indexOf('if (rateCards.length === 0) {'), source.indexOf('console.log(`✓ Staged ${rateCards.length} rate card profiles.`)'));
+  assert.match(emptyProfileBranch, /await exportPublishedWorkbook\(pool, onProgress\)/,
+    'the zero-profile early exit still honors --export-excel using the read-only published-rate snapshot');
+  assert.match(source, /async function exportPublishedWorkbook\(pool, onProgress\)[\s\S]*?generateBrandwiseRateCardExcel\(targetPath, pool\)/,
+    'the workbook generator reads published database rates rather than generating fee estimates');
 });
 
 test('review helpers do not mark incomplete errors as success or duplicate active rate details', () => {
@@ -573,10 +694,10 @@ test('desktop fixes retry backend discovery and render unchanged pick-pack rows'
     'standalone claimed jobs discover configured categories even when verticals are explicit');
   assert.match(worker,/scrapeFlipkartRateCards\(\{ marketplace: job\.marketplace, seller_account: sellerAccount,/,
     'standalone claimed jobs preserve the selected seller account in extracted observations');
-  assert.match(main,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0 && uncoveredCategories\.length === 0/,
-    'the desktop review blocks empty, incomplete, omitted-category, or legacy unknown-coverage previews');
-  assert.match(server,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 && missingCategories\.length === 0 && uncoveredCategories\.length === 0/,
-    'the standalone review blocks empty, incomplete, omitted-category, or legacy unknown-coverage previews');
+  assert.match(main,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 &&\s*blockingUncoveredCategoriesForMarketplace\(stagedExtraction\.coverage, targetMp\)\.length === 0/,
+    'the desktop review skips no-FSN categories but blocks empty, omitted-category, or unknown-coverage previews');
+  assert.match(server,/canSync:\s*coverageKnown && filteredRateCards\.length > 0 &&\s*blockingUncoveredCategoriesForMarketplace\(stagedExtraction\.coverage, targetMp\)\.length === 0/,
+    'the standalone review skips no-FSN categories but blocks empty, omitted-category, or unknown-coverage previews');
   const renderer=fs.readFileSync(new URL('../ui/renderer.js',import.meta.url),'utf8');
   assert.match(renderer,/extraction omitted configured categories/,
     'review logs explain when a configured category was excluded from the selected extraction scope');

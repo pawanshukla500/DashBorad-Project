@@ -15,6 +15,7 @@ const CATEGORY_ALIASES = {
   'kurta sets': 'salwar_kurta_dupatta',
 };
 const hasShopsyPrefix = value => /^shopsy(?:[_\s-]+)/i.test(String(value || '').trim());
+const hasValidDatabaseFsn = value => /^[A-Z0-9]{16}$/i.test(String(value || '').trim());
 
 export function normalizeScrapeVertical(value, marketplace = 'both') {
   const raw = String(value || '').trim().toLowerCase();
@@ -48,6 +49,7 @@ function catalogVerticals(catalog, { marketplace = 'both', brand = 'all' } = {})
   const selectedBrand = String(brand || 'all').trim().toLowerCase();
   const available = new Set();
   for (const item of catalog) {
+    if (!hasValidDatabaseFsn(item?.sample_fsn)) continue;
     const rawCategory = String(item?.category || '').trim();
     const itemMarketplace = String(item?.marketplace || '').trim().toLowerCase();
     const isShopsy = itemMarketplace === 'shopsy' || hasShopsyPrefix(rawCategory);
@@ -85,25 +87,28 @@ export function resolveFsnBackedScrapeVerticals({
   if (!configured.length) {
     throw new Error('No configured rate-card categories were returned. Extraction was not started.');
   }
-  const unavailableRequestedVerticals = explicit
-    ? requested.filter(category => !available.includes(category))
-    : [];
-  if (unavailableRequestedVerticals.length) {
-    throw new Error(`Selected categories have no database FSNs for the selected marketplace and brand: ${unavailableRequestedVerticals.join(', ')}. Nothing was scraped.`);
-  }
   const unconfiguredRequestedVerticals = explicit
     ? requested.filter(category => !configured.includes(category))
     : [];
   if (unconfiguredRequestedVerticals.length) {
     throw new Error(`Selected categories are not configured for rate-card extraction: ${unconfiguredRequestedVerticals.join(', ')}. Nothing was scraped.`);
   }
-  const scopeVerticals = explicit ? requested : configured.filter(category => available.includes(category));
+  const unavailableRequestedVerticals = explicit
+    ? requested.filter(category => !available.includes(category))
+    : [];
+  const scopeVerticals = explicit
+    ? requested.filter(category => available.includes(category))
+    : configured.filter(category => available.includes(category));
   if (!explicit && !scopeVerticals.length) {
     throw new Error('No configured rate-card category has a database FSN for the selected marketplace and brand. Extraction was not started.');
   }
-  const requiredVerticals = explicit ? requested : scopeVerticals;
+  if (explicit && !scopeVerticals.length) {
+    throw new Error(`No selected category has a valid database FSN for the selected marketplace and brand. Skipped: ${unavailableRequestedVerticals.join(', ')}.`);
+  }
+  const requiredVerticals = scopeVerticals;
   const unavailableConfiguredVerticals = configured.filter(category => !availableAcrossBrands.includes(category));
-  const uncoveredConfiguredVerticals = configured.filter(category => !scopeVerticals.includes(category));
+  const uncoveredConfiguredVerticals = configured.filter(category =>
+    availableAcrossBrands.includes(category) && !scopeVerticals.includes(category));
   const incompleteByMarketplace = { flipkart: [], shopsy: [] };
   for (const category of unavailableConfiguredVerticals) {
     const channel = category.toLowerCase().startsWith('shopsy_') ? 'shopsy' : 'flipkart';
@@ -119,11 +124,15 @@ export function resolveFsnBackedScrapeVerticals({
     requiredVerticals,
     configuredVerticals: configured,
     availableVerticals: available,
+    unavailableRequestedVerticals,
     unavailableConfiguredVerticals,
     uncoveredConfiguredVerticals,
     incompleteByMarketplace,
     uncoveredByMarketplace,
-    complete: unavailableConfiguredVerticals.length === 0 && uncoveredConfiguredVerticals.length === 0
+    // Categories without real database FSNs are deliberately excluded from
+    // the scrape scope. Completeness is measured across configured categories
+    // that do have an FSN; omitted FSN-backed categories still block review.
+    complete: uncoveredConfiguredVerticals.length === 0
   };
 }
 
@@ -151,14 +160,16 @@ export function uncoveredCategoriesForMarketplace(coverage, marketplace) {
   ))];
 }
 
+export function blockingUncoveredCategoriesForMarketplace(coverage, marketplace) {
+  const skipped = new Set(missingFsnCategoriesForMarketplace(coverage, marketplace));
+  return uncoveredCategoriesForMarketplace(coverage, marketplace).filter(category => !skipped.has(category));
+}
+
 export function describeCoverageBlockers(coverage, marketplace) {
-  const missingFsns = missingFsnCategoriesForMarketplace(coverage, marketplace);
-  const uncovered = uncoveredCategoriesForMarketplace(coverage, marketplace)
-    .filter(category => !missingFsns.includes(category));
+  const uncovered = blockingUncoveredCategoriesForMarketplace(coverage, marketplace);
   const blockers = [];
-  if (missingFsns.length) blockers.push(`categories without database FSNs: ${missingFsns.join(', ')}`);
   if (uncovered.length) blockers.push(`configured categories omitted from this extraction: ${uncovered.join(', ')}`);
-  return blockers.join('; ') || 'configured category coverage is incomplete';
+  return blockers.join('; ') || 'all configured categories with database FSNs are included';
 }
 
 export function hasKnownMarketplaceFsnCoverage(coverage, marketplace) {
@@ -182,6 +193,7 @@ export function buildFsnPlan(catalog, { marketplace = 'both', brand = 'all', ver
     : normalizeList(requiredVerticals);
   const targets = new Map();
   for (const item of catalog) {
+    if (!hasValidDatabaseFsn(item?.sample_fsn)) continue;
     const itemMarketplace = String(item.marketplace || '').trim().toLowerCase();
     const channel = itemMarketplace === 'shopsy' || hasShopsyPrefix(item.category)
       ? 'shopsy' : itemMarketplace;
@@ -190,7 +202,7 @@ export function buildFsnPlan(catalog, { marketplace = 'both', brand = 'all', ver
     if (['flipkart','shopsy'].includes(marketplace) && channel !== marketplace) continue;
     if (brand && brand !== 'all' && item.brand?.toLowerCase() !== brand.toLowerCase()) continue;
     if (normalizedVerticals?.length && !normalizedVerticals.includes(category)) continue;
-    if (!category || !item.brand || !/^[A-Z0-9]{16}$/.test(item.sample_fsn || '')) throw new Error('Catalog has a missing or invalid real FSN, brand or category. Nothing was staged.');
+    if (!category || !item.brand) throw new Error('Catalog has a missing brand or category for a valid real FSN. Nothing was staged.');
     const key = JSON.stringify([channel,category,item.brand.toLowerCase()]);
     if (!targets.has(key)) targets.set(key, {...item,category,marketplace:channel});
   }

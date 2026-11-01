@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getDesktopPool } from './db.js';
+import { normalizeScrapeVertical } from './fsnPlan.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,19 +47,18 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
         category,
         COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General') as brand,
         COALESCE(NULLIF(TRIM(seller_account), ''), 'default') as seller_account,
-        fsn,
+        UPPER(TRIM(fsn)) as fsn,
         sku,
         ROW_NUMBER() OVER (
           PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General'), COALESCE(NULLIF(TRIM(seller_account), ''), 'default')
-          ORDER BY id DESC
+          ORDER BY CASE WHEN UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$' THEN 0 ELSE 1 END, id DESC
         ) as rn,
         COUNT(1) OVER (
           PARTITION BY marketplace, category, COALESCE(NULLIF(TRIM(brand_name), ''), NULLIF(TRIM(brand), ''), 'General'), COALESCE(NULLIF(TRIM(seller_account), ''), 'default')
         ) as order_count
       FROM orders
       WHERE (marketplace ILIKE '%flipkart%' OR marketplace ILIKE '%shopsy%')
-        AND fsn IS NOT NULL AND fsn != ''
-        AND category IS NOT NULL AND category != ''
+        AND category IS NOT NULL AND TRIM(category) != ''
     )
     SELECT 
       marketplace, 
@@ -69,7 +69,7 @@ export async function getRealTimeBrandFsnSamples(pool = null) {
       sku as sample_sku, 
       order_count::int as order_count
     FROM ranked
-    WHERE rn = 1
+    WHERE rn = 1 AND UPPER(TRIM(fsn)) ~ '^[A-Z0-9]{16}$'
     ORDER BY marketplace, category, order_count DESC;
   `;
 
@@ -83,22 +83,43 @@ export async function buildBrandRateCardSet(pool = null, sellerAccount = 'defaul
   const effectiveDate = new Date().toISOString().slice(0, 10);
   const samples = await getRealTimeBrandFsnSamples(p);
   const normalize = value => String(value || '').trim().toLowerCase();
-  const fields = [['rc_commission','commissions'],['rc_fixed_fee','fixedFees'],['rc_collection_fee','collectionFees'],['rc_reverse_shipping','reverseShipping'],['rc_pick_pack','pickPackFees']];
+  const normalizedAccount = value => String(value || '').trim() || 'default';
+  const isGenericRateBrand = value => !normalize(value) || ['general', 'all brands'].includes(normalize(value));
+  const channelFor = (marketplace, category) => {
+    const channel = normalize(marketplace);
+    return channel === 'shopsy' || /^shopsy(?:[_\s-]+)/i.test(String(category || '').trim())
+      ? 'shopsy'
+      : channel;
+  };
+  const fields = [['rc_commission','commissions',true],['rc_fixed_fee','fixedFees',false],['rc_collection_fee','collectionFees',false],['rc_reverse_shipping','reverseShipping',false],['rc_pick_pack','pickPackFees',false]];
   const cards = new Map();
-  for (const [table, field] of fields) {
+  for (const [table, field, brandSpecific] of fields) {
     const { rows } = await p.query(`SELECT * FROM ${table} WHERE marketplace IN ('flipkart','shopsy')
       AND ($2 = 'all' OR seller_account = $2)
       AND (start_date IS NULL OR start_date <= $1) AND (end_date IS NULL OR end_date >= $1) ORDER BY category, id`, [effectiveDate, sellerAccount]);
     for (const row of rows) {
-      const brand = row.brand_name || 'General';
-      const sellerAccount = row.seller_account || 'default';
-      const key = JSON.stringify([row.marketplace,sellerAccount,row.category,field === 'commissions' ? brand : 'General']);
+      const account = normalizedAccount(row.seller_account);
+      const genericBrand = brandSpecific && isGenericRateBrand(row.brand_name);
+      const brand = brandSpecific ? (genericBrand ? 'All brands' : String(row.brand_name).trim()) : 'General';
+      const rowChannel = channelFor(row.marketplace, row.category);
+      const rowCategory = normalizeScrapeVertical(row.category, rowChannel);
+      const scopedSamples = samples.filter(item => {
+        const sampleChannel = channelFor(item.marketplace, item.category);
+        return sampleChannel === rowChannel &&
+          normalizeScrapeVertical(item.category, sampleChannel) === rowCategory &&
+          normalizedAccount(item.seller_account) === account;
+      });
+      const sample = genericBrand || !brandSpecific
+        ? scopedSamples[0]
+        : scopedSamples.find(item => normalize(item.brand || 'General') === normalize(brand));
+      if (!sample) continue;
+      const orderCount = genericBrand || !brandSpecific
+        ? scopedSamples.reduce((total, item) => total + Number(item.order_count || 0), 0)
+        : Number(sample.order_count || 0);
+      const key = JSON.stringify([row.marketplace,account,row.category,brand]);
       if (!cards.has(key)) {
-        const sample = samples.find(item => normalize(item.marketplace).includes(normalize(row.marketplace)) &&
-          normalize(item.category) === normalize(row.category) && normalize(item.seller_account || 'default') === normalize(sellerAccount) &&
-          normalize(item.brand || 'General') === normalize(field === 'commissions' ? brand : 'General'));
-        cards.set(key, { marketplace: row.marketplace, seller_account: sellerAccount, category: row.category, brand,
-        ...(sample ? { sample_fsn: sample.sample_fsn, sample_sku: sample.sample_sku, order_count: Number(sample.order_count) } : {}),
+        cards.set(key, { marketplace: row.marketplace, seller_account: account, category: row.category, brand,
+        sample_fsn: sample.sample_fsn, sample_sku: sample.sample_sku, order_count: orderCount,
         source: 'published_database', effectiveDate, commissions: [], fixedFees: [], collectionFees: [], reverseShipping: [], pickPackFees: [] });
       }
       const slab = { ...row };
@@ -209,7 +230,13 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
       WHERE marketplace = $1 
         AND (seller_account = $4 OR ($4 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
         AND category = $2 
-        AND (brand_name = $3 OR ($3 = 'General' AND (brand_name IS NULL OR brand_name = 'All brands')))
+        AND (
+          brand_name = $3
+          OR (LOWER(TRIM($3)) IN ('general', 'all brands') AND (
+            brand_name IS NULL OR NULLIF(TRIM(brand_name), '') IS NULL
+            OR LOWER(TRIM(brand_name)) IN ('general', 'all brands')
+          ))
+        )
         AND end_date IS NULL
     `, [marketplace, category, brand, sellerAccount]);
 
