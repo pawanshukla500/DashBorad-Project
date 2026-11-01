@@ -81,6 +81,45 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
       expect((await client.query('SELECT COUNT(*)::int AS n FROM rate_card_versions')).rows[0].n).toBe(before);
     } finally {client.release();}
   });
+  it('closes a removed price slab when Seller Hub replaces it with split ranges in PostgreSQL', async () => {
+    const observations = cards().map(card => ({ ...card, vertical: 'price_split', category: 'price_split' }));
+    const changed = structuredClone(observations);
+    const original = changed[0].commissions[0];
+    changed[0].commissions = [
+      { ...original, price_max: 4999999 },
+      { ...original, price_min: 5000000 },
+    ];
+    const descriptor = RATE_TABLES.find(item => item.table === 'rc_commission');
+    const old = normalizeObservationRow(descriptor, observations[0].commissions[0], observations[0]);
+    const client = await scoped.connect();
+    try {
+      await client.query(`INSERT INTO rc_commission
+        (marketplace,seller_account,category,brand_name,start_date,end_date,price_min,price_max,rate)
+        VALUES ('flipkart','default','price_split',$1,'2026-10-01',NULL,$2,$3,0.2)`,
+      [old.brand_name, old.price_min, old.price_max]);
+
+      const review = await compareScrapedRatesWithActive(changed, {
+        marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30', dbClient: client,
+      });
+      expect(review.diffs.filter(diff => diff.table === 'rc_commission' && diff.changeType === 'REMOVED')).toHaveLength(1);
+      expect(review.diffs.filter(diff => diff.table === 'rc_commission' && diff.changeType === 'ADDED')).toHaveLength(2);
+
+      await publishRateCardObservations(changed, {
+        pool: scoped, marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30',
+        publishedBy: 'integration-fixture', reviewFingerprint: review.fingerprint,
+      });
+
+      const periods = await client.query(`SELECT TO_CHAR(start_date,'YYYY-MM-DD') AS start_date,
+          TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, price_min, price_max, rate
+        FROM rc_commission WHERE category = 'price_split' ORDER BY start_date, price_min`);
+      expect(periods.rows).toHaveLength(3);
+      expect(periods.rows[0]).toMatchObject({ start_date: '2026-10-01', end_date: '2026-10-29', price_min: '0.00', price_max: '10000000.00', rate: '0.200000' });
+      expect(periods.rows.slice(1).map(row => [row.start_date, row.end_date, row.price_min, row.price_max])).toEqual([
+        ['2026-10-30', null, '0.00', '4999999.00'],
+        ['2026-10-30', null, '5000000.00', '10000000.00'],
+      ]);
+    } finally { client.release(); }
+  });
   it('ends the inserted period before a future record with a different brand case',async()=>{
     const observations=cards().map(card=>({...card,category:'future_case',brand:'Here&Now'}));
     const client=await scoped.connect();
