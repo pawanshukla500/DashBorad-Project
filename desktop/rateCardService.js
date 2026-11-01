@@ -217,7 +217,13 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
       WHERE marketplace = $1 
         AND (seller_account = $4 OR ($4 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
         AND category = $2 
-        AND (brand_name = $3 OR ($3 = 'General' AND (brand_name IS NULL OR brand_name = 'All brands')))
+        AND (
+          brand_name = $3
+          OR (LOWER(TRIM($3)) IN ('general', 'all brands') AND (
+            brand_name IS NULL OR NULLIF(TRIM(brand_name), '') IS NULL
+            OR LOWER(TRIM(brand_name)) IN ('general', 'all brands')
+          ))
+        )
         AND end_date IS NULL
     `, [marketplace, category, brand, sellerAccount]);
 

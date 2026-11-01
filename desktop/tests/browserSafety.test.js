@@ -13,7 +13,7 @@ import { parsePortalRateSnapshot } from '../portalRates.js';
 import { createWorkerEngine } from '../workerEngine.js';
 import { isPermanentScrapeError, permanentScrapeError } from '../scrapeErrors.js';
 import { getStagingDb, stageReview, recoverReview, supersedeReviews, saveStagedJob, saveStagedObservations, getStagedObservations, closeStagingDb } from '../localStaging.js';
-import { buildBrandRateCardSet } from '../rateCardService.js';
+import { buildBrandRateCardSet, detectBrandRateChanges } from '../rateCardService.js';
 import { generateBrandwiseRateCardExcel } from '../excelExport.js';
 import { captureScrapeFailure } from '../scrapeDiagnostics.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from '../portalProfileState.js';
@@ -504,6 +504,35 @@ test('desktop published-rate workbook includes generic commission rows with a re
   } finally {
     fs.rmSync(outputPath,{force:true});
   }
+});
+
+test('generic commission cards compare against NULL, blank, General and All brands database rows', async () => {
+  const genericRows=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:null,price_min:0,price_max:500,rate:0.12},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'',price_min:500,price_max:1000,rate:0.13},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'General',price_min:1000,price_max:1500,rate:0.14},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:'All brands',price_min:1500,price_max:999999,rate:0.15}
+  ];
+  const samples=[
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku:'SKU-DEFAULT',order_count:6},
+    {marketplace:'flipkart',seller_account:'default',category:'kurta',brand:'Sangria',sample_fsn:'QRSTUVWXYZ123456',sample_sku:'SKU-SANGRIA',order_count:2}
+  ];
+  const pool={query:async sql=>{
+    const query=String(sql);
+    if (query.includes('FROM orders')) return {rows:samples};
+    if (query.includes('FROM rc_commission')) {
+      return {rows:/AND\s+end_date\s+IS\s+NULL/i.test(query)
+        ? genericRows.map(({price_min,price_max,rate})=>({price_min,price_max,rate}))
+        : genericRows};
+    }
+    return {rows:[]};
+  }};
+  const cards=await buildBrandRateCardSet(pool,'default');
+  assert.equal(cards.length,1);
+  assert.equal(cards[0].brand,'All brands');
+  assert.equal(cards[0].commissions.length,4);
+  const changes=await detectBrandRateChanges(cards,pool);
+  assert.deepEqual(changes.filter(change=>change.type==='commission'),[]);
 });
 
 test('standalone worker keeps requested published-rate workbook export when all profiles lack FSNs', () => {
