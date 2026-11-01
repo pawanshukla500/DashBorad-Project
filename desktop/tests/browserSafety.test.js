@@ -475,6 +475,26 @@ test('rate-card snapshot keeps seller accounts in separate cards', async () => {
   assert.ok(defaultCards.length>0 && defaultCards.every(card=>card.seller_account==='default'),'the visible review defaults to the same seller account used by publication');
 });
 
+test('desktop Shopsy rate cards match real FSNs from legacy Flipkart Shopsy orders', async () => {
+  const commissionRows = [
+    {marketplace:'shopsy',seller_account:'default',category:'shopsy_saree',brand_name:'Youthnic',price_min:0,price_max:500,rate:0},
+    {marketplace:'flipkart',seller_account:'default',category:'sari',brand_name:'Youthnic',price_min:0,price_max:500,rate:0.1}
+  ];
+  const catalogRows = [
+    {marketplace:'flipkart',seller_account:'default',category:'Shopsy Saree',brand:'Youthnic',sample_fsn:'ABCDEFGHIJKLMNOP',sample_sku:'SKU-SHOPSY',order_count:4},
+    {marketplace:'flipkart',seller_account:'default',category:'Saree',brand:'Youthnic',sample_fsn:'QRSTUVWXYZ123456',sample_sku:'SKU-FLIPKART',order_count:7}
+  ];
+  const pool = {query:async sql => ({rows:String(sql).includes('FROM orders') ? catalogRows :
+    String(sql).includes('FROM rc_commission') ? commissionRows : []})};
+
+  const cards = await buildBrandRateCardSet(pool, 'default');
+
+  assert.deepEqual(cards.map(card=>[card.marketplace,card.category,card.sample_fsn,card.sample_sku,card.order_count]).sort(), [
+    ['flipkart','sari','QRSTUVWXYZ123456','SKU-FLIPKART',7],
+    ['shopsy','shopsy_saree','ABCDEFGHIJKLMNOP','SKU-SHOPSY',4]
+  ]);
+});
+
 test('desktop published-rate workbook includes generic commission rows with a real category FSN', async () => {
   const commissionRows=[
     {marketplace:'flipkart',seller_account:'default',category:'kurta',brand_name:null,price_min:0,price_max:500,rate:0.12},

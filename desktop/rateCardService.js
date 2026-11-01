@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getDesktopPool } from './db.js';
+import { normalizeScrapeVertical } from './fsnPlan.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,6 +85,12 @@ export async function buildBrandRateCardSet(pool = null, sellerAccount = 'defaul
   const normalize = value => String(value || '').trim().toLowerCase();
   const normalizedAccount = value => String(value || '').trim() || 'default';
   const isGenericRateBrand = value => !normalize(value) || ['general', 'all brands'].includes(normalize(value));
+  const channelFor = (marketplace, category) => {
+    const channel = normalize(marketplace);
+    return channel === 'shopsy' || /^shopsy(?:[_\s-]+)/i.test(String(category || '').trim())
+      ? 'shopsy'
+      : channel;
+  };
   const fields = [['rc_commission','commissions',true],['rc_fixed_fee','fixedFees',false],['rc_collection_fee','collectionFees',false],['rc_reverse_shipping','reverseShipping',false],['rc_pick_pack','pickPackFees',false]];
   const cards = new Map();
   for (const [table, field, brandSpecific] of fields) {
@@ -94,8 +101,14 @@ export async function buildBrandRateCardSet(pool = null, sellerAccount = 'defaul
       const account = normalizedAccount(row.seller_account);
       const genericBrand = brandSpecific && isGenericRateBrand(row.brand_name);
       const brand = brandSpecific ? (genericBrand ? 'All brands' : String(row.brand_name).trim()) : 'General';
-      const scopedSamples = samples.filter(item => normalize(item.marketplace).includes(normalize(row.marketplace)) &&
-        normalize(item.category) === normalize(row.category) && normalizedAccount(item.seller_account) === account);
+      const rowChannel = channelFor(row.marketplace, row.category);
+      const rowCategory = normalizeScrapeVertical(row.category, rowChannel);
+      const scopedSamples = samples.filter(item => {
+        const sampleChannel = channelFor(item.marketplace, item.category);
+        return sampleChannel === rowChannel &&
+          normalizeScrapeVertical(item.category, sampleChannel) === rowCategory &&
+          normalizedAccount(item.seller_account) === account;
+      });
       const sample = genericBrand || !brandSpecific
         ? scopedSamples[0]
         : scopedSamples.find(item => normalize(item.brand || 'General') === normalize(brand));
