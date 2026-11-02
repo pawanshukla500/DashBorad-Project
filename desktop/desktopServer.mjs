@@ -28,7 +28,8 @@ import {
   saveEncryptedCookies,
   loadEncryptedCookies,
   deleteEncryptedCookies,
-  clearEncryptedCookieSnapshot,
+  getCookieVaultGeneration,
+  clearEncryptedCookieSnapshotsAsync,
   decryptMarketplaceCredential,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
@@ -420,7 +421,7 @@ const serverWorker = createWorkerEngine({
           console.warn(JSON.stringify(entry));
           broadcastProgress(`Ignored ${discardedRecords} malformed saved cookie records while restoring the Seller Hub session.`);
         },
-        onSessionExpiry: async page => {
+        onSessionExpiry: async (page, { cookieVaultGeneration } = {}) => {
           if (!canOpenVisibleBrowser()) return false;
           broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible Chrome window at seller.flipkart.com.');
           try {
@@ -432,11 +433,11 @@ const serverWorker = createWorkerEngine({
             });
             const cookies = await authPage.cookies();
             if (cookies.length) {
-              saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
-              saveEncryptedCookies(COOKIES_PATH, cookies);
+              saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies, { expectedGeneration: cookieVaultGeneration });
+              saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
             } else {
-              deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
-              deleteEncryptedCookies(COOKIES_PATH);
+              deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), { expectedGeneration: cookieVaultGeneration });
+              deleteEncryptedCookies(COOKIES_PATH, { expectedGeneration: cookieVaultGeneration });
             }
             broadcastProgress(cookies.length
               ? `Seller Hub login verified. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile will be reused.`
@@ -1502,7 +1503,7 @@ const server = http.createServer(async (req, res) => {
                 console.warn(JSON.stringify(entry));
                 broadcastProgress(`Ignored ${discardedRecords} malformed saved cookie records while restoring the Seller Hub session.`);
               },
-              onSessionExpiry: async page => {
+              onSessionExpiry: async (page, { cookieVaultGeneration } = {}) => {
                 if (!isVisible) {
                   broadcastProgress('Seller Hub session expired. Open Seller Hub Sign-in, complete login manually, then run the worker again.');
                   return false;
@@ -1516,8 +1517,8 @@ const server = http.createServer(async (req, res) => {
                     onPage: () => broadcastProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.')
                   });
                   const cookies = await authPage.cookies();
-                  saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
-                  saveEncryptedCookies(COOKIES_PATH, cookies);
+                  saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies, { expectedGeneration: cookieVaultGeneration });
+                  saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
                   broadcastProgress(`Seller Hub login verified. Saved ${cookies.length} encrypted cookies and retained the persistent browser profile.`);
                   return authPage;
                 } catch (loginError) {
@@ -1602,6 +1603,7 @@ const server = http.createServer(async (req, res) => {
           ? FLIPKART_MANUAL_LOGIN_URL
           : (mpConfig.loginUrl || mpConfig.portalUrl || body.portal_url || FLIPKART_MANUAL_LOGIN_URL);
         const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
+        const cookieVaultGeneration = getCookieVaultGeneration(cookiesPath);
         const chromePath = getChromeExecutablePath();
         const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
         const profileSessionState = readSellerHubProfileState(profileDir);
@@ -1732,9 +1734,9 @@ const server = http.createServer(async (req, res) => {
             if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
               writeSellerHubProfileState(profileDir, 'authenticated');
             }
-            saveEncryptedCookies(cookiesPath, cookies);
+            saveEncryptedCookies(cookiesPath, cookies, { expectedGeneration: cookieVaultGeneration });
             if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
-              saveEncryptedCookies(COOKIES_PATH, cookies);
+              saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
             }
             broadcastProgress(`✓ Authentication detected. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile remains available to the worker.`);
           } catch (loginErr) {
@@ -1785,13 +1787,21 @@ const server = http.createServer(async (req, res) => {
         const cleared = await withBrowserTask(async () => {
           const profilePath = getMarketplaceBrowserProfilePath(targetId);
           await standaloneBrowserRecovery.closeProfile(profilePath);
-          clearEncryptedCookieSnapshot(getMarketplaceCookiesPath(targetId));
           const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
-          if (isFlipkart) {
-            clearEncryptedCookieSnapshot(COOKIES_PATH);
-          }
-          fs.rmSync(profilePath, { recursive: true, force: true });
-          if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent marketplace browser profile.');
+          const cookiePaths = isFlipkart
+            ? [getMarketplaceCookiesPath(targetId), COOKIES_PATH]
+            : [getMarketplaceCookiesPath(targetId)];
+          await clearEncryptedCookieSnapshotsAsync(cookiePaths, {
+            clearProfile: async () => {
+              await fs.promises.rm(profilePath, { recursive: true, force: true });
+              try {
+                await fs.promises.lstat(profilePath);
+                throw new Error('Could not remove the persistent marketplace browser profile.');
+              } catch (error) {
+                if (error?.code !== 'ENOENT') throw error;
+              }
+            }
+          });
           return { success: true, message: `Session data cleared for ${targetId}` };
         });
         if (!cleared.success) return sendJson(/already running/i.test(cleared.error || '') ? 409 : 500, cleared);

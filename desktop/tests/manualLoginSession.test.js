@@ -6,14 +6,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from '../manualLoginWindow.js';
 import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL, inspectFlipkartLoginState } from '../portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from '../portalLoginWaiter.js';
 import { scrapeFlipkartRateCards } from '../portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from '../portalProfileState.js';
 import { invokeProgressSafely } from '../safeProgress.js';
-import { clearEncryptedCookieSnapshot, decryptVaultData, encryptVaultData, getVaultMasterKey, loadEncryptedCookies, saveEncryptedCookies } from '../cookieVault.js';
+import { clearEncryptedCookieSnapshot, clearEncryptedCookieSnapshotsAsync, decryptVaultData, deleteEncryptedCookies, encryptVaultData, getCookieVaultGeneration, getCookieVaultLockPath, getVaultMasterKey, loadEncryptedCookies, saveEncryptedCookies } from '../cookieVault.js';
 import { persistDesktopUserDataDirChoice, resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from '../userDataPaths.js';
+
+const DESKTOP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('desktop app and standalone login helper share one Windows Seller Hub profile', () => {
   const appData = path.join(os.tmpdir(), 'shared-seller-hub-roaming');
@@ -852,24 +855,24 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'foregrounding must keep one-second interaction gaps around the selected page activation');
   assert.match(mainSource, /timeoutMs: 30 \* 60 \* 1000/,
     'manual login and visible reauthentication must allow time for the operator to sign in');
-  assert.match(mainSource, /async function openManualFlipkartLogin\(\{ onProgress = \(\) => \{\}, waitMs \} = \{\}\)/);
-  assert.match(mainSource, /manager\.open\(\{ waitMs \}\)/);
+  assert.match(mainSource, /async function openManualFlipkartLogin\(\{ onProgress = \(\) => \{\}, waitMs, cookieVaultGeneration \} = \{\}\)/);
+  assert.match(mainSource, /manager\.open\(\{ waitMs, cookieVaultGeneration: sessionGeneration \}\)/);
   assert.match(mainSource, /captureScrapeFailure\(page, DIAGNOSTICS_DIR,[\s\S]*?operation: 'manual_login'/,
     'manual-login failures must use the redacted, bounded diagnostic screenshot path');
-  assert.match(externalExpiryHandler, /async \(page, \{ visible = false \} = \{\}\) => \{\s*if \(!visible\) return false;/,
+  assert.match(externalExpiryHandler, /async \(page, \{ visible = false, cookieVaultGeneration \} = \{\}\) => \{\s*if \(!visible\) return false;/,
     'external reauthentication must only wait on a visible browser page');
   assert.match(externalExpiryHandler, /onState: \(_candidate, state\) => reportFlipkartLoginState\(state,[\s\S]*?operation: 'scrape_reauthentication'/,
     'scrape-time reauthentication must report the observed username, password, challenge, and public-return states');
   assert(!externalExpiryHandler.includes('openManualFlipkartLogin'), 'external Chrome reauthentication must not switch to a separate Electron storage partition');
-  assert.match(externalExpiryHandler, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\)\)/,
+  assert.match(externalExpiryHandler, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\), \{ expectedGeneration: cookieVaultGeneration \}\)/,
     'visible reauthentication must remove stale cookie snapshots when the authenticated browser has no cookies');
   assert.match(workerEntry, /visible: true/);
   assert.match(standaloneSource, /userDataDir: profileDir/);
   assert.match(standaloneSource, /mpConfig\.id === 'flipkart_shopsy'[\s\S]*?FLIPKART_MANUAL_LOGIN_URL/);
   assert.match(standaloneWorker, /visible: canOpenVisibleBrowser\(\)/);
-  assert.match(standaloneWorker, /onSessionExpiry: async page/);
+  assert.match(standaloneWorker, /onSessionExpiry: async \(page, \{ cookieVaultGeneration \} = \{\}\)/);
   assert.match(standaloneWorker, /waitForFlipkartAuthenticatedPage\(page\.browser\(\), \{[\s\S]*?pollMs: 1000/);
-  assert.match(standaloneWorker, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\)\)/,
+  assert.match(standaloneWorker, /if \(cookies\.length\)[\s\S]*?deleteEncryptedCookies\(getMarketplaceCookiesPath\('flipkart_shopsy'\), \{ expectedGeneration: cookieVaultGeneration \}\)/,
     'standalone reauthentication must remove stale snapshots when the authenticated browser has no cookies');
   assert.match(standaloneSource, /version: DESKTOP_VERSION/);
   assert(!monitorHtml.includes('value="embedded"'), 'the monitor must not let users select a separate embedded session');
@@ -881,33 +884,31 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'the session clear route must recheck browser activity after parsing the request body');
   assert(clearSessionRoute.includes('const cleared = await withBrowserTask(async () =>'),
     'session profile deletion must hold the shared browser task lock');
-  assert(clearSessionRoute.indexOf('withBrowserTask(async () =>') < clearSessionRoute.indexOf('fs.rmSync'),
+  assert(clearSessionRoute.indexOf('withBrowserTask(async () =>') < clearSessionRoute.indexOf('fs.promises.rm'),
     'the worker profile must be deleted only after acquiring the browser task lock');
-  assert(clearSessionRoute.indexOf('await standaloneBrowserRecovery.closeProfile(profilePath)') < clearSessionRoute.indexOf('fs.rmSync(profilePath'),
+  assert(clearSessionRoute.indexOf('await standaloneBrowserRecovery.closeProfile(profilePath)') < clearSessionRoute.indexOf('fs.promises.rm(profilePath'),
     'failed standalone browser handles must be retried before deleting their locked profile');
   assert.match(standaloneLoginRoute, /standaloneBrowserRecovery\.track\(browser, profileDir\)/,
     'standalone interactive-login browsers must be registered for failed-close recovery');
   assert.match(standaloneSource, /browserRecoveryRegistry: standaloneBrowserRecovery/,
     'standalone scraping browsers must share the recovery registry used by profile reset');
-  assert.match(clearSessionRoute, /const profilePath = getMarketplaceBrowserProfilePath\(targetId\)[\s\S]*?clearEncryptedCookieSnapshot\(getMarketplaceCookiesPath\(targetId\)\)[\s\S]*?fs\.rmSync/,
-    'standalone reset must delete the selected marketplace profile after clearing its cookie snapshot');
-  assert.match(clearSessionRoute, /if \(isFlipkart\) \{\s*clearEncryptedCookieSnapshot\(COOKIES_PATH\)/,
-    'standalone reset must retain the legacy cookie cleanup only for Flipkart');
-  const standaloneProfileCleanup = clearSessionRoute.slice(clearSessionRoute.indexOf('fs.rmSync(profilePath'), clearSessionRoute.indexOf('return { success: true'));
+  assert.match(clearSessionRoute, /clearEncryptedCookieSnapshotsAsync\(cookiePaths,\s*\{\s*clearProfile: async \(\) =>[\s\S]*?fs\.promises\.rm/,
+    'standalone reset must clear all related snapshots and the profile under the shared vault lock');
+  assert.match(clearSessionRoute, /const cookiePaths = isFlipkart\s*\? \[getMarketplaceCookiesPath\(targetId\), COOKIES_PATH\]/,
+    'standalone reset must retain legacy cookie cleanup only for Flipkart');
+  const standaloneProfileCleanup = clearSessionRoute.slice(clearSessionRoute.indexOf('fs.promises.rm(profilePath'), clearSessionRoute.indexOf('return { success: true'));
   assert(!standaloneProfileCleanup.includes('if (isFlipkart)'), 'standalone reset must delete profiles for every marketplace');
-  assert.match(clearSessionRoute, /if \(fs\.existsSync\(profilePath\)\) throw/,
+  assert.match(clearSessionRoute, /await fs\.promises\.lstat\(profilePath\);\s*throw new Error\('Could not remove the persistent marketplace browser profile\.'\)/,
     'standalone reset must fail if browser-profile removal did not take effect');
-  assert.match(desktopResetHandler, /clearEncryptedCookieSnapshot\(cookiesPath\)[\s\S]*?const profilePath = getMarketplaceBrowserProfilePath\(targetId\)[\s\S]*?fs\.rmSync/,
-    'desktop reset must delete the selected marketplace profile after clearing its cookie snapshot');
-  assert.match(desktopResetHandler, /if \(isFlipkart\) \{\s*clearEncryptedCookieSnapshot\(COOKIES_PATH\)/,
-    'desktop reset must retain the legacy cookie cleanup only for Flipkart');
+  assert.match(desktopResetHandler, /const snapshotPaths = isFlipkart \? \[cookiesPath, COOKIES_PATH\] : \[cookiesPath\][\s\S]*?clearEncryptedCookieSnapshotsAsync\(snapshotPaths,\s*\{\s*clearProfile: async \(\) =>[\s\S]*?fs\.promises\.rm/,
+    'desktop reset must clear all related snapshots and the profile under the shared vault lock');
   const desktopProfileCleanup = desktopResetHandler.slice(desktopResetHandler.indexOf('const profilePath'), desktopResetHandler.indexOf('if (partitionErr)'));
   assert(!desktopProfileCleanup.includes('if (isFlipkart)'), 'desktop reset must delete profiles for every marketplace');
-  const desktopBrowserClose = desktopResetHandler.slice(desktopResetHandler.indexOf('const isFlipkart'), desktopResetHandler.indexOf('const cookiesPath'));
+  const desktopBrowserClose = desktopResetHandler.slice(desktopResetHandler.indexOf('const isFlipkart'), desktopResetHandler.indexOf('let partitionErr'));
   assert(desktopBrowserClose.includes('await externalBrowserSession.close({') && desktopBrowserClose.includes("reason: 'cookie-reset'"),
     'desktop reset must close the selected retained browser for every marketplace');
   assert(!desktopBrowserClose.includes('if (isFlipkart)'), 'retained browser cleanup must cover every marketplace');
-  assert.match(desktopResetHandler, /if \(fs\.existsSync\(profilePath\)\) throw/,
+  assert.match(desktopResetHandler, /await fs\.promises\.lstat\(profilePath\);\s*throw new Error\('Could not remove the persistent marketplace browser profile\.'\)/,
     'desktop reset must fail if browser-profile removal did not take effect');
 });
 
@@ -968,6 +969,112 @@ test('reset refuses success when an existing encrypted cookie snapshot cannot be
     assert.equal(clearEncryptedCookieSnapshot(cookiePath), true);
     assert.equal(fs.existsSync(cookiePath), false);
   } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('cookie reset advances the session generation and rejects stale saves and deletions', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-cookie-generation-reset-'));
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  try {
+    const oldGeneration = getCookieVaultGeneration(cookiePath);
+    saveEncryptedCookies(cookiePath, [
+      { name: 'old-session', value: 'old-fixture-value', domain: '.seller.flipkart.com' }
+    ], { expectedGeneration: oldGeneration });
+
+    await clearEncryptedCookieSnapshotsAsync([cookiePath]);
+    const nextGeneration = getCookieVaultGeneration(cookiePath);
+    assert.equal(nextGeneration, oldGeneration + 1);
+    assert.equal(fs.existsSync(cookiePath), false);
+
+    assert.throws(
+      () => saveEncryptedCookies(cookiePath, [
+        { name: 'stale-session', value: 'stale-fixture-value', domain: '.seller.flipkart.com' }
+      ], { expectedGeneration: oldGeneration }),
+      error => error.code === 'COOKIE_VAULT_GENERATION_CHANGED'
+    );
+
+    saveEncryptedCookies(cookiePath, [
+      { name: 'new-session', value: 'new-fixture-value', domain: '.seller.flipkart.com' }
+    ], { expectedGeneration: nextGeneration });
+    assert.equal(deleteEncryptedCookies(cookiePath, { expectedGeneration: oldGeneration }), false);
+    assert.deepEqual(loadEncryptedCookies(cookiePath).map(cookie => cookie.name), ['new-session']);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Flipkart reset clears both encrypted snapshot aliases in one generation', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-cookie-alias-reset-'));
+  const previous = process.env.RECON_USER_DATA_DIR;
+  const marketplacePath = path.join(tempDir, 'cookies', 'cookies_flipkart_shopsy.json');
+  const legacyPath = path.join(tempDir, 'cookies.json');
+  try {
+    process.env.RECON_USER_DATA_DIR = tempDir;
+    const generation = getCookieVaultGeneration(marketplacePath);
+    const cookies = [{ name: 'session', value: 'fixture-only', domain: '.seller.flipkart.com' }];
+    saveEncryptedCookies(marketplacePath, cookies, { expectedGeneration: generation });
+    saveEncryptedCookies(legacyPath, cookies, { expectedGeneration: generation });
+
+    await clearEncryptedCookieSnapshotsAsync([marketplacePath, legacyPath]);
+
+    assert.equal(fs.existsSync(marketplacePath), false);
+    assert.equal(fs.existsSync(legacyPath), false);
+    assert.equal(getCookieVaultGeneration(legacyPath), generation + 1);
+  } finally {
+    if (previous === undefined) delete process.env.RECON_USER_DATA_DIR;
+    else process.env.RECON_USER_DATA_DIR = previous;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('a stale cookie writer process cannot restore a snapshot after reset finishes', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-cookie-stale-process-'));
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  const previous = process.env.RECON_USER_DATA_DIR;
+  try {
+    process.env.RECON_USER_DATA_DIR = tempDir;
+    const generationBeforeReset = getCookieVaultGeneration(cookiePath);
+    await clearEncryptedCookieSnapshotsAsync([cookiePath]);
+
+    const childScript = `
+      import { saveEncryptedCookies } from './cookieVault.js';
+      const target = ${JSON.stringify(cookiePath)};
+      try {
+        saveEncryptedCookies(target, [
+          { name: 'stale-process-session', value: 'fixture-only', domain: '.seller.flipkart.com' }
+        ], { expectedGeneration: ${generationBeforeReset} });
+        process.stdout.write('UNEXPECTED_SAVE');
+        process.exitCode = 1;
+      } catch (error) {
+        if (error?.code !== 'COOKIE_VAULT_GENERATION_CHANGED') {
+          process.stderr.write(String(error.stack || error));
+          process.exitCode = 1;
+        } else {
+          process.stdout.write('STALE_REJECTED');
+        }
+      }
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childScript], {
+      cwd: DESKTOP_DIR,
+      env: { ...process.env, RECON_USER_DATA_DIR: tempDir },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    const exitCode = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+
+    assert.equal(exitCode, 0, stderr);
+    assert.equal(stdout, 'STALE_REJECTED');
+    assert.equal(fs.existsSync(cookiePath), false);
+  } finally {
+    if (previous === undefined) delete process.env.RECON_USER_DATA_DIR;
+    else process.env.RECON_USER_DATA_DIR = previous;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
@@ -1214,7 +1321,8 @@ test('cookie snapshot loading waits for a cross-process writer holding the share
       import fs from 'node:fs';
       const target = ${JSON.stringify(cookiePath)};
       const snapshot = ${JSON.stringify(newerSnapshot)};
-      const release = lockfile.lockSync(target, { realpath: false, stale: 5000, update: 2500 });
+      const lockPath = ${JSON.stringify(getCookieVaultLockPath(cookiePath))};
+      const release = lockfile.lockSync(lockPath, { realpath: false, stale: 5000, update: 2500 });
       process.stdout.write('LOCKED\\n');
       setTimeout(() => {
         try {
@@ -1231,7 +1339,7 @@ test('cookie snapshot loading waits for a cross-process writer holding the share
       }, 250);
     `;
     const child = spawn(process.execPath, ['--input-type=module', '-e', childScript], {
-      cwd: process.cwd(),
+      cwd: DESKTOP_DIR,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     const childExit = new Promise(resolve => child.once('exit', resolve));
@@ -1262,6 +1370,92 @@ test('cookie snapshot loading waits for a cross-process writer holding the share
     const restored = loadEncryptedCookies(cookiePath);
     assert.deepEqual(restored.map(cookie => cookie.name), ['new-session']);
     assert.equal(await childExit, 0, stderr);
+  } finally {
+    if (previous === undefined) delete process.env.RECON_USER_DATA_DIR;
+    else process.env.RECON_USER_DATA_DIR = previous;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('cookie reset waits for a cross-process save and removes its snapshot before completing', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-reset-cross-process-'));
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  const lockPath = getCookieVaultLockPath(cookiePath);
+  const previous = process.env.RECON_USER_DATA_DIR;
+  let stderr = '';
+  let stdout = '';
+  let didLock = false;
+  let profileCleared = false;
+
+  try {
+    process.env.RECON_USER_DATA_DIR = tempDir;
+    const childScript = `
+      import lockfile from 'proper-lockfile';
+      import fs from 'node:fs';
+      const target = ${JSON.stringify(cookiePath)};
+      const lockPath = ${JSON.stringify(lockPath)};
+      const snapshot = ${JSON.stringify(encryptVaultData(JSON.stringify({
+        saved_at: Date.now(),
+        cookie_vault_generation: 0,
+        cookies: [{ name: 'in-flight-session', value: 'fixture-only', domain: '.seller.flipkart.com' }]
+      })))};
+      const release = lockfile.lockSync(lockPath, { realpath: false, stale: 5000, update: 2500 });
+      process.stdout.write('LOCKED\\n');
+      setTimeout(() => {
+        try {
+          const temporaryPath = target + '.writer.tmp';
+          fs.writeFileSync(temporaryPath, snapshot, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+          fs.renameSync(temporaryPath, target);
+          process.stdout.write('SAVED\\n');
+        } catch (error) {
+          process.stderr.write(String(error.stack || error));
+          process.exitCode = 1;
+        } finally {
+          release();
+        }
+      }, 250);
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childScript], {
+      cwd: DESKTOP_DIR,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const childExit = new Promise(resolve => child.once('exit', resolve));
+    const lockReady = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`Writer did not acquire the cookie vault lock. stdout=${stdout} stderr=${stderr}`)), 5000);
+      child.stdout.on('data', chunk => {
+        stdout += chunk.toString();
+        if (stdout.includes('LOCKED') && !didLock) {
+          didLock = true;
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+      child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      child.once('error', error => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once('exit', code => {
+        if (!didLock) {
+          clearTimeout(timeout);
+          reject(new Error(`Writer exited before acquiring the cookie vault lock (${code}): ${stderr}`));
+        }
+      });
+    });
+
+    await lockReady;
+    let resetSettled = false;
+    const reset = clearEncryptedCookieSnapshotsAsync([cookiePath], {
+      clearProfile: async () => { profileCleared = true; }
+    }).finally(() => { resetSettled = true; });
+    await new Promise(resolve => setTimeout(resolve, 75));
+    assert.equal(resetSettled, false, 'reset must wait while another process is saving the snapshot');
+    assert.equal(await childExit, 0, stderr);
+    await reset;
+    assert.equal(stdout.includes('SAVED'), true);
+    assert.equal(profileCleared, true);
+    assert.equal(fs.existsSync(cookiePath), false, 'reset must remove a snapshot written before its lock is acquired');
+    assert.equal(getCookieVaultGeneration(cookiePath), 1);
   } finally {
     if (previous === undefined) delete process.env.RECON_USER_DATA_DIR;
     else process.env.RECON_USER_DATA_DIR = previous;
