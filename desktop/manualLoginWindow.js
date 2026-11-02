@@ -217,6 +217,16 @@ export function createManualLoginWindowManager({
         return;
       } catch (error) {
         safeLog(log, 'warn', 'portal.login_window.auth_check_retry', { message: error?.message || String(error) });
+        if (error?.code === 'COOKIE_VAULT_GENERATION_CHANGED' && isCurrent()) {
+          const message = 'Seller Hub session was reset while sign-in was in progress. Close this window and open Seller Hub Sign-in again.';
+          safeNotify(onState, currentState(window, {
+            active: false,
+            status: 'error',
+            error: message,
+            progressMessage: message
+          }));
+          currentWatcher.finish({ success: false, error: message });
+        }
       } finally {
         checking = false;
       }

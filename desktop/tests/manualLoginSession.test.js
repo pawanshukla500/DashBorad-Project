@@ -213,7 +213,7 @@ class FakeWindow {
   close() { this.destroyed = true; this.listeners.get('closed')?.(); }
 }
 
-function manualLoginHarness({ authenticated = false } = {}) {
+function manualLoginHarness({ authenticated = false, saveCookies, onState = () => {} } = {}) {
   const windows = [];
   const saved = [];
   let poll;
@@ -227,7 +227,8 @@ function manualLoginHarness({ authenticated = false } = {}) {
     portalSession,
     isAuthenticated: async () => authenticated,
     readCookies: async () => [{ name: 'seller_session', value: 'redacted-test-value', domain: '.flipkart.com', session: true }],
-    saveCookies: async cookies => saved.push(cookies),
+    saveCookies: saveCookies || (async cookies => saved.push(cookies)),
+    onState,
     setIntervalFn: callback => { poll = callback; return 1; },
     clearIntervalFn: () => {},
     setTimeoutFn: callback => { timeout = callback; return 2; },
@@ -924,6 +925,30 @@ test('manual sign-in timeout leaves its window and authentication watcher availa
   harness.setAuthenticated(true);
   await harness.poll();
   assert.equal(harness.saved.length, 1);
+});
+
+test('manual sign-in watcher stops retrying after Reset Cookies invalidates its session generation', async () => {
+  const states = [];
+  let saveAttempts = 0;
+  const harness = manualLoginHarness({
+    authenticated: true,
+    saveCookies: async () => {
+      saveAttempts += 1;
+      const error = new Error('stale session fixture');
+      error.code = 'COOKIE_VAULT_GENERATION_CHANGED';
+      throw error;
+    },
+    onState: state => states.push(state)
+  });
+
+  const result = await harness.manager.open({ waitMs: 5000, cookieVaultGeneration: 0 });
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /session was reset while sign-in was in progress/i);
+  await harness.poll();
+  assert.equal(saveAttempts, 1, 'the stale sign-in watcher must stop retrying the rejected save');
+  assert.equal(states.at(-1).status, 'error');
+  assert.equal(states.at(-1).active, false);
 });
 
 test('closing a manual sign-in window cancels an in-flight authentication check before cookies are saved', async () => {
