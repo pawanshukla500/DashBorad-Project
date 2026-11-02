@@ -170,21 +170,25 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
       expect(publication).toMatchObject({ published: true, diffCount: review.diffCount });
 
       for (const descriptor of RATE_TABLES) {
-        const periods = await client.query(`SELECT TO_CHAR(start_date,'YYYY-MM-DD') AS start_date,
-            TO_CHAR(end_date,'YYYY-MM-DD') AS end_date, category, price_min, price_max FROM ${descriptor.table}
+        const periods = await client.query(`SELECT *, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date_text,
+            TO_CHAR(end_date,'YYYY-MM-DD') AS end_date_text FROM ${descriptor.table}
           WHERE category = ANY($1::text[])`, [categories]);
-        const previous = periods.rows.filter(row => row.start_date === '2026-10-01');
-        const current = periods.rows.filter(row => row.start_date === '2026-10-30');
+        const previous = periods.rows.filter(row => row.start_date_text === '2026-10-01');
+        const current = periods.rows.filter(row => row.start_date_text === '2026-10-30');
         expect(previous).toHaveLength(expectedRows[descriptor.table]);
-        expect(previous.every(row => row.end_date === '2026-10-29')).toBe(true);
+        expect(previous.every(row => row.end_date_text === '2026-10-29')).toBe(true);
         expect(current).toHaveLength(expectedRows[descriptor.table] * 2);
-        expect(current.every(row => row.end_date === null)).toBe(true);
-        const expectedRanges = changed.flatMap(observation => (observation[descriptor.field] || []).map(source => {
-          const row = normalizeObservationRow(descriptor, source, observation);
-          return JSON.stringify([row.category, row.price_min, row.price_max]);
-        })).sort();
-        const actualRanges = current.map(row => JSON.stringify([row.category, Number(row.price_min), Number(row.price_max)])).sort();
-        expect(actualRanges).toEqual(expectedRanges);
+        expect(current.every(row => row.end_date_text === null)).toBe(true);
+        const expectedActiveRows = changed.flatMap(observation => (observation[descriptor.field] || [])
+          .map(source => normalizeObservationRow(descriptor, source, observation)));
+        const actualActiveRows = current.map(row => normalizeObservationRow(descriptor, row, { marketplace: 'flipkart' }));
+        const signature = row => JSON.stringify([
+          row.category,
+          ...descriptor.keys.map(key => descriptor.table === 'rc_commission' && key === 'brand_name'
+            ? String(row[key] || '').toLowerCase() : row[key]),
+          ...descriptor.values.map(key => row[key]),
+        ]);
+        expect(actualActiveRows.map(signature).sort()).toEqual(expectedActiveRows.map(signature).sort());
       }
     } finally { client.release(); }
   });
