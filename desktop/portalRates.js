@@ -1,5 +1,39 @@
 // Parsed only from the observed /orchestrator/graphql settlement contract.
 // Every monetary value remains tied to its request and original response.
+const AGREEMENT_PARAMETERS = new Set([
+  'fixedRate', 'prepaid', 'postpaid', 'startSlab', 'incrementalSlab', 'localFee', 'zonalFee', 'nationalFee',
+  'localAdditionalCharges', 'zonalAdditionalCharges', 'nationalAdditionalCharges'
+]);
+
+// Fail closed if Seller Hub adds a field so a fee is never silently dropped.
+function assertSupportedAgreementParameters(fees) {
+  const unsupported = new Set();
+  const visit = value => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (Object.hasOwn(value, 'agreementParameters')) {
+      const parameters = value.agreementParameters;
+      if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+        throw new Error('Malformed Seller Hub agreementParameters object.');
+      }
+      for (const name of Object.keys(parameters)) {
+        if (!AGREEMENT_PARAMETERS.has(name)) unsupported.add(name);
+      }
+    }
+    for (const [key, nested] of Object.entries(value)) {
+      if (key !== 'agreementParameters') visit(nested);
+    }
+  };
+
+  visit(fees);
+  if (unsupported.size) {
+    throw new Error(`Unsupported Seller Hub agreement parameter(s): ${[...unsupported].sort().join(', ')}.`);
+  }
+}
+
 const amount = (value, unit) => {
   const text = String(value ?? '').replace(/,/g, '').trim();
   const expression = unit === 'kg' ? /^(\d+(?:\.\d+)?)kg$/ : unit === '%' ? /^(\d+(?:\.\d+)?)%$/ : /^₹(\d+(?:\.\d+)?)$/;
@@ -34,6 +68,7 @@ export function parsePortalRateSnapshot(snapshot, { vertical, marketplace, fulfi
   if (snapshot.missing.length) throw new Error(`Incomplete rate response: ${snapshot.missing.join(', ')}.`);
   const normalizedSellerAccount = String(sellerAccount || 'default').trim() || 'default';
   const { fees } = snapshot;
+  assertSupportedAgreementParameters(fees);
   const asps = key => {
     const rows = fees[key]?.slabs?.asp;
     if (!Array.isArray(rows) || !rows.length) throw new Error(`Missing ${key} price slabs.`);
