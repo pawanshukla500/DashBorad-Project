@@ -94,6 +94,38 @@ describe('Rate Card Automation & Sync Endpoints', () => {
     expect(body.error).toContain('scrapedData array is required');
   });
 
+  it('POST /api/rate-card/detect-changes returns the review fingerprint required by the desktop publisher', async () => {
+    const res = await fetch(`${baseUrl}/api/rate-card/detect-changes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        marketplace: 'flipkart',
+        seller_account: 'default',
+        scrapedData: [{
+          marketplace: 'flipkart',
+          seller_account: 'default',
+          vertical: 'kurta',
+          commissions: [{ brand_name: '', price_min: 0, price_max: 1000, rate: 0.1 }],
+          fixedFees: [{ fulfilment_type: 'FBF', price_min: 0, price_max: 1000, rate: 20 }],
+          collectionFees: [{ fulfilment_type: 'FBF', price_min: 0, price_max: 1000,
+            prepaid: 2, postpaid: 3, prepaid_type: 'flat', postpaid_type: 'flat' }],
+          reverseShipping: [{ weight_slab: '0-500g', price_min: 0, price_max: 1000,
+            local_fee: 10, zonal_fee: 20, national_fee: 30, base_weight: 0.5,
+            increment_weight: 0, local_additional_fee: 0, zonal_additional_fee: 0, national_additional_fee: 0 }],
+          pickPackFees: [{ fulfilment_type: 'FBF', weight_min: 0, weight_max: 0.5,
+            price_min: 0, price_max: 1000, price_scope: 'range', rate: 5,
+            local_fee: 5, zonal_fee: 6, national_fee: 7, base_weight: 0.5,
+            increment_weight: 0, local_additional_fee: 0, zonal_additional_fee: 0, national_additional_fee: 0 }],
+        }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ hasChanges: true, diffCount: 5, summary: { added: 5 } });
+    expect(body.fingerprint).toMatch(/^[a-f\d]{64}$/i);
+  });
+
   it('POST /api/rate-card/detect-changes rejects observations for another seller account', async () => {
     const res = await fetch(`${baseUrl}/api/rate-card/detect-changes`, {
       method: 'POST',
