@@ -39,7 +39,7 @@ function readPersistedVaultKey(keyFilePath, attempts = 100, retryDelayMs = 10) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
-      if (storedKey.length >= 32) return crypto.createHash('sha256').update(storedKey).digest();
+      if (/^[a-f0-9]{64}$/i.test(storedKey)) return crypto.createHash('sha256').update(storedKey).digest();
     } catch (error) {
       if (!['ENOENT', 'EBUSY'].includes(error?.code)) throw error;
     }

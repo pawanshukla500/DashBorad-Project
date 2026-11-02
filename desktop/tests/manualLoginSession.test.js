@@ -1033,11 +1033,13 @@ test('vault key readers wait for a concurrent first writer to finish the key fil
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-key-race-'));
   const keyFilePath = path.join(tempDir, '.vault_key');
   const expectedSecret = 'a'.repeat(64);
+  const partialSecret = expectedSecret.slice(0, 32);
   const originalExistsSync = fs.existsSync;
   const originalReadFileSync = fs.readFileSync;
   const originalWriteFileSync = fs.writeFileSync;
   const previous = process.env.RECON_USER_DATA_DIR;
   let reportInitialAbsence = true;
+  let writePartialSecret = false;
   let completeConcurrentWrite = false;
 
   try {
@@ -1060,7 +1062,10 @@ test('vault key readers wait for a concurrent first writer to finish the key fil
     };
     fs.readFileSync = function patchedReadFileSync(candidate, ...args) {
       const contents = originalReadFileSync.call(fs, candidate, ...args);
-      if (path.resolve(candidate) === keyFilePath && !completeConcurrentWrite && String(contents).trim().length === 0) {
+      if (path.resolve(candidate) === keyFilePath && !writePartialSecret && String(contents).trim().length === 0) {
+        writePartialSecret = true;
+        originalWriteFileSync.call(fs, candidate, partialSecret, { encoding: 'utf8', mode: 0o600 });
+      } else if (path.resolve(candidate) === keyFilePath && writePartialSecret && !completeConcurrentWrite && String(contents).trim() === partialSecret) {
         completeConcurrentWrite = true;
         originalWriteFileSync.call(fs, candidate, expectedSecret, { encoding: 'utf8', mode: 0o600 });
       }
