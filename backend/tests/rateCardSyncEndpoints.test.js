@@ -123,6 +123,13 @@ describe('Rate Card Automation & Sync Endpoints', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toMatchObject({ hasChanges: true, diffCount: 5, summary: { added: 5 } });
+    expect(body.diffs.map(({ table, category, changeType }) => [table, category, changeType])).toEqual([
+      ['rc_commission', 'kurta', 'ADDED'],
+      ['rc_fixed_fee', 'kurta', 'ADDED'],
+      ['rc_collection_fee', 'kurta', 'ADDED'],
+      ['rc_reverse_shipping', 'kurta', 'ADDED'],
+      ['rc_pick_pack', 'kurta', 'ADDED'],
+    ]);
     expect(body.fingerprint).toMatch(/^[a-f\d]{64}$/i);
   });
 
