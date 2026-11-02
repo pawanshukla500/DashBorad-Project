@@ -120,6 +120,116 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
       ]);
     } finally { client.release(); }
   });
+  it('closes replaced price slabs in every fee table across categories in PostgreSQL', async () => {
+    const categories = ['closure_fixture_kurta', 'closure_fixture_ethnic_set'];
+    const existing = categories.flatMap(category => cards().map(card => ({ ...card, vertical: category, category })));
+    // Keep one category's all-price pick/pack row intact and model a ranged
+    // Seller Hub response for the other so both price scopes are covered.
+    for (const observation of existing) if (observation.category === 'closure_fixture_ethnic_set') {
+      observation.pickPackFees = observation.pickPackFees.map(row => ({ ...row, price_scope: 'range' }));
+    }
+    // Exercise paise-precision price bounds without changing any fee values.
+    for (const observation of existing) for (const descriptor of RATE_TABLES) {
+      observation[descriptor.field] = (observation[descriptor.field] || []).map(row => ({
+        ...row,
+        ...((descriptor.table === 'rc_pick_pack' && row.price_scope === 'all')
+          ? {} : { price_max: Number((Number(row.price_max) + 0.99).toFixed(2)) }),
+      }));
+    }
+    const changed = structuredClone(existing);
+    const expectedRows = Object.fromEntries(RATE_TABLES.map(descriptor => [descriptor.table,
+      existing.reduce((total, observation) => total + (observation[descriptor.field]?.length || 0), 0)]));
+    const unchangedRows = Object.fromEntries(RATE_TABLES.map(descriptor => [descriptor.table,
+      descriptor.table === 'rc_pick_pack'
+        ? existing.reduce((total, observation) => total + (observation[descriptor.field] || []).filter(row => row.price_scope === 'all').length, 0)
+        : 0]));
+    expect(unchangedRows.rc_pick_pack).toBeGreaterThan(0);
+    const replacedRows = Object.fromEntries(RATE_TABLES.map(descriptor => [descriptor.table,
+      expectedRows[descriptor.table] - unchangedRows[descriptor.table]]));
+    const client = await scoped.connect();
+    try {
+      for (const observation of existing) for (const descriptor of RATE_TABLES) {
+        for (const source of observation[descriptor.field] || []) {
+          const row = normalizeObservationRow(descriptor, source, observation);
+          const columns = ['marketplace', 'seller_account', 'category', 'start_date', 'end_date',
+            ...descriptor.keys, ...descriptor.values];
+          const values = ['flipkart', 'default', row.category, '2026-10-01', null,
+            ...descriptor.keys.map(key => row[key]), ...descriptor.values.map(key => row[key])];
+          await client.query(`INSERT INTO ${descriptor.table} (${columns.join(',')}) VALUES (${values.map((_, i) => `$${i + 1}`).join(',')})`, values);
+        }
+      }
+
+      for (const observation of changed) for (const descriptor of RATE_TABLES) {
+        observation[descriptor.field] = (observation[descriptor.field] || []).flatMap(row => {
+          if (descriptor.table === 'rc_pick_pack' && row.price_scope === 'all') return [row];
+          const priceMinCents = Math.round(Number(row.price_min) * 100);
+          const priceMaxCents = Math.round(Number(row.price_max) * 100);
+          const splitCents = Math.floor((priceMinCents + priceMaxCents) / 2);
+          if (splitCents < priceMinCents || splitCents + 1 > priceMaxCents) {
+            throw new Error(`Fixture has no splittable price range for ${descriptor.table}.`);
+          }
+          return [
+            { ...row, price_max: Number((splitCents / 100).toFixed(2)) },
+            { ...row, price_min: Number(((splitCents + 1) / 100).toFixed(2)) },
+          ];
+        });
+      }
+      for (const observation of changed) for (const descriptor of RATE_TABLES) {
+        const rows = (observation[descriptor.field] || []).filter(row =>
+          descriptor.table !== 'rc_pick_pack' || row.price_scope !== 'all');
+        for (let index = 0; index < rows.length; index += 2) {
+          expect(Math.round(Number(rows[index + 1].price_min) * 100))
+            .toBe(Math.round(Number(rows[index].price_max) * 100) + 1);
+        }
+      }
+
+      const review = await compareScrapedRatesWithActive(changed, {
+        marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30', dbClient: client,
+      });
+      for (const descriptor of RATE_TABLES) {
+        const diffs = review.diffs.filter(diff => diff.table === descriptor.table);
+        expect(diffs.filter(diff => diff.changeType === 'REMOVED')).toHaveLength(replacedRows[descriptor.table]);
+        expect(diffs.filter(diff => diff.changeType === 'ADDED')).toHaveLength(replacedRows[descriptor.table] * 2);
+        expect(diffs.every(diff => ['REMOVED', 'ADDED'].includes(diff.changeType))).toBe(true);
+      }
+
+      const publication = await publishRateCardObservations(changed, {
+        pool: scoped, marketplace: 'flipkart', sellerAccount: 'default', effectiveDate: '2026-10-30',
+        publishedBy: 'integration-fixture', reviewFingerprint: review.fingerprint,
+      });
+      expect(publication).toMatchObject({ published: true, diffCount: review.diffCount });
+
+      for (const descriptor of RATE_TABLES) {
+        const periods = await client.query(`SELECT *, TO_CHAR(start_date,'YYYY-MM-DD') AS start_date_text,
+            TO_CHAR(end_date,'YYYY-MM-DD') AS end_date_text FROM ${descriptor.table}
+          WHERE category = ANY($1::text[])`, [categories]);
+        const previous = periods.rows.filter(row => row.start_date_text === '2026-10-01');
+        const current = periods.rows.filter(row => row.start_date_text === '2026-10-30');
+        expect(previous).toHaveLength(expectedRows[descriptor.table]);
+        expect(previous.filter(row => row.end_date_text === '2026-10-29')).toHaveLength(replacedRows[descriptor.table]);
+        expect(previous.filter(row => row.end_date_text === null)).toHaveLength(unchangedRows[descriptor.table]);
+        if (descriptor.table === 'rc_pick_pack') {
+          expect(previous.filter(row => row.end_date_text === null).every(row => row.price_scope === 'all')).toBe(true);
+        }
+        expect(current).toHaveLength(replacedRows[descriptor.table] * 2);
+        expect(current.every(row => row.end_date_text === null)).toBe(true);
+        const expectedActiveRows = changed.flatMap(observation => (observation[descriptor.field] || [])
+          .filter(row => descriptor.table !== 'rc_pick_pack' || row.price_scope !== 'all')
+          .map(source => normalizeObservationRow(descriptor, source, observation)));
+        const stringColumns = new Set(['category', 'brand_name', 'fulfilment_type', 'weight_slab', 'price_scope', 'prepaid_type', 'postpaid_type']);
+        const fields = ['category', ...descriptor.keys, ...descriptor.values];
+        const signature = (row, fromDatabase = false) => JSON.stringify(fields.map(key => {
+          const value = row[key];
+          if (key === 'brand_name' && value) return String(value).toLowerCase();
+          // Compare PostgreSQL's numeric strings as numbers without running the
+          // scraper normalizer, which intentionally supplies legacy defaults.
+          if (fromDatabase && value !== null && value !== undefined && !stringColumns.has(key)) return Number(value);
+          return value;
+        }));
+        expect(current.map(row => signature(row, true)).sort()).toEqual(expectedActiveRows.map(row => signature(row)).sort());
+      }
+    } finally { client.release(); }
+  });
   it('ends the inserted period before a future record with a different brand case',async()=>{
     const observations=cards().map(card=>({...card,category:'future_case',brand:'Here&Now'}));
     const client=await scoped.connect();
