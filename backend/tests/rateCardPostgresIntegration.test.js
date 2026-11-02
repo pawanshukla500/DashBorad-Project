@@ -123,6 +123,13 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
   it('closes replaced price slabs in every fee table across categories in PostgreSQL', async () => {
     const categories = ['closure_fixture_kurta', 'closure_fixture_ethnic_set'];
     const existing = categories.flatMap(category => cards().map(card => ({ ...card, vertical: category, category })));
+    // Exercise paise-precision price bounds without changing any fee values.
+    for (const observation of existing) for (const descriptor of RATE_TABLES) {
+      observation[descriptor.field] = (observation[descriptor.field] || []).map(row => ({
+        ...row,
+        price_max: Number((Number(row.price_max) + 0.99).toFixed(2)),
+      }));
+    }
     // The shared portal fixture has an all-price pick/pack row; model a ranged
     // Seller Hub response here so price-bound identity is exercised for every table.
     for (const observation of existing) {
@@ -157,6 +164,13 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
             { ...row, price_min: Number(((splitCents + 1) / 100).toFixed(2)) },
           ];
         });
+      }
+      for (const observation of changed) for (const descriptor of RATE_TABLES) {
+        const rows = observation[descriptor.field] || [];
+        for (let index = 0; index < rows.length; index += 2) {
+          expect(Math.round(Number(rows[index + 1].price_min) * 100))
+            .toBe(Math.round(Number(rows[index].price_max) * 100) + 1);
+        }
       }
 
       const review = await compareScrapedRatesWithActive(changed, {
