@@ -146,10 +146,16 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
 
       for (const observation of changed) for (const descriptor of RATE_TABLES) {
         observation[descriptor.field] = (observation[descriptor.field] || []).flatMap(row => {
-          const priceMin = Number(row.price_min), priceMax = Number(row.price_max);
-          const split = Math.floor((priceMin + priceMax) / 2);
-          if (split < priceMin || split >= priceMax) throw new Error(`Fixture has no splittable price range for ${descriptor.table}.`);
-          return [{ ...row, price_max: split }, { ...row, price_min: split + 1 }];
+          const priceMinCents = Math.round(Number(row.price_min) * 100);
+          const priceMaxCents = Math.round(Number(row.price_max) * 100);
+          const splitCents = Math.floor((priceMinCents + priceMaxCents) / 2);
+          if (splitCents < priceMinCents || splitCents + 1 > priceMaxCents) {
+            throw new Error(`Fixture has no splittable price range for ${descriptor.table}.`);
+          }
+          return [
+            { ...row, price_max: Number((splitCents / 100).toFixed(2)) },
+            { ...row, price_min: Number(((splitCents + 1) / 100).toFixed(2)) },
+          ];
         });
       }
 
