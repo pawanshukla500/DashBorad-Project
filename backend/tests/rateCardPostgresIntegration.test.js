@@ -181,14 +181,17 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
         expect(current.every(row => row.end_date_text === null)).toBe(true);
         const expectedActiveRows = changed.flatMap(observation => (observation[descriptor.field] || [])
           .map(source => normalizeObservationRow(descriptor, source, observation)));
-        const actualActiveRows = current.map(row => normalizeObservationRow(descriptor, row, { marketplace: 'flipkart' }));
-        const signature = row => JSON.stringify([
-          row.category,
-          ...descriptor.keys.map(key => descriptor.table === 'rc_commission' && key === 'brand_name'
-            ? String(row[key] || '').toLowerCase() : row[key]),
-          ...descriptor.values.map(key => row[key]),
-        ]);
-        expect(actualActiveRows.map(signature).sort()).toEqual(expectedActiveRows.map(signature).sort());
+        const stringColumns = new Set(['brand_name', 'fulfilment_type', 'weight_slab', 'price_scope', 'prepaid_type', 'postpaid_type']);
+        const fields = ['category', ...descriptor.keys, ...descriptor.values];
+        const signature = (row, fromDatabase = false) => JSON.stringify(fields.map(key => {
+          const value = row[key];
+          if (key === 'brand_name' && value) return String(value).toLowerCase();
+          // Compare PostgreSQL's numeric strings as numbers without running the
+          // scraper normalizer, which intentionally supplies legacy defaults.
+          if (fromDatabase && value !== null && value !== undefined && !stringColumns.has(key)) return Number(value);
+          return value;
+        }));
+        expect(current.map(row => signature(row, true)).sort()).toEqual(expectedActiveRows.map(row => signature(row)).sort());
       }
     } finally { client.release(); }
   });
