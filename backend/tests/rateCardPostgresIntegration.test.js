@@ -123,21 +123,29 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
   it('closes replaced price slabs in every fee table across categories in PostgreSQL', async () => {
     const categories = ['closure_fixture_kurta', 'closure_fixture_ethnic_set'];
     const existing = categories.flatMap(category => cards().map(card => ({ ...card, vertical: category, category })));
+    // Keep one category's all-price pick/pack row intact and model a ranged
+    // Seller Hub response for the other so both price scopes are covered.
+    for (const observation of existing) if (observation.category === 'closure_fixture_ethnic_set') {
+      observation.pickPackFees = observation.pickPackFees.map(row => ({ ...row, price_scope: 'range' }));
+    }
     // Exercise paise-precision price bounds without changing any fee values.
     for (const observation of existing) for (const descriptor of RATE_TABLES) {
       observation[descriptor.field] = (observation[descriptor.field] || []).map(row => ({
         ...row,
-        price_max: Number((Number(row.price_max) + 0.99).toFixed(2)),
+        ...((descriptor.table === 'rc_pick_pack' && row.price_scope === 'all')
+          ? {} : { price_max: Number((Number(row.price_max) + 0.99).toFixed(2)) }),
       }));
-    }
-    // The shared portal fixture has an all-price pick/pack row; model a ranged
-    // Seller Hub response here so price-bound identity is exercised for every table.
-    for (const observation of existing) {
-      observation.pickPackFees = observation.pickPackFees.map(row => ({ ...row, price_scope: 'range' }));
     }
     const changed = structuredClone(existing);
     const expectedRows = Object.fromEntries(RATE_TABLES.map(descriptor => [descriptor.table,
       existing.reduce((total, observation) => total + (observation[descriptor.field]?.length || 0), 0)]));
+    const unchangedRows = Object.fromEntries(RATE_TABLES.map(descriptor => [descriptor.table,
+      descriptor.table === 'rc_pick_pack'
+        ? existing.reduce((total, observation) => total + (observation[descriptor.field] || []).filter(row => row.price_scope === 'all').length, 0)
+        : 0]));
+    expect(unchangedRows.rc_pick_pack).toBeGreaterThan(0);
+    const replacedRows = Object.fromEntries(RATE_TABLES.map(descriptor => [descriptor.table,
+      expectedRows[descriptor.table] - unchangedRows[descriptor.table]]));
     const client = await scoped.connect();
     try {
       for (const observation of existing) for (const descriptor of RATE_TABLES) {
@@ -153,6 +161,7 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
 
       for (const observation of changed) for (const descriptor of RATE_TABLES) {
         observation[descriptor.field] = (observation[descriptor.field] || []).flatMap(row => {
+          if (descriptor.table === 'rc_pick_pack' && row.price_scope === 'all') return [row];
           const priceMinCents = Math.round(Number(row.price_min) * 100);
           const priceMaxCents = Math.round(Number(row.price_max) * 100);
           const splitCents = Math.floor((priceMinCents + priceMaxCents) / 2);
@@ -166,7 +175,8 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
         });
       }
       for (const observation of changed) for (const descriptor of RATE_TABLES) {
-        const rows = observation[descriptor.field] || [];
+        const rows = (observation[descriptor.field] || []).filter(row =>
+          descriptor.table !== 'rc_pick_pack' || row.price_scope !== 'all');
         for (let index = 0; index < rows.length; index += 2) {
           expect(Math.round(Number(rows[index + 1].price_min) * 100))
             .toBe(Math.round(Number(rows[index].price_max) * 100) + 1);
@@ -178,8 +188,8 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
       });
       for (const descriptor of RATE_TABLES) {
         const diffs = review.diffs.filter(diff => diff.table === descriptor.table);
-        expect(diffs.filter(diff => diff.changeType === 'REMOVED')).toHaveLength(expectedRows[descriptor.table]);
-        expect(diffs.filter(diff => diff.changeType === 'ADDED')).toHaveLength(expectedRows[descriptor.table] * 2);
+        expect(diffs.filter(diff => diff.changeType === 'REMOVED')).toHaveLength(replacedRows[descriptor.table]);
+        expect(diffs.filter(diff => diff.changeType === 'ADDED')).toHaveLength(replacedRows[descriptor.table] * 2);
         expect(diffs.every(diff => ['REMOVED', 'ADDED'].includes(diff.changeType))).toBe(true);
       }
 
@@ -196,10 +206,15 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
         const previous = periods.rows.filter(row => row.start_date_text === '2026-10-01');
         const current = periods.rows.filter(row => row.start_date_text === '2026-10-30');
         expect(previous).toHaveLength(expectedRows[descriptor.table]);
-        expect(previous.every(row => row.end_date_text === '2026-10-29')).toBe(true);
-        expect(current).toHaveLength(expectedRows[descriptor.table] * 2);
+        expect(previous.filter(row => row.end_date_text === '2026-10-29')).toHaveLength(replacedRows[descriptor.table]);
+        expect(previous.filter(row => row.end_date_text === null)).toHaveLength(unchangedRows[descriptor.table]);
+        if (descriptor.table === 'rc_pick_pack') {
+          expect(previous.filter(row => row.end_date_text === null).every(row => row.price_scope === 'all')).toBe(true);
+        }
+        expect(current).toHaveLength(replacedRows[descriptor.table] * 2);
         expect(current.every(row => row.end_date_text === null)).toBe(true);
         const expectedActiveRows = changed.flatMap(observation => (observation[descriptor.field] || [])
+          .filter(row => descriptor.table !== 'rc_pick_pack' || row.price_scope !== 'all')
           .map(source => normalizeObservationRow(descriptor, source, observation)));
         const stringColumns = new Set(['category', 'brand_name', 'fulfilment_type', 'weight_slab', 'price_scope', 'prepaid_type', 'postpaid_type']);
         const fields = ['category', ...descriptor.keys, ...descriptor.values];
