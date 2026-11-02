@@ -1029,9 +1029,61 @@ test('local cookie vault encryption is stable when backend environment secrets d
   }
 });
 
+test('vault key readers wait for a concurrent first writer to finish the key file', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-key-race-'));
+  const keyFilePath = path.join(tempDir, '.vault_key');
+  const expectedSecret = 'a'.repeat(64);
+  const originalExistsSync = fs.existsSync;
+  const originalReadFileSync = fs.readFileSync;
+  const originalWriteFileSync = fs.writeFileSync;
+  const previous = process.env.RECON_USER_DATA_DIR;
+  let reportInitialAbsence = true;
+  let completeConcurrentWrite = false;
+
+  try {
+    process.env.RECON_USER_DATA_DIR = tempDir;
+    fs.existsSync = function patchedExistsSync(candidate, ...args) {
+      if (path.resolve(candidate) === keyFilePath && reportInitialAbsence) {
+        reportInitialAbsence = false;
+        return false;
+      }
+      return originalExistsSync.call(fs, candidate, ...args);
+    };
+    fs.writeFileSync = function patchedWriteFileSync(candidate, data, options, ...args) {
+      if (path.resolve(candidate) === keyFilePath && options?.flag === 'wx') {
+        originalWriteFileSync.call(fs, candidate, '', { encoding: 'utf8', mode: 0o600 });
+        const error = new Error('simulated concurrent key creation');
+        error.code = 'EEXIST';
+        throw error;
+      }
+      return originalWriteFileSync.call(fs, candidate, data, options, ...args);
+    };
+    fs.readFileSync = function patchedReadFileSync(candidate, ...args) {
+      const contents = originalReadFileSync.call(fs, candidate, ...args);
+      if (path.resolve(candidate) === keyFilePath && !completeConcurrentWrite && String(contents).trim().length === 0) {
+        completeConcurrentWrite = true;
+        originalWriteFileSync.call(fs, candidate, expectedSecret, { encoding: 'utf8', mode: 0o600 });
+      }
+      return contents;
+    };
+
+    const masterKey = getVaultMasterKey();
+    assert.deepEqual(masterKey, crypto.createHash('sha256').update(expectedSecret).digest());
+    assert.equal(fs.readFileSync(keyFilePath, 'utf8'), expectedSecret);
+  } finally {
+    fs.existsSync = originalExistsSync;
+    fs.readFileSync = originalReadFileSync;
+    fs.writeFileSync = originalWriteFileSync;
+    if (previous === undefined) delete process.env.RECON_USER_DATA_DIR;
+    else process.env.RECON_USER_DATA_DIR = previous;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('legacy cookie reads do not overwrite a newer snapshot; fresh saves use the stable local key', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-key-migration-'));
-  const cookiePath = path.join(tempDir, 'cookies.json');
+  const cookiePath = path.join(tempDir, 'cookies_flipkart.json');
+  const legacyCookiePath = path.join(tempDir, 'cookies.json');
   const keys = ['RECON_USER_DATA_DIR', 'CREDENTIALS_ENCRYPTION_KEY', 'ENCRYPTION_KEY', 'JWT_SECRET'];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
   const savedAt = Date.now();
@@ -1050,13 +1102,14 @@ test('legacy cookie reads do not overwrite a newer snapshot; fresh saves use the
     delete process.env.CREDENTIALS_ENCRYPTION_KEY;
     delete process.env.ENCRYPTION_KEY;
     process.env.JWT_SECRET = legacySecret;
-    fs.writeFileSync(cookiePath, legacySnapshot, 'utf8');
+    fs.writeFileSync(legacyCookiePath, legacySnapshot, 'utf8');
 
     const restored = loadEncryptedCookies(cookiePath);
     assert.equal(restored?.length, 1);
     assert.equal(restored[0].domain, '.seller.flipkart.com');
-    assert.equal(fs.readFileSync(cookiePath, 'utf8'), legacySnapshot, 'reading a legacy snapshot must not rewrite it over a concurrent login');
-    const legacyRead = JSON.parse(decryptVaultData(fs.readFileSync(cookiePath, 'utf8')));
+    assert.equal(fs.existsSync(cookiePath), false, 'reading a legacy fallback must not create or replace the canonical snapshot');
+    assert.equal(fs.readFileSync(legacyCookiePath, 'utf8'), legacySnapshot, 'reading a legacy snapshot must not rewrite it over a concurrent login');
+    const legacyRead = JSON.parse(decryptVaultData(fs.readFileSync(legacyCookiePath, 'utf8')));
     assert.equal(legacyRead.saved_at, savedAt, 'legacy reads must preserve the existing cookie retention age');
 
     saveEncryptedCookies(cookiePath, [

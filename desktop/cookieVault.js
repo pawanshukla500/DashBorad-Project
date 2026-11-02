@@ -34,6 +34,20 @@ export function getResolvedUserDataDir() {
   return path.join(__dirname, '.runtime');
 }
 
+function readPersistedVaultKey(keyFilePath, attempts = 100, retryDelayMs = 10) {
+  const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
+      if (storedKey.length >= 32) return crypto.createHash('sha256').update(storedKey).digest();
+    } catch (error) {
+      if (!['ENOENT', 'EBUSY'].includes(error?.code)) throw error;
+    }
+    if (attempt + 1 < attempts) Atomics.wait(waitCell, 0, 0, retryDelayMs);
+  }
+  return null;
+}
+
 /**
  * Gets or provisions a secure per-installation 256-bit encryption key.
  * A local vault must not depend on backend environment secrets: the Electron app
@@ -48,14 +62,11 @@ export function getVaultMasterKey() {
   }
 
   const keyFilePath = path.join(userDir, '.vault_key');
-  try {
-    if (fs.existsSync(keyFilePath)) {
-      const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
-      if (storedKey && storedKey.length >= 32) {
-        return crypto.createHash('sha256').update(storedKey).digest();
-      }
-    }
-  } catch {}
+  if (fs.existsSync(keyFilePath)) {
+    const persistedKey = readPersistedVaultKey(keyFilePath);
+    if (persistedKey) return persistedKey;
+    throw new Error(`Vault key remained incomplete after waiting for concurrent initialization: ${keyFilePath}`);
+  }
 
   // Generate a fresh cryptographically random 256-bit key using exclusive atomic creation ('wx')
   const randomSecret = crypto.randomBytes(32).toString('hex');
@@ -64,12 +75,9 @@ export function getVaultMasterKey() {
     return crypto.createHash('sha256').update(randomSecret).digest();
   } catch (err) {
     if (err.code === 'EEXIST') {
-      try {
-        const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
-        if (storedKey && storedKey.length >= 32) {
-          return crypto.createHash('sha256').update(storedKey).digest();
-        }
-      } catch {}
+      const persistedKey = readPersistedVaultKey(keyFilePath);
+      if (persistedKey) return persistedKey;
+      throw new Error(`Vault key remained incomplete after concurrent initialization: ${keyFilePath}`);
     }
     throw new Error(`Failed to persist encryption key to ${keyFilePath}: ${err.message}`);
   }
