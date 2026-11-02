@@ -181,7 +181,7 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
         expect(current.every(row => row.end_date_text === null)).toBe(true);
         const expectedActiveRows = changed.flatMap(observation => (observation[descriptor.field] || [])
           .map(source => normalizeObservationRow(descriptor, source, observation)));
-        const stringColumns = new Set(['brand_name', 'fulfilment_type', 'weight_slab', 'price_scope', 'prepaid_type', 'postpaid_type']);
+        const stringColumns = new Set(['category', 'brand_name', 'fulfilment_type', 'weight_slab', 'price_scope', 'prepaid_type', 'postpaid_type']);
         const fields = ['category', ...descriptor.keys, ...descriptor.values];
         const signature = (row, fromDatabase = false) => JSON.stringify(fields.map(key => {
           const value = row[key];
