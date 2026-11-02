@@ -361,7 +361,6 @@ function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
 const DEFAULT_CONFIG = {
   marketplace: 'flipkart_shopsy', // 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'
   email: 'Vbexports@outlook.com',
-  password: '',
   apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
   databaseUrl: process.env.DATABASE_URL || '',
   // Role that provisioned databaseUrl. An analyst-provisioned URL is bound to
@@ -386,6 +385,8 @@ function loadConfig() {
     if (fs.existsSync(CONFIG_FILE)) {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
       const parsed = JSON.parse(raw);
+      const hasLegacySellerPassword = Object.prototype.hasOwnProperty.call(parsed, 'password');
+      delete parsed.password;
       // Auto-heal old typo in apiServerUrl
       if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
         parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
@@ -400,12 +401,16 @@ function loadConfig() {
       const effectiveDatabaseUrl = ('databaseUrl' in parsed && parsed.databaseUrl)
         ? parsed.databaseUrl
         : sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl);
-      return {
+      const config = {
         ...DEFAULT_CONFIG,
         ...parsed,
         databaseUrl: effectiveDatabaseUrl,
         accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) }
       };
+      if (hasLegacySellerPassword && !saveConfig(config).success) {
+        desktopLogger.warn('config.legacy_seller_password_scrub_failed', 'Could not remove the unused Seller Hub password from the local configuration file.');
+      }
+      return config;
     }
   } catch (err) {
     console.error('Failed to read config:', err);
@@ -416,7 +421,9 @@ function loadConfig() {
 function saveConfig(config) {
   try {
     fs.mkdirSync(USER_DATA_DIR, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+    const safeConfig = { ...config };
+    delete safeConfig.password;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(safeConfig, null, 2), { mode: 0o600 });
     try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
     return { success: true };
   } catch (err) {

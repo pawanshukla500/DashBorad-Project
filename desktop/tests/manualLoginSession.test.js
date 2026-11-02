@@ -817,6 +817,17 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(mainSource, /let currentBrowserEngine = 'external'/);
   assert.match(mainSource, /externalBrowserSession\.acquire\(puppeteer,[\s\S]*?keepOpen: true/,
     'manual sign-in must retain the authenticated external Chrome process');
+  assert(!standaloneSource.includes('FK_PASSWORD'), 'the standalone desktop worker must not load Seller Hub passwords from environment variables');
+  assert(!monitorHtml.includes('cfg-password') && !rendererSource.includes('cfg-password'),
+    'desktop settings must not collect or submit Seller Hub passwords');
+  assert.match(monitorHtml, /Sign in manually from Live Browser[\s\S]*?does not store or submit Seller Hub passwords/,
+    'settings must explain the manual Seller Hub sign-in and encrypted session behavior');
+  assert.match(mainSource, /delete parsed\.password[\s\S]*?hasLegacySellerPassword[\s\S]*?saveConfig\(config\)/,
+    'the Electron app must remove a legacy plaintext Seller Hub password from saved config');
+  assert.match(standaloneSource, /delete parsed\.password[\s\S]*?hasLegacySellerPassword[\s\S]*?saveConfig\(config\)/,
+    'the standalone worker must remove a legacy plaintext Seller Hub password from saved config');
+  assert.match(mainSource, /delete safeConfig\.password/);
+  assert.match(standaloneSource, /delete safeConfig\.password/);
   assert.match(mainSource, /externalBrowserSession\.acquire\(target, options,[\s\S]*?keepOpen: options\.headless === false/,
     'scrapes must reuse a retained Seller Hub browser profile');
   assert.match(externalBrowserSource, /if \(keepOpen && retained === entry\) return/,

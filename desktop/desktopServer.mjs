@@ -498,7 +498,6 @@ function broadcastProgress(msg) {
 const DEFAULT_CONFIG = {
   marketplace: 'flipkart_shopsy', // 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'
   email: 'Vbexports@outlook.com',
-  password: process.env.FK_PASSWORD || '',
   apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
   databaseUrl: process.env.DATABASE_URL || '',
   scheduledHour: 6,
@@ -519,6 +518,8 @@ function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      const hasLegacySellerPassword = Object.prototype.hasOwnProperty.call(parsed, 'password');
+      delete parsed.password;
       if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
         parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
       }
@@ -528,12 +529,21 @@ function loadConfig() {
       // DATABASE_URL (postgres:5432) must never reach the pool logic, even
       // when the config file is missing or predates the databaseUrl key.
       const effectiveDatabaseUrl = 'databaseUrl' in parsed ? parsed.databaseUrl : sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl);
-      return {
+      const config = {
         ...DEFAULT_CONFIG,
         ...parsed,
         databaseUrl: effectiveDatabaseUrl,
         accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) }
       };
+      if (hasLegacySellerPassword && !saveConfig(config).success) {
+        console.warn(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: 'warn',
+          event: 'config.legacy_seller_password_scrub_failed',
+          message: 'Could not remove the unused Seller Hub password from the local configuration file.'
+        }));
+      }
+      return config;
     }
   } catch (err) {
     console.error('Failed to read config:', err);
@@ -543,14 +553,16 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    const safeConfig = { ...cfg };
+    delete safeConfig.password;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(safeConfig, null, 2), { mode: 0o600 });
     try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
     if (process.platform === 'linux') {
       try {
         const sysDir = '/etc/reconcentral-ratecard';
         if (fs.existsSync(sysDir)) {
           const sysFile = path.join(sysDir, 'worker-config.json');
-          fs.writeFileSync(sysFile, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+          fs.writeFileSync(sysFile, JSON.stringify(safeConfig, null, 2), { mode: 0o600 });
           try { fs.chmodSync(sysFile, 0o600); } catch {}
         }
       } catch {}

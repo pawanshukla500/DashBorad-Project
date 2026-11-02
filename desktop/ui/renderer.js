@@ -487,8 +487,6 @@ async function loadInitialState() {
     const config = await window.ratecardAPI.getConfig();
     
     // Populate Settings form
-    document.getElementById('cfg-email').value = config.email || '';
-    document.getElementById('cfg-password').value = config.password || '';
     // An analyst-provisioned read-only URL is not usable by privileged roles:
     // show the honest empty state instead of a URL their writes would fail on.
     document.getElementById('cfg-db-url').value = config.databaseUrlRole === 'analyst' ? '' : (config.databaseUrl || '');
@@ -1471,8 +1469,6 @@ function setupEventListeners() {
   // Save Settings
   btnSaveSettings?.addEventListener('click', async () => {
     const newConfig = {
-      email: document.getElementById('cfg-email').value,
-      password: document.getElementById('cfg-password').value,
       databaseUrl: document.getElementById('cfg-db-url').value,
       scheduledHour: parseInt(document.getElementById('cfg-hour').value) || 6,
       scheduledMinute: parseInt(document.getElementById('cfg-minute').value) || 0,
