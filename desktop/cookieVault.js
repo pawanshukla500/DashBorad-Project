@@ -36,20 +36,12 @@ export function getResolvedUserDataDir() {
 
 /**
  * Gets or provisions a secure per-installation 256-bit encryption key.
- * 1. Checks CREDENTIALS_ENCRYPTION_KEY / ENCRYPTION_KEY / JWT_SECRET.
- * 2. If absent, checks or provisions a machine-local, cryptographically random key
- *    stored in `<USER_DATA_DIR>/.vault_key` with strict permissions (0o600).
- * This guarantees that every desktop install has a distinct, secret key not found in source code.
+ * A local vault must not depend on backend environment secrets: the Electron app
+ * and standalone worker can share this user-data directory while loading different
+ * environments. A machine-local, cryptographically random key is stored in
+ * `<USER_DATA_DIR>/.vault_key` with strict permissions (0o600).
  */
 export function getVaultMasterKey() {
-  const envSecret = process.env.CREDENTIALS_ENCRYPTION_KEY 
-    || process.env.ENCRYPTION_KEY 
-    || process.env.JWT_SECRET;
-  
-  if (envSecret && String(envSecret).trim()) {
-    return crypto.createHash('sha256').update(String(envSecret).trim()).digest();
-  }
-
   const userDir = getResolvedUserDataDir();
   if (!fs.existsSync(userDir)) {
     fs.mkdirSync(userDir, { recursive: true });
@@ -97,22 +89,42 @@ export function encryptVaultData(plaintext) {
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${ciphertext}`;
 }
 
-/**
- * Decrypts AES-256-GCM data.
- */
-export function decryptVaultData(encryptedPayload) {
-  if (!encryptedPayload || typeof encryptedPayload !== 'string') return null;
-  const parts = encryptedPayload.split(':');
-  if (parts.length !== 3) return null;
-  const [ivHex, authTagHex, ciphertextHex] = parts;
-  const key = getVaultMasterKey();
+function decryptVaultPayloadWithKey(encryptedPayload, key) {
+  const [ivHex, authTagHex, ciphertextHex] = encryptedPayload.split(':');
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
   decipher.setAuthTag(authTag);
-  let decrypted = decipher.update(ciphertextHex, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+  return decipher.update(ciphertextHex, 'hex', 'utf8') + decipher.final('utf8');
+}
+
+function legacyVaultKeys() {
+  const secrets = [process.env.CREDENTIALS_ENCRYPTION_KEY, process.env.ENCRYPTION_KEY, process.env.JWT_SECRET]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  return [...new Set(secrets)].map(secret => crypto.createHash('sha256').update(secret).digest());
+}
+
+/**
+ * Decrypts AES-256-GCM data. Legacy environment-derived keys are read-only
+ * fallbacks so old snapshots can be migrated to the stable per-install key.
+ */
+export function decryptVaultData(encryptedPayload, { onLegacyKey = () => {} } = {}) {
+  if (!encryptedPayload || typeof encryptedPayload !== 'string') return null;
+  const parts = encryptedPayload.split(':');
+  if (parts.length !== 3) return null;
+  try {
+    return decryptVaultPayloadWithKey(encryptedPayload, getVaultMasterKey());
+  } catch (primaryError) {
+    for (const key of legacyVaultKeys()) {
+      try {
+        const plaintext = decryptVaultPayloadWithKey(encryptedPayload, key);
+        try { onLegacyKey(); } catch {}
+        return plaintext;
+      } catch {}
+    }
+    throw primaryError;
+  }
 }
 
 /**
@@ -252,14 +264,17 @@ function extractValidCookies(parsed, statMtimeMs, maxAgeMs, onInvalidRecords = (
  * Saves cookies encrypted with AES-256-GCM along with save timestamp.
  */
 export function saveEncryptedCookies(filePath, cookies) {
+  writeEncryptedCookiePayload(filePath, {
+    saved_at: Date.now(),
+    cookies: Array.isArray(cookies) ? cookies : []
+  });
+}
+
+function writeEncryptedCookiePayload(filePath, payload) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const payload = {
-    saved_at: Date.now(),
-    cookies: Array.isArray(cookies) ? cookies : []
-  };
   const serialized = JSON.stringify(payload, null, 2);
   const encrypted = encryptVaultData(serialized);
   fs.writeFileSync(filePath, encrypted, { encoding: 'utf8', mode: 0o600 });
@@ -336,7 +351,10 @@ export function loadEncryptedCookies(filePath, {
             } catch {}
             const validCookies = extractValidCookies(fallbackData, stat?.mtimeMs || Date.now(), maxAgeMs, onInvalidRecords);
             if (!validCookies) continue;
-            try { saveEncryptedCookies(filePath, validCookies); } catch {}
+            try {
+              const savedAt = typeof fallbackData?.saved_at === 'number' ? fallbackData.saved_at : stat?.mtimeMs || Date.now();
+              writeEncryptedCookiePayload(filePath, { saved_at: savedAt, cookies: validCookies });
+            } catch {}
             return validCookies;
           } catch {}
         }
@@ -347,10 +365,11 @@ export function loadEncryptedCookies(filePath, {
     const raw = fs.readFileSync(filePath, 'utf8').trim();
     if (!raw) return null;
     let parsed = null;
+    let usedLegacyKey = false;
     // Check if AES-256-GCM serialized format: ivHex:authTagHex:ciphertextHex
     if (isEncryptedVaultPayload(raw)) {
       try {
-        const decrypted = decryptVaultData(raw);
+        const decrypted = decryptVaultData(raw, { onLegacyKey: () => { usedLegacyKey = true; } });
         if (decrypted) parsed = JSON.parse(decrypted);
       } catch {}
     }
@@ -365,6 +384,12 @@ export function loadEncryptedCookies(filePath, {
       // Stale or expired: delete cookie file so it does not persist
       deleteEncryptedCookies(filePath);
       return null;
+    }
+    if (usedLegacyKey) {
+      const savedAt = Array.isArray(parsed)
+        ? stat?.mtimeMs || Date.now()
+        : (typeof parsed.saved_at === 'number' ? parsed.saved_at : stat?.mtimeMs || Date.now());
+      try { writeEncryptedCookiePayload(filePath, { saved_at: savedAt, cookies: validCookies }); } catch {}
     }
     return validCookies;
   } catch {

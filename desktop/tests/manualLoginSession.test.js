@@ -4,13 +4,14 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from '../manualLoginWindow.js';
 import { FLIPKART_DASHBOARD_URL, FLIPKART_MANUAL_LOGIN_URL, inspectFlipkartLoginState } from '../portalSession.js';
 import { waitForFlipkartAuthenticatedPage } from '../portalLoginWaiter.js';
 import { scrapeFlipkartRateCards } from '../portalScraper.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from '../portalProfileState.js';
 import { invokeProgressSafely } from '../safeProgress.js';
-import { clearEncryptedCookieSnapshot, loadEncryptedCookies, saveEncryptedCookies } from '../cookieVault.js';
+import { clearEncryptedCookieSnapshot, decryptVaultData, encryptVaultData, getVaultMasterKey, loadEncryptedCookies, saveEncryptedCookies } from '../cookieVault.js';
 import { persistDesktopUserDataDirChoice, resolveDesktopUserDataDir, resolveFlipkartBrowserProfileDir } from '../userDataPaths.js';
 
 test('desktop app and standalone login helper share one Windows Seller Hub profile', () => {
@@ -999,6 +1000,72 @@ test('encrypted cookie restore skips malformed entries that cannot be addressed 
     assert.equal(restored[1].domain, undefined, 'an invalid domain is removed when a valid URL scope exists');
     assert.deepEqual(invalidReports, [2]);
   } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('local cookie vault encryption is stable when backend environment secrets differ', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-key-source-'));
+  const keys = ['RECON_USER_DATA_DIR', 'CREDENTIALS_ENCRYPTION_KEY', 'ENCRYPTION_KEY', 'JWT_SECRET'];
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  try {
+    process.env.RECON_USER_DATA_DIR = tempDir;
+    delete process.env.CREDENTIALS_ENCRYPTION_KEY;
+    delete process.env.ENCRYPTION_KEY;
+    process.env.JWT_SECRET = 'first-backend-secret';
+    const firstKey = getVaultMasterKey();
+    const encrypted = encryptVaultData('stable-local-session');
+
+    process.env.JWT_SECRET = 'second-backend-secret';
+    const secondKey = getVaultMasterKey();
+    assert.deepEqual(secondKey, firstKey, 'the local key must come from the shared user-data directory');
+    assert.equal(decryptVaultData(encrypted), 'stable-local-session');
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('legacy environment-key cookie snapshots migrate to the stable local vault key', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-key-migration-'));
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  const keys = ['RECON_USER_DATA_DIR', 'CREDENTIALS_ENCRYPTION_KEY', 'ENCRYPTION_KEY', 'JWT_SECRET'];
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  const savedAt = Date.now();
+  const legacySecret = 'legacy-backend-secret';
+  const legacyPayload = JSON.stringify({
+    saved_at: savedAt,
+    cookies: [{ name: 'seller-session', value: 'fixture-value', domain: '.seller.flipkart.com', expires: savedAt / 1000 + 3600 }]
+  });
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', crypto.createHash('sha256').update(legacySecret).digest(), iv, { authTagLength: 16 });
+  const ciphertext = cipher.update(legacyPayload, 'utf8', 'hex') + cipher.final('hex');
+  const legacySnapshot = `${iv.toString('hex')}:${cipher.getAuthTag().toString('hex')}:${ciphertext}`;
+
+  try {
+    process.env.RECON_USER_DATA_DIR = tempDir;
+    delete process.env.CREDENTIALS_ENCRYPTION_KEY;
+    delete process.env.ENCRYPTION_KEY;
+    process.env.JWT_SECRET = legacySecret;
+    fs.writeFileSync(cookiePath, legacySnapshot, 'utf8');
+
+    const restored = loadEncryptedCookies(cookiePath);
+    assert.equal(restored?.length, 1);
+    assert.equal(restored[0].domain, '.seller.flipkart.com');
+    assert.notEqual(fs.readFileSync(cookiePath, 'utf8'), legacySnapshot, 'a legacy snapshot must be rewritten using the local key');
+
+    delete process.env.JWT_SECRET;
+    const migrated = JSON.parse(decryptVaultData(fs.readFileSync(cookiePath, 'utf8')));
+    assert.equal(migrated.saved_at, savedAt, 'migration must preserve the original cookie retention age');
+    assert.deepEqual(loadEncryptedCookies(cookiePath).map(cookie => cookie.name), ['seller-session']);
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
