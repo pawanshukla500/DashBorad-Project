@@ -360,6 +360,9 @@ export function loadEncryptedCookies(filePath, {
             if (!validCookies) continue;
             // Reads never rewrite a cookie file: another process may have
             // saved a newer login while this legacy snapshot was being read.
+            if (fs.existsSync(filePath)) {
+              return loadEncryptedCookies(filePath, { maxAgeMs, onInvalidRecords });
+            }
             return validCookies;
           } catch {}
         }

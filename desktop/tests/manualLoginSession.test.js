@@ -1135,6 +1135,59 @@ test('legacy cookie reads do not overwrite a newer snapshot; fresh saves use the
   }
 });
 
+test('legacy fallback prefers a canonical snapshot saved while the fallback is being read', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-concurrent-snapshot-'));
+  const cookiePath = path.join(tempDir, 'cookies_flipkart.json');
+  const legacyCookiePath = path.join(tempDir, 'cookies.json');
+  const keys = ['RECON_USER_DATA_DIR', 'CREDENTIALS_ENCRYPTION_KEY', 'ENCRYPTION_KEY', 'JWT_SECRET'];
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  const originalReadFileSync = fs.readFileSync;
+  const savedAt = Date.now();
+  const legacySecret = 'legacy-backend-secret';
+  const legacyPayload = JSON.stringify({
+    saved_at: savedAt,
+    cookies: [{ name: 'old-session', value: 'stale-fixture-value', domain: '.seller.flipkart.com', expires: savedAt / 1000 + 3600 }]
+  });
+  const legacyIv = crypto.randomBytes(12);
+  const legacyCipher = crypto.createCipheriv('aes-256-gcm', crypto.createHash('sha256').update(legacySecret).digest(), legacyIv, { authTagLength: 16 });
+  const legacyCiphertext = legacyCipher.update(legacyPayload, 'utf8', 'hex') + legacyCipher.final('hex');
+  const legacySnapshot = `${legacyIv.toString('hex')}:${legacyCipher.getAuthTag().toString('hex')}:${legacyCiphertext}`;
+  let legacyReadCount = 0;
+
+  try {
+    process.env.RECON_USER_DATA_DIR = tempDir;
+    delete process.env.CREDENTIALS_ENCRYPTION_KEY;
+    delete process.env.ENCRYPTION_KEY;
+    process.env.JWT_SECRET = legacySecret;
+    fs.writeFileSync(legacyCookiePath, legacySnapshot, 'utf8');
+    const newerSnapshot = encryptVaultData(JSON.stringify({
+      saved_at: Date.now(),
+      cookies: [{ name: 'new-session', value: 'fresh-fixture-value', domain: '.seller.flipkart.com', expires: Date.now() / 1000 + 3600 }]
+    }));
+
+    fs.readFileSync = function writeNewSnapshotDuringLegacyRead(candidate, ...args) {
+      const contents = originalReadFileSync.call(fs, candidate, ...args);
+      if (path.resolve(candidate) === legacyCookiePath) {
+        legacyReadCount += 1;
+        if (legacyReadCount === 2) fs.writeFileSync(cookiePath, newerSnapshot, 'utf8');
+      }
+      return contents;
+    };
+
+    const restored = loadEncryptedCookies(cookiePath);
+    assert.deepEqual(restored.map(cookie => cookie.name), ['new-session']);
+    assert.equal(fs.readFileSync(cookiePath, 'utf8'), newerSnapshot);
+    assert.equal(fs.readFileSync(legacyCookiePath, 'utf8'), legacySnapshot);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('scraper starts on the authenticated Seller Hub tab selected by its retained browser session', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-selected-seller-tab-'));
   const staleNavigations = [];
