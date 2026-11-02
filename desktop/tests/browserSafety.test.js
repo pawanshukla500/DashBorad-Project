@@ -144,6 +144,10 @@ test('unrecognized layouts and missing fees cannot be substituted with Shopsy co
   assert.throws(()=>parsePortalRateSnapshot(fixture,{marketplace:'shopsy'}),/Incomplete/);
   const malformed=rateFixture();malformed.fees.collectionFee.slabs.asp[0].agreementParameters.prepaid='pending';
   assert.throws(()=>parsePortalRateSnapshot(malformed,{marketplace:'flipkart',fulfilment:'NON_FBF'}),/Invalid/);
+  const changedContract=rateFixture();
+  changedContract.fees.reverseShippingFee.slabs.shippingSlab[0].asp[0].agreementParameters.deliverySurcharge='₹5';
+  assert.throws(()=>parsePortalRateSnapshot(changedContract,{marketplace:'flipkart',fulfilment:'NON_FBF'}),
+    /Unsupported Seller Hub agreement parameter\(s\): deliverySurcharge/);
 });
 
 test('SQLite review survives restart, rejects a different owner and rolls back a failed replacement', () => {
