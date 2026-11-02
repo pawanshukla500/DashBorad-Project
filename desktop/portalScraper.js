@@ -51,7 +51,8 @@ export async function scrapeFlipkartRateCards(config = {}, {
   onSessionExpiry,
   canShowBrowser = canOpenVisibleBrowser,
   browserRecoveryRegistry,
-  onCookieDiagnostics = () => {}
+  onCookieDiagnostics = () => {},
+  acquireProfileOwnership = acquireBrowserProfileOwnership
 } = {}) {
   const marketplace = config.marketplace || 'both';
   const cookieVaultGeneration = getCookieVaultGeneration(cookiesPath);
@@ -100,12 +101,14 @@ export async function scrapeFlipkartRateCards(config = {}, {
     const launchBrowser = async visible => {
       const usesExternalProfile = !runtime?.partition && profileDir && runtime?.managesProfileOwnership !== true;
       if (usesExternalProfile) {
-        releaseProfileOwnership = await acquireBrowserProfileOwnership(profileDir);
-        fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-        try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
-        try { fs.chmodSync(profileDir, 0o700); } catch {}
+        releaseProfileOwnership = await acquireProfileOwnership(profileDir);
       }
       try {
+        if (usesExternalProfile) {
+          fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+          try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
+          try { fs.chmodSync(profileDir, 0o700); } catch {}
+        }
         browser = await runtime.launch({
           executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
           headless: visible ? false : 'new',

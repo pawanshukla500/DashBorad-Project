@@ -908,9 +908,9 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'failed standalone browser handles must be retried before deleting their locked profile');
   assert.match(standaloneLoginRoute, /acquireBrowserProfileOwnership\(profileDir\)[\s\S]*?standaloneBrowserRecovery\.track\(browser, profileDir,\s*\{\s*releaseProfileOwnership/,
     'standalone interactive-login browsers must own the shared profile lock until recovery confirms close');
-  assert.match(scraperSource, /acquireBrowserProfileOwnership\(profileDir\)[\s\S]*?browserRecoveryRegistry\.track\(browser, profileDir,\s*\{\s*releaseProfileOwnership/,
+  assert.match(scraperSource, /acquireProfileOwnership\(profileDir\)[\s\S]*?browserRecoveryRegistry\.track\(browser, profileDir,\s*\{\s*releaseProfileOwnership/,
     'standalone scraping browsers must own the shared profile lock until recovery confirms close');
-  assert(scraperSource.indexOf('acquireBrowserProfileOwnership(profileDir)') < scraperSource.indexOf('fs.mkdirSync(profileDir'),
+  assert(scraperSource.indexOf('acquireProfileOwnership(profileDir)') < scraperSource.indexOf('fs.mkdirSync(profileDir'),
     'the scraper must not recreate a shared Chromium profile until it owns the profile lock');
   assert(externalBrowserSource.indexOf('acquireProfileOwnership(profileDir)') < externalBrowserSource.indexOf('fs.mkdirSync(profileDir'),
     'the persistent login browser must not create its profile until it owns the profile lock');
@@ -1717,6 +1717,35 @@ test('scraping opens Seller Hub root, verifies dashboard session, and requires a
     assert.equal(result.success, false, 'no fee responses were provided, so the extraction must be rejected');
     assert.match(result.error, /Missing rate responses/);
     assert.equal(fs.existsSync(result.stagingFile || ''), false, 'incomplete extraction must not be staged');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('scraper releases profile ownership when persistent-profile setup fails before Chromium launch', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-profile-setup-failure-'));
+  const profileParentFile = path.join(tempDir, 'not-a-directory');
+  fs.writeFileSync(profileParentFile, 'file blocks profile directory creation');
+  let releaseCount = 0;
+  let launchCount = 0;
+
+  try {
+    const result = await scrapeFlipkartRateCards({ marketplace: 'flipkart', fsnCatalog: [], scopeVerticals: [], requiredVerticals: [] }, {
+      runtime: { launch: async () => { launchCount += 1; throw new Error('launch must not run'); } },
+      executablePath: 'test-chrome',
+      browserProfileDir: path.join(profileParentFile, 'profile'),
+      cookiesPath: path.join(tempDir, 'cookies.json'),
+      fallbackCookiesPath: path.join(tempDir, 'fallback.json'),
+      stagingDir: path.join(tempDir, 'staging'),
+      delay: async () => {},
+      onProgress: () => {},
+      acquireProfileOwnership: async () => async () => { releaseCount += 1; }
+    });
+
+    assert.equal(result.success, false);
+    assert.match(result.error, /ENOTDIR|not a directory/i);
+    assert.equal(launchCount, 0);
+    assert.equal(releaseCount, 1, 'the acquired profile lease must be released if setup fails before launch');
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
