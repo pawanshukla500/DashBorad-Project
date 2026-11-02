@@ -1029,7 +1029,7 @@ test('local cookie vault encryption is stable when backend environment secrets d
   }
 });
 
-test('legacy environment-key cookie snapshots migrate to the stable local vault key', () => {
+test('legacy cookie reads do not overwrite a newer snapshot; fresh saves use the stable local key', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-key-migration-'));
   const cookiePath = path.join(tempDir, 'cookies.json');
   const keys = ['RECON_USER_DATA_DIR', 'CREDENTIALS_ENCRYPTION_KEY', 'ENCRYPTION_KEY', 'JWT_SECRET'];
@@ -1055,11 +1055,18 @@ test('legacy environment-key cookie snapshots migrate to the stable local vault 
     const restored = loadEncryptedCookies(cookiePath);
     assert.equal(restored?.length, 1);
     assert.equal(restored[0].domain, '.seller.flipkart.com');
-    assert.notEqual(fs.readFileSync(cookiePath, 'utf8'), legacySnapshot, 'a legacy snapshot must be rewritten using the local key');
+    assert.equal(fs.readFileSync(cookiePath, 'utf8'), legacySnapshot, 'reading a legacy snapshot must not rewrite it over a concurrent login');
+    const legacyRead = JSON.parse(decryptVaultData(fs.readFileSync(cookiePath, 'utf8')));
+    assert.equal(legacyRead.saved_at, savedAt, 'legacy reads must preserve the existing cookie retention age');
+
+    saveEncryptedCookies(cookiePath, [
+      { name: 'seller-session', value: 'fresh-fixture-value', domain: '.seller.flipkart.com', expires: savedAt / 1000 + 3600 }
+    ]);
 
     delete process.env.JWT_SECRET;
-    const migrated = JSON.parse(decryptVaultData(fs.readFileSync(cookiePath, 'utf8')));
-    assert.equal(migrated.saved_at, savedAt, 'migration must preserve the original cookie retention age');
+    const saved = JSON.parse(decryptVaultData(fs.readFileSync(cookiePath, 'utf8')));
+    assert.ok(saved.saved_at >= savedAt, 'fresh cookie saves receive their own timestamp');
+    assert.equal(saved.cookies[0].value, 'fresh-fixture-value');
     assert.deepEqual(loadEncryptedCookies(cookiePath).map(cookie => cookie.name), ['seller-session']);
   } finally {
     for (const [key, value] of previous) {

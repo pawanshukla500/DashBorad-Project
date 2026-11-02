@@ -107,9 +107,9 @@ function legacyVaultKeys() {
 
 /**
  * Decrypts AES-256-GCM data. Legacy environment-derived keys are read-only
- * fallbacks so old snapshots can be migrated to the stable per-install key.
+ * fallbacks so old snapshots remain readable; all new writes use the local key.
  */
-export function decryptVaultData(encryptedPayload, { onLegacyKey = () => {} } = {}) {
+export function decryptVaultData(encryptedPayload) {
   if (!encryptedPayload || typeof encryptedPayload !== 'string') return null;
   const parts = encryptedPayload.split(':');
   if (parts.length !== 3) return null;
@@ -119,7 +119,6 @@ export function decryptVaultData(encryptedPayload, { onLegacyKey = () => {} } = 
     for (const key of legacyVaultKeys()) {
       try {
         const plaintext = decryptVaultPayloadWithKey(encryptedPayload, key);
-        try { onLegacyKey(); } catch {}
         return plaintext;
       } catch {}
     }
@@ -351,10 +350,8 @@ export function loadEncryptedCookies(filePath, {
             } catch {}
             const validCookies = extractValidCookies(fallbackData, stat?.mtimeMs || Date.now(), maxAgeMs, onInvalidRecords);
             if (!validCookies) continue;
-            try {
-              const savedAt = typeof fallbackData?.saved_at === 'number' ? fallbackData.saved_at : stat?.mtimeMs || Date.now();
-              writeEncryptedCookiePayload(filePath, { saved_at: savedAt, cookies: validCookies });
-            } catch {}
+            // Reads never rewrite a cookie file: another process may have
+            // saved a newer login while this legacy snapshot was being read.
             return validCookies;
           } catch {}
         }
@@ -365,11 +362,10 @@ export function loadEncryptedCookies(filePath, {
     const raw = fs.readFileSync(filePath, 'utf8').trim();
     if (!raw) return null;
     let parsed = null;
-    let usedLegacyKey = false;
     // Check if AES-256-GCM serialized format: ivHex:authTagHex:ciphertextHex
     if (isEncryptedVaultPayload(raw)) {
       try {
-        const decrypted = decryptVaultData(raw, { onLegacyKey: () => { usedLegacyKey = true; } });
+        const decrypted = decryptVaultData(raw);
         if (decrypted) parsed = JSON.parse(decrypted);
       } catch {}
     }
@@ -384,12 +380,6 @@ export function loadEncryptedCookies(filePath, {
       // Stale or expired: delete cookie file so it does not persist
       deleteEncryptedCookies(filePath);
       return null;
-    }
-    if (usedLegacyKey) {
-      const savedAt = Array.isArray(parsed)
-        ? stat?.mtimeMs || Date.now()
-        : (typeof parsed.saved_at === 'number' ? parsed.saved_at : stat?.mtimeMs || Date.now());
-      try { writeEncryptedCookiePayload(filePath, { saved_at: savedAt, cookies: validCookies }); } catch {}
     }
     return validCookies;
   } catch {
