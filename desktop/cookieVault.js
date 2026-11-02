@@ -284,8 +284,16 @@ function writeEncryptedCookiePayload(filePath, payload) {
   }
   const serialized = JSON.stringify(payload, null, 2);
   const encrypted = encryptVaultData(serialized);
-  fs.writeFileSync(filePath, encrypted, { encoding: 'utf8', mode: 0o600 });
-  fs.chmodSync(filePath, 0o600);
+  const temporaryPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(temporaryPath, encrypted, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    fs.chmodSync(temporaryPath, 0o600);
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    try {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    } catch {}
+  }
 }
 
 function isPlaintextCookieSnapshot(raw) {

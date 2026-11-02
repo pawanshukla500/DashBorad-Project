@@ -1160,23 +1160,20 @@ test('legacy fallback prefers a canonical snapshot saved while the fallback is b
     delete process.env.ENCRYPTION_KEY;
     process.env.JWT_SECRET = legacySecret;
     fs.writeFileSync(legacyCookiePath, legacySnapshot, 'utf8');
-    const newerSnapshot = encryptVaultData(JSON.stringify({
-      saved_at: Date.now(),
-      cookies: [{ name: 'new-session', value: 'fresh-fixture-value', domain: '.seller.flipkart.com', expires: Date.now() / 1000 + 3600 }]
-    }));
+    const newerCookies = [{ name: 'new-session', value: 'fresh-fixture-value', domain: '.seller.flipkart.com', expires: Date.now() / 1000 + 3600 }];
 
     fs.readFileSync = function writeNewSnapshotDuringLegacyRead(candidate, ...args) {
       const contents = originalReadFileSync.call(fs, candidate, ...args);
       if (path.resolve(candidate) === legacyCookiePath) {
         legacyReadCount += 1;
-        if (legacyReadCount === 2) fs.writeFileSync(cookiePath, newerSnapshot, 'utf8');
+        if (legacyReadCount === 2) saveEncryptedCookies(cookiePath, newerCookies);
       }
       return contents;
     };
 
     const restored = loadEncryptedCookies(cookiePath);
     assert.deepEqual(restored.map(cookie => cookie.name), ['new-session']);
-    assert.equal(fs.readFileSync(cookiePath, 'utf8'), newerSnapshot);
+    assert.deepEqual(loadEncryptedCookies(cookiePath).map(cookie => cookie.name), ['new-session']);
     assert.equal(fs.readFileSync(legacyCookiePath, 'utf8'), legacySnapshot);
   } finally {
     fs.readFileSync = originalReadFileSync;
@@ -1184,6 +1181,35 @@ test('legacy fallback prefers a canonical snapshot saved while the fallback is b
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('atomic cookie snapshot replacement preserves the previous file when rename fails', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-atomic-write-'));
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  const originalRenameSync = fs.renameSync;
+
+  try {
+    saveEncryptedCookies(cookiePath, [{ name: 'old-session', value: 'preserve-me', domain: '.flipkart.com' }]);
+    saveEncryptedCookies(cookiePath, [{ name: 'latest-session', value: 'replace-me', domain: '.flipkart.com' }]);
+    const originalSnapshot = fs.readFileSync(cookiePath, 'utf8');
+    assert.deepEqual(loadEncryptedCookies(cookiePath).map(cookie => cookie.name), ['latest-session']);
+    fs.renameSync = function failAtomicReplacement() {
+      throw new Error('simulated atomic replacement failure');
+    };
+
+    assert.throws(
+      () => saveEncryptedCookies(cookiePath, [{ name: 'new-session', value: 'not-committed', domain: '.flipkart.com' }]),
+      /simulated atomic replacement failure/
+    );
+
+    fs.renameSync = originalRenameSync;
+    assert.equal(fs.readFileSync(cookiePath, 'utf8'), originalSnapshot);
+    assert.deepEqual(loadEncryptedCookies(cookiePath).map(cookie => cookie.name), ['latest-session']);
+    assert.deepEqual(fs.readdirSync(tempDir).filter(name => name.endsWith('.tmp')), []);
+  } finally {
+    fs.renameSync = originalRenameSync;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
