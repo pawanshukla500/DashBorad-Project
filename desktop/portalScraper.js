@@ -6,8 +6,10 @@ import { captureScrapeFailure } from './scrapeDiagnostics.js';
 import path from 'node:path';
 import { buildFsnPlan } from './fsnPlan.js';
 import { canOpenVisibleBrowser, focusBrowserPage, getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js';
-import { getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, deleteEncryptedCookies } from './cookieVault.js';
+import { getCookieVaultGeneration, getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, deleteEncryptedCookies } from './cookieVault.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
+import { acquireBrowserProfileOwnership, registerBrowserProfileProcess } from './browserProfileOwnership.js';
+import { closeOwnedBrowserProcess, isBrowserProcessExited, watchBrowserProcessExit } from './browserProcessLifecycle.js';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const SESSION_AUTH_CHECK_ATTEMPTS = 15;
@@ -49,9 +51,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
   onSessionExpiry,
   canShowBrowser = canOpenVisibleBrowser,
   browserRecoveryRegistry,
-  onCookieDiagnostics = () => {}
+  onCookieDiagnostics = () => {},
+  acquireProfileOwnership = acquireBrowserProfileOwnership
 } = {}) {
   const marketplace = config.marketplace || 'both';
+  const cookieVaultGeneration = getCookieVaultGeneration(cookiesPath);
   if (!['both', 'flipkart_shopsy', 'flipkart', 'shopsy'].includes(marketplace)) {
     return { success: false, error: `Automated scraping is not implemented for ${marketplace}.` };
   }
@@ -61,6 +65,14 @@ export async function scrapeFlipkartRateCards(config = {}, {
   let browserRecoveryLease;
   let page;
   let safeGoto;
+  let releaseProfileOwnership = null;
+  const releaseProfileOwnershipWhenClosed = async () => {
+    if (!releaseProfileOwnership) return false;
+    const release = releaseProfileOwnership;
+    await release();
+    if (releaseProfileOwnership === release) releaseProfileOwnership = null;
+    return true;
+  };
   const context = { marketplace, stage: 'launch' };
   try {
     const profileDir = browserProfileDir;
@@ -86,21 +98,46 @@ export async function scrapeFlipkartRateCards(config = {}, {
     // cookie handoff. This also migrates older initialized profiles and allows
     // a fresh Electron login snapshot to reach external Chrome.
     const profileSessionState = readSellerHubProfileState(profileDir);
-    if (profileDir && !runtime?.partition) fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
     const launchBrowser = async visible => {
-      browser = await runtime.launch({
-        executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
-        headless: visible ? false : 'new',
-        defaultViewport: visible ? null : { width: 1500, height: 1000 },
-        ...(!runtime?.partition && profileDir ? { userDataDir: profileDir } : {}),
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          ...(profileDir ? ['--restore-last-session'] : []),
-          ...(visible ? ['--start-maximized'] : ['--window-size=1500,1000'])
-        ]
-      });
-      browserRecoveryLease = browserRecoveryRegistry?.track(browser, profileDir);
+      const usesExternalProfile = !runtime?.partition && profileDir && runtime?.managesProfileOwnership !== true;
+      if (usesExternalProfile) {
+        releaseProfileOwnership = await acquireProfileOwnership(profileDir);
+      }
+      try {
+        if (usesExternalProfile) {
+          fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+          try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
+          try { fs.chmodSync(profileDir, 0o700); } catch {}
+        }
+        browser = await runtime.launch({
+          executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
+          headless: visible ? false : 'new',
+          defaultViewport: visible ? null : { width: 1500, height: 1000 },
+          ...(!runtime?.partition && profileDir ? { userDataDir: profileDir } : {}),
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            ...(profileDir ? ['--restore-last-session'] : []),
+            ...(visible ? ['--start-maximized'] : ['--window-size=1500,1000'])
+          ]
+        });
+      } catch (error) {
+        await releaseProfileOwnershipWhenClosed();
+        throw error;
+      }
+      if (browserRecoveryRegistry) {
+        browserRecoveryLease = browserRecoveryRegistry.track(browser, profileDir, {
+          releaseProfileOwnership
+        });
+        releaseProfileOwnership = null;
+      } else if (releaseProfileOwnership) {
+        registerBrowserProfileProcess(releaseProfileOwnership, browser);
+        const releaseAfterExit = () => { void releaseProfileOwnershipWhenClosed().catch(() => {}); };
+        browser.on?.('disconnected', () => {
+          if (isBrowserProcessExited(browser)) releaseAfterExit();
+          else watchBrowserProcessExit(browser, releaseAfterExit);
+        });
+      }
       let preferredPage = null;
       try { preferredPage = await runtime?.getPage?.(browser); } catch {}
       const pages = await browser.pages();
@@ -141,7 +178,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
         await page.setCookie(...cookies);
         snapshotImported = true;
       } else {
-        deleteEncryptedCookies(cookieFile);
+        deleteEncryptedCookies(cookieFile, { expectedGeneration: cookieVaultGeneration });
       }
     }
     // Begin on the public landing page for manual sign-in, then probe the
@@ -180,7 +217,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
         captureHandle?.detach();
         captureHandle = null;
         if (browserRecoveryLease) await browserRecoveryLease.close();
-        else await browser.close();
+        else if (runtime?.managesProfileOwnership === true) await browser.close();
+        else {
+          await closeOwnedBrowserProcess(browser);
+          await releaseProfileOwnershipWhenClosed();
+        }
         browser = null;
         browserRecoveryLease = null;
         currentPage = null;
@@ -189,7 +230,7 @@ export async function scrapeFlipkartRateCards(config = {}, {
         await onProgress('Seller Hub session expired. Reopened the same persistent Chrome profile visibly for manual sign-in.');
         await safeGoto(FLIPKART_MANUAL_LOGIN_URL, { waitUntil: 'load', timeout: 35000 });
       }
-      const resumed = await onSessionExpiry(page, { visible: visibleForLogin });
+      const resumed = await onSessionExpiry(page, { visible: visibleForLogin, cookieVaultGeneration });
       if (!resumed) throw new Error('Manual Seller Hub login is incomplete. Nothing was staged.');
       const resumedPage = resumed && typeof resumed === 'object'
         ? (typeof resumed.goto === 'function' ? resumed : resumed.page)
@@ -204,11 +245,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
     }
     const sessionCookies = await page.cookies();
     if (sessionCookies?.length) {
-      saveEncryptedCookies(cookiesPath, sessionCookies);
-      saveEncryptedCookies(fallbackCookiesPath, sessionCookies);
+      saveEncryptedCookies(cookiesPath, sessionCookies, { expectedGeneration: cookieVaultGeneration });
+      saveEncryptedCookies(fallbackCookiesPath, sessionCookies, { expectedGeneration: cookieVaultGeneration });
     } else {
-      deleteEncryptedCookies(cookiesPath);
-      deleteEncryptedCookies(fallbackCookiesPath);
+      deleteEncryptedCookies(cookiesPath, { expectedGeneration: cookieVaultGeneration });
+      deleteEncryptedCookies(fallbackCookiesPath, { expectedGeneration: cookieVaultGeneration });
     }
     const plan = buildFsnPlan(config.fsnCatalog, { marketplace, brand: config.brand, verticals: config.scopeVerticals, requiredVerticals: config.requiredVerticals });
     const effectiveDate = config.effectiveDate || new Date().toISOString().slice(0, 10);
@@ -300,7 +341,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
     captureHandle?.detach();
     if (browser) {
       if (browserRecoveryLease) await browserRecoveryLease.close();
-      else await browser.close();
+      else if (runtime?.managesProfileOwnership === true) await browser.close();
+      else {
+        await closeOwnedBrowserProcess(browser);
+        await releaseProfileOwnershipWhenClosed();
+      }
     }
   }
 }

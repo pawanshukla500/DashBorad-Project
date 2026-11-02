@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import properLockfile from 'proper-lockfile';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -9,6 +10,149 @@ const __dirname = path.dirname(__filename);
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // 96 bits recommended for GCM
 const AUTH_TAG_LENGTH = 16; // 128 bits authentication tag
+const COOKIE_SNAPSHOT_LOCK_OPTIONS = { realpath: false, stale: 5000, update: 2500 };
+const COOKIE_SNAPSHOT_LOCK_WAIT_MS = 6500;
+const activeAsyncCookieSnapshotLocks = new Map();
+const asyncCookieSnapshotQueues = new Map();
+
+function cookieVaultBusyError(filePath) {
+  const error = new Error(`A cookie snapshot operation is already in progress for ${path.basename(filePath)}.`);
+  error.code = 'COOKIE_VAULT_BUSY';
+  return error;
+}
+
+function getCookieVaultGroup(filePath) {
+  const filename = path.basename(path.resolve(filePath)).toLowerCase();
+  if (['cookies.json', 'cookies_flipkart.json', 'cookies_shopsy.json', 'cookies_flipkart_shopsy.json'].includes(filename)) {
+    return 'flipkart_shopsy';
+  }
+  const match = /^cookies_([a-z0-9_-]+)\.json$/.exec(filename);
+  return (match?.[1] || filename.replace(/\.[^.]+$/, '') || 'default').replace(/[^a-z0-9_-]/g, '_');
+}
+
+function getCookieVaultStatePaths(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  const userDataDir = path.resolve(getResolvedUserDataDir());
+  const isInUserData = resolvedPath === userDataDir || resolvedPath.startsWith(`${userDataDir}${path.sep}`);
+  const stateDir = isInUserData ? userDataDir : path.dirname(resolvedPath);
+  const group = getCookieVaultGroup(resolvedPath);
+  return {
+    stateDir,
+    group,
+    lockPath: path.join(stateDir, `.cookie-vault-${group}`),
+    generationPath: path.join(stateDir, `.cookie-vault-${group}.generation.json`)
+  };
+}
+
+export function getCookieVaultLockPath(filePath) {
+  return getCookieVaultStatePaths(filePath).lockPath;
+}
+
+function withCookieSnapshotLock(filePath, action) {
+  const { stateDir, lockPath } = getCookieVaultStatePaths(filePath);
+  if (activeAsyncCookieSnapshotLocks.has(path.resolve(lockPath))) {
+    throw cookieVaultBusyError(filePath);
+  }
+  fs.mkdirSync(stateDir, { recursive: true });
+  const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const deadline = Date.now() + COOKIE_SNAPSHOT_LOCK_WAIT_MS;
+  let release;
+
+  while (!release) {
+    try {
+      release = properLockfile.lockSync(lockPath, COOKIE_SNAPSHOT_LOCK_OPTIONS);
+    } catch (error) {
+      if (error?.code !== 'ELOCKED') throw error;
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for the cookie snapshot lock: ${path.basename(filePath)}`);
+      Atomics.wait(waitCell, 0, 0, 25);
+    }
+  }
+
+  try {
+    return action();
+  } finally {
+    release();
+  }
+}
+
+async function withCookieSnapshotLockAsync(filePath, action) {
+  const { stateDir, lockPath } = getCookieVaultStatePaths(filePath);
+  const resolvedLockPath = path.resolve(lockPath);
+  // Synchronous vault operations must fail fast while this async lock is held.
+  // Their Atomics.wait retry loop would otherwise block this event loop and
+  // prevent the async owner from completing and releasing the lock.
+  activeAsyncCookieSnapshotLocks.set(resolvedLockPath, (activeAsyncCookieSnapshotLocks.get(resolvedLockPath) || 0) + 1);
+  const previous = asyncCookieSnapshotQueues.get(resolvedLockPath) || Promise.resolve();
+  let releaseQueue;
+  const queued = new Promise(resolve => { releaseQueue = resolve; });
+  asyncCookieSnapshotQueues.set(resolvedLockPath, queued);
+  const deadline = Date.now() + COOKIE_SNAPSHOT_LOCK_WAIT_MS;
+  let release;
+
+  try {
+    await previous;
+    fs.mkdirSync(stateDir, { recursive: true });
+    while (!release) {
+      try {
+        release = await properLockfile.lock(lockPath, COOKIE_SNAPSHOT_LOCK_OPTIONS);
+      } catch (error) {
+        if (error?.code !== 'ELOCKED') throw error;
+        if (Date.now() >= deadline) throw new Error(`Timed out waiting for the cookie snapshot lock: ${path.basename(filePath)}`);
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    }
+
+    return await action();
+  } finally {
+    try {
+      if (release) await release();
+    } finally {
+      releaseQueue();
+      if (asyncCookieSnapshotQueues.get(resolvedLockPath) === queued) {
+        asyncCookieSnapshotQueues.delete(resolvedLockPath);
+      }
+      const remaining = (activeAsyncCookieSnapshotLocks.get(resolvedLockPath) || 1) - 1;
+      if (remaining > 0) activeAsyncCookieSnapshotLocks.set(resolvedLockPath, remaining);
+      else activeAsyncCookieSnapshotLocks.delete(resolvedLockPath);
+    }
+  }
+}
+
+function readCookieVaultGeneration(filePath) {
+  const { generationPath } = getCookieVaultStatePaths(filePath);
+  try {
+    const state = JSON.parse(fs.readFileSync(generationPath, 'utf8'));
+    if (!Number.isSafeInteger(state?.generation) || state.generation < 0) {
+      throw new Error('Cookie vault generation state is invalid.');
+    }
+    return state.generation;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 0;
+    throw error;
+  }
+}
+
+function writeCookieVaultGeneration(filePath, generation) {
+  const { stateDir, generationPath } = getCookieVaultStatePaths(filePath);
+  fs.mkdirSync(stateDir, { recursive: true });
+  const temporaryPath = path.join(stateDir, `.${path.basename(generationPath)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(temporaryPath, JSON.stringify({ generation, updated_at: Date.now() }), {
+      encoding: 'utf8', mode: 0o600, flag: 'wx'
+    });
+    fs.chmodSync(temporaryPath, 0o600);
+    fs.renameSync(temporaryPath, generationPath);
+  } finally {
+    try {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    } catch {}
+  }
+}
+
+/** Capture the session generation before opening a browser or beginning login. */
+export function getCookieVaultGeneration(filePath) {
+  return withCookieSnapshotLock(filePath, () => readCookieVaultGeneration(filePath));
+}
 
 /**
  * Resolves a safe writable user-data directory across Windows, Linux, and macOS.
@@ -34,36 +178,39 @@ export function getResolvedUserDataDir() {
   return path.join(__dirname, '.runtime');
 }
 
+function readPersistedVaultKey(keyFilePath, attempts = 100, retryDelayMs = 10) {
+  const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
+      if (/^[a-f0-9]{64}$/i.test(storedKey)) return crypto.createHash('sha256').update(storedKey).digest();
+    } catch (error) {
+      if (!['ENOENT', 'EBUSY'].includes(error?.code)) throw error;
+    }
+    if (attempt + 1 < attempts) Atomics.wait(waitCell, 0, 0, retryDelayMs);
+  }
+  return null;
+}
+
 /**
  * Gets or provisions a secure per-installation 256-bit encryption key.
- * 1. Checks CREDENTIALS_ENCRYPTION_KEY / ENCRYPTION_KEY / JWT_SECRET.
- * 2. If absent, checks or provisions a machine-local, cryptographically random key
- *    stored in `<USER_DATA_DIR>/.vault_key` with strict permissions (0o600).
- * This guarantees that every desktop install has a distinct, secret key not found in source code.
+ * A local vault must not depend on backend environment secrets: the Electron app
+ * and standalone worker can share this user-data directory while loading different
+ * environments. A machine-local, cryptographically random key is stored in
+ * `<USER_DATA_DIR>/.vault_key` with strict permissions (0o600).
  */
 export function getVaultMasterKey() {
-  const envSecret = process.env.CREDENTIALS_ENCRYPTION_KEY 
-    || process.env.ENCRYPTION_KEY 
-    || process.env.JWT_SECRET;
-  
-  if (envSecret && String(envSecret).trim()) {
-    return crypto.createHash('sha256').update(String(envSecret).trim()).digest();
-  }
-
   const userDir = getResolvedUserDataDir();
   if (!fs.existsSync(userDir)) {
     fs.mkdirSync(userDir, { recursive: true });
   }
 
   const keyFilePath = path.join(userDir, '.vault_key');
-  try {
-    if (fs.existsSync(keyFilePath)) {
-      const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
-      if (storedKey && storedKey.length >= 32) {
-        return crypto.createHash('sha256').update(storedKey).digest();
-      }
-    }
-  } catch {}
+  if (fs.existsSync(keyFilePath)) {
+    const persistedKey = readPersistedVaultKey(keyFilePath);
+    if (persistedKey) return persistedKey;
+    throw new Error(`Vault key remained incomplete after waiting for concurrent initialization: ${keyFilePath}`);
+  }
 
   // Generate a fresh cryptographically random 256-bit key using exclusive atomic creation ('wx')
   const randomSecret = crypto.randomBytes(32).toString('hex');
@@ -72,12 +219,9 @@ export function getVaultMasterKey() {
     return crypto.createHash('sha256').update(randomSecret).digest();
   } catch (err) {
     if (err.code === 'EEXIST') {
-      try {
-        const storedKey = fs.readFileSync(keyFilePath, 'utf8').trim();
-        if (storedKey && storedKey.length >= 32) {
-          return crypto.createHash('sha256').update(storedKey).digest();
-        }
-      } catch {}
+      const persistedKey = readPersistedVaultKey(keyFilePath);
+      if (persistedKey) return persistedKey;
+      throw new Error(`Vault key remained incomplete after concurrent initialization: ${keyFilePath}`);
     }
     throw new Error(`Failed to persist encryption key to ${keyFilePath}: ${err.message}`);
   }
@@ -97,22 +241,41 @@ export function encryptVaultData(plaintext) {
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${ciphertext}`;
 }
 
+function decryptVaultPayloadWithKey(encryptedPayload, key) {
+  const [ivHex, authTagHex, ciphertextHex] = encryptedPayload.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const authTag = Buffer.from(authTagHex, 'hex');
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  decipher.setAuthTag(authTag);
+  return decipher.update(ciphertextHex, 'hex', 'utf8') + decipher.final('utf8');
+}
+
+function legacyVaultKeys() {
+  const secrets = [process.env.CREDENTIALS_ENCRYPTION_KEY, process.env.ENCRYPTION_KEY, process.env.JWT_SECRET]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  return [...new Set(secrets)].map(secret => crypto.createHash('sha256').update(secret).digest());
+}
+
 /**
- * Decrypts AES-256-GCM data.
+ * Decrypts AES-256-GCM data. Legacy environment-derived keys are read-only
+ * fallbacks so old snapshots remain readable; all new writes use the local key.
  */
 export function decryptVaultData(encryptedPayload) {
   if (!encryptedPayload || typeof encryptedPayload !== 'string') return null;
   const parts = encryptedPayload.split(':');
   if (parts.length !== 3) return null;
-  const [ivHex, authTagHex, ciphertextHex] = parts;
-  const key = getVaultMasterKey();
-  const iv = Buffer.from(ivHex, 'hex');
-  const authTag = Buffer.from(authTagHex, 'hex');
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
-  decipher.setAuthTag(authTag);
-  let decrypted = decipher.update(ciphertextHex, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+  try {
+    return decryptVaultPayloadWithKey(encryptedPayload, getVaultMasterKey());
+  } catch (primaryError) {
+    for (const key of legacyVaultKeys()) {
+      try {
+        const plaintext = decryptVaultPayloadWithKey(encryptedPayload, key);
+        return plaintext;
+      } catch {}
+    }
+    throw primaryError;
+  }
 }
 
 /**
@@ -143,7 +306,7 @@ export const DEFAULT_MAX_COOKIE_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Session-va
 /**
  * Deletes encrypted cookies file from disk safely.
  */
-export function deleteEncryptedCookies(filePath) {
+function deleteEncryptedCookiesUnlocked(filePath) {
   try {
     if (filePath && fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
@@ -158,23 +321,65 @@ export function deleteEncryptedCookies(filePath) {
  * Reset-session flows use this before deleting a browser profile so a stale
  * encrypted snapshot can never be silently restored on the next launch.
  */
-export function clearEncryptedCookieSnapshot(filePath, { fsModule = fs, remove = deleteEncryptedCookies } = {}) {
-  if (!filePath) throw new Error('Cookie snapshot path is required.');
-  const exists = () => {
-    try {
-      fsModule.lstatSync(filePath);
-      return true;
-    } catch (error) {
-      if (error?.code === 'ENOENT') return false;
-      throw error;
-    }
-  };
-  if (!exists()) return true;
-  remove(filePath);
-  if (exists()) {
-    throw new Error(`Could not remove the saved cookie snapshot ${path.basename(filePath)}.`);
+export function clearEncryptedCookieSnapshots(filePaths, { fsModule = fs, remove = deleteEncryptedCookiesUnlocked, clearProfile } = {}) {
+  const targets = [...new Set((Array.isArray(filePaths) ? filePaths : [filePaths]).filter(Boolean).map(file => path.resolve(file)))];
+  if (targets.length === 0) throw new Error('At least one cookie snapshot path is required.');
+  const { lockPath } = getCookieVaultStatePaths(targets[0]);
+  if (targets.some(target => getCookieVaultStatePaths(target).lockPath !== lockPath)) {
+    throw new Error('Cookie snapshots from different marketplace sessions cannot be cleared together.');
   }
-  return true;
+
+  return withCookieSnapshotLock(targets[0], () => {
+    writeCookieVaultGeneration(targets[0], readCookieVaultGeneration(targets[0]) + 1);
+    for (const target of targets) {
+      const exists = () => {
+        try {
+          fsModule.lstatSync(target);
+          return true;
+        } catch (error) {
+          if (error?.code === 'ENOENT') return false;
+          throw error;
+        }
+      };
+      if (exists()) remove(target);
+      if (exists()) throw new Error(`Could not remove the saved cookie snapshot ${path.basename(target)}.`);
+    }
+    if (typeof clearProfile === 'function') clearProfile();
+    return true;
+  });
+}
+
+export async function clearEncryptedCookieSnapshotsAsync(filePaths, { clearProfile } = {}) {
+  const targets = [...new Set((Array.isArray(filePaths) ? filePaths : [filePaths]).filter(Boolean).map(file => path.resolve(file)))];
+  if (targets.length === 0) throw new Error('At least one cookie snapshot path is required.');
+  const { lockPath } = getCookieVaultStatePaths(targets[0]);
+  if (targets.some(target => getCookieVaultStatePaths(target).lockPath !== lockPath)) {
+    throw new Error('Cookie snapshots from different marketplace sessions cannot be cleared together.');
+  }
+
+  return withCookieSnapshotLockAsync(targets[0], async () => {
+    writeCookieVaultGeneration(targets[0], readCookieVaultGeneration(targets[0]) + 1);
+    for (const target of targets) {
+      try {
+        await fs.promises.unlink(target);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      try {
+        await fs.promises.lstat(target);
+        throw new Error(`Could not remove the saved cookie snapshot ${path.basename(target)}.`);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+    if (typeof clearProfile === 'function') await clearProfile();
+    return true;
+  });
+}
+
+export function clearEncryptedCookieSnapshot(filePath, options = {}) {
+  if (!filePath) throw new Error('Cookie snapshot path is required.');
+  return clearEncryptedCookieSnapshots([filePath], options);
 }
 
 /**
@@ -199,6 +404,18 @@ export function areCookiesExpired(cookies, maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS,
     if (validCookies.length === 0) return true;
   }
   return false;
+}
+
+export function deleteEncryptedCookies(filePath, { expectedGeneration } = {}) {
+  if (!filePath) return false;
+  try {
+    return withCookieSnapshotLock(filePath, () => {
+      if (expectedGeneration !== undefined && readCookieVaultGeneration(filePath) !== expectedGeneration) return false;
+      return deleteEncryptedCookiesUnlocked(filePath);
+    });
+  } catch {
+    return false;
+  }
 }
 
 function normalizeCookieForImport(cookie) {
@@ -251,19 +468,40 @@ function extractValidCookies(parsed, statMtimeMs, maxAgeMs, onInvalidRecords = (
 /**
  * Saves cookies encrypted with AES-256-GCM along with save timestamp.
  */
-export function saveEncryptedCookies(filePath, cookies) {
+export function saveEncryptedCookies(filePath, cookies, { expectedGeneration } = {}) {
+  return withCookieSnapshotLock(filePath, () => {
+    const generation = readCookieVaultGeneration(filePath);
+    if (expectedGeneration !== undefined && expectedGeneration !== generation) {
+      const error = new Error('Seller Hub session changed while this browser was active. Reopen Seller Hub after resetting the session.');
+      error.code = 'COOKIE_VAULT_GENERATION_CHANGED';
+      throw error;
+    }
+    writeEncryptedCookiePayload(filePath, {
+      saved_at: Date.now(),
+      cookie_vault_generation: generation,
+      cookies: Array.isArray(cookies) ? cookies : []
+    });
+    return true;
+  });
+}
+
+function writeEncryptedCookiePayload(filePath, payload) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const payload = {
-    saved_at: Date.now(),
-    cookies: Array.isArray(cookies) ? cookies : []
-  };
   const serialized = JSON.stringify(payload, null, 2);
   const encrypted = encryptVaultData(serialized);
-  fs.writeFileSync(filePath, encrypted, { encoding: 'utf8', mode: 0o600 });
-  fs.chmodSync(filePath, 0o600);
+  const temporaryPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(temporaryPath, encrypted, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    fs.chmodSync(temporaryPath, 0o600);
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    try {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    } catch {}
+  }
 }
 
 function isPlaintextCookieSnapshot(raw) {
@@ -313,6 +551,23 @@ export function loadEncryptedCookies(filePath, {
   onInvalidRecords = () => {}
 } = {}) {
   try {
+    return withCookieSnapshotLock(filePath, () => loadEncryptedCookiesUnlocked(filePath, {
+      maxAgeMs,
+      onInvalidRecords,
+      generation: readCookieVaultGeneration(filePath)
+    }));
+  } catch (error) {
+    if (error?.code === 'COOKIE_VAULT_BUSY') throw error;
+    return null;
+  }
+}
+
+function loadEncryptedCookiesUnlocked(filePath, {
+  maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS,
+  onInvalidRecords = () => {},
+  generation = readCookieVaultGeneration(filePath)
+} = {}) {
+  try {
     const candidates = legacyCookieCandidates(filePath);
     // Purge plaintext legacy files even if the requested encrypted target
     // exists; a valid target must not leave an unused plaintext copy behind.
@@ -334,9 +589,14 @@ export function loadEncryptedCookies(filePath, {
               const dec = decryptVaultData(raw);
               if (dec) fallbackData = JSON.parse(dec);
             } catch {}
+            if (!fallbackData || !isCookieVaultGenerationCurrent(fallbackData, generation)) continue;
             const validCookies = extractValidCookies(fallbackData, stat?.mtimeMs || Date.now(), maxAgeMs, onInvalidRecords);
             if (!validCookies) continue;
-            try { saveEncryptedCookies(filePath, validCookies); } catch {}
+            // Reads never rewrite a cookie file: another process may have
+            // saved a newer login while this legacy snapshot was being read.
+            if (fs.existsSync(filePath)) {
+              return loadEncryptedCookiesUnlocked(filePath, { maxAgeMs, onInvalidRecords, generation });
+            }
             return validCookies;
           } catch {}
         }
@@ -357,19 +617,30 @@ export function loadEncryptedCookies(filePath, {
     if (!parsed) {
       // Refuse unencrypted cookie JSON. The Chromium profile is the persistent
       // session source of truth; a plaintext snapshot must not be replayed.
-      deleteEncryptedCookies(filePath);
+      deleteEncryptedCookiesUnlocked(filePath);
+      return null;
+    }
+    if (!isCookieVaultGenerationCurrent(parsed, generation)) {
+      deleteEncryptedCookiesUnlocked(filePath);
       return null;
     }
     const validCookies = extractValidCookies(parsed, stat?.mtimeMs || Date.now(), maxAgeMs, onInvalidRecords);
     if (!validCookies) {
       // Stale or expired: delete cookie file so it does not persist
-      deleteEncryptedCookies(filePath);
+      deleteEncryptedCookiesUnlocked(filePath);
       return null;
     }
     return validCookies;
   } catch {
     return null;
   }
+}
+
+function isCookieVaultGenerationCurrent(payload, generation) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return generation === 0;
+  const savedGeneration = payload.cookie_vault_generation;
+  if (savedGeneration === undefined) return generation === 0;
+  return Number.isSafeInteger(savedGeneration) && savedGeneration === generation;
 }
 
 /**

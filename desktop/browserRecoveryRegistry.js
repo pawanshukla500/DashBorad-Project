@@ -1,3 +1,6 @@
+import { registerBrowserProfileProcess } from './browserProfileOwnership.js';
+import { closeOwnedBrowserProcess, isBrowserProcessExited, watchBrowserProcessExit } from './browserProcessLifecycle.js';
+
 /**
  * Retains Chromium handles when a close fails so a profile is never removed or
  * reopened while the old process may still own its lock.
@@ -12,33 +15,71 @@ export function createBrowserRecoveryRegistry() {
 
   const discard = entry => entries.delete(entry);
 
+  function releaseProfileOwnership(entry) {
+    if (!entry?.releaseProfileOwnership) return Promise.resolve(false);
+    if (entry.ownershipReleasePromise) return entry.ownershipReleasePromise;
+    entry.ownershipReleasePromise = Promise.resolve()
+      .then(() => entry.releaseProfileOwnership())
+      .then(() => {
+        entry.releaseProfileOwnership = null;
+        return true;
+      })
+      .finally(() => { entry.ownershipReleasePromise = null; });
+    return entry.ownershipReleasePromise;
+  }
+
   async function closeEntry(entry) {
-    if (!entry || !isConnected(entry.browser)) {
-      if (entry) discard(entry);
+    if (!entry) return false;
+    if (!isConnected(entry.browser) && isBrowserProcessExited(entry.browser)) {
+      if (entry) {
+        await releaseProfileOwnership(entry);
+        discard(entry);
+      }
       return false;
     }
 
     try {
-      await entry.browser.close();
+      await closeOwnedBrowserProcess(entry.browser);
     } catch (error) {
-      if (!isConnected(entry.browser)) discard(entry);
+      if (isBrowserProcessExited(entry.browser)) {
+        await releaseProfileOwnership(entry);
+        discard(entry);
+      }
       throw error;
     }
 
-    if (isConnected(entry.browser)) {
-      throw new Error(`Chromium remained connected after close for profile ${entry.profileKey || '(unknown)'}.`);
-    }
+    await releaseProfileOwnership(entry);
     discard(entry);
     return true;
   }
 
-  function track(browser, profileKey) {
+  function track(browser, profileKey, { releaseProfileOwnership: releaseOwnership = null } = {}) {
     if (!browser || typeof browser.close !== 'function') {
       throw new Error('A Chromium browser handle is required for recovery tracking.');
     }
-    const entry = { browser, profileKey: String(profileKey || '') };
+    const entry = {
+      browser,
+      profileKey: String(profileKey || ''),
+      releaseProfileOwnership: typeof releaseOwnership === 'function' ? releaseOwnership : null,
+      ownershipReleasePromise: null
+    };
     entries.add(entry);
-    browser.on?.('disconnected', () => discard(entry));
+    browser.on?.('disconnected', () => {
+      if (isBrowserProcessExited(browser)) {
+        void releaseProfileOwnership(entry).then(
+          () => discard(entry),
+          () => {} // Keep the handle so reset can retry a failed ownership release.
+        );
+      } else {
+        entry.removeProcessExitWatch ||= watchBrowserProcessExit(browser, () => {
+          void releaseProfileOwnership(entry).then(
+            () => discard(entry),
+            () => {} // Keep the handle so reset can retry a failed ownership release.
+          );
+        });
+      }
+    });
+    registerBrowserProfileProcess(entry.releaseProfileOwnership, browser);
     return { close: () => closeEntry(entry) };
   }
 

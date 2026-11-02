@@ -28,7 +28,8 @@ import {
   saveEncryptedCookies,
   loadEncryptedCookies,
   deleteEncryptedCookies,
-  clearEncryptedCookieSnapshot,
+  getCookieVaultGeneration,
+  clearEncryptedCookieSnapshotsAsync,
   decryptMarketplaceCredential,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
@@ -59,6 +60,11 @@ export function resetDesktopTokenVerifier() {
   activeTokenVerifier = verifyDesktopTokenAuthorization;
 }
 
+const sellerPortalCredentialEnvName = /^FK_(?:ID|PASSWORD)$/i;
+for (const envName of Object.keys(process.env)) {
+  if (sellerPortalCredentialEnvName.test(envName)) delete process.env[envName];
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DESKTOP_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
@@ -73,6 +79,7 @@ if (fs.existsSync(envPath)) {
     const eqIdx = trimmed.indexOf('=');
     if (eqIdx > 0) {
       const key = trimmed.slice(0, eqIdx).trim();
+      if (sellerPortalCredentialEnvName.test(key)) continue;
       let val = trimmed.slice(eqIdx + 1).trim();
       if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
         val = val.slice(1, -1);
@@ -93,6 +100,8 @@ import {
   DEFAULT_EXCEL_PATH 
 } from './excelExport.js';
 import { getChromeExecutablePath } from './chromeFinder.js';
+import { acquireBrowserProfileOwnership, withBrowserProfileOwnership } from './browserProfileOwnership.js';
+import { closeOwnedBrowserProcess, isBrowserProcessExited } from './browserProcessLifecycle.js';
 import { getDesktopPool, closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 
@@ -420,7 +429,7 @@ const serverWorker = createWorkerEngine({
           console.warn(JSON.stringify(entry));
           broadcastProgress(`Ignored ${discardedRecords} malformed saved cookie records while restoring the Seller Hub session.`);
         },
-        onSessionExpiry: async page => {
+        onSessionExpiry: async (page, { cookieVaultGeneration } = {}) => {
           if (!canOpenVisibleBrowser()) return false;
           broadcastProgress('Seller Hub session expired. Complete sign-in manually in the visible Chrome window at seller.flipkart.com.');
           try {
@@ -432,11 +441,11 @@ const serverWorker = createWorkerEngine({
             });
             const cookies = await authPage.cookies();
             if (cookies.length) {
-              saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
-              saveEncryptedCookies(COOKIES_PATH, cookies);
+              saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies, { expectedGeneration: cookieVaultGeneration });
+              saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
             } else {
-              deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
-              deleteEncryptedCookies(COOKIES_PATH);
+              deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), { expectedGeneration: cookieVaultGeneration });
+              deleteEncryptedCookies(COOKIES_PATH, { expectedGeneration: cookieVaultGeneration });
             }
             broadcastProgress(cookies.length
               ? `Seller Hub login verified. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile will be reused.`
@@ -497,7 +506,6 @@ function broadcastProgress(msg) {
 const DEFAULT_CONFIG = {
   marketplace: 'flipkart_shopsy', // 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'
   email: 'Vbexports@outlook.com',
-  password: process.env.FK_PASSWORD || '',
   apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
   databaseUrl: process.env.DATABASE_URL || '',
   scheduledHour: 6,
@@ -518,6 +526,8 @@ function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      const hasLegacySellerPassword = Object.prototype.hasOwnProperty.call(parsed, 'password');
+      delete parsed.password;
       if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
         parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
       }
@@ -527,12 +537,21 @@ function loadConfig() {
       // DATABASE_URL (postgres:5432) must never reach the pool logic, even
       // when the config file is missing or predates the databaseUrl key.
       const effectiveDatabaseUrl = 'databaseUrl' in parsed ? parsed.databaseUrl : sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl);
-      return {
+      const config = {
         ...DEFAULT_CONFIG,
         ...parsed,
         databaseUrl: effectiveDatabaseUrl,
         accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) }
       };
+      if (hasLegacySellerPassword && !saveConfig(config).success) {
+        console.warn(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: 'warn',
+          event: 'config.legacy_seller_password_scrub_failed',
+          message: 'Could not remove the unused Seller Hub password from the local configuration file.'
+        }));
+      }
+      return config;
     }
   } catch (err) {
     console.error('Failed to read config:', err);
@@ -542,14 +561,16 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    const safeConfig = { ...cfg };
+    delete safeConfig.password;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(safeConfig, null, 2), { mode: 0o600 });
     try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
     if (process.platform === 'linux') {
       try {
         const sysDir = '/etc/reconcentral-ratecard';
         if (fs.existsSync(sysDir)) {
           const sysFile = path.join(sysDir, 'worker-config.json');
-          fs.writeFileSync(sysFile, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+          fs.writeFileSync(sysFile, JSON.stringify(safeConfig, null, 2), { mode: 0o600 });
           try { fs.chmodSync(sysFile, 0o600); } catch {}
         }
       } catch {}
@@ -1502,7 +1523,7 @@ const server = http.createServer(async (req, res) => {
                 console.warn(JSON.stringify(entry));
                 broadcastProgress(`Ignored ${discardedRecords} malformed saved cookie records while restoring the Seller Hub session.`);
               },
-              onSessionExpiry: async page => {
+              onSessionExpiry: async (page, { cookieVaultGeneration } = {}) => {
                 if (!isVisible) {
                   broadcastProgress('Seller Hub session expired. Open Seller Hub Sign-in, complete login manually, then run the worker again.');
                   return false;
@@ -1516,8 +1537,8 @@ const server = http.createServer(async (req, res) => {
                     onPage: () => broadcastProgress('Seller Hub opened another Chrome tab. Checking it for the authenticated dashboard.')
                   });
                   const cookies = await authPage.cookies();
-                  saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
-                  saveEncryptedCookies(COOKIES_PATH, cookies);
+                  saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies, { expectedGeneration: cookieVaultGeneration });
+                  saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
                   broadcastProgress(`Seller Hub login verified. Saved ${cookies.length} encrypted cookies and retained the persistent browser profile.`);
                   return authPage;
                 } catch (loginError) {
@@ -1602,12 +1623,9 @@ const server = http.createServer(async (req, res) => {
           ? FLIPKART_MANUAL_LOGIN_URL
           : (mpConfig.loginUrl || mpConfig.portalUrl || body.portal_url || FLIPKART_MANUAL_LOGIN_URL);
         const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
+        const cookieVaultGeneration = getCookieVaultGeneration(cookiesPath);
         const chromePath = getChromeExecutablePath();
         const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
-        const profileSessionState = readSellerHubProfileState(profileDir);
-        fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-        try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
-        try { fs.chmodSync(profileDir, 0o700); } catch {}
 
         broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
 
@@ -1621,8 +1639,14 @@ const server = http.createServer(async (req, res) => {
         withBrowserTask(async () => {
           let browser = null;
           let browserRecoveryLease = null;
+          let releaseProfileOwnership = null;
           try {
             await standaloneBrowserRecovery.closeProfile(profileDir);
+            releaseProfileOwnership = await acquireBrowserProfileOwnership(profileDir);
+            const profileSessionState = readSellerHubProfileState(profileDir);
+            fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+            try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
+            try { fs.chmodSync(profileDir, 0o700); } catch {}
             browser = await puppeteer.launch({
               headless: false,
               executablePath: chromePath,
@@ -1634,7 +1658,10 @@ const server = http.createServer(async (req, res) => {
                 '--window-size=1280,800'
               ]
             });
-            browserRecoveryLease = standaloneBrowserRecovery.track(browser, profileDir);
+            browserRecoveryLease = standaloneBrowserRecovery.track(browser, profileDir, {
+              releaseProfileOwnership
+            });
+            releaseProfileOwnership = null;
             const pages = await browser.pages();
             const page = pages.length > 0 ? pages[0] : await browser.newPage();
 
@@ -1732,9 +1759,9 @@ const server = http.createServer(async (req, res) => {
             if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
               writeSellerHubProfileState(profileDir, 'authenticated');
             }
-            saveEncryptedCookies(cookiesPath, cookies);
+            saveEncryptedCookies(cookiesPath, cookies, { expectedGeneration: cookieVaultGeneration });
             if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
-              saveEncryptedCookies(COOKIES_PATH, cookies);
+              saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
             }
             broadcastProgress(`✓ Authentication detected. Saved ${cookies.length} encrypted cookies; the persistent Chrome profile remains available to the worker.`);
           } catch (loginErr) {
@@ -1742,8 +1769,12 @@ const server = http.createServer(async (req, res) => {
           } finally {
             if (browser) {
               if (browserRecoveryLease) await browserRecoveryLease.close();
-              else await browser.close();
+              else {
+                await closeOwnedBrowserProcess(browser);
+                if (isBrowserProcessExited(browser) && releaseProfileOwnership) await releaseProfileOwnership();
+              }
             }
+            if (releaseProfileOwnership && (!browser || isBrowserProcessExited(browser))) await releaseProfileOwnership();
           }
           return { ran: true };
         }).then((gate) => {
@@ -1785,16 +1816,26 @@ const server = http.createServer(async (req, res) => {
         const cleared = await withBrowserTask(async () => {
           const profilePath = getMarketplaceBrowserProfilePath(targetId);
           await standaloneBrowserRecovery.closeProfile(profilePath);
-          clearEncryptedCookieSnapshot(getMarketplaceCookiesPath(targetId));
           const isFlipkart = ['flipkart_shopsy','flipkart','shopsy','both'].includes(targetId);
-          if (isFlipkart) {
-            clearEncryptedCookieSnapshot(COOKIES_PATH);
-          }
-          fs.rmSync(profilePath, { recursive: true, force: true });
-          if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent marketplace browser profile.');
+          const cookiePaths = isFlipkart
+            ? [getMarketplaceCookiesPath(targetId), COOKIES_PATH]
+            : [getMarketplaceCookiesPath(targetId)];
+          await withBrowserProfileOwnership(profilePath, async () => {
+            await clearEncryptedCookieSnapshotsAsync(cookiePaths, {
+              clearProfile: async () => {
+                await fs.promises.rm(profilePath, { recursive: true, force: true });
+                try {
+                  await fs.promises.lstat(profilePath);
+                  throw new Error('Could not remove the persistent marketplace browser profile.');
+                } catch (error) {
+                  if (error?.code !== 'ENOENT') throw error;
+                }
+              }
+            });
+          });
           return { success: true, message: `Session data cleared for ${targetId}` };
         });
-        if (!cleared.success) return sendJson(/already running/i.test(cleared.error || '') ? 409 : 500, cleared);
+        if (!cleared.success) return sendJson(/already running|already open in another reconcentral process/i.test(cleared.error || '') ? 409 : 500, cleared);
         broadcastProgress(`✓ Cleared saved cookies and browser profile for ${targetId}`);
         return sendJson(200, cleared);
       } catch (err) {

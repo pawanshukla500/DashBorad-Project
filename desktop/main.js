@@ -12,7 +12,8 @@ import {
   saveEncryptedCookies,
   loadEncryptedCookies,
   deleteEncryptedCookies,
-  clearEncryptedCookieSnapshot,
+  getCookieVaultGeneration,
+  clearEncryptedCookieSnapshotsAsync,
   decryptMarketplaceCredential,
   AUTHORIZED_ROLES, 
   FIREBASE_ROLE_CLAIM 
@@ -35,6 +36,7 @@ import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { createExternalBrowserSession } from './externalBrowserSession.js';
+import { withBrowserProfileOwnership } from './browserProfileOwnership.js';
 import { blockingUncoveredCategoriesForMarketplace, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from './fsnPlan.js';
 import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 import {
@@ -71,6 +73,11 @@ const { app, BrowserWindow, ipcMain, dialog, Notification, shell, safeStorage, s
 const fs = require('fs');
 const fsp = require('fs').promises;
 const { Pool } = require('pg');
+
+const sellerPortalCredentialEnvName = /^FK_(?:ID|PASSWORD)$/i;
+for (const envName of Object.keys(process.env)) {
+  if (sellerPortalCredentialEnvName.test(envName)) delete process.env[envName];
+}
 
 let mainWindow = null;
 const smokeOutput = process.argv.find(arg => arg.startsWith('--ratecard-smoke-test='))?.slice('--ratecard-smoke-test='.length);
@@ -360,7 +367,6 @@ function getMarketplaceBrowserProfilePath(marketplace = 'flipkart_shopsy') {
 const DEFAULT_CONFIG = {
   marketplace: 'flipkart_shopsy', // 'flipkart_shopsy', 'myntra_vb', 'myntra_ej', 'meesho'
   email: 'Vbexports@outlook.com',
-  password: '',
   apiServerUrl: process.env.API_SERVER_URL || 'https://payments.youthnic.shop',
   databaseUrl: process.env.DATABASE_URL || '',
   // Role that provisioned databaseUrl. An analyst-provisioned URL is bound to
@@ -385,6 +391,8 @@ function loadConfig() {
     if (fs.existsSync(CONFIG_FILE)) {
       const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
       const parsed = JSON.parse(raw);
+      const hasLegacySellerPassword = Object.prototype.hasOwnProperty.call(parsed, 'password');
+      delete parsed.password;
       // Auto-heal old typo in apiServerUrl
       if (parsed.apiServerUrl && parsed.apiServerUrl.includes('payment.youthnic.shop')) {
         parsed.apiServerUrl = parsed.apiServerUrl.replace('payment.youthnic.shop', 'payments.youthnic.shop');
@@ -399,12 +407,16 @@ function loadConfig() {
       const effectiveDatabaseUrl = ('databaseUrl' in parsed && parsed.databaseUrl)
         ? parsed.databaseUrl
         : sanitizeSavedDbUrl(DEFAULT_CONFIG.databaseUrl);
-      return {
+      const config = {
         ...DEFAULT_CONFIG,
         ...parsed,
         databaseUrl: effectiveDatabaseUrl,
         accounts: { ...DEFAULT_CONFIG.accounts, ...(parsed.accounts || {}) }
       };
+      if (hasLegacySellerPassword && !saveConfig(config).success) {
+        desktopLogger.warn('config.legacy_seller_password_scrub_failed', 'Could not remove the unused Seller Hub password from the local configuration file.');
+      }
+      return config;
     }
   } catch (err) {
     console.error('Failed to read config:', err);
@@ -415,7 +427,9 @@ function loadConfig() {
 function saveConfig(config) {
   try {
     fs.mkdirSync(USER_DATA_DIR, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+    const safeConfig = { ...config };
+    delete safeConfig.password;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(safeConfig, null, 2), { mode: 0o600 });
     try { fs.chmodSync(CONFIG_FILE, 0o600); } catch {}
     return { success: true };
   } catch (err) {
@@ -867,18 +881,18 @@ function getManualFlipkartLoginManager() {
     readCookies: async session => normalizeElectronSessionCookies(
       await session.cookies.get({ url: FLIPKART_MANUAL_LOGIN_URL })
     ),
-    saveCookies: async cookies => {
+    saveCookies: async (cookies, cookieVaultGeneration) => {
       const marketplacePath = getMarketplaceCookiesPath('flipkart_shopsy');
       if (!cookies.length) {
         // A Seller Hub session can also live in persistent web storage. Never
         // retain an older encrypted cookie snapshot when the live store is empty.
-        deleteEncryptedCookies(marketplacePath);
-        deleteEncryptedCookies(COOKIES_PATH);
+        deleteEncryptedCookies(marketplacePath, { expectedGeneration: cookieVaultGeneration });
+        deleteEncryptedCookies(COOKIES_PATH, { expectedGeneration: cookieVaultGeneration });
         writeSellerHubProfileState(getMarketplaceBrowserProfilePath('flipkart_shopsy'), 'signed_out');
         return;
       }
-      saveEncryptedCookies(marketplacePath, cookies);
-      saveEncryptedCookies(COOKIES_PATH, cookies);
+      saveEncryptedCookies(marketplacePath, cookies, { expectedGeneration: cookieVaultGeneration });
+      saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
       writeSellerHubProfileState(getMarketplaceBrowserProfilePath('flipkart_shopsy'), 'snapshot_available');
     },
     onState: state => {
@@ -900,8 +914,9 @@ function getManualFlipkartLoginManager() {
   return manualFlipkartLoginManager;
 }
 
-async function openManualFlipkartLogin({ onProgress = () => {}, waitMs } = {}) {
+async function openManualFlipkartLogin({ onProgress = () => {}, waitMs, cookieVaultGeneration } = {}) {
   const manager = getManualFlipkartLoginManager();
+  const sessionGeneration = cookieVaultGeneration ?? getCookieVaultGeneration(getMarketplaceCookiesPath('flipkart_shopsy'));
   onProgress(`Opening Seller Hub at ${FLIPKART_MANUAL_LOGIN_URL}. Click Login, complete sign-in manually, and leave the window open until the dashboard is verified.`);
   broadcastMonitorState({
     active: true,
@@ -911,7 +926,7 @@ async function openManualFlipkartLogin({ onProgress = () => {}, waitMs } = {}) {
     url: FLIPKART_MANUAL_LOGIN_URL,
     title: 'Flipkart Seller Hub — Manual Sign-in'
   });
-  const result = await manager.open({ waitMs });
+  const result = await manager.open({ waitMs, cookieVaultGeneration: sessionGeneration });
   if (result.success) {
     onProgress(`✓ Seller Hub login verified. Persistent session saved (${result.cookiesCount} cookies captured).`);
   } else {
@@ -933,6 +948,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     return { success: false, marketplace: targetId, error: `Unsupported marketplace channel: "${targetId}". Supported channels: ${validIds}` };
   }
   const cookiesPath = getMarketplaceCookiesPath(mpConfig.id);
+  const cookieVaultGeneration = getCookieVaultGeneration(cookiesPath);
   const isFlipkart = mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart';
   const manualLoginUrl = isFlipkart ? FLIPKART_MANUAL_LOGIN_URL : mpConfig.loginUrl;
 
@@ -941,7 +957,7 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     // the operator a clean root page in a visible window and leave every login
     // action (including the site's Login control and OTP prompts) manual.
     return {
-      ...(await openManualFlipkartLogin({ waitMs: 5000 })),
+      ...(await openManualFlipkartLogin({ waitMs: 5000, cookieVaultGeneration })),
       marketplace: mpConfig.id
     };
   }
@@ -1040,9 +1056,9 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
       if (!loggedIn) throw new Error('Interactive login timed out after 5 minutes.');
 
       const cookies = await page.cookies();
-      saveEncryptedCookies(cookiesPath, cookies);
+      saveEncryptedCookies(cookiesPath, cookies, { expectedGeneration: cookieVaultGeneration });
       if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
-        saveEncryptedCookies(COOKIES_PATH, cookies);
+        saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
       }
       broadcastMonitorState({ active: false, status: 'completed', url: page.url(), title: page.title() });
       await page.close();
@@ -1062,9 +1078,6 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   const puppeteer = getBrowserRuntime();
   const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
   const profileSessionState = readSellerHubProfileState(profileDir);
-  fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
-  try { fs.chmodSync(profileDir, 0o700); } catch {}
   const browserLease = await externalBrowserSession.acquire(puppeteer, {
     executablePath: requireChromeExecutable(),
     headless: false,
@@ -1203,9 +1216,9 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
     if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
       writeSellerHubProfileState(profileDir, 'authenticated');
     }
-    saveEncryptedCookies(cookiesPath, cookies);
+    saveEncryptedCookies(cookiesPath, cookies, { expectedGeneration: cookieVaultGeneration });
     if (mpConfig.id === 'flipkart_shopsy' || mpConfig.marketplace === 'flipkart') {
-      saveEncryptedCookies(COOKIES_PATH, cookies);
+      saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
     }
     console.log(`[InteractiveLogin] Logged in to ${mpConfig.name} successfully! Saved and encrypted ${cookies.length} session cookies; authenticated browser remains open for the worker.`);
 
@@ -1333,7 +1346,7 @@ async function executeScrapeProcess(config, onProgress) {
           });
         };
 
-        const onSessionExpiry = async (page) => {
+        const onSessionExpiry = async (page, { cookieVaultGeneration } = {}) => {
           broadcastMonitorState({
             active: true,
             status: 'login_prompt',
@@ -1347,7 +1360,7 @@ async function executeScrapeProcess(config, onProgress) {
               url: page.url()
             });
           }
-          const login = await openManualFlipkartLogin({ onProgress, waitMs: 30 * 60 * 1000 });
+          const login = await openManualFlipkartLogin({ onProgress, waitMs: 30 * 60 * 1000, cookieVaultGeneration });
           if (!login.success || login.waitingForManualLogin) return false;
           broadcastMonitorState({ active: true, status: 'extracting', url: page.url(), title: page.title() });
           onProgress('✓ Manual Seller Hub login verified. The scraper is reusing the persistent authenticated session.');
@@ -1379,7 +1392,7 @@ async function executeScrapeProcess(config, onProgress) {
         }
       }
 
-      const externalSessionExpiry = async (page, { visible = false } = {}) => {
+      const externalSessionExpiry = async (page, { visible = false, cookieVaultGeneration } = {}) => {
         if (!visible) return false;
         onProgress('🔐 Seller Hub sign-in is required. Complete it manually in the visible Seller Hub browser window.');
         try {
@@ -1402,12 +1415,12 @@ async function executeScrapeProcess(config, onProgress) {
           writeSellerHubProfileState(profileDir, 'authenticated');
           const cookies = await authPage.cookies();
           if (cookies.length) {
-            saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies);
-            saveEncryptedCookies(COOKIES_PATH, cookies);
+            saveEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), cookies, { expectedGeneration: cookieVaultGeneration });
+            saveEncryptedCookies(COOKIES_PATH, cookies, { expectedGeneration: cookieVaultGeneration });
             onProgress('✓ In-browser authentication complete. Session cookies encrypted and saved.');
           } else {
-            deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'));
-            deleteEncryptedCookies(COOKIES_PATH);
+            deleteEncryptedCookies(getMarketplaceCookiesPath('flipkart_shopsy'), { expectedGeneration: cookieVaultGeneration });
+            deleteEncryptedCookies(COOKIES_PATH, { expectedGeneration: cookieVaultGeneration });
             onProgress('✓ Seller Hub authentication verified without cookies. Removed stale cookie snapshots; the active browser session will continue.');
           }
           return authPage;
@@ -1420,6 +1433,7 @@ async function executeScrapeProcess(config, onProgress) {
       const baseExternalRuntime = getBrowserRuntime();
       const externalRuntime = new Proxy(baseExternalRuntime, {
         get(target, property, receiver) {
+          if (property === 'managesProfileOwnership') return true;
           if (property === 'getPage') {
             return () => externalBrowserSession.getPage(getMarketplaceBrowserProfilePath('flipkart_shopsy'));
           }
@@ -1978,31 +1992,34 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
       reason: 'cookie-reset'
     });
     const cookiesPath = getMarketplaceCookiesPath(targetId);
-    clearEncryptedCookieSnapshot(cookiesPath);
-    if (isFlipkart) {
-      clearEncryptedCookieSnapshot(COOKIES_PATH);
-    }
-    let partitionErr = null;
+    const profilePath = getMarketplaceBrowserProfilePath(targetId);
+    const snapshotPaths = isFlipkart ? [cookiesPath, COOKIES_PATH] : [cookiesPath];
     try {
-      if (isFlipkart) manualFlipkartLoginManager?.close();
-      const { session: electronSession } = require('electron');
-      if (electronSession) {
-        const part = electronSession.fromPartition(portalPartition(targetId));
-        if (part?.clearStorageData) {
-          await part.clearStorageData();
+      await withBrowserProfileOwnership(profilePath, async () => {
+        try {
+          if (isFlipkart) manualFlipkartLoginManager?.close();
+          const { session: electronSession } = require('electron');
+          if (electronSession) {
+            const part = electronSession.fromPartition(portalPartition(targetId));
+            if (part?.clearStorageData) await part.clearStorageData();
+          }
+        } catch (error) {
+          throw new Error(`Failed to clear in-memory partition cookies: ${error.message}`);
         }
-      }
+        await clearEncryptedCookieSnapshotsAsync(snapshotPaths, {
+          clearProfile: async () => {
+            await fs.promises.rm(profilePath, { recursive: true, force: true });
+            try {
+              await fs.promises.lstat(profilePath);
+              throw new Error('Could not remove the persistent marketplace browser profile.');
+            } catch (error) {
+              if (error?.code !== 'ENOENT') throw error;
+            }
+          }
+        });
+      });
     } catch (err) {
-      partitionErr = err.message;
-    }
-    try {
-      const profilePath = getMarketplaceBrowserProfilePath(targetId);
-      fs.rmSync(profilePath, { recursive: true, force: true });
-      if (fs.existsSync(profilePath)) throw new Error('Could not remove the persistent marketplace browser profile.');
-    }
-    catch (err) { partitionErr = partitionErr || err.message; }
-    if (partitionErr) {
-      return { success: false, error: `Failed to clear in-memory partition cookies: ${partitionErr}` };
+      return { success: false, error: `Failed to clear marketplace cookies and browser profile: ${err.message}` };
     }
     return { success: true, marketplace: targetId };
   });

@@ -168,7 +168,7 @@ export function createManualLoginWindowManager({
     return window;
   };
 
-  const startWatcher = window => {
+  const startWatcher = (window, cookieVaultGeneration) => {
     if (watcher?.window === window) return watcher.promise;
 
     let resolvePromise;
@@ -202,7 +202,7 @@ export function createManualLoginWindowManager({
         if (!authenticated || !isCurrent()) return;
         const cookies = await readCookies(portalSession);
         if (!isCurrent()) return;
-        await saveCookies(Array.isArray(cookies) ? cookies : []);
+        await saveCookies(Array.isArray(cookies) ? cookies : [], cookieVaultGeneration);
         if (!isCurrent()) return;
         const result = { success: true, cookiesCount: Array.isArray(cookies) ? cookies.length : 0, persistentSession: true };
         safeLog(log, 'info', 'portal.login_window.authenticated', { cookieCount: result.cookiesCount });
@@ -217,6 +217,16 @@ export function createManualLoginWindowManager({
         return;
       } catch (error) {
         safeLog(log, 'warn', 'portal.login_window.auth_check_retry', { message: error?.message || String(error) });
+        if (error?.code === 'COOKIE_VAULT_GENERATION_CHANGED' && isCurrent()) {
+          const message = 'Seller Hub session was reset while sign-in was in progress. Close this window and open Seller Hub Sign-in again.';
+          safeNotify(onState, currentState(window, {
+            active: false,
+            status: 'error',
+            error: message,
+            progressMessage: message
+          }));
+          currentWatcher.finish({ success: false, error: message });
+        }
       } finally {
         checking = false;
       }
@@ -227,14 +237,14 @@ export function createManualLoginWindowManager({
     return promise;
   };
 
-  const open = async ({ waitMs = timeoutMs } = {}) => {
+  const open = async ({ waitMs = timeoutMs, cookieVaultGeneration } = {}) => {
     const window = createWindow();
     safeNotify(onState, currentState(window, {
       active: true,
       status: 'login_prompt',
       progressMessage: 'Seller Hub opens on its public page. Click Login, complete sign-in manually, and leave the window open until the dashboard is verified.'
     }));
-    const authentication = startWatcher(window);
+    const authentication = startWatcher(window, cookieVaultGeneration);
     let timeoutHandle;
     const timeout = new Promise(resolve => {
       timeoutHandle = setTimeoutFn(() => resolve({
