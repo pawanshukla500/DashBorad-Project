@@ -818,6 +818,10 @@ test('desktop and standalone worker use the same persistent external Chrome prof
   assert.match(mainSource, /externalBrowserSession\.acquire\(puppeteer,[\s\S]*?keepOpen: true/,
     'manual sign-in must retain the authenticated external Chrome process');
   assert(!standaloneSource.includes('FK_PASSWORD'), 'the standalone desktop worker must not load Seller Hub passwords from environment variables');
+  assert.match(mainSource, /sellerPortalCredentialEnvName[\s\S]*?delete process\.env\[envName\]/,
+    'the Electron process must discard inherited Seller Hub credential variables before loading desktop configuration');
+  assert.match(standaloneSource, /sellerPortalCredentialEnvName[\s\S]*?delete process\.env\[envName\][\s\S]*?if \(sellerPortalCredentialEnvName\.test\(key\)\) continue/,
+    'the standalone worker must discard inherited Seller Hub variables and skip them when importing backend environment values');
   assert(!monitorHtml.includes('cfg-password') && !rendererSource.includes('cfg-password'),
     'desktop settings must not collect or submit Seller Hub passwords');
   assert.match(monitorHtml, /Sign in manually from Live Browser[\s\S]*?does not store or submit Seller Hub passwords/,
@@ -896,12 +900,22 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'the session clear route must recheck browser activity after parsing the request body');
   assert(clearSessionRoute.includes('const cleared = await withBrowserTask(async () =>'),
     'session profile deletion must hold the shared browser task lock');
+  assert.match(clearSessionRoute, /await withBrowserProfileOwnership\(profilePath, async \(\) =>\s*\{[\s\S]*?clearEncryptedCookieSnapshotsAsync/,
+    'standalone reset must fail while another process owns the live Seller Hub profile');
   assert(clearSessionRoute.indexOf('withBrowserTask(async () =>') < clearSessionRoute.indexOf('fs.promises.rm'),
     'the worker profile must be deleted only after acquiring the browser task lock');
   assert(clearSessionRoute.indexOf('await standaloneBrowserRecovery.closeProfile(profilePath)') < clearSessionRoute.indexOf('fs.promises.rm(profilePath'),
     'failed standalone browser handles must be retried before deleting their locked profile');
-  assert.match(standaloneLoginRoute, /standaloneBrowserRecovery\.track\(browser, profileDir\)/,
-    'standalone interactive-login browsers must be registered for failed-close recovery');
+  assert.match(standaloneLoginRoute, /acquireBrowserProfileOwnership\(profileDir\)[\s\S]*?standaloneBrowserRecovery\.track\(browser, profileDir,\s*\{\s*releaseProfileOwnership/,
+    'standalone interactive-login browsers must own the shared profile lock until recovery confirms close');
+  assert.match(scraperSource, /acquireBrowserProfileOwnership\(profileDir\)[\s\S]*?browserRecoveryRegistry\.track\(browser, profileDir,\s*\{\s*releaseProfileOwnership/,
+    'standalone scraping browsers must own the shared profile lock until recovery confirms close');
+  assert(scraperSource.indexOf('acquireBrowserProfileOwnership(profileDir)') < scraperSource.indexOf('fs.mkdirSync(profileDir'),
+    'the scraper must not recreate a shared Chromium profile until it owns the profile lock');
+  assert(externalBrowserSource.indexOf('acquireProfileOwnership(profileDir)') < externalBrowserSource.indexOf('fs.mkdirSync(profileDir'),
+    'the persistent login browser must not create its profile until it owns the profile lock');
+  assert(standaloneLoginRoute.indexOf('acquireBrowserProfileOwnership(profileDir)') < standaloneLoginRoute.indexOf('fs.mkdirSync(profileDir'),
+    'standalone manual login must not recreate a shared profile until it owns the profile lock');
   assert.match(standaloneSource, /browserRecoveryRegistry: standaloneBrowserRecovery/,
     'standalone scraping browsers must share the recovery registry used by profile reset');
   assert.match(clearSessionRoute, /clearEncryptedCookieSnapshotsAsync\(cookiePaths,\s*\{\s*clearProfile: async \(\) =>[\s\S]*?fs\.promises\.rm/,
@@ -914,9 +928,14 @@ test('desktop and standalone worker use the same persistent external Chrome prof
     'standalone reset must fail if browser-profile removal did not take effect');
   assert.match(desktopResetHandler, /const snapshotPaths = isFlipkart \? \[cookiesPath, COOKIES_PATH\] : \[cookiesPath\][\s\S]*?clearEncryptedCookieSnapshotsAsync\(snapshotPaths,\s*\{\s*clearProfile: async \(\) =>[\s\S]*?fs\.promises\.rm/,
     'desktop reset must clear all related snapshots and the profile under the shared vault lock');
-  const desktopProfileCleanup = desktopResetHandler.slice(desktopResetHandler.indexOf('const profilePath'), desktopResetHandler.indexOf('if (partitionErr)'));
+  assert.match(desktopResetHandler, /await withBrowserProfileOwnership\(profilePath, async \(\) =>\s*\{[\s\S]*?clearEncryptedCookieSnapshotsAsync/,
+    'desktop reset must fail while another process owns the live Seller Hub profile');
+  const desktopProfileCleanup = desktopResetHandler.slice(
+    desktopResetHandler.indexOf('await fs.promises.rm(profilePath'),
+    desktopResetHandler.indexOf("throw new Error('Could not remove the persistent marketplace browser profile.')")
+  );
   assert(!desktopProfileCleanup.includes('if (isFlipkart)'), 'desktop reset must delete profiles for every marketplace');
-  const desktopBrowserClose = desktopResetHandler.slice(desktopResetHandler.indexOf('const isFlipkart'), desktopResetHandler.indexOf('let partitionErr'));
+  const desktopBrowserClose = desktopResetHandler.slice(desktopResetHandler.indexOf('const isFlipkart'), desktopResetHandler.indexOf('const cookiesPath'));
   assert(desktopBrowserClose.includes('await externalBrowserSession.close({') && desktopBrowserClose.includes("reason: 'cookie-reset'"),
     'desktop reset must close the selected retained browser for every marketplace');
   assert(!desktopBrowserClose.includes('if (isFlipkart)'), 'retained browser cleanup must cover every marketplace');
@@ -1495,6 +1514,77 @@ test('cookie reset waits for a cross-process save and removes its snapshot befor
   } finally {
     if (previous === undefined) delete process.env.RECON_USER_DATA_DIR;
     else process.env.RECON_USER_DATA_DIR = previous;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('async cookie reset never leaves synchronous vault readers blocked on its event loop', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-async-cookie-reset-event-loop-'));
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  let profileCleanupStarted;
+  const cleanupStarted = new Promise(resolve => { profileCleanupStarted = resolve; });
+  let allowProfileCleanup;
+  const cleanupGate = new Promise(resolve => { allowProfileCleanup = resolve; });
+  let resetSettled = false;
+
+  try {
+    saveEncryptedCookies(cookiePath, [{ name: 'session', value: 'reset-me', domain: '.flipkart.com' }]);
+    const reset = clearEncryptedCookieSnapshotsAsync([cookiePath], {
+      clearProfile: async () => {
+        profileCleanupStarted();
+        await cleanupGate;
+      }
+    }).finally(() => { resetSettled = true; });
+
+    await cleanupStarted;
+    assert.throws(() => getCookieVaultGeneration(cookiePath), error => error?.code === 'COOKIE_VAULT_BUSY');
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(resetSettled, false, 'the event loop should continue while reset awaits profile cleanup');
+    allowProfileCleanup();
+    await reset;
+    assert.equal(getCookieVaultGeneration(cookiePath), 1);
+    assert.equal(fs.existsSync(cookiePath), false);
+  } finally {
+    allowProfileCleanup();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('same-process async cookie resets queue while synchronous readers fail fast', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-async-cookie-reset-queue-'));
+  const cookiePath = path.join(tempDir, 'cookies.json');
+  let firstCleanupStarted;
+  const firstStarted = new Promise(resolve => { firstCleanupStarted = resolve; });
+  let finishFirstCleanup;
+  const firstCleanupGate = new Promise(resolve => { finishFirstCleanup = resolve; });
+  const order = [];
+  let secondSettled = false;
+
+  try {
+    const firstReset = clearEncryptedCookieSnapshotsAsync([cookiePath], {
+      clearProfile: async () => {
+        order.push('first-start');
+        firstCleanupStarted();
+        await firstCleanupGate;
+        order.push('first-finish');
+      }
+    });
+    await firstStarted;
+    const secondReset = clearEncryptedCookieSnapshotsAsync([cookiePath], {
+      clearProfile: async () => { order.push('second'); }
+    }).finally(() => { secondSettled = true; });
+
+    assert.throws(() => getCookieVaultGeneration(cookiePath), error => error?.code === 'COOKIE_VAULT_BUSY');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(order, ['first-start']);
+    assert.equal(secondSettled, false, 'the next async reset should wait without blocking the event loop');
+
+    finishFirstCleanup();
+    await Promise.all([firstReset, secondReset]);
+    assert.deepEqual(order, ['first-start', 'first-finish', 'second']);
+  } finally {
+    finishFirstCleanup();
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

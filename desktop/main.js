@@ -36,6 +36,7 @@ import { waitForFlipkartAuthenticatedPage } from './portalLoginWaiter.js';
 import { createEmbeddedPage, createEmbeddedRuntime, DEFAULT_EDGE_USER_AGENT } from './embeddedBrowser.js';
 import { createManualLoginWindowManager, normalizeElectronSessionCookies } from './manualLoginWindow.js';
 import { createExternalBrowserSession } from './externalBrowserSession.js';
+import { withBrowserProfileOwnership } from './browserProfileOwnership.js';
 import { blockingUncoveredCategoriesForMarketplace, describeCoverageBlockers, hasKnownMarketplaceFsnCoverage, missingFsnCategoriesForMarketplace, uncoveredCategoriesForMarketplace, resolveFsnBackedScrapeVerticals, resolveScrapeVerticals } from './fsnPlan.js';
 import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 import {
@@ -72,6 +73,11 @@ const { app, BrowserWindow, ipcMain, dialog, Notification, shell, safeStorage, s
 const fs = require('fs');
 const fsp = require('fs').promises;
 const { Pool } = require('pg');
+
+const sellerPortalCredentialEnvName = /^FK_(?:ID|PASSWORD)$/i;
+for (const envName of Object.keys(process.env)) {
+  if (sellerPortalCredentialEnvName.test(envName)) delete process.env[envName];
+}
 
 let mainWindow = null;
 const smokeOutput = process.argv.find(arg => arg.startsWith('--ratecard-smoke-test='))?.slice('--ratecard-smoke-test='.length);
@@ -1072,9 +1078,6 @@ async function executeInteractiveLogin(marketplace = 'flipkart_shopsy') {
   const puppeteer = getBrowserRuntime();
   const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
   const profileSessionState = readSellerHubProfileState(profileDir);
-  fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
-  try { fs.chmodSync(profileDir, 0o700); } catch {}
   const browserLease = await externalBrowserSession.acquire(puppeteer, {
     executablePath: requireChromeExecutable(),
     headless: false,
@@ -1430,6 +1433,7 @@ async function executeScrapeProcess(config, onProgress) {
       const baseExternalRuntime = getBrowserRuntime();
       const externalRuntime = new Proxy(baseExternalRuntime, {
         get(target, property, receiver) {
+          if (property === 'managesProfileOwnership') return true;
           if (property === 'getPage') {
             return () => externalBrowserSession.getPage(getMarketplaceBrowserProfilePath('flipkart_shopsy'));
           }
@@ -1987,36 +1991,32 @@ registerHandler('clear-marketplace-session', async (e, marketplace) => {
       profileKey: getMarketplaceBrowserProfilePath(targetId),
       reason: 'cookie-reset'
     });
-    let partitionErr = null;
-    try {
-      if (isFlipkart) manualFlipkartLoginManager?.close();
-      const { session: electronSession } = require('electron');
-      if (electronSession) {
-        const part = electronSession.fromPartition(portalPartition(targetId));
-        if (part?.clearStorageData) {
-          await part.clearStorageData();
-        }
-      }
-    } catch (err) {
-      partitionErr = err.message;
-    }
-    if (partitionErr) {
-      return { success: false, error: `Failed to clear in-memory partition cookies: ${partitionErr}` };
-    }
     const cookiesPath = getMarketplaceCookiesPath(targetId);
     const profilePath = getMarketplaceBrowserProfilePath(targetId);
     const snapshotPaths = isFlipkart ? [cookiesPath, COOKIES_PATH] : [cookiesPath];
     try {
-      await clearEncryptedCookieSnapshotsAsync(snapshotPaths, {
-        clearProfile: async () => {
-          await fs.promises.rm(profilePath, { recursive: true, force: true });
-          try {
-            await fs.promises.lstat(profilePath);
-            throw new Error('Could not remove the persistent marketplace browser profile.');
-          } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
+      await withBrowserProfileOwnership(profilePath, async () => {
+        try {
+          if (isFlipkart) manualFlipkartLoginManager?.close();
+          const { session: electronSession } = require('electron');
+          if (electronSession) {
+            const part = electronSession.fromPartition(portalPartition(targetId));
+            if (part?.clearStorageData) await part.clearStorageData();
           }
+        } catch (error) {
+          throw new Error(`Failed to clear in-memory partition cookies: ${error.message}`);
         }
+        await clearEncryptedCookieSnapshotsAsync(snapshotPaths, {
+          clearProfile: async () => {
+            await fs.promises.rm(profilePath, { recursive: true, force: true });
+            try {
+              await fs.promises.lstat(profilePath);
+              throw new Error('Could not remove the persistent marketplace browser profile.');
+            } catch (error) {
+              if (error?.code !== 'ENOENT') throw error;
+            }
+          }
+        });
       });
     } catch (err) {
       return { success: false, error: `Failed to clear marketplace cookies and browser profile: ${err.message}` };

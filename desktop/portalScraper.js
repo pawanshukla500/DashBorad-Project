@@ -8,6 +8,8 @@ import { buildFsnPlan } from './fsnPlan.js';
 import { canOpenVisibleBrowser, focusBrowserPage, getBrowserRuntime, requireChromeExecutable } from './browserRuntime.js';
 import { getCookieVaultGeneration, getResolvedUserDataDir, loadEncryptedCookies, saveEncryptedCookies, deleteEncryptedCookies } from './cookieVault.js';
 import { readSellerHubProfileState, writeSellerHubProfileState } from './portalProfileState.js';
+import { acquireBrowserProfileOwnership, registerBrowserProfileProcess } from './browserProfileOwnership.js';
+import { closeOwnedBrowserProcess, isBrowserProcessExited, watchBrowserProcessExit } from './browserProcessLifecycle.js';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const SESSION_AUTH_CHECK_ATTEMPTS = 15;
@@ -62,6 +64,14 @@ export async function scrapeFlipkartRateCards(config = {}, {
   let browserRecoveryLease;
   let page;
   let safeGoto;
+  let releaseProfileOwnership = null;
+  const releaseProfileOwnershipWhenClosed = async () => {
+    if (!releaseProfileOwnership) return false;
+    const release = releaseProfileOwnership;
+    await release();
+    if (releaseProfileOwnership === release) releaseProfileOwnership = null;
+    return true;
+  };
   const context = { marketplace, stage: 'launch' };
   try {
     const profileDir = browserProfileDir;
@@ -87,21 +97,44 @@ export async function scrapeFlipkartRateCards(config = {}, {
     // cookie handoff. This also migrates older initialized profiles and allows
     // a fresh Electron login snapshot to reach external Chrome.
     const profileSessionState = readSellerHubProfileState(profileDir);
-    if (profileDir && !runtime?.partition) fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
     const launchBrowser = async visible => {
-      browser = await runtime.launch({
-        executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
-        headless: visible ? false : 'new',
-        defaultViewport: visible ? null : { width: 1500, height: 1000 },
-        ...(!runtime?.partition && profileDir ? { userDataDir: profileDir } : {}),
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          ...(profileDir ? ['--restore-last-session'] : []),
-          ...(visible ? ['--start-maximized'] : ['--window-size=1500,1000'])
-        ]
-      });
-      browserRecoveryLease = browserRecoveryRegistry?.track(browser, profileDir);
+      const usesExternalProfile = !runtime?.partition && profileDir && runtime?.managesProfileOwnership !== true;
+      if (usesExternalProfile) {
+        releaseProfileOwnership = await acquireBrowserProfileOwnership(profileDir);
+        fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+        try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
+        try { fs.chmodSync(profileDir, 0o700); } catch {}
+      }
+      try {
+        browser = await runtime.launch({
+          executablePath: executablePath || (runtime?.partition ? undefined : requireChromeExecutable()),
+          headless: visible ? false : 'new',
+          defaultViewport: visible ? null : { width: 1500, height: 1000 },
+          ...(!runtime?.partition && profileDir ? { userDataDir: profileDir } : {}),
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            ...(profileDir ? ['--restore-last-session'] : []),
+            ...(visible ? ['--start-maximized'] : ['--window-size=1500,1000'])
+          ]
+        });
+      } catch (error) {
+        await releaseProfileOwnershipWhenClosed();
+        throw error;
+      }
+      if (browserRecoveryRegistry) {
+        browserRecoveryLease = browserRecoveryRegistry.track(browser, profileDir, {
+          releaseProfileOwnership
+        });
+        releaseProfileOwnership = null;
+      } else if (releaseProfileOwnership) {
+        registerBrowserProfileProcess(releaseProfileOwnership, browser);
+        const releaseAfterExit = () => { void releaseProfileOwnershipWhenClosed().catch(() => {}); };
+        browser.on?.('disconnected', () => {
+          if (isBrowserProcessExited(browser)) releaseAfterExit();
+          else watchBrowserProcessExit(browser, releaseAfterExit);
+        });
+      }
       let preferredPage = null;
       try { preferredPage = await runtime?.getPage?.(browser); } catch {}
       const pages = await browser.pages();
@@ -181,7 +214,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
         captureHandle?.detach();
         captureHandle = null;
         if (browserRecoveryLease) await browserRecoveryLease.close();
-        else await browser.close();
+        else if (runtime?.managesProfileOwnership === true) await browser.close();
+        else {
+          await closeOwnedBrowserProcess(browser);
+          await releaseProfileOwnershipWhenClosed();
+        }
         browser = null;
         browserRecoveryLease = null;
         currentPage = null;
@@ -301,7 +338,11 @@ export async function scrapeFlipkartRateCards(config = {}, {
     captureHandle?.detach();
     if (browser) {
       if (browserRecoveryLease) await browserRecoveryLease.close();
-      else await browser.close();
+      else if (runtime?.managesProfileOwnership === true) await browser.close();
+      else {
+        await closeOwnedBrowserProcess(browser);
+        await releaseProfileOwnershipWhenClosed();
+      }
     }
   }
 }

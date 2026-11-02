@@ -60,6 +60,11 @@ export function resetDesktopTokenVerifier() {
   activeTokenVerifier = verifyDesktopTokenAuthorization;
 }
 
+const sellerPortalCredentialEnvName = /^FK_(?:ID|PASSWORD)$/i;
+for (const envName of Object.keys(process.env)) {
+  if (sellerPortalCredentialEnvName.test(envName)) delete process.env[envName];
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DESKTOP_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
@@ -74,6 +79,7 @@ if (fs.existsSync(envPath)) {
     const eqIdx = trimmed.indexOf('=');
     if (eqIdx > 0) {
       const key = trimmed.slice(0, eqIdx).trim();
+      if (sellerPortalCredentialEnvName.test(key)) continue;
       let val = trimmed.slice(eqIdx + 1).trim();
       if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
         val = val.slice(1, -1);
@@ -94,6 +100,8 @@ import {
   DEFAULT_EXCEL_PATH 
 } from './excelExport.js';
 import { getChromeExecutablePath } from './chromeFinder.js';
+import { acquireBrowserProfileOwnership, withBrowserProfileOwnership } from './browserProfileOwnership.js';
+import { closeOwnedBrowserProcess, isBrowserProcessExited } from './browserProcessLifecycle.js';
 import { getDesktopPool, closeDesktopPool, setDesktopDatabaseAccess } from './db.js';
 import { persistDesktopUserDataDirChoice, resolveFlipkartBrowserProfileDir } from './userDataPaths.js';
 
@@ -1618,10 +1626,6 @@ const server = http.createServer(async (req, res) => {
         const cookieVaultGeneration = getCookieVaultGeneration(cookiesPath);
         const chromePath = getChromeExecutablePath();
         const profileDir = getMarketplaceBrowserProfilePath(mpConfig.id);
-        const profileSessionState = readSellerHubProfileState(profileDir);
-        fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-        try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
-        try { fs.chmodSync(profileDir, 0o700); } catch {}
 
         broadcastProgress(`Launching interactive browser for ${mpConfig.name} at ${portalUrl}...`);
 
@@ -1635,8 +1639,14 @@ const server = http.createServer(async (req, res) => {
         withBrowserTask(async () => {
           let browser = null;
           let browserRecoveryLease = null;
+          let releaseProfileOwnership = null;
           try {
             await standaloneBrowserRecovery.closeProfile(profileDir);
+            releaseProfileOwnership = await acquireBrowserProfileOwnership(profileDir);
+            const profileSessionState = readSellerHubProfileState(profileDir);
+            fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+            try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
+            try { fs.chmodSync(profileDir, 0o700); } catch {}
             browser = await puppeteer.launch({
               headless: false,
               executablePath: chromePath,
@@ -1648,7 +1658,10 @@ const server = http.createServer(async (req, res) => {
                 '--window-size=1280,800'
               ]
             });
-            browserRecoveryLease = standaloneBrowserRecovery.track(browser, profileDir);
+            browserRecoveryLease = standaloneBrowserRecovery.track(browser, profileDir, {
+              releaseProfileOwnership
+            });
+            releaseProfileOwnership = null;
             const pages = await browser.pages();
             const page = pages.length > 0 ? pages[0] : await browser.newPage();
 
@@ -1756,8 +1769,12 @@ const server = http.createServer(async (req, res) => {
           } finally {
             if (browser) {
               if (browserRecoveryLease) await browserRecoveryLease.close();
-              else await browser.close();
+              else {
+                await closeOwnedBrowserProcess(browser);
+                if (isBrowserProcessExited(browser) && releaseProfileOwnership) await releaseProfileOwnership();
+              }
             }
+            if (releaseProfileOwnership && (!browser || isBrowserProcessExited(browser))) await releaseProfileOwnership();
           }
           return { ran: true };
         }).then((gate) => {
@@ -1803,20 +1820,22 @@ const server = http.createServer(async (req, res) => {
           const cookiePaths = isFlipkart
             ? [getMarketplaceCookiesPath(targetId), COOKIES_PATH]
             : [getMarketplaceCookiesPath(targetId)];
-          await clearEncryptedCookieSnapshotsAsync(cookiePaths, {
-            clearProfile: async () => {
-              await fs.promises.rm(profilePath, { recursive: true, force: true });
-              try {
-                await fs.promises.lstat(profilePath);
-                throw new Error('Could not remove the persistent marketplace browser profile.');
-              } catch (error) {
-                if (error?.code !== 'ENOENT') throw error;
+          await withBrowserProfileOwnership(profilePath, async () => {
+            await clearEncryptedCookieSnapshotsAsync(cookiePaths, {
+              clearProfile: async () => {
+                await fs.promises.rm(profilePath, { recursive: true, force: true });
+                try {
+                  await fs.promises.lstat(profilePath);
+                  throw new Error('Could not remove the persistent marketplace browser profile.');
+                } catch (error) {
+                  if (error?.code !== 'ENOENT') throw error;
+                }
               }
-            }
+            });
           });
           return { success: true, message: `Session data cleared for ${targetId}` };
         });
-        if (!cleared.success) return sendJson(/already running/i.test(cleared.error || '') ? 409 : 500, cleared);
+        if (!cleared.success) return sendJson(/already running|already open in another reconcentral process/i.test(cleared.error || '') ? 409 : 500, cleared);
         broadcastProgress(`✓ Cleared saved cookies and browser profile for ${targetId}`);
         return sendJson(200, cleared);
       } catch (err) {

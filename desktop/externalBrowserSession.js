@@ -3,7 +3,16 @@
  * the desktop app. Session cookies can otherwise be discarded when login and
  * scraping each launch and close a separate Chromium process.
  */
-export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = () => {} } = {}) {
+import fs from 'node:fs';
+import path from 'node:path';
+import { acquireBrowserProfileOwnership, registerBrowserProfileProcess } from './browserProfileOwnership.js';
+import { closeOwnedBrowserProcess, isBrowserProcessExited, watchBrowserProcessExit } from './browserProcessLifecycle.js';
+
+export function createExternalBrowserSession({
+  onPage = () => {},
+  onLifecycle = () => {},
+  acquireProfileOwnership = acquireBrowserProfileOwnership
+} = {}) {
   let retained = null;
   const recoveryEntries = new Set();
 
@@ -20,6 +29,19 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     try { return Boolean(page && (typeof page.isClosed !== 'function' || !page.isClosed())); }
     catch { return false; }
   };
+
+  function releaseProfileOwnership(entry) {
+    if (!entry?.releaseProfileOwnership) return Promise.resolve(false);
+    if (entry.ownershipReleasePromise) return entry.ownershipReleasePromise;
+    entry.ownershipReleasePromise = Promise.resolve()
+      .then(() => entry.releaseProfileOwnership())
+      .then(() => {
+        entry.releaseProfileOwnership = null;
+        return true;
+      })
+      .finally(() => { entry.ownershipReleasePromise = null; });
+    return entry.ownershipReleasePromise;
+  }
 
   const getPage = async (browser, preferredPage = null) => {
     const pages = await browser.pages();
@@ -45,18 +67,19 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     if (!entry) return false;
     entry.closing = true;
     try {
-      if (isConnected(entry.browser)) await entry.browser.close(...closeArgs);
+      await closeOwnedBrowserProcess(entry.browser, { closeArgs });
     } catch (error) {
       entry.closing = false;
       // Keep the process handle so a failed close cannot strand Chromium with
       // the profile lock and cause the next acquire to launch a duplicate.
-      if (isConnected(entry.browser)) {
+      if (!isBrowserProcessExited(entry.browser)) {
         recoveryEntries.add(entry);
         notify(onLifecycle, 'close-failed', { profileKey: entry.profileKey, reason });
         throw error;
       }
     }
     entry.closing = false;
+    await releaseProfileOwnership(entry);
     recoveryEntries.delete(entry);
     if (retained === entry) retained = null;
     notify(onPage, null);
@@ -72,7 +95,13 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
     if (retained && !isConnected(retained.browser)) {
       const disconnected = retained;
       retained = null;
-      recoveryEntries.delete(disconnected);
+      if (!isBrowserProcessExited(disconnected.browser)) {
+        recoveryEntries.add(disconnected);
+        await closeEntry(disconnected, 'disconnected-cleanup');
+      } else {
+        await releaseProfileOwnership(disconnected);
+        recoveryEntries.delete(disconnected);
+      }
       notify(onPage, null);
       notify(onLifecycle, 'disconnected', { profileKey: disconnected.profileKey });
     }
@@ -101,16 +130,61 @@ export function createExternalBrowserSession({ onPage = () => {}, onLifecycle = 
       if (entry.profileKey === profileKey) await closeEntry(entry, 'retry-cleanup');
     }
 
-    const browser = await runtime.launch(options);
-    const entry = { browser, page: null, profileKey, closing: false };
+    const profileDir = typeof options.userDataDir === 'string' && path.isAbsolute(options.userDataDir)
+      ? options.userDataDir
+      : '';
+    const releaseOwnership = profileDir ? await acquireProfileOwnership(profileDir) : null;
+    let browser;
+    try {
+      if (profileDir) {
+        fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+        try { fs.chmodSync(path.dirname(profileDir), 0o700); } catch {}
+        try { fs.chmodSync(profileDir, 0o700); } catch {}
+      }
+      browser = await runtime.launch(options);
+    } catch (error) {
+      if (releaseOwnership) await releaseOwnership();
+      throw error;
+    }
+    const entry = {
+      browser,
+      page: null,
+      profileKey,
+      closing: false,
+      releaseProfileOwnership: releaseOwnership,
+      ownershipReleasePromise: null
+    };
     browser.on?.('disconnected', () => {
-      recoveryEntries.delete(entry);
-      if (entry.closing) return;
-      if (retained !== entry) return;
-      retained = null;
-      notify(onPage, null);
-      notify(onLifecycle, 'disconnected', { profileKey });
+      if (!entry.closing && retained === entry) {
+        retained = null;
+        notify(onPage, null);
+        notify(onLifecycle, 'disconnected', { profileKey });
+      }
+      if (isBrowserProcessExited(browser)) {
+        void releaseProfileOwnership(entry).then(
+          () => recoveryEntries.delete(entry),
+          error => {
+            recoveryEntries.add(entry);
+            notify(onLifecycle, 'profile-ownership-release-failed', { profileKey, error: error?.message || String(error) });
+          }
+        );
+      } else {
+        recoveryEntries.add(entry);
+        entry.removeProcessExitWatch ||= watchBrowserProcessExit(browser, () => {
+          void releaseProfileOwnership(entry).then(
+            () => recoveryEntries.delete(entry),
+            error => notify(onLifecycle, 'profile-ownership-release-failed', { profileKey, error: error?.message || String(error) })
+          );
+        });
+      }
     });
+    try {
+      if (releaseOwnership) registerBrowserProfileProcess(releaseOwnership, browser);
+    } catch (error) {
+      try { await closeEntry(entry, 'ownership-registration-failed'); }
+      catch (closeError) { closeError.cause ||= error; throw closeError; }
+      throw error;
+    }
     try {
       entry.page = await getPage(browser);
     } catch (error) {
