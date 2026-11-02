@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1161,12 +1162,17 @@ test('legacy fallback prefers a canonical snapshot saved while the fallback is b
     process.env.JWT_SECRET = legacySecret;
     fs.writeFileSync(legacyCookiePath, legacySnapshot, 'utf8');
     const newerCookies = [{ name: 'new-session', value: 'fresh-fixture-value', domain: '.seller.flipkart.com', expires: Date.now() / 1000 + 3600 }];
+    const newerSnapshot = encryptVaultData(JSON.stringify({ saved_at: Date.now(), cookies: newerCookies }));
 
     fs.readFileSync = function writeNewSnapshotDuringLegacyRead(candidate, ...args) {
       const contents = originalReadFileSync.call(fs, candidate, ...args);
       if (path.resolve(candidate) === legacyCookiePath) {
         legacyReadCount += 1;
-        if (legacyReadCount === 2) saveEncryptedCookies(cookiePath, newerCookies);
+        if (legacyReadCount === 2) {
+          const temporaryPath = path.join(tempDir, '.injected-new-snapshot.tmp');
+          fs.writeFileSync(temporaryPath, newerSnapshot, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+          fs.renameSync(temporaryPath, cookiePath);
+        }
       }
       return contents;
     };
@@ -1181,6 +1187,84 @@ test('legacy fallback prefers a canonical snapshot saved while the fallback is b
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('cookie snapshot loading waits for a cross-process writer holding the shared lock', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-vault-cross-process-lock-'));
+  const cookiePath = path.join(tempDir, 'cookies_flipkart.json');
+  const legacyCookiePath = path.join(tempDir, 'cookies.json');
+  const previous = process.env.RECON_USER_DATA_DIR;
+  let stderr = '';
+  let stdout = '';
+  let didLock = false;
+
+  try {
+    process.env.RECON_USER_DATA_DIR = tempDir;
+    saveEncryptedCookies(legacyCookiePath, [
+      { name: 'old-session', value: 'stale-fixture-value', domain: '.seller.flipkart.com' }
+    ]);
+    const newerSnapshot = encryptVaultData(JSON.stringify({
+      saved_at: Date.now(),
+      cookies: [{ name: 'new-session', value: 'fresh-fixture-value', domain: '.seller.flipkart.com' }]
+    }));
+    const childScript = `
+      import lockfile from 'proper-lockfile';
+      import fs from 'node:fs';
+      const target = ${JSON.stringify(cookiePath)};
+      const snapshot = ${JSON.stringify(newerSnapshot)};
+      const release = lockfile.lockSync(target, { realpath: false, stale: 5000, update: 2500 });
+      process.stdout.write('LOCKED\\n');
+      setTimeout(() => {
+        try {
+          const temporaryPath = target + '.test-writer.tmp';
+          fs.writeFileSync(temporaryPath, snapshot, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+          fs.renameSync(temporaryPath, target);
+          process.stdout.write('SAVED\\n');
+        } catch (error) {
+          process.stderr.write(String(error.stack || error));
+          process.exitCode = 1;
+        } finally {
+          release();
+        }
+      }, 250);
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', childScript], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const childExit = new Promise(resolve => child.once('exit', resolve));
+    const lockReady = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`Writer did not acquire the cookie lock. stdout=${stdout} stderr=${stderr}`)), 5000);
+      child.stdout.on('data', chunk => {
+        stdout += chunk.toString();
+        if (stdout.includes('LOCKED') && !didLock) {
+          didLock = true;
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+      child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      child.once('error', error => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once('exit', code => {
+        if (!didLock) {
+          clearTimeout(timeout);
+          reject(new Error(`Writer exited before acquiring the cookie lock (${code}): ${stderr}`));
+        }
+      });
+    });
+
+    await lockReady;
+    const restored = loadEncryptedCookies(cookiePath);
+    assert.deepEqual(restored.map(cookie => cookie.name), ['new-session']);
+    assert.equal(await childExit, 0, stderr);
+  } finally {
+    if (previous === undefined) delete process.env.RECON_USER_DATA_DIR;
+    else process.env.RECON_USER_DATA_DIR = previous;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

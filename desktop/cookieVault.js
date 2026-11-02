@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import properLockfile from 'proper-lockfile';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -9,6 +10,32 @@ const __dirname = path.dirname(__filename);
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // 96 bits recommended for GCM
 const AUTH_TAG_LENGTH = 16; // 128 bits authentication tag
+const COOKIE_SNAPSHOT_LOCK_OPTIONS = { realpath: false, stale: 5000, update: 2500 };
+const COOKIE_SNAPSHOT_LOCK_WAIT_MS = 6500;
+
+function withCookieSnapshotLock(filePath, action) {
+  const resolvedPath = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  const waitCell = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const deadline = Date.now() + COOKIE_SNAPSHOT_LOCK_WAIT_MS;
+  let release;
+
+  while (!release) {
+    try {
+      release = properLockfile.lockSync(resolvedPath, COOKIE_SNAPSHOT_LOCK_OPTIONS);
+    } catch (error) {
+      if (error?.code !== 'ELOCKED') throw error;
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for the cookie snapshot lock: ${path.basename(resolvedPath)}`);
+      Atomics.wait(waitCell, 0, 0, 25);
+    }
+  }
+
+  try {
+    return action();
+  } finally {
+    release();
+  }
+}
 
 /**
  * Resolves a safe writable user-data directory across Windows, Linux, and macOS.
@@ -271,9 +298,11 @@ function extractValidCookies(parsed, statMtimeMs, maxAgeMs, onInvalidRecords = (
  * Saves cookies encrypted with AES-256-GCM along with save timestamp.
  */
 export function saveEncryptedCookies(filePath, cookies) {
-  writeEncryptedCookiePayload(filePath, {
-    saved_at: Date.now(),
-    cookies: Array.isArray(cookies) ? cookies : []
+  withCookieSnapshotLock(filePath, () => {
+    writeEncryptedCookiePayload(filePath, {
+      saved_at: Date.now(),
+      cookies: Array.isArray(cookies) ? cookies : []
+    });
   });
 }
 
@@ -343,6 +372,17 @@ export function loadEncryptedCookies(filePath, {
   onInvalidRecords = () => {}
 } = {}) {
   try {
+    return withCookieSnapshotLock(filePath, () => loadEncryptedCookiesUnlocked(filePath, { maxAgeMs, onInvalidRecords }));
+  } catch {
+    return null;
+  }
+}
+
+function loadEncryptedCookiesUnlocked(filePath, {
+  maxAgeMs = DEFAULT_MAX_COOKIE_AGE_MS,
+  onInvalidRecords = () => {}
+} = {}) {
+  try {
     const candidates = legacyCookieCandidates(filePath);
     // Purge plaintext legacy files even if the requested encrypted target
     // exists; a valid target must not leave an unused plaintext copy behind.
@@ -369,7 +409,7 @@ export function loadEncryptedCookies(filePath, {
             // Reads never rewrite a cookie file: another process may have
             // saved a newer login while this legacy snapshot was being read.
             if (fs.existsSync(filePath)) {
-              return loadEncryptedCookies(filePath, { maxAgeMs, onInvalidRecords });
+              return loadEncryptedCookiesUnlocked(filePath, { maxAgeMs, onInvalidRecords });
             }
             return validCookies;
           } catch {}
