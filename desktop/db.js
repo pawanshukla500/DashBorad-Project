@@ -245,6 +245,8 @@ export const ALLOWED_TABLES = new Set([
   'rc_fixed_fee',
   'rc_collection_fee',
   'rc_reverse_shipping',
+  'rc_pick_pack',
+  'rc_franchise_fee',
   'rate_card_versions',
   'sku_master',
   'vb_sku_master'

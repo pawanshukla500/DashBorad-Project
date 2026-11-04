@@ -1,20 +1,52 @@
+/* ReconCentral RateCard Worker — light-first theme.
+   Light is the default. Set data-theme="dark" on <html> for the legacy dark
+   workspace. Persisted via app config (uiTheme). */
 :root {
+  color-scheme: light;
   --primary: #902A4A;
-  --primary-hover: #73223b;
+  --primary-hover: #7a2340;
   --primary-container: #fbe9f0;
   --on-primary: #ffffff;
   --on-primary-container: #902A4A;
+  /* NOTE: --bg-dark / --bg-card names are legacy; values are light-first. */
+  --bg-dark: #edf0f4;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f4f6fa;
+  --surface-strong: #ffffff;
+  --border: #e2e6ec;
+  --text-main: #1b2332;
+  --text-muted: #5d6675;
+  --success: #10b981;
+  --success-strong: #047857;
+  --warning: #f59e0b;
+  --warning-strong: #b45309;
+  --danger: #ef4444;
+  --danger-strong: #dc2626;
+  --info: #0284c7;
+  --btn-secondary-bg: #e9edf3;
+  --btn-secondary-hover: #dde3ec;
+  --table-row-hover: rgba(144, 42, 74, 0.06);
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --radius: 10px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
   --bg-dark: #0f172a;
   --bg-card: #1e293b;
   --bg-card-hover: #243248;
+  --surface-strong: #0b1120;
   --border: #334155;
   --text-main: #f8fafc;
   --text-muted: #94a3b8;
-  --success: #10b981;
-  --warning: #f59e0b;
-  --danger: #ef4444;
+  --success-strong: #34d399;
+  --warning-strong: #fbbf24;
+  --danger-strong: #f87171;
   --info: #38bdf8;
-  --radius: 10px;
+  --btn-secondary-bg: #334155;
+  --btn-secondary-hover: #475569;
+  --table-row-hover: rgba(30, 41, 59, 0.5);
+  --shadow: none;
 }
 
 * {
@@ -40,7 +72,7 @@ body {
 /* Sidebar */
 .sidebar {
   width: 260px;
-  background-color: #0b1120;
+  background-color: var(--surface-strong);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -66,7 +98,7 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .logo-text {
@@ -78,7 +110,7 @@ body {
   font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.3px;
-  color: #fff;
+  color: var(--text-main);
 }
 
 .logo-sub {
@@ -111,7 +143,12 @@ body {
 }
 
 .nav-item:hover {
-  background: rgba(144, 42, 74, 0.15);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+
+:root[data-theme="dark"] .nav-item:hover {
+  background: rgba(144, 42, 74, 0.35);
   color: #fff;
 }
 
@@ -141,7 +178,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  background: rgba(30, 41, 59, 0.6);
+  background: var(--bg-card-hover);
   border-radius: 8px;
   border: 1px solid var(--border);
 }
@@ -180,15 +217,18 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
 }
 
 .app-header {
   padding: 20px 32px;
-  background: #0f172a;
+  background: var(--surface-strong);
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .header-left h1 {
@@ -212,9 +252,20 @@ body {
   min-width: 0;
 }
 
-.app-header {
-  gap: 16px;
-  flex-wrap: wrap;
+.theme-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.theme-toggle:hover {
+  border-color: var(--primary);
+  color: var(--on-primary-container);
 }
 
 .badge-portal {
@@ -264,6 +315,7 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
+  box-shadow: var(--shadow);
   transition: transform 0.2s ease, border-color 0.2s ease;
 }
 
@@ -274,18 +326,21 @@ body {
 
 .kpi-icon {
   font-size: 28px;
-  background: rgba(144, 42, 74, 0.15);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
   width: 48px;
   height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 10px;
+  flex-shrink: 0;
 }
 
 .kpi-content {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .kpi-label {
@@ -314,6 +369,7 @@ body {
   border-radius: var(--radius);
   padding: 24px;
   margin-bottom: 20px;
+  box-shadow: var(--shadow);
 }
 
 /* Banner */
@@ -321,8 +377,14 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: linear-gradient(135deg, rgba(144, 42, 74, 0.2) 0%, rgba(30, 41, 59, 1) 100%);
+  gap: 12px;
+  flex-wrap: wrap;
+  background: linear-gradient(135deg, var(--primary-container) 0%, var(--bg-card) 100%);
   border: 1px solid rgba(144, 42, 74, 0.4);
+}
+
+:root[data-theme="dark"] .card-action-banner {
+  background: linear-gradient(135deg, rgba(144, 42, 74, 0.2) 0%, rgba(30, 41, 59, 1) 100%);
 }
 
 .banner-text h3 {
@@ -339,6 +401,7 @@ body {
 .banner-buttons {
   display: flex;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 /* Buttons */
@@ -366,12 +429,14 @@ body {
 }
 
 .btn-secondary {
-  background: #334155;
-  color: #fff;
+  background: var(--btn-secondary-bg);
+  color: var(--text-main);
+  border: 1px solid var(--border);
 }
 
 .btn-secondary:hover {
-  background: #475569;
+  background: var(--btn-secondary-hover);
+  border-color: var(--primary);
 }
 
 .btn-success {
@@ -426,7 +491,7 @@ body {
   flex-wrap: wrap;
 }
 
-/* Terminal Console */
+/* Terminal Console — intentionally dark in both themes, like a code editor. */
 .terminal-card {
   padding: 0;
   overflow: hidden;
@@ -461,7 +526,7 @@ body {
 .terminal-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: #94a3b8;
   font-family: 'JetBrains Mono', monospace;
 }
 
@@ -469,7 +534,7 @@ body {
   margin-left: auto;
   background: transparent;
   border: 1px solid #334155;
-  color: var(--text-muted);
+  color: #94a3b8;
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
@@ -502,6 +567,10 @@ body {
 .log-line.error { color: #f87171; }
 
 /* Table */
+.table-scroll {
+  overflow-x: auto;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -511,10 +580,11 @@ body {
 
 .data-table th {
   padding: 12px 16px;
-  background: #0b1120;
+  background: var(--surface-strong);
   color: var(--text-muted);
   font-weight: 600;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
 
 .data-table td {
@@ -524,7 +594,7 @@ body {
 }
 
 .data-table tr:hover td {
-  background: rgba(30, 41, 59, 0.5);
+  background: var(--table-row-hover);
 }
 
 .empty-state {
@@ -538,19 +608,20 @@ body {
   border-radius: 6px;
   font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .status-badge.new {
-  background: rgba(16, 185, 129, 0.2);
-  color: #34d399;
+  background: rgba(16, 185, 129, 0.14);
+  color: var(--success-strong);
 }
 
 .status-badge.mod {
-  background: rgba(245, 158, 11, 0.2);
-  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--warning-strong);
 }
 
-/* Forms */
+/* Forms *//* Forms */
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -575,11 +646,11 @@ body {
 }
 
 .form-input {
-  background: #0b1120;
+  background: var(--surface-strong);
   border: 1px solid var(--border);
   padding: 10px 14px;
   border-radius: 8px;
-  color: #fff;
+  color: var(--text-main);
   font-size: 13px;
   outline: none;
   transition: border-color 0.2s ease;
@@ -590,19 +661,24 @@ body {
   box-shadow: 0 0 0 2px rgba(144, 42, 74, 0.2);
 }
 
+select.form-input option {
+  background: var(--surface-strong);
+  color: var(--text-main);
+}
+
 .btn-sm {
   padding: 6px 12px;
   font-size: 12px;
 }
 
 .badge-active {
-  background: rgba(16, 185, 129, 0.2);
-  color: #34d399;
+  background: rgba(16, 185, 129, 0.14);
+  color: var(--success-strong);
 }
 
 .badge-modified {
-  background: rgba(245, 158, 11, 0.2);
-  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--warning-strong);
 }
 
 .filter-tab.active {
@@ -612,8 +688,47 @@ body {
 
 /* Keyboard focus visibility: every interactive control shows a visible focus ring */
 button:focus-visible,
-select:focus-visible {
-  outline: 2px solid var(--primary);
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid #902A4A;
   outline-offset: 2px;
 }
 
+/* Responsive: narrow windows stack controls and tighten padding */
+@media (max-width: 1100px) {
+  .sidebar {
+    width: 212px;
+  }
+}
+
+@media (max-width: 760px) {
+  .views-wrapper {
+    padding: 16px;
+  }
+
+  .app-header {
+    padding: 16px;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-group.full-width {
+    grid-column: span 1;
+  }
+
+  .control-actions {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-view {
+    animation: none;
+  }
+
+  .kpi-card:hover {
+    transform: none;
+  }
+}

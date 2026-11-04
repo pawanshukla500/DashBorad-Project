@@ -1,6 +1,8 @@
 import { getPool } from '../db/index.js';
 import { clearRateCardCache } from './rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import { sendPaymentNotification } from './rateCardNotifications.js';
+import { refreshOrderSettlementTotals } from './orderSettlementTotals.js';
 import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
 import { RATE_TABLES, validateRateObservations } from './rateCardObservationPlan.js';
 import { assertRateObservationCoverage, loadRateCardCoverage } from './rateCardCoverage.js';
@@ -86,6 +88,33 @@ export async function publishRateCardObservations(observations, options = {}) {
     });
     await client.query('COMMIT');
     clearRateCardCache();
+    // Post-publish side effects run outside the publish transaction: email
+    // failures or settlement refresh issues must never roll back committed rates.
+    const sidePool = options.pool || getPool();
+    const anomalyCount = plan.summary?.anomalies || 0;
+    const summaryText = [
+      `Rate version ${versionName} was published by ${publishedBy}.`,
+      `Marketplace: ${marketplace} · seller account: ${sellerAccount} · effective: ${effectiveDate}`,
+      `Added: ${plan.summary?.added || 0} · modified: ${plan.summary?.modified || 0} · removed: ${plan.summary?.removed || 0} · unchanged: ${plan.summary?.unchanged || 0}`,
+      anomalyCount ? `Flagged for review (>=50% move or >=5pp commission change): ${anomalyCount}` : 'No flagged anomalies.',
+    ].join('\n');
+    try {
+      await sendPaymentNotification(client, {
+        eventType: 'version_published',
+        subject: `[Payments] ${marketplace}/${sellerAccount}: rate version ${versionName} published` +
+          (anomalyCount ? ` — ${anomalyCount} flagged change${anomalyCount === 1 ? '' : 's'}` : ''),
+        text: summaryText,
+        html: `<div style="font-family:Arial,sans-serif"><h2>Rate version published</h2><pre>${summaryText}</pre></div>`,
+        payload: { versionName, versionId: version.rows[0]?.id || null, marketplace, sellerAccount, effectiveDate, jobId, summary: plan.summary },
+      });
+    } catch (notifyError) {
+      console.warn('[rate-card] Publish notification failed:', notifyError.message);
+    }
+    try {
+      await refreshOrderSettlementTotals(sidePool);
+    } catch (recalcError) {
+      console.warn('[rate-card] Settlement totals refresh after publish failed:', recalcError.message);
+    }
     return { published: true, versionId: version.rows[0]?.id, versionName,
       diffCount: plan.diffCount, summary: plan.summary };
   } catch (err) {

@@ -59,6 +59,8 @@ export function stageRateReviewIfCurrent(state, request, cards, sellerAccount, r
     payload: request.payload,
     sellerAccount,
     fingerprints: result?.fingerprints,
+    changesCount: result?.changesCount || 0,
+    anomaliesCount: result?.anomaliesCount || 0,
     publishable: result?.publishable
   };
   return true;

@@ -149,6 +149,16 @@ describe('Portal observations and reviewed publication', () => {
     expect(writes.some(([sql])=>/rc_fixed_fee|rc_reverse_shipping|rc_pick_pack/.test(sql))).toBe(false);
     expect(writes.find(([sql])=>sql.startsWith('UPDATE'))[1]).toEqual(['2026-10-29',db.tables.rc_commission[0].id]);
   });
+  it('notifies the audited channel and refreshes settlement totals after publish', async () => {
+    const db = database(); db.tables.rc_commission[0].rate = 0.25;
+    const review = await compare(db);
+    const result = await publishRateCardObservations(cards(), {pool:db.pool,publishedBy:'fixture',reviewFingerprint:review.fingerprint});
+    expect(result.published).toBe(true);
+    const statements = db.client.query.mock.calls.map(([sql]) => sql);
+    expect(statements.some(sql => sql.includes('INSERT INTO rate_card_notification_log'))).toBe(true);
+    expect(statements.some(sql => sql.includes('order_settlement_totals_next'))).toBe(true);
+    expect(statements.some(sql => sql.includes('order_settlement_totals '))).toBe(true);
+  });
   it('updates a changed same-day row by id without invalid date closure or duplicate insert', async () => {
     const db=database(); db.tables.rc_commission[0].start_date=date; db.tables.rc_commission[0].rate=0.25;
     const review=await compare(db);

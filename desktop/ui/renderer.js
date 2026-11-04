@@ -47,6 +47,7 @@ if (!window.ratecardAPI) {
     getUpdateStatus: () => Promise.resolve({ success: true, status: { status: 'unsupported' } }),
     checkForUpdates: () => Promise.resolve({ success: false, error: 'Updates are only available in the installed desktop app.' }),
     installUpdate: () => Promise.resolve({ success: false, error: 'Updates are only available in the installed desktop app.' }),
+    downloadUpdate: () => Promise.resolve({ success: false, error: 'Updates are only available in the installed desktop app.' }),
     onUpdateStatus: () => () => {},
     // Browser Monitor methods in standalone Chrome mode
     getBrowserMonitorState: () => fetch(`${API_BASE}/api/browser/state`, {
@@ -118,51 +119,65 @@ function updateUserAuthUI(session) {
 
 // ── Auto-Update Banner (installed desktop app) ────────────────────────────────
 let updateBannerHideTimer = null;
-let pendingUpdateDownloaded = ''; // version whose update is downloaded and awaiting restart
+let pendingUpdateDownloaded = ''; // raw version whose update is downloaded and awaiting restart
+let latestAvailableVersion = ''; // raw version from the last update-available event
+let deferredUpdateVersion = ''; // raw version the user postponed with Later (re-prompt on new version only)
 
 function applyUpdateBanner(status) {
   const banner = document.getElementById('update-banner');
   const text = document.getElementById('update-banner-text');
   const restartBtn = document.getElementById('btn-update-restart');
-  if (!banner || !text || !restartBtn) return;
+  const downloadBtn = document.getElementById('btn-update-download');
+  const laterBtn = document.getElementById('btn-update-later');
+  if (!banner || !text || !restartBtn || !downloadBtn || !laterBtn) return;
 
   if (updateBannerHideTimer) {
     clearTimeout(updateBannerHideTimer);
     updateBannerHideTimer = null;
   }
 
-  const show = (message, showRestart) => {
+  const show = (message, actions) => {
     text.textContent = message;
-    restartBtn.style.display = showRestart ? '' : 'none';
+    restartBtn.style.display = actions?.restart ? '' : 'none';
+    downloadBtn.style.display = actions?.download ? '' : 'none';
+    laterBtn.style.display = actions ? '' : 'none';
     banner.style.display = 'flex';
   };
   const hide = () => {
     banner.style.display = 'none';
+    downloadBtn.style.display = 'none';
     restartBtn.style.display = 'none';
+    laterBtn.style.display = 'none';
   };
 
   const kind = status?.status;
-  const version = status?.version ? ` v${status.version}` : '';
+  const rawVersion = status?.version || '';
+  const version = rawVersion ? ` v${rawVersion}` : '';
   if (kind === 'downloaded') {
-    pendingUpdateDownloaded = version;
+    pendingUpdateDownloaded = rawVersion;
+  }
+  if (kind === 'available') latestAvailableVersion = rawVersion;
+  if (deferredUpdateVersion && deferredUpdateVersion === rawVersion && (kind === 'available' || kind === 'downloaded')) {
+    hide();
+    return;
   }
   // Once an update is downloaded, the restart prompt is sticky: the periodic
   // 6-hourly re-check cycles (checking / available / downloading / not-available)
   // must never dismiss it — the downloaded installer is ready regardless.
   if (pendingUpdateDownloaded) {
-    show(`✅ App update${pendingUpdateDownloaded} is ready to install.`, true);
+    show(`✅ App update v${pendingUpdateDownloaded} is ready to install. Restart when ready — an active scrape blocks restart.`, { restart: true });
     return;
   }
 
   if (kind === 'available') {
-    show(`⬇ New app version${version} found — downloading in the background…`, false);
+    show(`⬇ New app version${version} is available.`, { download: true });
   } else if (kind === 'downloading') {
     const percent = Number.isFinite(status?.percent) ? ` (${status.percent}%)` : '';
-    show(`⬇ Downloading app update${version}${percent}…`, false);
+    show(`⬇ Downloading app update${version}${percent}…`);
   } else if (kind === 'error') {
     // Transient network failures are expected and retried on the updater's
     // own schedule, so the banner only mentions the failure briefly.
-    show('⚠ Update check failed — will retry automatically.', false);
+    show('⚠ Update check failed — will retry automatically.');
     updateBannerHideTimer = setTimeout(hide, 30 * 1000);
   } else {
     // checking, not-available, idle, unsupported: nothing to surface.
@@ -194,7 +209,53 @@ async function initUpdateBanner() {
       console.warn('Install update failed:', err);
     }
   });
+  const downloadBtn = document.getElementById('btn-update-download');
+  downloadBtn?.addEventListener('click', async () => {
+    downloadBtn.disabled = true;
+    try {
+      const res = await window.ratecardAPI.downloadUpdate();
+      if (!res?.success) {
+        downloadBtn.disabled = false;
+        alert(res?.error || 'The update could not be downloaded.');
+      }
+    } catch (err) {
+      downloadBtn.disabled = false;
+      console.warn('Download update failed:', err);
+    }
+  });
+  const laterBtn = document.getElementById('btn-update-later');
+  laterBtn?.addEventListener('click', () => {
+    deferredUpdateVersion = pendingUpdateDownloaded || latestAvailableVersion;
+    const banner = document.getElementById('update-banner');
+    if (banner) banner.style.display = 'none';
+  });
   window.ratecardAPI.onUpdateStatus((status) => applyUpdateBanner(status));
+}
+
+// ── Light/Dark Theme (light default, persisted in app config) ────────────────
+function applyTheme(theme) {
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = normalized;
+  const btn = document.getElementById('btn-theme-toggle');
+  if (btn) btn.textContent = normalized === 'dark' ? '☀ Light' : '🌙 Dark';
+}
+
+async function initTheme() {
+  try {
+    const config = await window.ratecardAPI.getConfig();
+    applyTheme(config?.uiTheme === 'dark' ? 'dark' : 'light');
+  } catch {
+    applyTheme('light');
+  }
+  document.getElementById('btn-theme-toggle')?.addEventListener('click', async () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    try {
+      await window.ratecardAPI.saveConfig({ uiTheme: next });
+    } catch (err) {
+      console.warn('Could not persist theme:', err);
+    }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -202,6 +263,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   subscribeToEvents();
   initUpdateBanner();
+  initTheme();
   initBrowserMonitorListeners();
 
   const isAuthorized = await checkAuthSession();
@@ -336,19 +398,19 @@ function updateBrowserMonitorUI(state) {
     if (state.status === 'extracting' || state.status === 'navigating') {
       statePill.style.background = 'rgba(16, 185, 129, 0.2)';
       statePill.style.borderColor = 'var(--success)';
-      statePill.style.color = '#34d399';
+      statePill.style.color = 'var(--success-strong)';
     } else if (state.status === 'login_prompt') {
       statePill.style.background = 'rgba(245, 158, 11, 0.2)';
       statePill.style.borderColor = 'var(--warning)';
-      statePill.style.color = '#fbbf24';
+      statePill.style.color = 'var(--warning-strong)';
     } else if (state.status === 'unsupported') {
       statePill.style.background = 'rgba(239, 68, 68, 0.2)';
       statePill.style.borderColor = 'var(--danger)';
-      statePill.style.color = '#f87171';
+      statePill.style.color = 'var(--danger-strong)';
     } else {
-      statePill.style.background = 'rgba(144, 42, 74, 0.25)';
+      statePill.style.background = 'var(--primary-container)';
       statePill.style.borderColor = 'var(--primary)';
-      statePill.style.color = '#fff';
+      statePill.style.color = 'var(--on-primary-container)';
     }
   }
   if (statusDot) {
@@ -508,11 +570,11 @@ async function loadInitialState() {
     }
     if (apiCheck.success) {
       dbStatusEl.innerText = 'Connected';
-      dbStatusEl.style.color = '#10b981';
+      dbStatusEl.style.color = 'var(--success-strong)';
       if (dbSubEl) dbSubEl.innerText = apiCheck.db || 'ReconCentral Cloud API';
     } else {
       dbStatusEl.innerText = 'Offline';
-      dbStatusEl.style.color = '#ef4444';
+      dbStatusEl.style.color = 'var(--danger-strong)';
       if (dbSubEl) dbSubEl.innerText = 'API Offline';
     }
 
@@ -546,16 +608,16 @@ async function loadSessionStatusUI() {
       if (!el || !mp) continue;
       if (mp.profileState === 'signed_out') {
         el.innerText = 'Signed Out — Sign In';
-        el.style.color = '#f59e0b';
+        el.style.color = 'var(--warning-strong)';
       } else if (mp.hasCookies) {
         el.innerText = `Session Saved (${mp.cookieCount ?? '?'} cookies)`;
-        el.style.color = '#10b981';
+        el.style.color = 'var(--success-strong)';
       } else if (mp.profileState === 'authenticated') {
         el.innerText = 'Saved Browser Profile — Recheck';
-        el.style.color = '#f59e0b';
+        el.style.color = 'var(--warning-strong)';
       } else {
         el.innerText = channelId === 'flipkart_shopsy' ? 'No Seller Hub Session — Sign in' : 'No Session — 2FA Login';
-        el.style.color = '#f59e0b';
+        el.style.color = 'var(--warning-strong)';
       }
     }
 
@@ -566,20 +628,20 @@ async function loadSessionStatusUI() {
     if (statusEl && subEl) {
       if (current?.profileState === 'signed_out') {
         statusEl.innerText = 'Signed Out';
-        statusEl.style.color = '#f59e0b';
+        statusEl.style.color = 'var(--warning-strong)';
         subEl.innerText = `Seller Hub confirmed sign-out for ${current.name || channel}; sign in again to continue`;
       } else if (current?.hasCookies) {
         statusEl.innerText = 'Session Saved';
-        statusEl.style.color = '#10b981';
+        statusEl.style.color = 'var(--success-strong)';
         const savedAt = current.lastSavedAt ? new Date(current.lastSavedAt).toLocaleString() : '';
         subEl.innerText = `${current.cookieCount ?? 0} cookies for ${current.name || channel}${savedAt ? ' · saved ' + savedAt : ''}`;
       } else if (current?.profileState === 'authenticated') {
         statusEl.innerText = 'Saved Browser Profile';
-        statusEl.style.color = '#f59e0b';
+        statusEl.style.color = 'var(--warning-strong)';
         subEl.innerText = `Last confirmed signed in for ${current.name || channel}; open Seller Hub to verify the session is still active`;
       } else {
         statusEl.innerText = 'No Session';
-        statusEl.style.color = '#f59e0b';
+        statusEl.style.color = 'var(--warning-strong)';
         const signInAction = channel === 'flipkart_shopsy' ? 'Open Seller Hub Sign-in' : 'Run 2FA Login';
         subEl.innerText = `${signInAction} to store marketplace cookies for ${current?.name || channel}`;
       }
@@ -589,12 +651,12 @@ async function loadSessionStatusUI() {
       const el = document.getElementById(elementId);
       if (el) {
         el.innerText = 'Status Unknown';
-        el.style.color = '#94a3b8';
+        el.style.color = 'var(--text-muted)';
       }
     }
     if (statusEl) {
       statusEl.innerText = 'Status Unknown';
-      statusEl.style.color = '#94a3b8';
+      statusEl.style.color = 'var(--text-muted)';
     }
     if (subEl) subEl.innerText = 'Could not read the local session vault';
   }
@@ -682,7 +744,7 @@ async function loadCatalogData() {
   try {
     const res = await window.ratecardAPI.getBrandFsnCatalog();
     if (!res || !res.success) {
-      setBrandsKpi('API Error', res?.error || 'Failed to reach ReconCentral catalog API', '#ef4444');
+      setBrandsKpi('API Error', res?.error || 'Failed to reach ReconCentral catalog API', 'var(--danger-strong)');
       appendTerminalLine(`! Catalog fetch failed: ${res?.error || 'Unknown error'}`);
       return;
     }
@@ -691,17 +753,17 @@ async function loadCatalogData() {
       renderCatalogTable(currentCatalog);
       const brands = [...new Set(currentCatalog.map(item => item.brand).filter(Boolean))];
       if (brands.length > 0) {
-        setBrandsKpi(`${brands.length} Brand${brands.length === 1 ? '' : 's'} Ready`, brands.join(', '), '#10b981');
+        setBrandsKpi(`${brands.length} Brand${brands.length === 1 ? '' : 's'} Ready`, brands.join(', '), 'var(--success-strong)');
       } else {
-        setBrandsKpi('Catalog Ready', `${currentCatalog.length} vertical samples`, '#10b981');
+        setBrandsKpi('Catalog Ready', `${currentCatalog.length} vertical samples`, 'var(--success-strong)');
       }
       appendTerminalLine(`✓ Loaded ${currentCatalog.length} brand catalog items from ReconCentral API.`);
     } else {
-      setBrandsKpi('0 Brands Configured', 'No brand entries found in API catalog', '#94a3b8');
+      setBrandsKpi('0 Brands Configured', 'No brand entries found in API catalog', 'var(--text-muted)');
       appendTerminalLine(`! No brand catalog items returned by API.`);
     }
   } catch (err) {
-    setBrandsKpi('API Offline', `Catalog load error: ${err.message}`, '#ef4444');
+    setBrandsKpi('API Offline', `Catalog load error: ${err.message}`, 'var(--danger-strong)');
   }
 }
 
@@ -730,9 +792,9 @@ function renderCatalogTable(catalog) {
       </td>
       <td style="font-weight: 500;">${escapeHtml(item.category)}</td>
       <td><strong>${escapeHtml(item.brand)}</strong></td>
-      <td style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">${escapeHtml(item.sample_fsn || '—')}</td>
-      <td style="font-family: 'JetBrains Mono', monospace; color: #94a3b8;">${escapeHtml(item.sample_sku || '—')}</td>
-      <td><span style="font-weight: 600; color: #10b981;">${escapeHtml(Number(item.order_count || 0).toLocaleString())}</span></td>
+      <td style="font-family: 'JetBrains Mono', monospace; color: var(--info);">${escapeHtml(item.sample_fsn || '—')}</td>
+      <td style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted);">${escapeHtml(item.sample_sku || '—')}</td>
+      <td><span style="font-weight: 600; color: var(--success-strong);">${escapeHtml(Number(item.order_count || 0).toLocaleString())}</span></td>
     </tr>
   `).join('');
 }
@@ -844,7 +906,7 @@ async function loadRateCardPreview() {
         }
         if (anomalyAlert) {
           anomalyAlert.style.display = 'flex';
-          if (anomalyText) anomalyText.innerText = `${anomaliesCount} rate ${anomaliesCount === 1 ? 'anomaly' : 'anomalies'} detected`;
+          if (anomalyText) anomalyText.innerText = anomalyGuidance(currentChanges, anomaliesCount);
         }
         if (tabFilterAnomalies) {
           tabFilterAnomalies.style.display = 'inline-block';
@@ -911,6 +973,19 @@ async function loadRateCardPreview() {
     }
     setTableMessage(tbody, 8, `Error loading rates: ${err.message}`, true);
   }
+}
+
+// Plain-language impact guidance for flagged rate changes.
+function anomalyGuidance(changes, anomaliesCount) {
+  const added = changes.filter(c => c.changeType === 'ADDED').length;
+  const removed = changes.filter(c => c.changeType === 'REMOVED').length;
+  const modified = changes.filter(c => c.changeType === 'MODIFIED').length;
+  const parts = [];
+  if (added) parts.push(`${added} new fee${added === 1 ? '' : 's'} (adds cost where none existed)`);
+  if (modified) parts.push(`${modified} changed rate${modified === 1 ? '' : 's'} (review margin impact before publishing)`);
+  if (removed) parts.push(`${removed} removed fee${removed === 1 ? '' : 's'} (cost eliminated)`);
+  return `${anomaliesCount} flagged rate change${anomaliesCount === 1 ? '' : 's'} (>=50% move or >=5pp commission): ` +
+    (parts.length ? parts.join('; ') + '. Approve only after reviewing impact.' : 'review before publishing.');
 }
 
 function describeRateRecord(table, row) {
@@ -1100,8 +1175,8 @@ function renderDiffTable() {
       <td>${escapeHtml(r.category)}</td>
       <td>${escapeHtml(r.brand)}</td>
       <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${escapeHtml(r.slab)}</td>
-      <td style="color: #94a3b8;">${escapeHtml(r.oldRate)}</td>
-      <td style="color: #38bdf8; font-weight: 600;">${escapeHtml(r.newRate)}</td>
+      <td style="color: var(--text-muted);">${escapeHtml(r.oldRate)}</td>
+      <td style="color: var(--info); font-weight: 600;">${escapeHtml(r.newRate)}</td>
       <td>
         ${r.anomaly
           ? `<span class="status-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px;">${escapeHtml(r.status)}</span>`
@@ -1454,15 +1529,15 @@ function setupEventListeners() {
     const dbUrl = document.getElementById('cfg-db-url').value;
     const resultSpan = document.getElementById('db-test-result');
     resultSpan.innerText = 'Testing connection...';
-    resultSpan.style.color = '#94a3b8';
+    resultSpan.style.color = 'var(--text-muted)';
 
     const res = await window.ratecardAPI.testDbConnection(dbUrl);
     if (res.success) {
       resultSpan.innerText = `✓ Connected to database: ${res.db}`;
-      resultSpan.style.color = '#10b981';
+      resultSpan.style.color = 'var(--success-strong)';
     } else {
       resultSpan.innerText = `✗ Connection failed: ${res.error}`;
-      resultSpan.style.color = '#ef4444';
+      resultSpan.style.color = 'var(--danger-strong)';
     }
   });
 
@@ -1518,12 +1593,12 @@ function setupEventListeners() {
       const engineStatusEl = document.getElementById('engine-status');
       if (sessionStatusEl) {
         sessionStatusEl.innerText = 'Signed Out';
-        sessionStatusEl.style.color = '#94a3b8';
+        sessionStatusEl.style.color = 'var(--text-muted)';
       }
       if (sessionSubEl) sessionSubEl.innerText = 'Sign in again to check marketplace sessions';
       if (dbStatusEl) {
         dbStatusEl.innerText = 'Signed Out';
-        dbStatusEl.style.color = '#94a3b8';
+        dbStatusEl.style.color = 'var(--text-muted)';
       }
       if (engineStatusEl) engineStatusEl.innerText = 'Idle';
     }
@@ -1533,20 +1608,20 @@ function setupEventListeners() {
     const dbUrl = authDbInput?.value;
     if (authDbPingStatus) {
       authDbPingStatus.innerText = 'Pinging DB...';
-      authDbPingStatus.style.color = '#94a3b8';
+      authDbPingStatus.style.color = 'var(--text-muted)';
     }
     try {
       const res = await window.ratecardAPI.authVerifyDb(dbUrl);
       if (res && res.success) {
         authDbPingStatus.innerText = `✓ Connected (${res.latencyMs}ms, ${res.dbName})`;
-        authDbPingStatus.style.color = '#10b981';
+        authDbPingStatus.style.color = 'var(--success-strong)';
       } else {
         authDbPingStatus.innerText = `✗ Failed: ${res?.error || 'Unknown'}`;
-        authDbPingStatus.style.color = '#ef4444';
+        authDbPingStatus.style.color = 'var(--danger-strong)';
       }
     } catch (err) {
       authDbPingStatus.innerText = `✗ Error: ${err.message}`;
-      authDbPingStatus.style.color = '#ef4444';
+      authDbPingStatus.style.color = 'var(--danger-strong)';
     }
   });
 

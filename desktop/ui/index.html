@@ -72,8 +72,12 @@
     <main class="content-area">
       <!-- Auto-Update Banner (shown by the updater; hidden by default) -->
       <div id="update-banner" style="display: none; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: rgba(144, 42, 74, 0.22); border: 1px solid var(--primary); padding: 10px 18px; border-radius: var(--radius); margin-bottom: 14px;">
-        <span id="update-banner-text" style="color: #fbe9f0; font-size: 13px; font-weight: 500;"></span>
-        <button id="btn-update-restart" class="btn btn-sm" style="display: none; background: var(--primary); color: #fff;">Restart to Update</button>
+        <span id="update-banner-text" style="color: var(--text-main); font-size: 13px; font-weight: 500;"></span>
+        <span style="display: flex; gap: 8px;">
+          <button id="btn-update-download" class="btn btn-sm" style="display: none; background: var(--primary); color: #fff;">Update Now</button>
+          <button id="btn-update-restart" class="btn btn-sm" style="display: none; background: var(--primary); color: #fff;">Restart to Update</button>
+          <button id="btn-update-later" class="btn btn-sm" style="display: none; background: transparent; border: 1px solid var(--primary); color: inherit;">Later</button>
+        </span>
       </div>
       <!-- Top Header -->
       <header class="app-header">
@@ -84,10 +88,10 @@
         <div class="header-right">
           <div class="user-auth-badge" id="user-auth-badge" style="display: none; align-items: center; gap: 8px; background: rgba(144, 42, 74, 0.2); border: 1px solid var(--primary); padding: 5px 12px; border-radius: 20px; font-size: 12px;">
             <span id="user-badge-role" class="badge" style="background: var(--primary); color: #fff; font-size: 11px; padding: 2px 6px;">Admin</span>
-            <span id="user-badge-name" style="font-weight: 600; color: #fff;">Pawan Shukla</span>
-            <button id="btn-header-logout" title="Sign out / Deauthorize" style="background: transparent; border: none; color: #f87171; cursor: pointer; font-size: 12px; padding: 0 4px; margin-left: 4px;">🚪 Sign Out</button>
+            <span id="user-badge-name" style="font-weight: 600; color: var(--text-main);">Pawan Shukla</span>
+            <button id="btn-header-logout" title="Sign out / Deauthorize" style="background: transparent; border: none; color: var(--danger-strong); cursor: pointer; font-size: 12px; padding: 0 4px; margin-left: 4px;">🚪 Sign Out</button>
           </div>
-          <select id="header-select-marketplace" class="form-input" style="width: auto; font-size: 12px; padding: 4px 10px; background: rgba(144, 42, 74, 0.25); border: 1px solid var(--primary); color: #fff; border-radius: 8px; cursor: pointer;">
+          <select id="header-select-marketplace" class="form-input" style="width: auto; font-size: 12px; padding: 4px 10px; background: var(--primary-container); border: 1px solid var(--primary); color: var(--on-primary-container); border-radius: 8px; cursor: pointer;">
             <option value="flipkart_shopsy" selected>Flipkart & Shopsy</option>
             <option value="myntra_vb">Myntra (VB - 10708)</option>
             <option value="myntra_ej">Myntra (EJ - 45833)</option>
@@ -97,6 +101,7 @@
             <option value="cocoblu">Cocoblu Retails (2FA Only)</option>
             <option value="shopify">Shopify Admin Center (2FA Only)</option>
           </select>
+          <button class="theme-toggle" id="btn-theme-toggle" title="Switch between light and dark theme">🌙 Dark</button>
           <button class="btn btn-sm btn-secondary" id="btn-quick-excel">📑 Export Excel</button>
           <button class="btn btn-sm btn-secondary" id="btn-quick-open-excel">📂 Open Excel</button>
           <span class="badge badge-portal" id="header-badge-channel">Flipkart & Shopsy</span>
@@ -111,8 +116,8 @@
           <!-- Shopsy Notice Banner -->
           <div class="notice-banner" style="background: rgba(144, 42, 74, 0.15); border: 1px solid var(--primary); padding: 14px 18px; border-radius: var(--radius); margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
             <div>
-              <strong style="color: #fbe9f0; font-size: 14px;">🛍️ Shopsy Rate Card Policy:</strong>
-              <span style="color: #cbd5e1; font-size: 13px; margin-left: 8px;">Flat <strong>0% Commission</strong> across all brands | Tiered Closing Fee (<strong>₹0</strong> for ≤ ₹1,500, <strong>₹10</strong> for &gt; ₹1,500) | Full Return Shipping Matrix (0-0.5kg & 0.5-1kg)</span>
+              <strong style="color: var(--text-main); font-size: 14px;">🛍️ Shopsy Rate Card Policy:</strong>
+              <span style="color: var(--text-muted); font-size: 13px; margin-left: 8px;">Flat <strong>0% Commission</strong> across all brands | Tiered Closing Fee (<strong>₹0</strong> for ≤ ₹1,500, <strong>₹10</strong> for &gt; ₹1,500) | Full Return Shipping Matrix (0-0.5kg & 0.5-1kg)</span>
             </div>
             <span class="badge" style="background: var(--primary); color: #fff;">Verified Live</span>
           </div>
@@ -159,50 +164,50 @@
                 <h3 style="font-size: 15px; font-weight: 600;">Integrated Marketplace Channels</h3>
                 <p style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Dedicated cookie vaults and automation profiles per channel (Isolated session stores).</p>
               </div>
-              <span class="badge" style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981;">4 Channels Configured</span>
+              <span class="badge" style="background: rgba(16, 185, 129, 0.12); border: 1px solid var(--success); color: var(--success-strong);">4 Channels Configured</span>
             </div>
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px;">
-              <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+              <div class="marketplace-channel-card" style="background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                   <span style="font-weight: 600; font-size: 13px;">Flipkart & Shopsy</span>
                   <span class="badge badge-portal" style="font-size: 10px;">Primary</span>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted);">Seller Hub & Rate Card Center</div>
                 <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
-                  <span id="status-ch-flipkart" style="font-size: 11px; color: #94a3b8;">Not Checked</span>
+                  <span id="status-ch-flipkart" style="font-size: 11px; color: var(--text-muted);">Not Checked</span>
                   <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="flipkart_shopsy" style="padding: 2px 8px; font-size: 11px;">Seller Hub Sign-in</button>
                 </div>
               </div>
-              <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+              <div class="marketplace-channel-card" style="background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                   <span style="font-weight: 600; font-size: 13px;">Myntra (VB)</span>
                   <span class="badge" style="background: rgba(144, 42, 74, 0.3); border: 1px solid var(--primary); color: #fff; font-size: 10px;">ID: 10708</span>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted);">Partners Portal (VB Exports)</div>
                 <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
-                  <span id="status-ch-myntra-vb" style="font-size: 11px; color: #94a3b8;">Not Checked</span>
+                  <span id="status-ch-myntra-vb" style="font-size: 11px; color: var(--text-muted);">Not Checked</span>
                   <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="myntra_vb" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
                 </div>
               </div>
-              <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+              <div class="marketplace-channel-card" style="background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                   <span style="font-weight: 600; font-size: 13px;">Myntra (EJ)</span>
                   <span class="badge" style="background: rgba(144, 42, 74, 0.3); border: 1px solid var(--primary); color: #fff; font-size: 10px;">ID: 45833</span>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted);">Partners Portal (Ethnic Junction)</div>
                 <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
-                  <span id="status-ch-myntra-ej" style="font-size: 11px; color: #94a3b8;">Not Checked</span>
+                  <span id="status-ch-myntra-ej" style="font-size: 11px; color: var(--text-muted);">Not Checked</span>
                   <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="myntra_ej" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
                 </div>
               </div>
-              <div class="marketplace-channel-card" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+              <div class="marketplace-channel-card" style="background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                   <span style="font-weight: 600; font-size: 13px;">Meesho</span>
                   <span class="badge badge-account" style="font-size: 10px;">Supplier</span>
                 </div>
                 <div style="font-size: 11px; color: var(--text-muted);">Supplier Panel Automation</div>
                 <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
-                  <span id="status-ch-meesho" style="font-size: 11px; color: #94a3b8;">Not Checked</span>
+                  <span id="status-ch-meesho" style="font-size: 11px; color: var(--text-muted);">Not Checked</span>
                   <button class="btn btn-sm btn-secondary btn-ch-login" data-channel="meesho" style="padding: 2px 8px; font-size: 11px;">2FA Login</button>
                 </div>
               </div>
@@ -360,12 +365,12 @@
             </div>
           </div>
 
-          <div id="diff-anomaly-alert" style="display: none; background: rgba(220, 38, 38, 0.12); border: 1px solid #ef4444; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; color: #fecaca; font-size: 13px; align-items: center; justify-content: space-between;">
+          <div id="diff-anomaly-alert" style="display: none; background: rgba(220, 38, 38, 0.12); border: 1px solid #ef4444; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; color: var(--danger-strong); font-size: 13px; align-items: center; justify-content: space-between;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 16px;">⚠️</span>
               <span><strong>Anomaly Alert:</strong> <span id="diff-anomaly-text">0 rate anomalies detected</span> with unexpected shifts. Please verify before committing.</span>
             </div>
-            <button class="btn btn-sm btn-secondary filter-tab" id="btn-filter-anomalies" data-filter="anomalies" style="background: rgba(220, 38, 38, 0.25); color: #fff; border: 1px solid #ef4444;">View Anomalies Only</button>
+            <button class="btn btn-sm btn-secondary filter-tab" id="btn-filter-anomalies" data-filter="anomalies" style="background: #dc2626; color: #fff; border: 1px solid #dc2626;">View Anomalies Only</button>
           </div>
 
           <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;">
@@ -374,7 +379,7 @@
             <button class="btn btn-sm btn-secondary filter-tab" data-filter="fixed">Fixed Fees (Closing Fee)</button>
             <button class="btn btn-sm btn-secondary filter-tab" data-filter="collection">Collection Fees</button>
             <button class="btn btn-sm btn-secondary filter-tab" data-filter="reverse">Reverse Shipping (Return Fee)</button>
-            <button class="btn btn-sm btn-secondary filter-tab" data-filter="anomalies" id="tab-filter-anomalies" style="display: none; border-color: #f59e0b; color: #fbbf24;">⚠️ Anomalies (<span id="filter-anomaly-count">0</span>)</button>
+            <button class="btn btn-sm btn-secondary filter-tab" data-filter="anomalies" id="tab-filter-anomalies" style="display: none; border-color: var(--warning); color: var(--warning-strong);">⚠️ Anomalies (<span id="filter-anomaly-count">0</span>)</button>
           </div>
 
           <div class="card table-card">
@@ -507,7 +512,7 @@
                     <td><strong>Flipkart & Shopsy</strong></td>
                     <td>Vbexports@outlook.com</td>
                     <td style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">https://seller.flipkart.com/</td>
-                    <td><span class="badge" style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981;">Vault Active</span></td>
+                    <td><span class="badge" style="background: rgba(16, 185, 129, 0.12); border: 1px solid var(--success); color: var(--success-strong);">Vault Active</span></td>
                     <td><button class="btn btn-sm btn-secondary btn-ch-login" data-channel="flipkart_shopsy" style="padding: 2px 8px; font-size: 11px;">Seller Hub Sign-in</button></td>
                   </tr>
                   <tr>
@@ -546,7 +551,7 @@
           <div class="card" style="margin-bottom: 16px; padding: 16px 20px;">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
               <div style="display: flex; align-items: center; gap: 14px;">
-                <div class="status-indicator-box" style="padding: 6px 12px; background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px;">
+                <div class="status-indicator-box" style="padding: 6px 12px; background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: 8px;">
                   <div class="status-dot active" id="monitor-status-dot"></div>
                   <div class="status-info">
                     <span class="status-label" style="font-size: 10px;">Browser Engine</span>
@@ -556,7 +561,7 @@
                 <div>
                   <div style="display: flex; align-items: center; gap: 8px;">
                     <span class="badge" id="monitor-state-pill" style="background: rgba(144, 42, 74, 0.25); border: 1px solid var(--primary); color: #fff; font-size: 11px;">Idle</span>
-                    <span id="monitor-channel-tag" style="font-size: 12px; font-weight: 600; color: #cbd5e1;">Flipkart & Shopsy</span>
+                    <span id="monitor-channel-tag" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">Flipkart & Shopsy</span>
                   </div>
                   <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); margin-top: 4px; max-width: 450px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" id="monitor-current-url">
                     about:blank
@@ -572,7 +577,7 @@
             </div>
 
           <!-- Manual Seller Hub sign-in alert -->
-            <div id="monitor-auth-alert" style="display: none; margin-top: 14px; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--warning); padding: 10px 14px; border-radius: 8px; align-items: center; justify-content: space-between; font-size: 12px; color: #fde68a;">
+            <div id="monitor-auth-alert" style="display: none; margin-top: 14px; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--warning); padding: 10px 14px; border-radius: 8px; align-items: center; justify-content: space-between; font-size: 12px; color: var(--warning-strong);">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-size: 16px;">🔐</span>
                 <span><strong>Manual Seller Hub sign-in required:</strong> In the Chrome window opened at <code>https://seller.flipkart.com/</code>, click Flipkart’s Login button and finish sign-in. The worker saves the persistent profile after it verifies the dashboard and reuses it until Seller Hub logs out.</span>
@@ -617,31 +622,31 @@
 
   <!-- Firebase Login & PC Authorization Modal -->
   <div id="auth-modal" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.95); z-index: 9999; backdrop-filter: blur(8px); align-items: center; justify-content: center;">
-    <div class="modal-card" style="background: #1e293b; border: 1px solid rgba(144, 42, 74, 0.4); border-radius: 16px; width: 480px; max-width: 90vw; padding: 32px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);">
+    <div class="modal-card" style="background: var(--bg-card); border: 1px solid rgba(144, 42, 74, 0.4); border-radius: 16px; width: 480px; max-width: 90vw; padding: 32px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
       <div style="text-align: center; margin-bottom: 24px;">
         <img src="icon.png" alt="ReconCentral" style="width: 56px; height: 56px; margin: 0 auto 12px; display: block; border-radius: 12px; box-shadow: 0 4px 12px rgba(144, 42, 74, 0.4); background: rgba(144, 42, 74, 0.1); padding: 4px; border: 1px solid rgba(144, 42, 74, 0.4);">
-        <h2 style="font-size: 20px; font-weight: 700; color: #fff;">ReconCentral Desktop Authorization</h2>
-        <p style="font-size: 13px; color: #94a3b8; margin-top: 6px;">Sign in with your Firebase credentials to authorize this PC for database access & scraper control.</p>
+        <h2 style="font-size: 20px; font-weight: 700; color: var(--text-main);">ReconCentral Desktop Authorization</h2>
+        <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px;">Sign in with your Firebase credentials to authorize this PC for database access & scraper control.</p>
       </div>
 
-      <div id="auth-error-banner" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; color: #fca5a5;"></div>
+      <div id="auth-error-banner" style="display: none; background: rgba(239, 68, 68, 0.12); border: 1px solid var(--danger); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; color: var(--danger-strong);"></div>
 
       <form id="form-auth-login">
         <div class="form-group" style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Firebase Email</label>
+          <label style="display: block; font-size: 12px; font-weight: 600; color: var(--text-main); margin-bottom: 6px;">Firebase Email</label>
           <input type="email" id="auth-input-email" class="form-input" placeholder="returnorders@vbexports.co.in" required autocomplete="email" style="width: 100%; box-sizing: border-box;">
         </div>
 
         <div class="form-group" style="margin-bottom: 16px;">
-          <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Firebase Password</label>
+          <label style="display: block; font-size: 12px; font-weight: 600; color: var(--text-main); margin-bottom: 6px;">Firebase Password</label>
           <input type="password" id="auth-input-password" class="form-input" placeholder="••••••••••••" required autocomplete="current-password" style="width: 100%; box-sizing: border-box;">
         </div>
 
-        <details style="margin-bottom: 20px; font-size: 12px; color: #94a3b8;">
-          <summary style="cursor: pointer; color: #38bdf8; font-weight: 500;">⚙️ Advanced Connection Settings</summary>
-          <div style="margin-top: 10px; padding: 12px; background: rgba(15, 23, 42, 0.6); border-radius: 8px; border: 1px solid #334155;">
-            <p style="font-size: 11px; color: #10b981; margin-bottom: 8px;">🔒 Database access is securely auto-provisioned over TLS upon sign-in. Manual entry is optional.</p>
-            <label style="display: block; font-size: 11px; margin-bottom: 4px; color: #94a3b8;">PostgreSQL Connection Override (Optional)</label>
+        <details style="margin-bottom: 20px; font-size: 12px; color: var(--text-muted);">
+          <summary style="cursor: pointer; color: var(--info); font-weight: 500;">⚙️ Advanced Connection Settings</summary>
+          <div style="margin-top: 10px; padding: 12px; background: var(--bg-card-hover); border-radius: 8px; border: 1px solid var(--border);">
+            <p style="font-size: 11px; color: var(--success-strong); margin-bottom: 8px;">🔒 Database access is securely auto-provisioned over TLS upon sign-in. Manual entry is optional.</p>
+            <label style="display: block; font-size: 11px; margin-bottom: 4px; color: var(--text-muted);">PostgreSQL Connection Override (Optional)</label>
             <input type="text" id="auth-input-db" class="form-input" style="width: 100%; font-size: 11px; box-sizing: border-box;" placeholder="Auto-provisioned or postgresql://user:pass@host:5433/paymentapp" autocomplete="off">
             <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px;">
               <button type="button" id="btn-auth-test-db" class="btn btn-sm btn-secondary">Test DB Ping</button>

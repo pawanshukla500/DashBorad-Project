@@ -7,6 +7,7 @@ import { meeshoSettlementUnifiedSelect } from '../services/meeshoSettlementRepor
 import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { rebuildAjioSorLedger } from '../services/sorMirror.js';
 import { reencryptMarketplaceCredentials } from '../utils/credentialCrypto.js';
+import { runRateCardDimensionalMigration } from './rateCardDimensionalMigration.js';
 
 // Every item below this version is idempotent but not free: ALTER TABLE takes
 // a table lock even when the column already exists. Record completion so a
@@ -49,6 +50,7 @@ const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimiz
 const LOOKUP_INDEXES_SCHEMA_VERSION = '2026.09.lookup-indexes-1';
 const MARKETPLACE_CREDENTIALS_SCHEMA_VERSION = '2026.10.marketplace-credentials-1';
 export const RATE_CARD_WORKER_SCHEMA_VERSION = '2026.10.ratecard-worker-jobs-1';
+// Dimensional rate-card migration version lives in ./rateCardDimensionalMigration.js.
 
 const TABLES = [`
   CREATE TABLE IF NOT EXISTS orders (
@@ -3435,6 +3437,14 @@ export async function ensureRateCardWorkerSchema(pool) {
         WHERE end_date IS NULL;
     `);
   }, { lockTimeout: '5s' });
+
+  // Dimensional columns + portal-active indexes required by the publish
+  // readiness gate (rateCardPublisher.js). Runs after the jobs-1/jobs-2
+  // migrations above; each versioned unit is independent and idempotent.
+  const mig3 = await runRateCardDimensionalMigration(pool, runVersionedMigration);
+  if (mig3 === false) {
+    throw new Error('Migration 2026.10.ratecard-worker-jobs-3 failed to apply');
+  }
 
   if (mig2 === false) {
     throw new Error('Migration 2026.10.ratecard-worker-jobs-2 failed to apply');
