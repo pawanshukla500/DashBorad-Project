@@ -14,7 +14,7 @@ The working scraper, browser sessions, and comparison architecture are preserved
   `price_scope` on `rc_pick_pack`), backfills them, and creates the three missing
   portal-active unique indexes (`rc_commission_uniq_portal_active`,
   `rc_reverse_shipping_uniq_portal_active`, `rc_pick_pack_uniq_portal_active`).
-  Also adds a `NOT VALID` CHECK enforcing the Shopsy 0%-commission policy for new writes.
+  Also adds a `NOT VALID` CHECK enforcing the Shopsy 0%-commission policy for open rows (closed history stays closable via an `end_date` escape).
 - Before: every publish failed with `RATE_SCHEMA_NOT_READY`. After: gate requirements
   are satisfiable (5 indexes + 21 columns).
 - Test: `backend/tests/rateCardDimensionalMigration.test.js` (6 tests).

@@ -157,7 +157,10 @@ function applyUpdateBanner(status) {
     pendingUpdateDownloaded = rawVersion;
   }
   if (kind === 'available') latestAvailableVersion = rawVersion;
-  if (deferredUpdateVersion && deferredUpdateVersion === rawVersion && (kind === 'available' || kind === 'downloaded')) {
+  // A postponed update stays hidden until a NEWER version appears: version-less
+  // status events (checking / not-available) must not resurrect the prompt while
+  // the deferred version is still the pending one.
+  if (deferredUpdateVersion && (deferredUpdateVersion === rawVersion || (!rawVersion && deferredUpdateVersion === pendingUpdateDownloaded))) {
     hide();
     return;
   }
@@ -1671,6 +1674,19 @@ function setupEventListeners() {
 }
 
 // ── Load Connected Marketplace Accounts from Backend ─────────────────────────
+function renderAccountsUnavailable(message) {
+  const tbody = document.getElementById('tbody-marketplace-accounts');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = 5;
+  td.className = 'empty-state';
+  td.textContent = message;
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
 async function loadMarketplaceAccountsUI() {
   try {
     const res = await window.ratecardAPI.getMarketplaceAccounts();
@@ -1735,8 +1751,13 @@ async function loadMarketplaceAccountsUI() {
       // Dashboard channel cards are owned exclusively by loadSessionStatusUI()
       // (real cookie vault state). Backend vault linkage is shown in the table
       // badges above, so it must not overwrite the per-channel session status.
+    } else {
+      // Never leave the hard-coded placeholder rows in place: without verified
+      // account data the vault must read as unverified, not active.
+      renderAccountsUnavailable('No marketplace accounts were returned — vault status is unverified.');
     }
   } catch (err) {
+    renderAccountsUnavailable('Vault status unknown — the accounts service did not respond. Sign-in state is unverified.');
     console.warn('Could not load marketplace accounts:', err);
   }
 }

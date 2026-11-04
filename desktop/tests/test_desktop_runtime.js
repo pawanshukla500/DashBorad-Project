@@ -930,6 +930,10 @@ async function runTests() {
     assert(applyWindow.includes("kind === 'error'"), 'update errors must be reported without blocking the UI');
     assert(applyWindow.includes('pendingUpdateDownloaded'), 'a downloaded update must keep the restart prompt sticky');
     assert(/if \(pendingUpdateDownloaded\) \{\s*show\(/.test(applyWindow), 'the downloaded restart prompt must survive the later periodic checking/not-available events');
+    assert(rendererSource.includes('deferredUpdateVersion === pendingUpdateDownloaded'), 'a postponed download must stay hidden across version-less update checks until a newer version appears');
+    const deferIdx = rendererSource.indexOf('deferredUpdateVersion === pendingUpdateDownloaded');
+    const stickyIdx = rendererSource.indexOf('if (pendingUpdateDownloaded)');
+    assert(deferIdx !== -1 && stickyIdx !== -1 && deferIdx < stickyIdx, 'the postponement must be evaluated before the sticky restart prompt');
     assert(applyWindow.includes('restartBtn.style.display'), 'the restart button must be hidden unless an update is ready');
     const clickIdx = rendererSource.indexOf("restartBtn?.addEventListener('click'");
     assert(clickIdx !== -1, 'restart button click wiring not found');

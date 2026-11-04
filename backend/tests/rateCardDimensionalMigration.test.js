@@ -70,10 +70,16 @@ describe('rate-card dimensional migration (jobs-3)', () => {
     expect(sql).toMatch(/UPDATE rc_pick_pack SET price_scope = 'range' WHERE price_scope IS NULL/);
   });
 
-  it('enforces the Shopsy 0% commission policy for new writes', async () => {
+  it('enforces the Shopsy 0% commission policy for open rows only', async () => {
     const { sql } = await captureMigration();
     expect(sql).toContain('rc_commission_shopsy_zero_rate');
-    expect(sql).toMatch(/CHECK \(marketplace <> 'shopsy' OR rate = 0\) NOT VALID/);
+    expect(sql).toMatch(/CHECK \(marketplace <> 'shopsy' OR rate = 0 OR end_date IS NOT NULL\) NOT VALID/);
+  });
+
+  it('derives reverse weight ceilings from the stored slab (matcher parity)', async () => {
+    const { sql } = await captureMigration();
+    expect(sql).toContain('regexp_matches(weight_slab');
+    expect(sql).toMatch(/weight_max = 999999 WHERE weight_max IS NULL/);
   });
 
   it('deduplicates active rows before creating unique indexes', async () => {

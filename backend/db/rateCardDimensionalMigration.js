@@ -43,10 +43,36 @@ export async function runRateCardDimensionalMigration(pool, runVersionedMigratio
     // (`local_fee ?? rate` in `services/rateCard.js`).
     await tx.query(`
       UPDATE rc_reverse_shipping SET weight_min = 0 WHERE weight_min IS NULL;
-      UPDATE rc_reverse_shipping SET weight_max = 999999 WHERE weight_max IS NULL;
       UPDATE rc_reverse_shipping SET base_weight = 0 WHERE base_weight IS NULL;
       UPDATE rc_reverse_shipping SET increment_weight = 0 WHERE increment_weight IS NULL;
       UPDATE rc_reverse_shipping SET local_additional_fee = 0 WHERE local_additional_fee IS NULL;
+    `);
+
+    // Derive the weight ceiling from the stored slab exactly like the app
+    // matcher (reverseWeightUpperBound): last number, grams→kg. weight_min
+    // stays 0 so the matcher filter behaves as it did with NULLs.
+    // Unparseable slabs fall back to 999999 below.
+    await tx.query(`
+      UPDATE rc_reverse_shipping r
+      SET weight_max = p.upper
+      FROM (
+        SELECT id,
+          CASE WHEN weight_slab ~* '(^|[^a-z])g([^a-z]|$)|gm'
+            THEN nums[cardinality(nums)] / 1000
+            ELSE nums[cardinality(nums)] END AS upper
+        FROM (
+          SELECT id, weight_slab, array_agg(match[1]::numeric ORDER BY ord) AS nums
+          FROM rc_reverse_shipping,
+            regexp_matches(weight_slab, '(\\d+(?:\\.\\d+)?)', 'g') WITH ORDINALITY AS m(match, ord)
+          WHERE weight_max IS NULL
+          GROUP BY id, weight_slab
+        ) s
+        WHERE cardinality(nums) > 0
+      ) p
+      WHERE r.id = p.id;
+    `);
+    await tx.query(`
+      UPDATE rc_reverse_shipping SET weight_max = 999999 WHERE weight_max IS NULL;
       UPDATE rc_reverse_shipping SET zonal_additional_fee = 0 WHERE zonal_additional_fee IS NULL;
       UPDATE rc_reverse_shipping SET national_additional_fee = 0 WHERE national_additional_fee IS NULL;
 
@@ -137,11 +163,14 @@ export async function runRateCardDimensionalMigration(pool, runVersionedMigratio
 
     // 5. Shopsy marketplace commission is 0% by policy (see the observation
     // validator). Enforce it for new writes without validating legacy rows.
+    // The end_date escape keeps historical closes working: closing a row
+    // rewrites it, so a legacy nonzero Shopsy rate must stay closable — only
+    // open (end_date IS NULL) Shopsy rows are held to 0%.
     await tx.query(`
       DO $$ BEGIN
         ALTER TABLE rc_commission
           ADD CONSTRAINT rc_commission_shopsy_zero_rate
-          CHECK (marketplace <> 'shopsy' OR rate = 0) NOT VALID;
+          CHECK (marketplace <> 'shopsy' OR rate = 0 OR end_date IS NOT NULL) NOT VALID;
       EXCEPTION WHEN duplicate_object THEN NULL;
       END $$;
     `);
