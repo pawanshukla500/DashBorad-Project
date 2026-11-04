@@ -466,9 +466,9 @@ function createWindow() {
 
 // ── Auto-Update (GitHub Releases feed) ───────────────────────────────────────
 // Keeps the installed desktop app on the latest published release: it checks
-// shortly after launch and every 6 hours, downloads in the background, then
-// notifies through an in-app banner and a native toast. The download is also
-// applied automatically on the next quit if the user ignores the prompt.
+// shortly after launch and every 6 hours, then notifies through an in-app
+// banner and a native toast. Nothing downloads or installs without
+// explicit user approval; restart is blocked while a scrape or publish runs.
 const UPDATE_STATUS_CHANNEL = 'update-status';
 let autoUpdater = null;         // electron-updater instance (packaged builds only)
 let pendingUpdateVersion = '';   // version of the update currently being downloaded
@@ -511,8 +511,8 @@ function setupAutoUpdate() {
   autoUpdater = loadAutoUpdater();
   if (!autoUpdater) return;
 
-  autoUpdater.autoDownload = true;          // fetch in the background as soon as an update is found
-  autoUpdater.autoInstallOnAppQuit = true;  // an ignored prompt still applies on the next quit
+  autoUpdater.autoDownload = false;         // download only after the user clicks Update Now
+  autoUpdater.autoInstallOnAppQuit = false; // installs only run from the explicit Restart control
 
   autoUpdater.on('checking-for-update', () => broadcastUpdateStatus({ status: 'checking' }));
   autoUpdater.on('update-available', (info) => {
@@ -1505,7 +1505,7 @@ const PUBLIC_CHANNELS = new Set([
   // Update lifecycle is app-level, not session/data-level: checking for a new
   // release and applying it must work before sign-in and can never touch
   // database or session data.
-  'update-get-status', 'update-check', 'update-install'
+  'update-get-status', 'update-check', 'update-download', 'update-install'
 ]);
 const MUTATION_CHANNELS = new Set(['save-config', 'sync-brand-rate-cards', 'upload-database-details']);
 
@@ -1563,14 +1563,30 @@ registerHandler('update-check', async () => {
   const started = await checkForAppUpdate();
   return started ? { success: true } : { success: false, error: 'Update check failed. It will be retried automatically.' };
 });
+registerHandler('update-download', async () => {
+  if (!autoUpdater) {
+    return { success: false, error: 'Updates are only available in the installed desktop app.' };
+  }
+  // Explicit user consent (Update Now) starts the download; progress and
+  // completion arrive through update-status events.
+  try {
+    await autoUpdater.downloadUpdate();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err?.message || String(err) };
+  }
+});
 registerHandler('update-install', () => {
   if (!autoUpdater) {
     return { success: false, error: 'Updates are only available in the installed desktop app.' };
   }
+  if (withBrowserTask.busy || isWorkerExecutingJob || stagedExtraction.publicationInProgress) {
+    return { success: false, error: 'An extraction or publication is running. Wait for it to finish, then restart to update.' };
+  }
   if (lastUpdateStatus?.status !== 'downloaded') {
     return { success: false, error: 'No downloaded update is ready to install yet.' };
   }
-  // Silent install that relaunches the app with the new version.
+  // Explicit restart with the downloaded version. Never fires without the user clicking Restart.
   autoUpdater.quitAndInstall(true, true);
   return { success: true };
 });
@@ -2239,6 +2255,15 @@ registerHandler('sync-brand-rate-cards', async (e, submitted, options = {}) => {
         marketplace: cards[0].marketplace, cardCount: cards.length,
         changeCount: result.changesCount || 0, version: result.versionName || null
       });
+    if (result.updated && Notification.isSupported()) {
+      const flagged = review?.anomaliesCount || 0;
+      const count = result.changesCount || 0;
+      new Notification({
+        title: flagged ? 'Rate Card Published — review flagged changes' : 'Rate Card Published',
+        body: `${count} fee change${count === 1 ? '' : 's'} published for ${cards[0].marketplace} (${result.versionName || 'new version'})` +
+          (flagged ? ` — ${flagged} flagged as significant.` : '.'),
+      }).show();
+    }
     return { success: true, result };
   } catch (err) {
     desktopLogger.error('rate-review.publish_failed', err, { marketplace: cards[0].marketplace });

@@ -864,21 +864,22 @@ async function runTests() {
     const setupIdx = mainSource.indexOf('function setupAutoUpdate()');
     assert(setupIdx !== -1, 'setupAutoUpdate not found');
     const setupWindow = mainSource.slice(setupIdx, setupIdx + 2200);
-    assert(setupWindow.includes('autoUpdater.autoDownload = true'), 'updates must download automatically once found');
-    assert(setupWindow.includes('autoUpdater.autoInstallOnAppQuit = true'), 'an ignored prompt must still apply the update on the next quit');
+    assert(setupWindow.includes('autoUpdater.autoDownload = false'), 'updates must wait for explicit Update Now consent before downloading');
+    assert(setupWindow.includes('autoUpdater.autoInstallOnAppQuit = false'), 'a postponed update must never apply itself on quit; install requires the explicit Restart control');
     for (const event of ['checking-for-update', 'update-available', 'update-not-available', 'download-progress', 'update-downloaded', 'error']) {
       assert(setupWindow.includes(`'${event}'`), `updater must forward '${event}' to the renderer`);
     }
     assert(setupWindow.includes('mainWindow.webContents.send(UPDATE_STATUS_CHANNEL') || mainSource.includes('mainWindow.webContents.send(UPDATE_STATUS_CHANNEL'), 'renderer update notifications must ride the update-status channel');
     assert(/setTimeout\(\(\) => \{ checkForAppUpdate\(\); \}/.test(setupWindow), 'an update check must run shortly after launch');
     assert(/setInterval\(\(\) => \{ checkForAppUpdate\(\); \}/.test(setupWindow), 'update checks must be periodic');
-    const ipcWindow = mainSource.slice(mainSource.indexOf("registerHandler('update-get-status'"), mainSource.indexOf("registerHandler('update-get-status'") + 1600);
-    for (const channel of ['update-get-status', 'update-check', 'update-install']) {
+    const ipcWindow = mainSource.slice(mainSource.indexOf("registerHandler('update-get-status'"), mainSource.indexOf("registerHandler('update-get-status'") + 2600);
+    for (const channel of ['update-get-status', 'update-check', 'update-download', 'update-install']) {
       assert(mainSource.includes(`registerHandler('${channel}'`), `missing IPC handler ${channel}`);
     }
-    assert(mainSource.includes("'update-get-status', 'update-check', 'update-install'"), 'update IPC channels must be public: an update must be applicable before sign-in and must never touch session or database data');
+    assert(mainSource.includes("'update-get-status', 'update-check', 'update-download', 'update-install'"), 'update IPC channels must be public: an update must be applicable before sign-in and must never touch session or database data');
     assert(ipcWindow.includes('quitAndInstall(true, true)'), 'install prompt must silently install and relaunch');
     assert(ipcWindow.includes("lastUpdateStatus?.status !== 'downloaded'"), 'install must be refused until an update has actually downloaded');
+    assert(mainSource.includes('withBrowserTask.busy || isWorkerExecutingJob || stagedExtraction.publicationInProgress'), 'restart-to-update must refuse while a scrape, worker job, or publication is running');
   });
 
   await runTest('preload bridge exposes the update lifecycle (static invariant)', async () => {
@@ -886,7 +887,8 @@ async function runTests() {
     for (const [api, channel] of [
       ['getUpdateStatus', 'update-get-status'],
       ['checkForUpdates', 'update-check'],
-      ['installUpdate', 'update-install']
+      ['installUpdate', 'update-install'],
+      ['downloadUpdate', 'update-download']
     ]) {
       assert(preloadSource.includes(`${api}: () => ipcRenderer.invoke('${channel}')`), `preload must expose ${api} over ${channel}`);
     }
@@ -928,6 +930,10 @@ async function runTests() {
     assert(applyWindow.includes("kind === 'error'"), 'update errors must be reported without blocking the UI');
     assert(applyWindow.includes('pendingUpdateDownloaded'), 'a downloaded update must keep the restart prompt sticky');
     assert(/if \(pendingUpdateDownloaded\) \{\s*show\(/.test(applyWindow), 'the downloaded restart prompt must survive the later periodic checking/not-available events');
+    assert(rendererSource.includes('deferredUpdateVersion === pendingUpdateDownloaded'), 'a postponed download must stay hidden across version-less update checks until a newer version appears');
+    const deferIdx = rendererSource.indexOf('deferredUpdateVersion === pendingUpdateDownloaded');
+    const stickyIdx = rendererSource.indexOf('if (pendingUpdateDownloaded)');
+    assert(deferIdx !== -1 && stickyIdx !== -1 && deferIdx < stickyIdx, 'the postponement must be evaluated before the sticky restart prompt');
     assert(applyWindow.includes('restartBtn.style.display'), 'the restart button must be hidden unless an update is ready');
     const clickIdx = rendererSource.indexOf("restartBtn?.addEventListener('click'");
     assert(clickIdx !== -1, 'restart button click wiring not found');

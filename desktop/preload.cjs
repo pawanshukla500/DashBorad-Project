@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
   getUpdateStatus: () => ipcRenderer.invoke('update-get-status'),
   checkForUpdates: () => ipcRenderer.invoke('update-check'),
   installUpdate: () => ipcRenderer.invoke('update-install'),
+  downloadUpdate: () => ipcRenderer.invoke('update-download'),
   onUpdateStatus: (callback) => {
     const subscription = (event, status) => callback(status);
     ipcRenderer.on('update-status', subscription);

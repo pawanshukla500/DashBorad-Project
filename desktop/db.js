@@ -245,9 +245,25 @@ export const ALLOWED_TABLES = new Set([
   'rc_fixed_fee',
   'rc_collection_fee',
   'rc_reverse_shipping',
+  'rc_pick_pack',
+  'rc_franchise_fee',
   'rate_card_versions',
   'sku_master',
   'vb_sku_master'
+]);
+
+// Rate-card and version tables are read-only through the desktop DB browser:
+// fee changes publish only through the reviewed backend flow (fingerprints +
+// coverage checks). The broader ALLOWED_TABLES read set stays available for
+// offline inspection and Excel work.
+export const READ_ONLY_TABLES = new Set([
+  'rc_commission',
+  'rc_fixed_fee',
+  'rc_collection_fee',
+  'rc_reverse_shipping',
+  'rc_pick_pack',
+  'rc_franchise_fee',
+  'rate_card_versions'
 ]);
 
 const IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -309,6 +325,13 @@ export async function downloadTableDetails(tableName, options = {}) {
  */
 export async function uploadTableUpdates(tableName, rows = [], keyColumns = ['id']) {
   if (!rows || rows.length === 0) return { updated: 0 };
+  const earlyTable = String(tableName || '').trim().toLowerCase();
+  if (!ALLOWED_TABLES.has(earlyTable)) {
+    throw new Error(`Table "${tableName}" is not in the allowed update allowlist.`);
+  }
+  if (READ_ONLY_TABLES.has(earlyTable)) {
+    throw new Error(`Table "${tableName}" is read-only in the desktop app. Rate changes publish only through the reviewed backend flow.`);
+  }
   const pool = getDesktopPool();
   const safeTable = String(tableName || '').trim().toLowerCase();
 
