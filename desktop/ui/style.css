@@ -685,6 +685,69 @@ select.form-input option {
   background: var(--primary) !important;
   color: var(--on-primary) !important;
 }
+.filter-status {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 6px;
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.filter-status:hover {
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+}
+
+.filter-status.active {
+  background: var(--primary) !important;
+  color: var(--on-primary) !important;
+  border-color: var(--primary) !important;
+  font-weight: 600;
+}
+
+.badge-increase {
+  background: rgba(239, 68, 68, 0.12) !important;
+  color: var(--danger-strong) !important;
+  border: 1px solid rgba(239, 68, 68, 0.3) !important;
+}
+
+.badge-decrease {
+  background: rgba(16, 185, 129, 0.12) !important;
+  color: var(--success-strong) !important;
+  border: 1px solid rgba(16, 185, 129, 0.3) !important;
+}
+
+.badge-neutral {
+  background: var(--bg-card-hover) !important;
+  color: var(--text-muted) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.modal-backdrop {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 9999;
+  backdrop-filter: blur(4px);
+  align-items: center;
+  justify-content: center;
+}
+
+:root[data-theme="dark"] .modal-backdrop {
+  background: rgba(15, 23, 42, 0.85);
+}
+
+.modal-card {
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
 
 /* Keyboard focus visibility: every interactive control shows a visible focus ring */
 button:focus-visible,

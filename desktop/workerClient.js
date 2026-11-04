@@ -325,13 +325,25 @@ export async function reviewRatesViaApi(session, cards, sellerAccount = 'default
       changes.push({ ...diff, marketplace, brand: diff.brand_name || 'General', type: types[diff.table], reason: `${diff.details || 'Rate change'}${periodNote}`,
         fulfilmentType: diff.fulfilment_type, weightSlab: (diff.newRow || diff.oldRow)?.weight_slab,
         priceMin: (diff.newRow || diff.oldRow)?.price_min, priceMax: (diff.newRow || diff.oldRow)?.price_max,
-        weightMin: (diff.newRow || diff.oldRow)?.weight_min, weightMax: (diff.newRow || diff.oldRow)?.weight_max });
+        weightMin: (diff.newRow || diff.oldRow)?.weight_min, weightMax: (diff.newRow || diff.oldRow)?.weight_max,
+        effectiveDate: diff.effectiveDate || result.effectiveDate || cards[0]?.effectiveDate || new Date().toISOString().slice(0, 10),
+        difference: diff.difference || '—',
+        financialImpact: diff.financialImpact || (diff.anomaly ? 'cost_increase' : 'neutral'),
+        recommendation: diff.recommendation || '' });
     }
   }
   return {
     changes, fingerprints,
     changesCount: changes.length,
     anomaliesCount: changes.filter(c => c.anomaly).length,
+    summary: {
+      added: changes.filter(c => c.changeType === 'ADDED').length,
+      modified: changes.filter(c => c.changeType === 'MODIFIED').length,
+      removed: changes.filter(c => c.changeType === 'REMOVED').length,
+      anomalies: changes.filter(c => c.anomaly).length,
+      costIncreases: changes.filter(c => c.financialImpact === 'cost_increase').length,
+      costDecreases: changes.filter(c => c.financialImpact === 'cost_decrease').length
+    },
     publishable: marketplaces.length > 0 && missingFingerprintMarketplaces.length === 0,
     missingFingerprintMarketplaces
   };

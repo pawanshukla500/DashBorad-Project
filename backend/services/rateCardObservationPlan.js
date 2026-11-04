@@ -166,6 +166,127 @@ const display = (descriptor, row) => !row ? null : descriptor.table === 'rc_coll
   ? `Prepaid: ${row.prepaid} ${row.prepaid_type}, Postpaid: ${row.postpaid} ${row.postpaid_type}`
   : descriptor.table === 'rc_reverse_shipping' ? `L:₹${row.local_fee}/Z:₹${row.zonal_fee}/N:₹${row.national_fee}` : row.rate;
 
+function calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next, previousRow, newRow) {
+  let diffAmount = null;
+  let diffPercent = null;
+  let difference = '—';
+  let financialImpact = 'neutral';
+  let recommendation = '';
+
+  const numOld = typeof oldRate === 'number' ? oldRate : null;
+  const numNew = typeof newRate === 'number' ? newRate : null;
+
+  if (changeType === 'ADDED') {
+    financialImpact = 'new_fee_introduced';
+    if (numNew !== null) {
+      if (descriptor.table === 'rc_commission') {
+        difference = `+${(numNew * 100).toFixed(2)}%`;
+        diffPercent = Number((numNew * 100).toFixed(2));
+        recommendation = `Newly introduced commission rate of ${(numNew * 100).toFixed(2)}% on ${next.category}. Factor into pricing models.`;
+      } else {
+        difference = `+₹${numNew.toFixed(2)}`;
+        diffAmount = numNew;
+        recommendation = `Newly introduced ${descriptor.field} of ₹${numNew.toFixed(2)} on ${next.category}. Verify margin impact.`;
+      }
+    } else {
+      difference = 'New fee slab';
+      recommendation = `Newly introduced ${descriptor.field} for ${next.category}. Review fulfillment terms.`;
+    }
+  } else if (changeType === 'REMOVED') {
+    financialImpact = 'fee_removed';
+    if (numOld !== null) {
+      if (descriptor.table === 'rc_commission') {
+        difference = `-${(numOld * 100).toFixed(2)}%`;
+        diffPercent = Number((-numOld * 100).toFixed(2));
+        recommendation = `Commission rate of ${(numOld * 100).toFixed(2)}% removed on ${next.category}. Positive margin impact.`;
+      } else {
+        difference = `-₹${numOld.toFixed(2)}`;
+        diffAmount = -numOld;
+        recommendation = `Fee of ₹${numOld.toFixed(2)} removed on ${next.category}. Cost eliminated.`;
+      }
+    } else {
+      difference = 'Removed';
+      recommendation = `Fee slab removed on ${next.category}. Cost eliminated.`;
+    }
+  } else if (changeType === 'MODIFIED') {
+    if (numOld !== null && numNew !== null) {
+      const delta = numNew - numOld;
+      const pctChange = numOld !== 0 ? (delta / numOld) * 100 : 0;
+      diffAmount = Number(delta.toFixed(4));
+      diffPercent = Number(pctChange.toFixed(2));
+
+      if (descriptor.table === 'rc_commission') {
+        const pp = delta * 100;
+        const sign = pp > 0 ? '+' : '';
+        difference = `${sign}${pp.toFixed(2)} pp (${sign}${pctChange.toFixed(1)}%)`;
+        if (delta > 0) {
+          financialImpact = 'cost_increase';
+          recommendation = `Commission increased by ${difference} on ${next.category}. Review retail ASP to protect net margins.`;
+        } else if (delta < 0) {
+          financialImpact = 'cost_decrease';
+          recommendation = `Commission reduced by ${difference} on ${next.category}. Direct positive impact on net realization.`;
+        } else {
+          difference = '0.00%';
+          recommendation = 'Commission rate unchanged.';
+        }
+      } else {
+        const sign = delta > 0 ? '+' : '';
+        difference = `${sign}₹${delta.toFixed(2)} (${sign}${pctChange.toFixed(1)}%)`;
+        if (delta > 0) {
+          financialImpact = 'cost_increase';
+          recommendation = `${descriptor.field} increased by ${difference} on ${next.category}. Will increase deductions per order.`;
+        } else if (delta < 0) {
+          financialImpact = 'cost_decrease';
+          recommendation = `${descriptor.field} decreased by ${difference} on ${next.category}. Will reduce fulfillment deductions.`;
+        } else {
+          difference = '₹0.00';
+          recommendation = 'Fee rate unchanged.';
+        }
+      }
+    } else if (descriptor.table === 'rc_reverse_shipping' && previousRow && newRow) {
+      const oldSum = (Number(previousRow.local_fee) || 0) + (Number(previousRow.zonal_fee) || 0) + (Number(previousRow.national_fee) || 0);
+      const newSum = (Number(newRow.local_fee) || 0) + (Number(newRow.zonal_fee) || 0) + (Number(newRow.national_fee) || 0);
+      const delta = newSum - oldSum;
+      diffAmount = Number(delta.toFixed(2));
+      const sign = delta > 0 ? '+' : '';
+      difference = `${sign}₹${delta.toFixed(2)} (zones)`;
+      if (delta > 0) {
+        financialImpact = 'cost_increase';
+        recommendation = `Reverse shipping fees increased (${difference}) on ${next.category}. Will increase deductions per return.`;
+      } else if (delta < 0) {
+        financialImpact = 'cost_decrease';
+        recommendation = `Reverse shipping fees decreased (${difference}) on ${next.category}. Will reduce deductions per return.`;
+      } else {
+        difference = '₹0.00';
+        financialImpact = 'neutral';
+        recommendation = `Reverse shipping fee structure unchanged on ${next.category}.`;
+      }
+    } else if (descriptor.table === 'rc_collection_fee' && previousRow && newRow) {
+      const preDelta = (Number(newRow.prepaid) || 0) - (Number(previousRow.prepaid) || 0);
+      const postDelta = (Number(newRow.postpaid) || 0) - (Number(previousRow.postpaid) || 0);
+      const totalDelta = preDelta + postDelta;
+      difference = `Prepaid: ${preDelta > 0 ? '+' : ''}${preDelta}, Postpaid: ${postDelta > 0 ? '+' : ''}${postDelta}`;
+      if (preDelta > 0 || postDelta > 0) {
+        financialImpact = totalDelta >= 0 ? 'cost_increase' : 'neutral';
+        recommendation = `Collection fees increased on ${next.category}. Will increase payment deductions.`;
+      } else if (preDelta < 0 || postDelta < 0) {
+        financialImpact = 'cost_decrease';
+        recommendation = `Collection fees reduced on ${next.category}. Will reduce payment deductions.`;
+      } else {
+        difference = 'Unchanged';
+        financialImpact = 'neutral';
+        recommendation = `Collection fees unchanged on ${next.category}.`;
+      }
+    } else {
+      difference = 'Modified';
+      financialImpact = 'neutral';
+      recommendation = `Rates or tiers modified for ${next.category}. Review slab structure carefully.`;
+    }
+  }
+
+  return { diffAmount, diffPercent, difference, financialImpact, recommendation };
+}
+
 export async function planRateCardChanges(client, observations, { marketplace, sellerAccount, effectiveDate }) {
   validateRateObservations(observations, { marketplace, sellerAccount });
   const diffs = [];
@@ -191,10 +312,17 @@ export async function planRateCardChanges(client, observations, { marketplace, s
       const next = row || previous.row;
       const oldRate = display(descriptor, previous?.row), newRate = display(descriptor, row);
       const delta = typeof oldRate === 'number' && typeof newRate === 'number' ? Math.abs(oldRate - newRate) : 0;
+      const metrics = calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next, previous?.row, row);
       diffs.push({ table: descriptor.table, category: next.category, brand_name: next.brand_name || null,
         fulfilment_type: next.fulfilment_type || null,
         slab: descriptor.table === 'rc_reverse_shipping' ? `${next.weight_slab}: ₹${next.price_min} - ₹${next.price_max}` : `₹${next.price_min} - ₹${next.price_max}`,
-        changeType, oldRate, newRate, anomaly: delta > 0 && ((oldRate > 0 && delta / oldRate >= 0.5) || (descriptor.table === 'rc_commission' && delta >= 0.05)),
+        changeType, oldRate, newRate,
+        diffAmount: metrics.diffAmount,
+        diffPercent: metrics.diffPercent,
+        difference: metrics.difference,
+        financialImpact: metrics.financialImpact,
+        recommendation: metrics.recommendation,
+        anomaly: delta > 0 && ((oldRate > 0 && delta / oldRate >= 0.5) || (descriptor.table === 'rc_commission' && delta >= 0.05)),
         oldRow: previous?.raw || null, newRow: row || null, details: `${changeType}: ${descriptor.field} for ${next.category}` });
     };
     for (const row of incoming) {
@@ -221,9 +349,12 @@ export async function planRateCardChanges(client, observations, { marketplace, s
       }
     }
   }
-  return { hasChanges: diffs.length > 0, diffCount: diffs.length, diffs, fingerprint: rateDiffFingerprint(diffs, effectiveDate),
+  return { hasChanges: diffs.length > 0, diffCount: diffs.length, effectiveDate, diffs, fingerprint: rateDiffFingerprint(diffs, effectiveDate),
     summary: { added: diffs.filter(d => d.changeType === 'ADDED').length,
       modified: diffs.filter(d => d.changeType === 'MODIFIED').length,
       removed: diffs.filter(d => d.changeType === 'REMOVED').length, unchanged,
-      anomalies: diffs.filter(d => d.anomaly).length, totalChecked: diffs.length + unchanged } };
+      anomalies: diffs.filter(d => d.anomaly).length,
+      costIncreases: diffs.filter(d => d.financialImpact === 'cost_increase').length,
+      costDecreases: diffs.filter(d => d.financialImpact === 'cost_decrease').length,
+      totalChecked: diffs.length + unchanged } };
 }
