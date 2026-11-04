@@ -749,6 +749,35 @@ async function runTests() {
     assert(slabMatch(commSlabChanges, twoSlabCard.commissions[0]) === null, 'unchanged commission slab must not inherit its neighbor diff');
   });
 
+  await runTest('detectBrandRateChanges compares Flipkart FBF pick-and-pack fees and calculates difference metrics', async () => {
+    const { detectBrandRateChanges } = await import('../rateCardService.js');
+    const card = {
+      marketplace: 'flipkart', category: 'Kurta', brand: 'Ethnic Junction',
+      commissions: [], fixedFees: [], collectionFees: [], reverseShipping: [],
+      pickPackFees: [
+        { fulfilment_type: 'FBF', weight_min: 0, weight_max: 0.5, price_min: 0, price_max: 500, rate: 14, local_fee: 14 },
+        { fulfilment_type: 'FBF', weight_min: 0.5, weight_max: 1.0, price_min: 0, price_max: 500, rate: 26, local_fee: 26 }
+      ]
+    };
+    const pool = { query: async (sql) => {
+      if (sql.includes('FROM rc_pick_pack')) {
+        return { rows: [
+          { fulfilment_type: 'FBF', weight_min: '0.000', weight_max: '0.500', price_min: '0.00', price_max: '500.00', rate: '11.00', local_fee: '11.00' }
+        ] };
+      }
+      return { rows: [] };
+    } };
+    const changes = await detectBrandRateChanges([card], pool);
+    const ppChanges = changes.filter(c => c.type === 'pick_pack');
+    assert(ppChanges.length === 2, `expected 2 pick-pack changes (1 modified, 1 added), got ${ppChanges.length}`);
+    const modified = ppChanges.find(c => c.changeType === 'MODIFIED');
+    const added = ppChanges.find(c => c.changeType === 'ADDED');
+    assert(modified, 'modified pick-pack change must exist');
+    assert(added, 'new pick-pack change must exist');
+    assert(modified.difference.includes('+₹3.00'), `difference should reflect fee shift, got ${modified.difference}`);
+    assert(modified.financialImpact === 'cost_increase', `financial impact must be cost_increase, got ${modified.financialImpact}`);
+  });
+
   // ── Packaging invariants ───────────────────────────────────────────────────
   await runTest('logout surfaces a failed session-file removal (static invariant)', async () => {
     const mainSource = fs.readFileSync(path.join(desktopDir, 'main.js'), 'utf8');

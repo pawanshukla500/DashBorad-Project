@@ -192,6 +192,20 @@ export function annotateRateAnomaly(change) {
       anomalySeverity = 'high';
       anomalyNote = 'collection fee shift';
     }
+  } else if (type === 'pick_pack') {
+    if (change.oldRate != null && change.newRate != null) {
+      const oldVal = parseFloat(String(change.oldRate).replace(/[^\d.]/g, ''));
+      const newVal = parseFloat(String(change.newRate).replace(/[^\d.]/g, ''));
+      if (Number.isFinite(oldVal) && Number.isFinite(newVal)) {
+        const delta = Math.abs(newVal - oldVal);
+        if (delta >= 10 || (oldVal > 0 && delta / oldVal >= 0.5)) {
+          anomaly = true;
+          anomalyType = 'pick_pack_shift';
+          anomalySeverity = 'high';
+          anomalyNote = `pick & pack fee shift ${newVal >= oldVal ? '+₹' : '-₹'}${delta.toFixed(0)}`;
+        }
+      }
+    }
   }
 
   if (anomaly) {
@@ -551,8 +565,87 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
         }
       }
     }
-  }
 
+    // FBF Pick & Pack fee differences (Flipkart warehouse fulfilment)
+    if (card.pickPackFees && card.pickPackFees.length > 0) {
+      const pickPackKey = [marketplace, sellerAccount, category].join('|');
+      if (!checkedCollectionFeeCategories.has('pp:' + pickPackKey)) {
+        checkedCollectionFeeCategories.add('pp:' + pickPackKey);
+        const activePickPack = await p.query(`
+          SELECT fulfilment_type, weight_min, weight_max, price_min, price_max, rate, local_fee, zonal_fee, national_fee, price_scope, base_weight, increment_weight, local_additional_fee, zonal_additional_fee, national_additional_fee
+          FROM rc_pick_pack
+          WHERE marketplace = $1
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $2
+            AND end_date IS NULL
+        `, [marketplace, category, sellerAccount]);
+
+        for (const pp of card.pickPackFees) {
+          const match = activePickPack.rows.find(ap =>
+            (ap.fulfilment_type || 'FBF') === (pp.fulfilment_type || 'FBF') &&
+            Math.abs(parseFloat(ap.price_min) - pp.price_min) < 0.01 &&
+            Math.abs(parseFloat(ap.price_max) - pp.price_max) < 1.0 &&
+            Math.abs(parseFloat(ap.weight_min || 0) - (pp.weight_min || 0)) < 0.001 &&
+            Math.abs(parseFloat(ap.weight_max || 999999) - (pp.weight_max || 999999)) < 0.001
+          );
+          const slab = `${pp.fulfilment_type || 'FBF'} · ${pp.weight_min || 0}-${pp.weight_max || 999999}kg · ₹${pp.price_min}-₹${pp.price_max}`;
+          const newFee = pp.rate ?? pp.local_fee ?? 0;
+          if (!match) {
+            changes.push(annotateRateAnomaly({
+              table: 'rc_pick_pack',
+              type: 'pick_pack',
+              marketplace,
+              category,
+              brand,
+              slab,
+              fulfilmentType: pp.fulfilment_type || 'FBF',
+              priceMin: pp.price_min,
+              priceMax: pp.price_max,
+              weightMin: pp.weight_min,
+              weightMax: pp.weight_max,
+              oldRate: null,
+              newRate: `₹${newFee}`,
+              difference: `+₹${newFee.toFixed(2)}`,
+              financialImpact: 'new_fee_introduced',
+              recommendation: `New FBF pick & pack fee structure for ${category}. Fulfillment charges on warehouse orders will apply.`,
+              changeType: 'ADDED',
+              reason: 'New FBF pick & pack fee structure'
+            }));
+          } else {
+            const oldFee = parseFloat(match.local_fee ?? match.rate ?? 0);
+            if (Math.abs(oldFee - newFee) > 0.01) {
+              const delta = newFee - oldFee;
+              const pct = oldFee !== 0 ? (delta / oldFee) * 100 : 0;
+              const sign = delta > 0 ? '+' : '';
+              changes.push(annotateRateAnomaly({
+                table: 'rc_pick_pack',
+                type: 'pick_pack',
+                marketplace,
+                category,
+                brand,
+                slab,
+                fulfilmentType: pp.fulfilment_type || 'FBF',
+                priceMin: pp.price_min,
+                priceMax: pp.price_max,
+                weightMin: pp.weight_min,
+                weightMax: pp.weight_max,
+                oldRate: `₹${oldFee}`,
+                newRate: `₹${newFee}`,
+                difference: `${sign}₹${delta.toFixed(2)} (${sign}${pct.toFixed(1)}%)`,
+                financialImpact: delta > 0 ? 'cost_increase' : 'cost_decrease',
+                recommendation: delta > 0
+                  ? `FBF pick & pack fee increased by ${sign}₹${delta.toFixed(2)} for ${category}. Increases warehouse fulfillment cost per unit.`
+                  : `FBF pick & pack fee reduced by ₹${Math.abs(delta).toFixed(2)} for ${category}. Positive warehouse fulfillment margin impact.`,
+                changeType: 'MODIFIED',
+                reason: 'FBF pick & pack fee modified'
+              }));
+            }
+          }
+        }
+      }
+    }
+
+  }
   return changes;
 }
 

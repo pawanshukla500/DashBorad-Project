@@ -253,7 +253,7 @@
             </div>
           </div>
 
-          <div class="card table-card">
+          <div class="card table-card" style="overflow-x: auto;">
             <table class="data-table" id="table-catalog">
               <thead>
                 <tr>
@@ -373,16 +373,51 @@
             <button class="btn btn-sm btn-secondary filter-tab" id="btn-filter-anomalies" data-filter="anomalies" style="background: #dc2626; color: #fff; border: 1px solid #dc2626;">View Anomalies Only</button>
           </div>
 
+          <!-- Summary KPI Strip -->
+          <div class="kpi-grid" style="grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px;" id="diff-summary-kpis">
+            <div class="kpi-card" style="padding: 12px 14px;">
+              <span class="kpi-label">Total Slabs</span>
+              <span class="kpi-val" id="kpi-diff-total" style="font-size: 18px;">0</span>
+            </div>
+            <div class="kpi-card" style="padding: 12px 14px;">
+              <span class="kpi-label">Matched (Active)</span>
+              <span class="kpi-val" style="color: var(--success); font-size: 18px;" id="kpi-diff-unchanged">0</span>
+            </div>
+            <div class="kpi-card" style="padding: 12px 14px;">
+              <span class="kpi-label">Modified</span>
+              <span class="kpi-val" style="color: var(--info); font-size: 18px;" id="kpi-diff-modified">0</span>
+            </div>
+            <div class="kpi-card" style="padding: 12px 14px;">
+              <span class="kpi-label">New Added</span>
+              <span class="kpi-val" style="color: #6366f1; font-size: 18px;" id="kpi-diff-added">0</span>
+            </div>
+            <div class="kpi-card" style="padding: 12px 14px;">
+              <span class="kpi-label">Removed</span>
+              <span class="kpi-val" style="color: var(--text-muted); font-size: 18px;" id="kpi-diff-removed">0</span>
+            </div>
+            <div class="kpi-card" style="padding: 12px 14px;">
+              <span class="kpi-label">Anomalies</span>
+              <span class="kpi-val" style="color: var(--danger-strong); font-size: 18px;" id="kpi-diff-anomalies">0</span>
+            </div>
+          </div>
+
           <div style="display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;">
             <button class="btn btn-sm btn-secondary filter-tab active" data-filter="all">All Fee Types</button>
             <button class="btn btn-sm btn-secondary filter-tab" data-filter="commission">Commissions</button>
             <button class="btn btn-sm btn-secondary filter-tab" data-filter="fixed">Fixed Fees (Closing Fee)</button>
             <button class="btn btn-sm btn-secondary filter-tab" data-filter="collection">Collection Fees</button>
             <button class="btn btn-sm btn-secondary filter-tab" data-filter="reverse">Reverse Shipping (Return Fee)</button>
+            <button class="btn btn-sm btn-secondary filter-tab" data-filter="pickpack">FBF Pick & Pack</button>
             <button class="btn btn-sm btn-secondary filter-tab" data-filter="anomalies" id="tab-filter-anomalies" style="display: none; border-color: var(--warning); color: var(--warning-strong);">⚠️ Anomalies (<span id="filter-anomaly-count">0</span>)</button>
+            <div style="margin-left: auto; display: flex; gap: 6px; align-items: center;">
+              <span style="font-size: 12px; color: var(--text-muted); font-weight: 500;">Filter:</span>
+              <button class="btn btn-sm btn-secondary filter-status active" data-status="all" id="btn-status-all">All Slabs</button>
+              <button class="btn btn-sm btn-secondary filter-status" data-status="changed" id="btn-status-changed">Changes Only</button>
+              <button class="btn btn-sm btn-secondary filter-status" data-status="unchanged" id="btn-status-unchanged">Unchanged Only</button>
+            </div>
           </div>
 
-          <div class="card table-card">
+          <div class="card table-card" style="overflow-x: auto;">
             <table class="data-table" id="table-diff">
               <thead>
                 <tr>
@@ -393,12 +428,14 @@
                   <th>Slab / Condition</th>
                   <th>Previous Active Rate</th>
                   <th>New Scraped Rate</th>
-                  <th>Status</th>
+                  <th>Difference (₹ / %)</th>
+                  <th>Effective Date</th>
+                  <th>Status & Financial Impact</th>
                 </tr>
               </thead>
               <tbody id="diff-tbody">
                 <tr>
-                  <td colspan="8" class="empty-state">No scraped or preview data loaded. Click "Load Active Rates" or run the scraper worker.</td>
+                  <td colspan="10" class="empty-state">No scraped or preview data loaded. Click "Load Active Rates" or run the scraper worker.</td>
                 </tr>
               </tbody>
             </table>
@@ -451,9 +488,9 @@
 
           <div class="card" style="padding: 20px;">
             <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Default File Location:</h4>
-            <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid var(--border); padding: 12px 16px; border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #38bdf8; display: flex; justify-content: space-between; align-items: center;">
+            <div style="background: var(--bg-card-hover); border: 1px solid var(--border); padding: 12px 16px; border-radius: 8px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--text-main); display: flex; justify-content: space-between; align-items: center;">
               <span id="excel-path-display">Not generated yet — click "Regenerate Excel" to create the workbook.</span>
-              <span class="badge" id="excel-size-badge" style="background: #334155; color: #fff;">On Demand</span>
+              <span class="badge" id="excel-size-badge" style="background: var(--primary-container); color: var(--on-primary-container); border: 1px solid rgba(144, 42, 74, 0.2);">On Demand</span>
             </div>
           </div>
         </section>
@@ -586,13 +623,13 @@
           </div>
 
           <!-- Browser View Container / Dock -->
-          <div class="card" id="browser-dock-card" style="padding: 0; overflow: hidden; border: 1px solid rgba(144, 42, 74, 0.4); border-radius: var(--radius); background: #0b1120; min-height: 540px; display: flex; flex-direction: column;">
-            <div style="padding: 10px 16px; background: rgba(15, 23, 42, 0.8); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+          <div class="card" id="browser-dock-card" style="padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); min-height: 540px; display: flex; flex-direction: column;">
+            <div style="padding: 10px 16px; background: var(--bg-card-hover); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #ef4444;"></span>
                 <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #f59e0b;"></span>
                 <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #10b981;"></span>
-                <span id="monitor-view-title" style="font-size: 12px; font-weight: 500; color: #cbd5e1; margin-left: 8px;">Live Browser Viewport</span>
+                <span id="monitor-view-title" style="font-size: 12px; font-weight: 500; color: var(--text-main); margin-left: 8px;">Live Browser Viewport</span>
               </div>
               <div style="font-size: 11px; color: var(--text-muted);" id="monitor-sync-timestamp">
                 Last updated: Just now
@@ -600,10 +637,10 @@
             </div>
 
             <!-- Viewport placeholder / screenshot fallback -->
-            <div id="browser-view-dock" style="flex: 1; min-height: 500px; display: flex; align-items: center; justify-content: center; position: relative; background: #020617;">
+            <div id="browser-view-dock" style="flex: 1; min-height: 500px; display: flex; align-items: center; justify-content: center; position: relative; background: var(--bg-dark);">
               <div id="browser-view-placeholder" style="text-align: center; color: var(--text-muted); padding: 40px 20px;">
                 <div style="font-size: 42px; margin-bottom: 14px; opacity: 0.7;">🌐</div>
-                <h4 style="font-size: 16px; font-weight: 600; color: #cbd5e1;">External Chrome is ready</h4>
+                <h4 style="font-size: 16px; font-weight: 600; color: var(--text-main);">External Chrome is ready</h4>
                 <p style="font-size: 13px; max-width: 440px; margin: 8px auto 20px; line-height: 1.5;">
                   Manual sign-in opens only https://seller.flipkart.com/ in the worker’s persistent Chrome profile. Click Login there; the verified profile is reused for future rate-card runs until Seller Hub signs out.
                 </p>
@@ -621,10 +658,10 @@
   </div>
 
   <!-- Firebase Login & PC Authorization Modal -->
-  <div id="auth-modal" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.95); z-index: 9999; backdrop-filter: blur(8px); align-items: center; justify-content: center;">
-    <div class="modal-card" style="background: var(--bg-card); border: 1px solid rgba(144, 42, 74, 0.4); border-radius: 16px; width: 480px; max-width: 90vw; padding: 32px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+  <div id="auth-modal" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); z-index: 9999; backdrop-filter: blur(4px); align-items: center; justify-content: center;">
+    <div class="modal-card" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; width: 480px; max-width: 90vw; padding: 32px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
       <div style="text-align: center; margin-bottom: 24px;">
-        <img src="icon.png" alt="ReconCentral" style="width: 56px; height: 56px; margin: 0 auto 12px; display: block; border-radius: 12px; box-shadow: 0 4px 12px rgba(144, 42, 74, 0.4); background: rgba(144, 42, 74, 0.1); padding: 4px; border: 1px solid rgba(144, 42, 74, 0.4);">
+        <img src="icon.png" alt="ReconCentral" style="width: 56px; height: 56px; margin: 0 auto 12px; display: block; border-radius: 12px; box-shadow: 0 4px 12px rgba(144, 42, 74, 0.2); background: rgba(144, 42, 74, 0.08); padding: 4px; border: 1px solid rgba(144, 42, 74, 0.3);">
         <h2 style="font-size: 20px; font-weight: 700; color: var(--text-main);">ReconCentral Desktop Authorization</h2>
         <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px;">Sign in with your Firebase credentials to authorize this PC for database access & scraper control.</p>
       </div>
@@ -661,8 +698,153 @@
         </button>
       </form>
 
-      <div style="margin-top: 20px; text-align: center; font-size: 11px; color: #64748b;">
+      <div style="margin-top: 20px; text-align: center; font-size: 11px; color: var(--text-muted);">
         ReconCentral Security Policy • Roles: Admin, Operator, Analyst
+      </div>
+    </div>
+  </div>
+
+  <!-- Rate Card Change Approval & Validation Modal -->
+  <div id="rate-change-approval-modal" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); z-index: 9999; backdrop-filter: blur(4px); align-items: center; justify-content: center;">
+    <div class="modal-card" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; width: 860px; max-width: 94vw; max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); overflow: hidden;">
+      
+      <!-- Modal Header -->
+      <div style="padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-card-hover);">
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 20px;">⚖️</span>
+            <h2 style="font-size: 18px; font-weight: 700; color: var(--text-main); margin: 0;">Rate Card Changes Approval</h2>
+            <span class="badge" id="modal-approval-channel-badge" style="background: var(--primary-container); color: var(--on-primary-container); border: 1px solid rgba(144, 42, 74, 0.2); font-weight: 600;">FLIPKART</span>
+          </div>
+          <p style="font-size: 12px; color: var(--text-muted); margin: 4px 0 0 0;">
+            Review detected fee shifts against PostgreSQL. Prior applicable rates will auto-close the day before effective date.
+          </p>
+        </div>
+        <button class="btn btn-sm btn-secondary" id="btn-modal-close-x" style="font-size: 14px; padding: 4px 10px; cursor: pointer;">✕</button>
+      </div>
+
+      <!-- Modal Body (scrollable) -->
+      <div style="padding: 20px 24px; overflow-y: auto; flex: 1;">
+        <!-- KPI Strip -->
+        <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px;">
+          <div class="kpi-card" style="padding: 12px 14px;">
+            <span class="kpi-label">Total Fee Shifts</span>
+            <span class="kpi-val" id="modal-kpi-total" style="font-size: 20px;">0</span>
+            <span class="kpi-sub">Detected changes</span>
+          </div>
+          <div class="kpi-card" style="padding: 12px 14px;">
+            <span class="kpi-label">Cost Increases</span>
+            <span class="kpi-val" id="modal-kpi-increases" style="color: var(--danger-strong); font-size: 20px;">0</span>
+            <span class="kpi-sub" style="color: var(--danger-strong);">Higher marketplace deductions</span>
+          </div>
+          <div class="kpi-card" style="padding: 12px 14px;">
+            <span class="kpi-label">Cost Decreases</span>
+            <span class="kpi-val" id="modal-kpi-decreases" style="color: var(--success-strong); font-size: 20px;">0</span>
+            <span class="kpi-sub" style="color: var(--success-strong);">Seller margin savings</span>
+          </div>
+          <div class="kpi-card" style="padding: 12px 14px;">
+            <span class="kpi-label">Anomalies Flagged</span>
+            <span class="kpi-val" id="modal-kpi-anomalies" style="color: var(--warning-strong); font-size: 20px;">0</span>
+            <span class="kpi-sub" style="color: var(--warning-strong);">Requires scrutiny</span>
+          </div>
+        </div>
+
+        <!-- Financial Impact Alert Banner -->
+        <div id="modal-impact-banner" style="background: rgba(245, 158, 11, 0.1); border: 1px solid var(--warning); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; align-items: flex-start; gap: 12px;">
+          <span style="font-size: 20px; line-height: 1;">⚠️</span>
+          <div>
+            <div style="font-size: 13px; font-weight: 700; color: var(--warning-strong);" id="modal-impact-title">Financial Impact Warning</div>
+            <div style="font-size: 12px; color: var(--text-main); margin-top: 2px;" id="modal-impact-desc">
+              Rate shifts detected that alter unit economics and fulfillment margins.
+            </div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;" id="modal-impact-effective">
+              Effective Date: Tomorrow • Superseded rates will auto-close cleanly with audit snapshot.
+            </div>
+          </div>
+        </div>
+
+        <!-- Key Fee Adjustments Preview Table -->
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h4 style="font-size: 13px; font-weight: 600; color: var(--text-main); margin: 0;">Key Rate Adjustments Preview</h4>
+          <span style="font-size: 11px; color: var(--text-muted);" id="modal-shifts-count-label">Showing detected changes</span>
+        </div>
+        <div class="card table-card" style="padding: 0; overflow-x: auto; max-height: 220px; border: 1px solid var(--border);">
+          <table class="data-table" id="modal-shifts-table">
+            <thead>
+              <tr>
+                <th>Component</th>
+                <th>Category / Scope</th>
+                <th>Previous Rate</th>
+                <th>New Rate</th>
+                <th>Difference (₹ / %)</th>
+                <th>Impact & Guidance</th>
+              </tr>
+            </thead>
+            <tbody id="modal-shifts-tbody">
+              <tr><td colspan="6" class="empty-state">No fee shifts detected.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Modal Footer -->
+      <div style="padding: 14px 24px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-card-hover);">
+        <button class="btn btn-secondary" id="btn-modal-review-changes">
+          🔍 Review Full Comparison Table
+        </button>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-secondary" id="btn-modal-cancel">Cancel</button>
+          <button class="btn btn-primary" id="btn-modal-approve-publish">
+            ✅ Approve & Publish to Database
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Application Update Modal -->
+  <div id="app-update-modal" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); z-index: 9999; backdrop-filter: blur(4px); align-items: center; justify-content: center;">
+    <div class="modal-card" style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; width: 500px; max-width: 90vw; padding: 28px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+        <span style="font-size: 32px;">🚀</span>
+        <div>
+          <h2 style="font-size: 18px; font-weight: 700; color: var(--text-main); margin: 0;">Application Update Available</h2>
+          <p style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+            A newer release of ReconCentral Desktop is available from GitHub Releases.
+          </p>
+        </div>
+      </div>
+
+      <div style="background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px;">
+          <span style="color: var(--text-muted);">Installed Version:</span>
+          <strong id="app-update-current-ver" style="font-family: 'JetBrains Mono', monospace;">1.8.0</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 13px;">
+          <span style="color: var(--text-muted);">Available Version:</span>
+          <strong id="app-update-new-ver" style="color: var(--primary); font-family: 'JetBrains Mono', monospace;">—</strong>
+        </div>
+      </div>
+
+      <div id="app-update-progress-container" style="display: none; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; color: var(--text-muted);">
+          <span>Downloading update...</span>
+          <span id="app-update-progress-percent">0%</span>
+        </div>
+        <div style="width: 100%; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;">
+          <div id="app-update-progress-bar" style="width: 0%; height: 100%; background: var(--primary); transition: width 0.3s ease;"></div>
+        </div>
+      </div>
+
+      <div id="app-update-safety-badge" style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 6px; padding: 8px 12px; margin-bottom: 20px; font-size: 11px; color: var(--success-strong);">
+        🛡️ <strong>Scraper Safety:</strong> Active scraping and database operations are never interrupted. The app will only restart when you click Restart.
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn btn-secondary" id="btn-app-update-later">Later</button>
+        <button class="btn btn-primary" id="btn-app-update-now">⚡ Update Now</button>
+        <button class="btn btn-primary" id="btn-app-update-restart" style="display: none;">🔄 Restart to Apply</button>
       </div>
     </div>
   </div>

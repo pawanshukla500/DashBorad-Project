@@ -75,6 +75,9 @@ let currentRateCards = [];
 let currentChanges = [];
 let currentComparisonAvailable = false;
 let activeDiffFilter = 'all';
+let activeStatusFilter = 'all'; // 'all' | 'changed' | 'unchanged'
+let currentEffectiveDate = '';
+let currentDiffSummary = {};
 let currentUserSession = null;
 let currentCanSync = false;
 
@@ -123,6 +126,39 @@ let pendingUpdateDownloaded = ''; // raw version whose update is downloaded and 
 let latestAvailableVersion = ''; // raw version from the last update-available event
 let deferredUpdateVersion = ''; // raw version the user postponed with Later (re-prompt on new version only)
 
+function showAppUpdateModal(version, isDownloaded = false) {
+  const modal = document.getElementById('app-update-modal');
+  if (!modal) return;
+  const newVerEl = document.getElementById('app-update-new-ver');
+  if (newVerEl && version) newVerEl.textContent = 'v' + version;
+  const btnNow = document.getElementById('btn-app-update-now');
+  const btnRestart = document.getElementById('btn-app-update-restart');
+  const prog = document.getElementById('app-update-progress-container');
+  if (isDownloaded) {
+    if (btnNow) btnNow.style.display = 'none';
+    if (btnRestart) btnRestart.style.display = 'inline-flex';
+    if (prog) prog.style.display = 'none';
+  } else {
+    if (btnNow) btnNow.style.display = 'inline-flex';
+    if (btnRestart) btnRestart.style.display = 'none';
+  }
+  modal.style.display = 'flex';
+}
+
+function hideAppUpdateModal() {
+  const modal = document.getElementById('app-update-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function updateAppProgress(percent) {
+  const prog = document.getElementById('app-update-progress-container');
+  const pct = document.getElementById('app-update-progress-percent');
+  const bar = document.getElementById('app-update-progress-bar');
+  if (prog) prog.style.display = 'block';
+  if (pct) pct.textContent = (percent || 0) + '%';
+  if (bar) bar.style.width = (percent || 0) + '%';
+}
+
 function applyUpdateBanner(status) {
   const banner = document.getElementById('update-banner');
   const text = document.getElementById('update-banner-text');
@@ -152,38 +188,37 @@ function applyUpdateBanner(status) {
 
   const kind = status?.status;
   const rawVersion = status?.version || '';
-  const version = rawVersion ? ` v${rawVersion}` : '';
+  const version = rawVersion ? (' v' + rawVersion) : '';
   if (kind === 'downloaded') {
     pendingUpdateDownloaded = rawVersion;
+    showAppUpdateModal(rawVersion, true);
   }
-  if (kind === 'available') latestAvailableVersion = rawVersion;
-  // A postponed update stays hidden until a NEWER version appears: version-less
-  // status events (checking / not-available) must not resurrect the prompt while
-  // the deferred version is still the pending one.
+  if (kind === 'available') {
+    latestAvailableVersion = rawVersion;
+    if (deferredUpdateVersion !== rawVersion) showAppUpdateModal(rawVersion, false);
+  }
+  if (kind === 'downloading') updateAppProgress(status?.percent);
+  if (kind === 'error') {
+    show('⚠ Update check failed — will retry automatically.');
+    updateBannerHideTimer = setTimeout(hide, 30 * 1000);
+    return;
+  }
+
   if (deferredUpdateVersion && (deferredUpdateVersion === rawVersion || (!rawVersion && deferredUpdateVersion === pendingUpdateDownloaded))) {
     hide();
     return;
   }
-  // Once an update is downloaded, the restart prompt is sticky: the periodic
-  // 6-hourly re-check cycles (checking / available / downloading / not-available)
-  // must never dismiss it — the downloaded installer is ready regardless.
   if (pendingUpdateDownloaded) {
-    show(`✅ App update v${pendingUpdateDownloaded} is ready to install. Restart when ready — an active scrape blocks restart.`, { restart: true });
+    show('✅ App update v' + pendingUpdateDownloaded + ' is ready to install. Restart when ready — an active scrape blocks restart.', { restart: true });
     return;
   }
 
   if (kind === 'available') {
-    show(`⬇ New app version${version} is available.`, { download: true });
+    show('⬇ New app version' + version + ' is available.', { download: true });
   } else if (kind === 'downloading') {
-    const percent = Number.isFinite(status?.percent) ? ` (${status.percent}%)` : '';
-    show(`⬇ Downloading app update${version}${percent}…`);
-  } else if (kind === 'error') {
-    // Transient network failures are expected and retried on the updater's
-    // own schedule, so the banner only mentions the failure briefly.
-    show('⚠ Update check failed — will retry automatically.');
-    updateBannerHideTimer = setTimeout(hide, 30 * 1000);
+    const percent = Number.isFinite(status?.percent) ? (' (' + status.percent + '%)') : '';
+    show('⬇ Downloading app update' + version + percent + '…');
   } else {
-    // checking, not-available, idle, unsupported: nothing to surface.
     hide();
   }
 }
@@ -795,8 +830,8 @@ function renderCatalogTable(catalog) {
       </td>
       <td style="font-weight: 500;">${escapeHtml(item.category)}</td>
       <td><strong>${escapeHtml(item.brand)}</strong></td>
-      <td style="font-family: 'JetBrains Mono', monospace; color: var(--info);">${escapeHtml(item.sample_fsn || '—')}</td>
-      <td style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted);">${escapeHtml(item.sample_sku || '—')}</td>
+      <td style="font-family: \'JetBrains Mono\', monospace; color: var(--info);">${escapeHtml(item.sample_fsn || '—')}</td>
+      <td style="font-family: \'JetBrains Mono\', monospace; color: var(--text-muted);">${escapeHtml(item.sample_sku || '—')}</td>
       <td><span style="font-weight: 600; color: var(--success-strong);">${escapeHtml(Number(item.order_count || 0).toLocaleString())}</span></td>
     </tr>
   `).join('');
@@ -812,7 +847,7 @@ let previewRequestSeq = 0;
 async function loadRateCardPreview() {
   const requestId = ++previewRequestSeq;
   const tbody = document.getElementById('diff-tbody');
-  tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Generating brand-wise rate cards and comparing with PostgreSQL database...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="10" class="empty-state">Generating brand-wise rate cards and comparing with PostgreSQL database...</td></tr>';
 
   try {
     const selectedChannel = document.getElementById('select-review-marketplace')?.value || 'flipkart';
@@ -834,6 +869,8 @@ async function loadRateCardPreview() {
       if (!diffRes?.success) throw new Error(diffRes?.error || 'Change detection failed.');
       currentRateCards = res.rateCards;
       currentChanges = diffRes.changes || [];
+      currentEffectiveDate = diffRes.effectiveDate || '';
+      currentDiffSummary = diffRes.summary || {};
       currentComparisonAvailable = diffRes.dbAvailable !== false;
       // Keep the local extraction visible when the PostgreSQL comparison is
       // unavailable, but never leave publication enabled without that review.
@@ -946,7 +983,7 @@ async function loadRateCardPreview() {
           }
         });
       }
-      setTableMessage(tbody, 8, res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.');
+      setTableMessage(tbody, 10, res.error ? 'Failed to load preview: ' + res.error : 'No active rate cards configured for ' + selectedChannel + '. Automated scraping active for Flipkart & Shopsy.');
     }
   } catch (err) {
     // A stale request's failure belongs to a selection nobody is looking at
@@ -974,7 +1011,7 @@ async function loadRateCardPreview() {
         }
       });
     }
-    setTableMessage(tbody, 8, `Error loading rates: ${err.message}`, true);
+    setTableMessage(tbody, 10, `Error loading rates: ${err.message}`, true);
   }
 }
 
@@ -1009,6 +1046,7 @@ function describeRateRecord(table, row) {
 
 function renderDiffTable() {
   const tbody = document.getElementById('diff-tbody');
+  if (!tbody) return;
   const rows = [];
 
   for (const card of currentRateCards) {
@@ -1017,24 +1055,30 @@ function renderDiffTable() {
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission' || activeDiffFilter === 'anomalies') {
       for (const c of commissions) {
-        // Match changes per slab (count-level records carry no price bounds and
-        // legitimately apply to every slab of that brand).
         const change = currentChanges.find(ch =>
           ch.marketplace === marketplace && ch.category === category && ch.brand === brand && ch.type === 'commission' &&
           (ch.priceMin == null ||
             (Math.abs(ch.priceMin - c.price_min) < 0.01 && Math.abs(ch.priceMax - c.price_max) < 1.0))
         );
+        const oldRateStr = change?.oldRate != null ? (Number(change.oldRate) * 100).toFixed(4) + '%' : (change ? '—' : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared'));
+        const newRateStr = (Number(c.rate) * 100).toFixed(4) + '%';
+        const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
           type: 'Commission',
           marketplace: marketplace.toUpperCase(),
           category,
           brand,
-          slab: c.price_max >= 999990 ? `≥ ₹${c.price_min}` : `₹${c.price_min} - ₹${c.price_max}`,
-          oldRate: change?.oldRate != null ? `${(change.oldRate * 100).toFixed(4)}%` : (change ? '—' : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared')),
-          newRate: `${(c.rate * 100).toFixed(4)}%`,
-          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          slab: c.price_max >= 999990 ? '≥ ₹' + c.price_min : '₹' + c.price_min + ' - ₹' + c.price_max,
+          oldRate: oldRateStr,
+          newRate: newRateStr,
+          difference: change?.difference || (isChanged ? ((c.rate - (change?.oldRate || 0)) * 100).toFixed(4) + '%' : '0.00%'),
+          effectiveDate: change?.effectiveDate || currentEffectiveDate || 'Immediate',
+          status: change ? (change.reason || change.changeType || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          financialImpact: change?.financialImpact || 'neutral',
+          recommendation: change?.recommendation || '',
           anomaly: Boolean(change?.anomaly),
-          anomalySeverity: change?.anomalySeverity
+          anomalySeverity: change?.anomalySeverity,
+          isChanged
         });
       }
     }
@@ -1050,43 +1094,53 @@ function renderDiffTable() {
                Math.abs(ch.priceMax - f.price_max) < 1.0)
             : (ch.slab == null || (ch.fulfilmentType ? ch.fulfilmentType === f.fulfilment_type : ch.slab.includes(f.fulfilment_type))))
         );
+        const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
           type: 'Fixed Fee',
           marketplace: marketplace.toUpperCase(),
           category,
           brand: 'All / Tier',
-          slab: `${f.fulfilment_type} (₹${f.price_min} - ₹${f.price_max})`,
-          oldRate: change?.oldRate != null ? `₹${change.oldRate}` : (change ? '—' : (currentComparisonAvailable ? `₹${f.rate}` : 'Uncompared')),
-          newRate: `₹${f.rate}`,
-          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          slab: f.fulfilment_type + ' (₹' + f.price_min + ' - ₹' + f.price_max + ')',
+          oldRate: change?.oldRate != null ? '₹' + change.oldRate : (change ? '—' : (currentComparisonAvailable ? '₹' + f.rate : 'Uncompared')),
+          newRate: '₹' + f.rate,
+          difference: change?.difference || (isChanged ? '₹' + (f.rate - (change?.oldRate || 0)) : '₹0.00'),
+          effectiveDate: change?.effectiveDate || currentEffectiveDate || 'Immediate',
+          status: change ? (change.reason || change.changeType || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          financialImpact: change?.financialImpact || 'neutral',
+          recommendation: change?.recommendation || '',
           anomaly: Boolean(change?.anomaly),
-          anomalySeverity: change?.anomalySeverity
+          anomalySeverity: change?.anomalySeverity,
+          isChanged
         });
       }
     }
 
-    // 3. Collection Fee rows (payment charges; staged scrapes commit these)
+    // 3. Collection Fee rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'collection' || activeDiffFilter === 'anomalies') {
-      const fmtColl = (value, type) => (type === 'pct' ? `${(value * 100).toFixed(2)}%` : `₹${value}`);
+      const fmtColl = (value, type) => (type === 'pct' ? (Number(value) * 100).toFixed(2) + '%' : '₹' + value);
       for (const cf of collectionFees) {
-        // Match changes per slab so one slab's old/new rates never bleed onto
-        // every other slab of that category.
         const change = currentChanges.find(ch =>
           ch.marketplace === marketplace && ch.category === category && ch.type === 'collection_fee' &&
           (ch.priceMin == null ||
             (Math.abs(ch.priceMin - cf.price_min) < 0.01 && Math.abs(ch.priceMax - cf.price_max) < 1.0))
         );
+        const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
           type: 'Collection Fee',
           marketplace: marketplace.toUpperCase(),
           category,
           brand: 'All',
-          slab: cf.price_max >= 999990 ? `≥ ₹${cf.price_min}` : `₹${cf.price_min} - ₹${cf.price_max}`,
+          slab: cf.price_max >= 999990 ? '≥ ₹' + cf.price_min : '₹' + cf.price_min + ' - ₹' + cf.price_max,
           oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared')),
-          newRate: change?.newRate != null ? change.newRate : `Prepaid ${fmtColl(cf.prepaid, cf.prepaid_type)} / Postpaid ${fmtColl(cf.postpaid, cf.postpaid_type)}`,
-          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          newRate: change?.newRate != null ? change.newRate : 'Prepaid ' + fmtColl(cf.prepaid, cf.prepaid_type) + ' / Postpaid ' + fmtColl(cf.postpaid, cf.postpaid_type),
+          difference: change?.difference || (isChanged ? 'Modified' : '—'),
+          effectiveDate: change?.effectiveDate || currentEffectiveDate || 'Immediate',
+          status: change ? (change.reason || change.changeType || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          financialImpact: change?.financialImpact || 'neutral',
+          recommendation: change?.recommendation || '',
           anomaly: Boolean(change?.anomaly),
-          anomalySeverity: change?.anomalySeverity
+          anomalySeverity: change?.anomalySeverity,
+          isChanged
         });
       }
     }
@@ -1102,46 +1156,61 @@ function renderDiffTable() {
                Math.abs(ch.priceMax - r.price_max) < 1.0)
             : (ch.slab == null || (ch.weightSlab ? ch.weightSlab === r.weight_slab : ch.slab.includes(r.weight_slab))))
         );
+        const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
           type: 'Reverse Shipping',
           marketplace: marketplace.toUpperCase(),
           category,
           brand: 'Standard',
-          slab: `${r.weight_slab} (₹${r.price_min} - ₹${r.price_max})`,
-          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : (currentComparisonAvailable ? `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}` : 'Uncompared')),
-          newRate: `L: ₹${r.local_fee}, Z: ₹${r.zonal_fee}, N: ₹${r.national_fee}; above ${r.base_weight}kg add L/Z/N ₹${r.local_additional_fee}/${r.zonal_additional_fee}/${r.national_additional_fee} per ${r.increment_weight}kg`,
-          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          slab: r.weight_slab + ' (₹' + r.price_min + ' - ₹' + r.price_max + ')',
+          oldRate: change?.oldRate != null ? change.oldRate : (change ? '—' : (currentComparisonAvailable ? 'L: ₹' + r.local_fee + ', Z: ₹' + r.zonal_fee + ', N: ₹' + r.national_fee : 'Uncompared')),
+          newRate: 'L: ₹' + r.local_fee + ', Z: ₹' + r.zonal_fee + ', N: ₹' + r.national_fee + '; above ' + r.base_weight + 'kg add L/Z/N ₹' + r.local_additional_fee + '/₹' + r.zonal_additional_fee + '/₹' + r.national_additional_fee + ' per ' + r.increment_weight + 'kg',
+          difference: change?.difference || (isChanged ? 'Modified' : '—'),
+          effectiveDate: change?.effectiveDate || currentEffectiveDate || 'Immediate',
+          status: change ? (change.reason || change.changeType || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          financialImpact: change?.financialImpact || 'neutral',
+          recommendation: change?.recommendation || '',
           anomaly: Boolean(change?.anomaly),
-          anomalySeverity: change?.anomalySeverity
+          anomalySeverity: change?.anomalySeverity,
+          isChanged
         });
       }
     }
 
-    // FBF pick-and-pack is reviewed even when PostgreSQL already matches it.
-    if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed' || activeDiffFilter === 'anomalies') {
+    // 5. FBF pick-and-pack
+    if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed' || activeDiffFilter === 'pickpack' || activeDiffFilter === 'anomalies') {
       for (const fee of pickPackFees) {
         const change = currentChanges.find(ch => ch.table === 'rc_pick_pack' &&
           ch.marketplace === marketplace && ch.category === category &&
           ch.fulfilmentType === fee.fulfilment_type &&
           (ch.priceMin == null || (Math.abs(ch.priceMin - fee.price_min) < 0.01 && Math.abs(ch.priceMax - fee.price_max) < 1.0)) &&
           (ch.weightMin == null || (Math.abs(ch.weightMin - fee.weight_min) < 0.001 && Math.abs(ch.weightMax - fee.weight_max) < 0.001)));
+        const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
-          type: 'FBF Pick & Pack', marketplace: marketplace.toUpperCase(), category, brand: 'All',
-          slab: `${fee.fulfilment_type} · ${fee.weight_min}-${fee.weight_max}kg · ${fee.price_scope === 'all' ? 'all prices' : `₹${fee.price_min}-₹${fee.price_max}`}`,
+          type: 'FBF Pick & Pack',
+          marketplace: marketplace.toUpperCase(),
+          category,
+          brand: 'All',
+          slab: fee.fulfilment_type + ' · ' + (fee.weight_min ?? 0) + '-' + (fee.weight_max ?? '-') + 'kg · ' + (fee.price_scope === 'all' ? 'all prices' : '₹' + fee.price_min + '-₹' + fee.price_max),
           oldRate: change ? (change.oldRow ? describeRateRecord('rc_pick_pack', change.oldRow) : '—') : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared'),
           newRate: describeRateRecord('rc_pick_pack', fee),
-          status: change ? (change.reason || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
-          anomaly: Boolean(change?.anomaly), anomalySeverity: change?.anomalySeverity
+          difference: change?.difference || (isChanged ? 'Modified' : '₹0.00'),
+          effectiveDate: change?.effectiveDate || currentEffectiveDate || 'Immediate',
+          status: change ? (change.reason || change.changeType || 'Modified') : (currentComparisonAvailable ? 'Active' : 'Uncompared'),
+          financialImpact: change?.financialImpact || 'neutral',
+          recommendation: change?.recommendation || '',
+          anomaly: Boolean(change?.anomaly),
+          anomalySeverity: change?.anomalySeverity,
+          isChanged
         });
       }
     }
   }
 
-  // Include every changed component and removed slab in the review. The full
-  // records expose weight increments and zone values which a headline rate hides.
+  // Include explicit change records (e.g. removed or separate component changes)
   const changeFilterByTable = {
     rc_commission: 'commission', commission: 'commission',
-    rc_fixed_fee: 'fixed', fixed_fee: 'fixed', rc_pick_pack: 'fixed', pick_pack: 'fixed',
+    rc_fixed_fee: 'fixed', fixed_fee: 'fixed', rc_pick_pack: 'pickpack', pick_pack: 'pickpack',
     rc_collection_fee: 'collection', collection_fee: 'collection',
     rc_reverse_shipping: 'reverse', reverse_shipping: 'reverse'
   };
@@ -1149,48 +1218,224 @@ function renderDiffTable() {
     if (!window.rateCardReviewHelpers?.shouldRenderChangeDetail(change)) continue;
     if (activeDiffFilter !== 'all' && activeDiffFilter !== 'anomalies' &&
         changeFilterByTable[change.table] !== activeDiffFilter &&
-        changeFilterByTable[change.type] !== activeDiffFilter) continue;
-    rows.push({type: change.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : 'Change detail',
-      marketplace: change.marketplace.toUpperCase(), category: change.category,
-      brand: change.brand || 'All', slab: change.slab,
+        changeFilterByTable[change.type] !== activeDiffFilter &&
+        !(activeDiffFilter === 'fixed' && (change.table === 'rc_pick_pack' || change.type === 'pick_pack'))) continue;
+    rows.push({
+      type: change.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : (change.type ? change.type.replace('_', ' ') : 'Change detail'),
+      marketplace: (change.marketplace || 'FLIPKART').toUpperCase(),
+      category: change.category,
+      brand: change.brand || 'All',
+      slab: change.slab || '—',
       oldRate: describeRateRecord(change.table, change.oldRow),
       newRate: change.newRow ? describeRateRecord(change.table, change.newRow) : 'Removed',
-      status: change.reason || change.changeType, anomaly: Boolean(change.anomaly)});
+      difference: change.difference || '—',
+      effectiveDate: change.effectiveDate || currentEffectiveDate || 'Immediate',
+      status: change.reason || change.changeType || 'Modified',
+      financialImpact: change.financialImpact || 'neutral',
+      recommendation: change.recommendation || '',
+      anomaly: Boolean(change.anomaly),
+      anomalySeverity: change.anomalySeverity,
+      isChanged: true
+    });
   }
 
-  // Filter for anomalies only if requested
-  const filteredRows = activeDiffFilter === 'anomalies' ? rows.filter(r => r.anomaly) : rows;
+  // Update Summary KPI Strip
+  const totalCount = rows.length;
+  const unchangedCount = rows.filter(r => !r.isChanged).length;
+  const changedRows = rows.filter(r => r.isChanged);
+  const modifiedCount = changedRows.filter(r => String(r.status).toLowerCase().includes('mod') || r.financialImpact !== 'neutral').length;
+  const addedCount = changedRows.filter(r => String(r.status).toLowerCase().includes('add') || String(r.status).toLowerCase().includes('new')).length;
+  const removedCount = changedRows.filter(r => String(r.status).toLowerCase().includes('rem') || r.newRate === 'Removed').length;
+  const anomalyCount = rows.filter(r => r.anomaly).length;
+
+  const setKpi = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+  };
+  setKpi('kpi-diff-total', totalCount);
+  setKpi('kpi-diff-unchanged', unchangedCount);
+  setKpi('kpi-diff-modified', modifiedCount);
+  setKpi('kpi-diff-added', addedCount);
+  setKpi('kpi-diff-removed', removedCount);
+  setKpi('kpi-diff-anomalies', anomalyCount);
+
+  // Filter by status (all / changed / unchanged)
+  let statusFiltered = rows;
+  if (activeStatusFilter === 'changed') {
+    statusFiltered = rows.filter(r => r.isChanged);
+  } else if (activeStatusFilter === 'unchanged') {
+    statusFiltered = rows.filter(r => !r.isChanged);
+  }
+
+  // Filter for anomalies if requested
+  const filteredRows = activeDiffFilter === 'anomalies' ? statusFiltered.filter(r => r.anomaly) : statusFiltered;
 
   if (filteredRows.length === 0) {
     const emptyMsg = activeDiffFilter === 'anomalies'
       ? '✓ No rate anomalies detected. All rate shifts are within expected thresholds.'
-      : 'No fee entries for the selected filter.';
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">${emptyMsg}</td></tr>`;
+      : (activeStatusFilter === 'changed' ? '✓ No changes detected — all fees match active PostgreSQL rates.' : 'No fee entries for the selected filter.');
+    tbody.innerHTML = '<tr><td colspan="10" class="empty-state">' + emptyMsg + '</td></tr>';
     return;
   }
 
-  // Deduplicate and render up to 100 rows
-  const displayRows = filteredRows;
-  tbody.innerHTML = displayRows.map(r => `
-    <tr class="${r.anomaly ? 'row-anomaly' : ''}" style="${r.anomaly ? 'background: rgba(245, 158, 11, 0.08);' : ''}">
-      <td><span class="badge ${r.type === 'Commission' ? 'badge-portal' : 'badge-account'}">${escapeHtml(r.type)}</span></td>
-      <td><strong>${escapeHtml(r.marketplace)}</strong></td>
-      <td>${escapeHtml(r.category)}</td>
-      <td>${escapeHtml(r.brand)}</td>
-      <td style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">${escapeHtml(r.slab)}</td>
-      <td style="color: var(--text-muted);">${escapeHtml(r.oldRate)}</td>
-      <td style="color: var(--info); font-weight: 600;">${escapeHtml(r.newRate)}</td>
-      <td>
-        ${r.anomaly
-          ? `<span class="status-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px;">${escapeHtml(r.status)}</span>`
-          : `<span class="status-badge ${String(r.status).includes('Active') ? 'badge-active' : 'badge-modified'}">${escapeHtml(r.status)}</span>`
-        }
-      </td>
-    </tr>
-  `).join('');
+  tbody.innerHTML = filteredRows.map(r => {
+    let diffColor = 'inherit';
+    if (r.financialImpact === 'increase') diffColor = 'var(--danger-strong)';
+    else if (r.financialImpact === 'decrease') diffColor = 'var(--success-strong)';
+
+    let statusHtml = '';
+    if (r.anomaly) {
+      statusHtml = '<span class="status-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px;" title="' + escapeHtml(r.recommendation || 'Significant rate anomaly') + '">⚠️ ' + escapeHtml(r.status) + '</span>';
+    } else if (r.financialImpact === 'increase') {
+      statusHtml = '<span class="status-badge badge-increase" style="font-size: 11px; padding: 2px 6px; border-radius: 4px;" title="' + escapeHtml(r.recommendation || 'Cost increase') + '">🔺 Cost Increase</span>';
+    } else if (r.financialImpact === 'decrease') {
+      statusHtml = '<span class="status-badge badge-decrease" style="font-size: 11px; padding: 2px 6px; border-radius: 4px;" title="' + escapeHtml(r.recommendation || 'Seller savings') + '">🔻 Cost Decrease</span>';
+    } else if (String(r.status).includes('Active') || !r.isChanged) {
+      statusHtml = '<span class="status-badge badge-active" style="font-size: 11px; padding: 2px 6px; border-radius: 4px;">Active</span>';
+    } else {
+      statusHtml = '<span class="status-badge badge-modified" style="font-size: 11px; padding: 2px 6px; border-radius: 4px;">' + escapeHtml(r.status) + '</span>';
+    }
+
+    return '<tr class="' + (r.anomaly ? 'row-anomaly' : '') + '" style="' + (r.anomaly ? 'background: rgba(245, 158, 11, 0.08);' : '') + '">' +
+      '<td><span class="badge ' + (r.type === 'Commission' ? 'badge-portal' : 'badge-account') + '">' + escapeHtml(r.type) + '</span></td>' +
+      '<td><strong>' + escapeHtml(r.marketplace) + '</strong></td>' +
+      '<td>' + escapeHtml(r.category) + '</td>' +
+      '<td>' + escapeHtml(r.brand) + '</td>' +
+      '<td style="font-family: \'JetBrains Mono\', monospace; font-size: 12px;">' + escapeHtml(r.slab) + '</td>' +
+      '<td style="color: var(--text-muted);">' + escapeHtml(r.oldRate) + '</td>' +
+      '<td style="color: var(--info); font-weight: 600;">' + escapeHtml(r.newRate) + '</td>' +
+      '<td style="font-family: \'JetBrains Mono\', monospace; font-weight: 600; color: ' + diffColor + ';">' + escapeHtml(r.difference) + '</td>' +
+      '<td style="font-size: 12px; color: var(--text-muted);">' + escapeHtml(r.effectiveDate) + '</td>' +
+      '<td>' + statusHtml + '</td>' +
+    '</tr>';
+  }).join('');
 }
 
-// ── Button & Form Event Listeners ────────────────────────────────────────────
+// ── Interactive Rate Change Approval Modal Logic ──────────────────────────────
+function showRateChangeApprovalModal() {
+  const modal = document.getElementById('rate-change-approval-modal');
+  if (!modal) return;
+
+  const reviewMarketplace = document.getElementById('select-review-marketplace')?.value || 'flipkart';
+  const channelBadge = document.getElementById('modal-approval-channel-badge');
+  if (channelBadge) channelBadge.textContent = reviewMarketplace.toUpperCase();
+
+  const totalShifts = currentChanges.length;
+  const anomalies = currentChanges.filter(c => c.anomaly);
+  const increases = currentChanges.filter(c => c.financialImpact === 'increase');
+  const decreases = currentChanges.filter(c => c.financialImpact === 'decrease');
+
+  const setVal = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+  setVal('modal-kpi-total', totalShifts);
+  setVal('modal-kpi-increases', increases.length);
+  setVal('modal-kpi-decreases', decreases.length);
+  setVal('modal-kpi-anomalies', anomalies.length);
+
+  // Impact alert banner
+  const impactBanner = document.getElementById('modal-impact-banner');
+  const impactTitle = document.getElementById('modal-impact-title');
+  const impactDesc = document.getElementById('modal-impact-desc');
+  const impactEffective = document.getElementById('modal-impact-effective');
+
+  if (anomalies.length > 0) {
+    if (impactBanner) {
+      impactBanner.style.background = 'rgba(239, 68, 68, 0.12)';
+      impactBanner.style.borderColor = 'var(--danger)';
+    }
+    if (impactTitle) {
+      impactTitle.textContent = '⚠️ CAUTION: ' + anomalies.length + ' Rate Anomalies Detected!';
+      impactTitle.style.color = 'var(--danger-strong)';
+    }
+    if (impactDesc) impactDesc.textContent = anomalyGuidance(currentChanges, anomalies.length);
+  } else if (increases.length > 0) {
+    if (impactBanner) {
+      impactBanner.style.background = 'rgba(245, 158, 11, 0.1)';
+      impactBanner.style.borderColor = 'var(--warning)';
+    }
+    if (impactTitle) {
+      impactTitle.textContent = 'Financial Impact Warning: ' + increases.length + ' Fee Increase(s)';
+      impactTitle.style.color = 'var(--warning-strong)';
+    }
+    if (impactDesc) impactDesc.textContent = 'Higher marketplace deductions detected. Review margin impact before publishing.';
+  } else {
+    if (impactBanner) {
+      impactBanner.style.background = 'rgba(16, 185, 129, 0.1)';
+      impactBanner.style.borderColor = 'var(--success)';
+    }
+    if (impactTitle) {
+      impactTitle.textContent = 'Safe Rate Card Update';
+      impactTitle.style.color = 'var(--success-strong)';
+    }
+    if (impactDesc) impactDesc.textContent = totalShifts > 0 ? totalShifts + ' fee adjustments ready for publication.' : 'No fee increases detected.';
+  }
+
+  if (impactEffective) {
+    impactEffective.textContent = 'Effective Date: ' + (currentEffectiveDate || 'Immediate') + ' • Prior applicable rates auto-close cleanly the day before.';
+  }
+
+  // Populate preview table (top 15 shifts)
+  const tbody = document.getElementById('modal-shifts-tbody');
+  if (tbody) {
+    if (currentChanges.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No fee shifts detected. Staged rates match existing active rates.</td></tr>';
+    } else {
+      const sortedChanges = [...currentChanges].sort((a, b) => {
+        if (a.anomaly && !b.anomaly) return -1;
+        if (!a.anomaly && b.anomaly) return 1;
+        if (a.financialImpact === 'increase' && b.financialImpact !== 'increase') return -1;
+        if (a.financialImpact !== 'increase' && b.financialImpact === 'increase') return 1;
+        return 0;
+      }).slice(0, 15);
+
+      tbody.innerHTML = sortedChanges.map(ch => {
+        const component = ch.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : (ch.type ? ch.type.replace('_', ' ') : 'Fee');
+        const scope = (ch.category || 'All') + (ch.brand && ch.brand !== 'All' ? ' (' + ch.brand + ')' : '') + ' · ' + (ch.slab || ch.fulfilmentType || 'All slabs');
+        const oldR = describeRateRecord(ch.table, ch.oldRow) || (ch.oldRate != null ? (ch.table === 'rc_commission' ? (Number(ch.oldRate) * 100).toFixed(4) + '%' : '₹' + ch.oldRate) : '—');
+        const newR = describeRateRecord(ch.table, ch.newRow) || (ch.newRate != null ? (ch.table === 'rc_commission' ? (Number(ch.newRate) * 100).toFixed(4) + '%' : '₹' + ch.newRate) : '—');
+        const diff = ch.difference || '—';
+        const impact = ch.recommendation || (ch.financialImpact === 'increase' ? 'Higher cost' : (ch.financialImpact === 'decrease' ? 'Cost saving' : 'Neutral'));
+
+        return '<tr>' +
+          '<td><strong>' + escapeHtml(component) + '</strong></td>' +
+          '<td style="font-size: 12px;">' + escapeHtml(scope) + '</td>' +
+          '<td style="color: var(--text-muted); font-size: 12px;">' + escapeHtml(oldR) + '</td>' +
+          '<td style="color: var(--info); font-weight: 600; font-size: 12px;">' + escapeHtml(newR) + '</td>' +
+          '<td style="font-family: \'JetBrains Mono\', monospace; font-weight: 600; color: ' + (ch.financialImpact === 'increase' ? 'var(--danger-strong)' : (ch.financialImpact === 'decrease' ? 'var(--success-strong)' : 'inherit')) + '; font-size: 12px;">' + escapeHtml(diff) + '</td>' +
+          '<td style="font-size: 11px; color: ' + (ch.anomaly ? 'var(--warning-strong)' : 'var(--text-muted)') + ';">' + (ch.anomaly ? '⚠️ ' : '') + escapeHtml(impact) + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+  }
+
+  modal.style.display = 'flex';
+}
+
+function hideRateChangeApprovalModal() {
+  const modal = document.getElementById('rate-change-approval-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function triggerRateChangeNotification(changesCount, increasesCount) {
+  if (typeof Notification === 'undefined') return;
+  const title = increasesCount > 0 
+    ? '⚠️ Rate Card Changes: ' + changesCount + ' fee shifts (' + increasesCount + ' cost increases)'
+    : 'Rate Card Changes: ' + changesCount + ' fee shifts detected';
+  const body = 'User approval is required before publishing to PostgreSQL database. Click to review.';
+
+  if (Notification.permission === 'granted') {
+    new Notification(title, { body, icon: 'icon.png' });
+  } else if (Notification.permission !== 'denied') {
+    Notification.requestPermission().then(perm => {
+      if (perm === 'granted') {
+        new Notification(title, { body, icon: 'icon.png' });
+      }
+    });
+  }
+}
+
 function setupEventListeners() {
   const btnDashRun = document.getElementById('btn-dash-run');
   const btnDashTour = document.getElementById('btn-dash-tour');
@@ -1264,6 +1509,94 @@ function setupEventListeners() {
       activeDiffFilter = targetFilter;
       renderDiffTable();
     });
+  });
+
+  // Filter Status Toggles (All Slabs / Changes Only / Unchanged Only)
+  const btnStatusAll = document.getElementById('btn-status-all');
+  const btnStatusChanged = document.getElementById('btn-status-changed');
+  const btnStatusUnchanged = document.getElementById('btn-status-unchanged');
+
+  const setStatusFilter = (status) => {
+    activeStatusFilter = status;
+    [btnStatusAll, btnStatusChanged, btnStatusUnchanged].forEach(btn => {
+      if (!btn) return;
+      if (btn.getAttribute('data-status') === status) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+    renderDiffTable();
+  };
+
+  btnStatusAll?.addEventListener('click', () => setStatusFilter('all'));
+  btnStatusChanged?.addEventListener('click', () => setStatusFilter('changed'));
+  btnStatusUnchanged?.addEventListener('click', () => setStatusFilter('unchanged'));
+
+  // Rate Change Approval Modal Buttons
+  document.getElementById('btn-modal-close-x')?.addEventListener('click', hideRateChangeApprovalModal);
+  document.getElementById('btn-modal-cancel')?.addEventListener('click', hideRateChangeApprovalModal);
+  document.getElementById('btn-modal-review-changes')?.addEventListener('click', () => {
+    hideRateChangeApprovalModal();
+    document.querySelector('.nav-item[data-tab="diff"]')?.click();
+    setStatusFilter('changed');
+  });
+  document.getElementById('btn-modal-approve-publish')?.addEventListener('click', executePublishToDatabase);
+
+  // App Update Modal Buttons
+  document.getElementById('btn-app-update-later')?.addEventListener('click', () => {
+    deferredUpdateVersion = pendingUpdateDownloaded || latestAvailableVersion;
+    hideAppUpdateModal();
+    const banner = document.getElementById('update-banner');
+    if (banner) banner.style.display = 'none';
+  });
+  document.getElementById('btn-app-update-now')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-app-update-now');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Downloading...';
+    }
+    const progContainer = document.getElementById('app-update-progress-container');
+    if (progContainer) progContainer.style.display = 'block';
+    try {
+      const res = await window.ratecardAPI.downloadUpdate();
+      if (!res?.success) {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '⚡ Update Now';
+        }
+        alert(res?.error || 'The update could not be downloaded.');
+      }
+    } catch (err) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '⚡ Update Now';
+      }
+      console.warn('Download update failed:', err);
+    }
+  });
+  document.getElementById('btn-app-update-restart')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-app-update-restart');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Restarting...';
+    }
+    try {
+      const res = await window.ratecardAPI.installUpdate();
+      if (!res?.success) {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🔄 Restart to Apply';
+        }
+        alert(res?.error || 'The update could not be installed.');
+      }
+    } catch (err) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '🔄 Restart to Apply';
+      }
+      console.warn('Install update failed:', err);
+    }
   });
 
   btnLoadPreview?.addEventListener('click', loadRateCardPreview);
@@ -1415,6 +1748,11 @@ function setupEventListeners() {
         await loadRateCardPreview();
         // Switch to Review & DB Sync tab so user can inspect diffs and commit
         document.querySelector('.nav-item[data-tab="diff"]')?.click();
+        if (currentChanges.length > 0) {
+          const incCount = currentChanges.filter(c => c.financialImpact === 'increase').length;
+          triggerRateChangeNotification(currentChanges.length, incCount);
+          showRateChangeApprovalModal();
+        }
       } else {
         appendTerminalLine('Scraping failed' + (result.errorCode ? ' [' + result.errorCode + ']' : '') + ': ' + result.error);
         if (result.diagnostic?.screenshot) appendTerminalLine('Failure screenshot saved: ' + result.diagnostic.screenshot);
@@ -1432,29 +1770,24 @@ function setupEventListeners() {
   });
 
   // Commit to Database
-  btnCommitDb?.addEventListener('click', async () => {
+  async function executePublishToDatabase() {
     if (currentRateCards.length === 0 || !currentCanSync) {
       alert('Run a successful extraction first. Generated template rates cannot be committed as live rates.');
       return;
     }
 
-    const anomalies = currentChanges.filter(c => c.anomaly);
-    const reviewMarketplace = document.getElementById('select-review-marketplace')?.value || 'flipkart';
-    let confirmMsg = 'Publish ' + currentRateCards.length + ' ' + reviewMarketplace.toUpperCase() + ' rate cards to the database?\n\nSuperseded rates will be auto-closed and the review will be recorded.';
-    if (anomalies.length > 0) {
-      confirmMsg = `⚠️ CAUTION: ${anomalies.length} RATE ANOMALIES DETECTED!\n\nReview flagged fee shifts (e.g. commission jump ≥5% or fee change ≥50%). Are you sure you want to commit these changes to PostgreSQL?\n\nClick OK to auto-close superseded rates and record an audit snapshot.`;
+    const btnApprovePublish = document.getElementById('btn-modal-approve-publish');
+    if (btnApprovePublish) {
+      btnApprovePublish.disabled = true;
+      btnApprovePublish.textContent = '⏳ Publishing to Database...';
     }
-
-    if (!confirm(confirmMsg)) {
-      return;
-    }
-
-    appendTerminalLine('Committing brand-wise rate cards to PostgreSQL database...');
     btnCommitDb.disabled = true;
     btnCommitDb.innerText = '⏳ Syncing...';
 
+    appendTerminalLine('Committing brand-wise rate cards to PostgreSQL database...');
+
     try {
-      const session = await window.ratecardAPI.loadSession?.().catch(() => null);
+      const session = await window.ratecardAPI.authGetSession?.().catch(() => null);
       const syncOptions = {
         forceUpdate: true,
         actor: session?.user?.email || session?.user?.name || 'desktop-operator',
@@ -1462,30 +1795,44 @@ function setupEventListeners() {
       };
       const res = await window.ratecardAPI.syncBrandRateCards(currentRateCards, syncOptions);
       if (res.success && res.result?.updated) {
-        appendTerminalLine(`✓ ${res.result.message}`);
-        appendTerminalLine(`✓ Version snapshot: ${res.result.versionName}`);
+        appendTerminalLine('✓ ' + res.result.message);
+        appendTerminalLine('✓ Version snapshot: ' + res.result.versionName);
         if (res.result?.anomaliesCount > 0) {
-          appendTerminalLine(`⚠️ Note: ${res.result.anomaliesCount} anomalies recorded in version audit snapshot.`);
+          appendTerminalLine('⚠️ Note: ' + res.result.anomaliesCount + ' anomalies recorded in version audit snapshot.');
         }
-        alert('Database synchronization completed successfully!');
+        hideRateChangeApprovalModal();
+        alert('Database synchronization completed successfully!\n\n' + res.result.message + '\nAudit Version: ' + res.result.versionName);
         await loadRateCardPreview();
       } else if (res.success) {
         const message = res.result?.message || 'Database is already in sync.';
-        appendTerminalLine(`Database sync result: ${message}`);
+        appendTerminalLine('Database sync result: ' + message);
+        hideRateChangeApprovalModal();
         alert(message);
         await loadRateCardPreview();
       } else {
         const message = res.error || res.result?.message || 'Database synchronization failed.';
-        appendTerminalLine(`Database sync failed: ${message}`);
+        appendTerminalLine('Database sync failed: ' + message);
         alert(message);
       }
     } catch (err) {
-      appendTerminalLine(`Database sync failed: ${err.message}`);
-      alert(`Database sync failed: ${err.message}`);
+      appendTerminalLine('Database sync failed: ' + err.message);
+      alert('Database sync failed: ' + err.message);
     } finally {
       btnCommitDb.disabled = !currentCanSync;
       btnCommitDb.innerText = '✓ Commit & Auto-Close in Database';
+      if (btnApprovePublish) {
+        btnApprovePublish.disabled = false;
+        btnApprovePublish.textContent = '✅ Approve & Publish to Database';
+      }
     }
+  }
+
+  btnCommitDb?.addEventListener('click', () => {
+    if (currentRateCards.length === 0 || !currentCanSync) {
+      alert('Run a successful extraction first. Generated template rates cannot be committed as live rates.');
+      return;
+    }
+    showRateChangeApprovalModal();
   });
 
   // Excel Actions
@@ -1719,7 +2066,7 @@ async function loadMarketplaceAccountsUI() {
 
           // TD 3: Portal URL
           const tdPortal = document.createElement('td');
-          tdPortal.style.fontFamily = "'JetBrains Mono', monospace";
+          tdPortal.style.fontFamily = "\'JetBrains Mono\', monospace";
           tdPortal.style.fontSize = '11px';
           tdPortal.textContent = acc.portal_url || '—';
           tr.appendChild(tdPortal);
