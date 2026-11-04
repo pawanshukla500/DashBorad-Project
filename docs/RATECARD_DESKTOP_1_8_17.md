@@ -102,5 +102,10 @@ All test suites and CI workflows passed 100% green:
 ## 5. Review & Deployment Policy Compliance
 
 - **Branch & PR Workflow**: Delivered on dedicated branch `feat/desktop-ratecard-hardening-light-ui` via PR [#100](https://github.com/pawanshukla500/DashBorad-Project/pull/100).
-- **CodeAnt AI Automated Review**: PR initialized and under active CodeAnt AI review.
+- **CodeAnt AI Automated Review**: Verified and addressed all CodeAnt AI review suggestions (`#a2354`):
+  1. Resolved `cost_increase` vs `increase` API mismatch in `desktop/ui/renderer.js` using `isCostIncrease` and `isCostDecrease` helpers.
+  2. Fixed reverse shipping and collection fee modified calculation in `backend/services/rateCardObservationPlan.js` to accurately differentiate cost increases from cost decreases and prevent false warnings.
+  3. Ensured `deferredUpdateVersion` prevents the auto-updater modal from re-popping when a user has clicked "Later".
+  4. Added click-to-review event listener to the native desktop notification.
 - **Production Guard**: Zero production fee modifications are published or merged without explicit administrative sign-off.
+

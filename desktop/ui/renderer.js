@@ -191,7 +191,7 @@ function applyUpdateBanner(status) {
   const version = rawVersion ? (' v' + rawVersion) : '';
   if (kind === 'downloaded') {
     pendingUpdateDownloaded = rawVersion;
-    showAppUpdateModal(rawVersion, true);
+    if (deferredUpdateVersion !== rawVersion) showAppUpdateModal(rawVersion, true);
   }
   if (kind === 'available') {
     latestAvailableVersion = rawVersion;
@@ -1267,6 +1267,9 @@ function renderDiffTable() {
     statusFiltered = rows.filter(r => !r.isChanged);
   }
 
+  const isCostIncrease = (impact) => impact === 'cost_increase' || impact === 'increase' || impact === 'new_fee_introduced';
+  const isCostDecrease = (impact) => impact === 'cost_decrease' || impact === 'decrease' || impact === 'fee_removed';
+
   // Filter for anomalies if requested
   const filteredRows = activeDiffFilter === 'anomalies' ? statusFiltered.filter(r => r.anomaly) : statusFiltered;
 
@@ -1280,15 +1283,15 @@ function renderDiffTable() {
 
   tbody.innerHTML = filteredRows.map(r => {
     let diffColor = 'inherit';
-    if (r.financialImpact === 'increase') diffColor = 'var(--danger-strong)';
-    else if (r.financialImpact === 'decrease') diffColor = 'var(--success-strong)';
+    if (isCostIncrease(r.financialImpact)) diffColor = 'var(--danger-strong)';
+    else if (isCostDecrease(r.financialImpact)) diffColor = 'var(--success-strong)';
 
     let statusHtml = '';
     if (r.anomaly) {
       statusHtml = '<span class="status-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px;" title="' + escapeHtml(r.recommendation || 'Significant rate anomaly') + '">⚠️ ' + escapeHtml(r.status) + '</span>';
-    } else if (r.financialImpact === 'increase') {
+    } else if (isCostIncrease(r.financialImpact)) {
       statusHtml = '<span class="status-badge badge-increase" style="font-size: 11px; padding: 2px 6px; border-radius: 4px;" title="' + escapeHtml(r.recommendation || 'Cost increase') + '">🔺 Cost Increase</span>';
-    } else if (r.financialImpact === 'decrease') {
+    } else if (isCostDecrease(r.financialImpact)) {
       statusHtml = '<span class="status-badge badge-decrease" style="font-size: 11px; padding: 2px 6px; border-radius: 4px;" title="' + escapeHtml(r.recommendation || 'Seller savings') + '">🔻 Cost Decrease</span>';
     } else if (String(r.status).includes('Active') || !r.isChanged) {
       statusHtml = '<span class="status-badge badge-active" style="font-size: 11px; padding: 2px 6px; border-radius: 4px;">Active</span>';
@@ -1320,10 +1323,13 @@ function showRateChangeApprovalModal() {
   const channelBadge = document.getElementById('modal-approval-channel-badge');
   if (channelBadge) channelBadge.textContent = reviewMarketplace.toUpperCase();
 
+  const isCostIncrease = (impact) => impact === 'cost_increase' || impact === 'increase' || impact === 'new_fee_introduced';
+  const isCostDecrease = (impact) => impact === 'cost_decrease' || impact === 'decrease' || impact === 'fee_removed';
+
   const totalShifts = currentChanges.length;
   const anomalies = currentChanges.filter(c => c.anomaly);
-  const increases = currentChanges.filter(c => c.financialImpact === 'increase');
-  const decreases = currentChanges.filter(c => c.financialImpact === 'decrease');
+  const increases = currentChanges.filter(c => isCostIncrease(c.financialImpact));
+  const decreases = currentChanges.filter(c => isCostDecrease(c.financialImpact));
 
   const setVal = (id, v) => {
     const el = document.getElementById(id);
@@ -1385,8 +1391,8 @@ function showRateChangeApprovalModal() {
       const sortedChanges = [...currentChanges].sort((a, b) => {
         if (a.anomaly && !b.anomaly) return -1;
         if (!a.anomaly && b.anomaly) return 1;
-        if (a.financialImpact === 'increase' && b.financialImpact !== 'increase') return -1;
-        if (a.financialImpact !== 'increase' && b.financialImpact === 'increase') return 1;
+        if (isCostIncrease(a.financialImpact) && !isCostIncrease(b.financialImpact)) return -1;
+        if (!isCostIncrease(a.financialImpact) && isCostIncrease(b.financialImpact)) return 1;
         return 0;
       }).slice(0, 15);
 
@@ -1396,14 +1402,14 @@ function showRateChangeApprovalModal() {
         const oldR = describeRateRecord(ch.table, ch.oldRow) || (ch.oldRate != null ? (ch.table === 'rc_commission' ? (Number(ch.oldRate) * 100).toFixed(4) + '%' : '₹' + ch.oldRate) : '—');
         const newR = describeRateRecord(ch.table, ch.newRow) || (ch.newRate != null ? (ch.table === 'rc_commission' ? (Number(ch.newRate) * 100).toFixed(4) + '%' : '₹' + ch.newRate) : '—');
         const diff = ch.difference || '—';
-        const impact = ch.recommendation || (ch.financialImpact === 'increase' ? 'Higher cost' : (ch.financialImpact === 'decrease' ? 'Cost saving' : 'Neutral'));
+        const impact = ch.recommendation || (isCostIncrease(ch.financialImpact) ? 'Higher cost' : (isCostDecrease(ch.financialImpact) ? 'Cost saving' : 'Neutral'));
 
         return '<tr>' +
           '<td><strong>' + escapeHtml(component) + '</strong></td>' +
           '<td style="font-size: 12px;">' + escapeHtml(scope) + '</td>' +
           '<td style="color: var(--text-muted); font-size: 12px;">' + escapeHtml(oldR) + '</td>' +
           '<td style="color: var(--info); font-weight: 600; font-size: 12px;">' + escapeHtml(newR) + '</td>' +
-          '<td style="font-family: \'JetBrains Mono\', monospace; font-weight: 600; color: ' + (ch.financialImpact === 'increase' ? 'var(--danger-strong)' : (ch.financialImpact === 'decrease' ? 'var(--success-strong)' : 'inherit')) + '; font-size: 12px;">' + escapeHtml(diff) + '</td>' +
+          '<td style="font-family: \'JetBrains Mono\', monospace; font-weight: 600; color: ' + (isCostIncrease(ch.financialImpact) ? 'var(--danger-strong)' : (isCostDecrease(ch.financialImpact) ? 'var(--success-strong)' : 'inherit')) + '; font-size: 12px;">' + escapeHtml(diff) + '</td>' +
           '<td style="font-size: 11px; color: ' + (ch.anomaly ? 'var(--warning-strong)' : 'var(--text-muted)') + ';">' + (ch.anomaly ? '⚠️ ' : '') + escapeHtml(impact) + '</td>' +
         '</tr>';
       }).join('');
@@ -1425,13 +1431,22 @@ function triggerRateChangeNotification(changesCount, increasesCount) {
     : 'Rate Card Changes: ' + changesCount + ' fee shifts detected';
   const body = 'User approval is required before publishing to PostgreSQL database. Click to review.';
 
+  const createNotice = () => {
+    try {
+      const n = new Notification(title, { body, icon: 'icon.png' });
+      n.onclick = () => {
+        window.focus();
+        document.querySelector('.nav-item[data-tab="diff"]')?.click();
+        showRateChangeApprovalModal();
+      };
+    } catch (_) {}
+  };
+
   if (Notification.permission === 'granted') {
-    new Notification(title, { body, icon: 'icon.png' });
+    createNotice();
   } else if (Notification.permission !== 'denied') {
     Notification.requestPermission().then(perm => {
-      if (perm === 'granted') {
-        new Notification(title, { body, icon: 'icon.png' });
-      }
+      if (perm === 'granted') createNotice();
     });
   }
 }
@@ -1749,7 +1764,7 @@ function setupEventListeners() {
         // Switch to Review & DB Sync tab so user can inspect diffs and commit
         document.querySelector('.nav-item[data-tab="diff"]')?.click();
         if (currentChanges.length > 0) {
-          const incCount = currentChanges.filter(c => c.financialImpact === 'increase').length;
+          const incCount = currentChanges.filter(c => c.financialImpact === 'cost_increase' || c.financialImpact === 'increase' || c.financialImpact === 'new_fee_introduced').length;
           triggerRateChangeNotification(currentChanges.length, incCount);
           showRateChangeApprovalModal();
         }

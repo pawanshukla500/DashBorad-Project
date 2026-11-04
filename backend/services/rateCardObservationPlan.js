@@ -166,7 +166,7 @@ const display = (descriptor, row) => !row ? null : descriptor.table === 'rc_coll
   ? `Prepaid: ${row.prepaid} ${row.prepaid_type}, Postpaid: ${row.postpaid} ${row.postpaid_type}`
   : descriptor.table === 'rc_reverse_shipping' ? `L:₹${row.local_fee}/Z:₹${row.zonal_fee}/N:₹${row.national_fee}` : row.rate;
 
-function calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next) {
+function calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next, previousRow, newRow) {
   let diffAmount = null;
   let diffPercent = null;
   let difference = '—';
@@ -243,9 +243,43 @@ function calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next) {
           recommendation = 'Fee rate unchanged.';
         }
       }
+    } else if (descriptor.table === 'rc_reverse_shipping' && previousRow && newRow) {
+      const oldSum = (Number(previousRow.local_fee) || 0) + (Number(previousRow.zonal_fee) || 0) + (Number(previousRow.national_fee) || 0);
+      const newSum = (Number(newRow.local_fee) || 0) + (Number(newRow.zonal_fee) || 0) + (Number(newRow.national_fee) || 0);
+      const delta = newSum - oldSum;
+      diffAmount = Number(delta.toFixed(2));
+      const sign = delta > 0 ? '+' : '';
+      difference = `${sign}₹${delta.toFixed(2)} (zones)`;
+      if (delta > 0) {
+        financialImpact = 'cost_increase';
+        recommendation = `Reverse shipping fees increased (${difference}) on ${next.category}. Will increase deductions per return.`;
+      } else if (delta < 0) {
+        financialImpact = 'cost_decrease';
+        recommendation = `Reverse shipping fees decreased (${difference}) on ${next.category}. Will reduce deductions per return.`;
+      } else {
+        difference = '₹0.00';
+        financialImpact = 'neutral';
+        recommendation = `Reverse shipping fee structure unchanged on ${next.category}.`;
+      }
+    } else if (descriptor.table === 'rc_collection_fee' && previousRow && newRow) {
+      const preDelta = (Number(newRow.prepaid) || 0) - (Number(previousRow.prepaid) || 0);
+      const postDelta = (Number(newRow.postpaid) || 0) - (Number(previousRow.postpaid) || 0);
+      const totalDelta = preDelta + postDelta;
+      difference = `Prepaid: ${preDelta > 0 ? '+' : ''}${preDelta}, Postpaid: ${postDelta > 0 ? '+' : ''}${postDelta}`;
+      if (preDelta > 0 || postDelta > 0) {
+        financialImpact = totalDelta >= 0 ? 'cost_increase' : 'neutral';
+        recommendation = `Collection fees increased on ${next.category}. Will increase payment deductions.`;
+      } else if (preDelta < 0 || postDelta < 0) {
+        financialImpact = 'cost_decrease';
+        recommendation = `Collection fees reduced on ${next.category}. Will reduce payment deductions.`;
+      } else {
+        difference = 'Unchanged';
+        financialImpact = 'neutral';
+        recommendation = `Collection fees unchanged on ${next.category}.`;
+      }
     } else {
       difference = 'Modified';
-      financialImpact = 'cost_increase';
+      financialImpact = 'neutral';
       recommendation = `Rates or tiers modified for ${next.category}. Review slab structure carefully.`;
     }
   }
@@ -278,7 +312,7 @@ export async function planRateCardChanges(client, observations, { marketplace, s
       const next = row || previous.row;
       const oldRate = display(descriptor, previous?.row), newRate = display(descriptor, row);
       const delta = typeof oldRate === 'number' && typeof newRate === 'number' ? Math.abs(oldRate - newRate) : 0;
-      const metrics = calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next);
+      const metrics = calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next, previous?.row, row);
       diffs.push({ table: descriptor.table, category: next.category, brand_name: next.brand_name || null,
         fulfilment_type: next.fulfilment_type || null,
         slab: descriptor.table === 'rc_reverse_shipping' ? `${next.weight_slab}: ₹${next.price_min} - ₹${next.price_max}` : `₹${next.price_min} - ₹${next.price_max}`,
