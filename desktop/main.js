@@ -532,12 +532,8 @@ function getPendingUpdateInfo() {
   }
 }
 
+// Updates ship only for packaged installs on Windows (NSIS installer with latest.yml).
 function loadAutoUpdater() {
-  // Updates ship only for packaged installs, and only for platforms a real
-  // update feed is published for: the release workflow publishes the Windows
-  // latest.yml feed (NSIS installer). Linux GUI packages are artifacts only —
-  // there is no latest-linux.yml, so checking there would surface recurring
-  // feed errors instead of updates.
   if (!app.isPackaged || process.platform !== 'win32') return null;
   try {
     const updater = require('electron-updater').autoUpdater;
@@ -598,18 +594,18 @@ function setupAutoUpdate() {
   autoUpdater.on('checking-for-update', () => broadcastUpdateStatus({ status: 'checking', currentVersion: app.getVersion() }));
   autoUpdater.on('update-available', (info) => {
     pendingUpdateVersion = info?.version || '';
-    broadcastUpdateStatus({ status: 'available', version: pendingUpdateVersion, currentVersion: app.getVersion(), checkedAt: lastUpdateCheckTime || new Date().toISOString() });
+    broadcastUpdateStatus({ status: 'available', version: pendingUpdateVersion, currentVersion: app.getVersion() });
   });
-  autoUpdater.on('update-not-available', () => broadcastUpdateStatus({ status: 'not-available', version: app.getVersion(), currentVersion: app.getVersion(), checkedAt: lastUpdateCheckTime || new Date().toISOString() }));
+  autoUpdater.on('update-not-available', () => broadcastUpdateStatus({ status: 'not-available', version: app.getVersion(), currentVersion: app.getVersion() }));
   autoUpdater.on('download-progress', (progress) => broadcastUpdateStatus({ status: 'downloading', version: pendingUpdateVersion, currentVersion: app.getVersion(), percent: Math.round(progress?.percent || 0) }));
   autoUpdater.on('update-downloaded', (info) => {
     pendingUpdateVersion = info?.version || pendingUpdateVersion;
-    broadcastUpdateStatus({ status: 'downloaded', version: pendingUpdateVersion, currentVersion: app.getVersion(), checkedAt: new Date().toISOString() });
+    broadcastUpdateStatus({ status: 'downloaded', version: pendingUpdateVersion, currentVersion: app.getVersion() });
     if (Notification.isSupported()) {
       new Notification({ title: 'ReconCentral RateCard Worker — update ready', body: 'Version ' + pendingUpdateVersion + ' is downloaded. Restart the app to apply it.' }).show();
     }
   });
-  autoUpdater.on('error', (err) => broadcastUpdateStatus({ status: 'error', message: String(err?.message || err), currentVersion: app.getVersion(), checkedAt: new Date().toISOString() }));
+  autoUpdater.on('error', (err) => broadcastUpdateStatus({ status: 'error', message: String(err?.message || err), currentVersion: app.getVersion() }));
 
   checkStagedCachedUpdate();
 
