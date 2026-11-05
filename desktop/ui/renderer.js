@@ -120,11 +120,29 @@ function updateUserAuthUI(session) {
   }
 }
 
-// ── Auto-Update Banner (installed desktop app) ────────────────────────────────
+// ── Auto-Update Banner & Settings Controls ────────────────────────────────────
+let currentAppVersion = '';
 let updateBannerHideTimer = null;
 let pendingUpdateDownloaded = ''; // raw version whose update is downloaded and awaiting restart
 let latestAvailableVersion = ''; // raw version from the last update-available event
 let deferredUpdateVersion = ''; // raw version the user postponed with Later (re-prompt on new version only)
+
+async function initAppVersion() {
+  try {
+    const res = await window.ratecardAPI?.getAppVersion?.();
+    if (res?.version) {
+      currentAppVersion = res.version;
+      const sidebarVer = document.getElementById('app-sidebar-version');
+      if (sidebarVer) sidebarVer.textContent = 'RateCard v' + res.version;
+      const modalVer = document.getElementById('app-update-current-ver');
+      if (modalVer) modalVer.textContent = res.version;
+      const settingsVer = document.getElementById('settings-app-version');
+      if (settingsVer) settingsVer.textContent = 'v' + res.version;
+    }
+  } catch (err) {
+    console.warn('Could not read app version:', err);
+  }
+}
 
 function showAppUpdateModal(version, isDownloaded = false) {
   const modal = document.getElementById('app-update-modal');
@@ -160,7 +178,77 @@ function updateAppProgress(percent) {
   if (bar) bar.style.width = (percent || 0) + '%';
 }
 
+function updateSettingsUpdateUI(status) {
+  const settingsMsg = document.getElementById('settings-update-status-msg');
+  const settingsCheckBtn = document.getElementById('btn-settings-check-update');
+  const settingsDlBtn = document.getElementById('btn-settings-download-update');
+  const settingsRestartBtn = document.getElementById('btn-settings-restart-update');
+  const settingsLastChecked = document.getElementById('settings-update-last-checked');
+
+  const kind = status?.status;
+  const rawVersion = status?.version || '';
+  const isManual = Boolean(status?.manual);
+  const checkedTimeStr = status?.checkedAt ? new Date(status.checkedAt).toLocaleTimeString() : new Date().toLocaleTimeString();
+
+  if (settingsLastChecked && status?.checkedAt) {
+    settingsLastChecked.textContent = checkedTimeStr;
+  }
+
+  if (kind === 'checking') {
+    if (settingsMsg) settingsMsg.textContent = '🔄 Checking GitHub Releases for updates...';
+    if (settingsCheckBtn) {
+      settingsCheckBtn.disabled = true;
+      settingsCheckBtn.textContent = 'Checking...';
+    }
+  } else if (kind === 'not-available') {
+    if (settingsMsg) settingsMsg.textContent = '✓ You are running the latest version (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.19') + ').';
+    if (settingsCheckBtn) {
+      settingsCheckBtn.disabled = false;
+      settingsCheckBtn.textContent = '🔄 Check for Updates';
+    }
+    if (settingsDlBtn) settingsDlBtn.style.display = 'none';
+    if (settingsRestartBtn) settingsRestartBtn.style.display = 'none';
+    if (isManual) {
+      alert('✓ You are running the latest release (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.19') + '). No update is required.');
+    }
+  } else if (kind === 'available') {
+    if (settingsMsg) settingsMsg.textContent = '⚡ Update available: v' + rawVersion + '! Ready to download.';
+    if (settingsCheckBtn) {
+      settingsCheckBtn.disabled = false;
+      settingsCheckBtn.textContent = '🔄 Check for Updates';
+    }
+    if (settingsDlBtn) {
+      settingsDlBtn.style.display = 'inline-flex';
+      settingsDlBtn.disabled = false;
+      settingsDlBtn.textContent = '⬇️ Download v' + rawVersion;
+    }
+    if (settingsRestartBtn) settingsRestartBtn.style.display = 'none';
+  } else if (kind === 'downloading') {
+    const pct = status?.percent || 0;
+    if (settingsMsg) settingsMsg.textContent = '⬇️ Downloading update v' + rawVersion + ' (' + pct + '%)...';
+    if (settingsDlBtn) {
+      settingsDlBtn.disabled = true;
+      settingsDlBtn.textContent = 'Downloading (' + pct + '%)...';
+    }
+  } else if (kind === 'downloaded') {
+    if (settingsMsg) settingsMsg.textContent = '✅ Update v' + rawVersion + ' is ready! Restart the worker to apply.';
+    if (settingsDlBtn) settingsDlBtn.style.display = 'none';
+    if (settingsRestartBtn) {
+      settingsRestartBtn.style.display = 'inline-flex';
+      settingsRestartBtn.disabled = false;
+    }
+  } else if (kind === 'error') {
+    if (settingsMsg) settingsMsg.textContent = '⚠ Update check error: ' + (status?.message || 'Network error');
+    if (settingsCheckBtn) {
+      settingsCheckBtn.disabled = false;
+      settingsCheckBtn.textContent = '🔄 Check for Updates';
+    }
+  }
+}
+
 function applyUpdateBanner(status) {
+  updateSettingsUpdateUI(status);
+
   const banner = document.getElementById('update-banner');
   const text = document.getElementById('update-banner-text');
   const restartBtn = document.getElementById('btn-update-restart');
@@ -269,6 +357,54 @@ async function initUpdateBanner() {
     if (banner) banner.style.display = 'none';
   });
   window.ratecardAPI.onUpdateStatus((status) => applyUpdateBanner(status));
+
+  // Settings view update controls
+  document.getElementById('btn-settings-check-update')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-settings-check-update');
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking...'; }
+    const settingsMsg = document.getElementById('settings-update-status-msg');
+    if (settingsMsg) settingsMsg.textContent = '🔄 Checking GitHub Releases for updates...';
+    try {
+      const res = await window.ratecardAPI.checkForUpdates({ manual: true });
+      if (!res?.success) {
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 Check for Updates'; }
+        if (settingsMsg) settingsMsg.textContent = '⚠ Update check failed: ' + (res?.error || 'Unknown error');
+      }
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 Check for Updates'; }
+      if (settingsMsg) settingsMsg.textContent = '⚠ Update check failed: ' + err.message;
+    }
+  });
+
+  document.getElementById('btn-settings-download-update')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-settings-download-update');
+    if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+    try {
+      const res = await window.ratecardAPI.downloadUpdate();
+      if (!res?.success) {
+        if (btn) { btn.disabled = false; btn.textContent = '⬇️ Download Update'; }
+        alert(res?.error || 'The update could not be downloaded.');
+      }
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '⬇️ Download Update'; }
+      alert('Download failed: ' + err.message);
+    }
+  });
+
+  document.getElementById('btn-settings-restart-update')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-settings-restart-update');
+    if (btn) { btn.disabled = true; btn.textContent = 'Restarting...'; }
+    try {
+      const res = await window.ratecardAPI.installUpdate();
+      if (!res?.success) {
+        if (btn) { btn.disabled = false; btn.textContent = '🚀 Restart to Apply'; }
+        alert(res?.error || 'The update could not be installed.');
+      }
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = '🚀 Restart to Apply'; }
+      alert('Install failed: ' + err.message);
+    }
+  });
 }
 
 // ── Light/Dark Theme (light default, persisted in app config) ────────────────
@@ -301,6 +437,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
   setupEventListeners();
   subscribeToEvents();
+  await initAppVersion();
   initUpdateBanner();
   initTheme();
   initBrowserMonitorListeners();

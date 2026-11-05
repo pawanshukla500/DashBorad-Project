@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('ratecardAPI', {
   },
 
   // Auto-Update (GitHub Releases)
+  getAppVersion: () => ipcRenderer.invoke('app-get-version'),
   getUpdateStatus: () => ipcRenderer.invoke('update-get-status'),
   checkForUpdates: () => ipcRenderer.invoke('update-check'),
   installUpdate: () => ipcRenderer.invoke('update-install'),
