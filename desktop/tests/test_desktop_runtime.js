@@ -887,7 +887,9 @@ async function runTests() {
     assert(mainSource.includes("app.setAppUserModelId('com.reconcentral.ratecardworker')"), 'Windows toasts need the app user model id to match build.appId');
     const loadIdx = mainSource.indexOf('function loadAutoUpdater()');
     assert(loadIdx !== -1, 'loadAutoUpdater not found');
-    const loadWindow = mainSource.slice(loadIdx, loadIdx + 500);
+    const loadEndIdx = mainSource.indexOf('\n}', loadIdx);
+    assert(loadEndIdx !== -1, 'end of loadAutoUpdater not found');
+    const loadWindow = mainSource.slice(loadIdx, loadEndIdx + 2);
     assert(loadWindow.includes('if (!app.isPackaged || process.platform !== \'win32\') return null;'), 'dev runs must never attempt auto-updates, and packaged Linux GUI builds must not check a feed the release workflow never publishes');
     assert(loadWindow.includes("require('electron-updater')"), 'packaged updater must load electron-updater');
     const setupIdx = mainSource.indexOf('function setupAutoUpdate()');
@@ -919,7 +921,8 @@ async function runTests() {
       ['installUpdate', 'update-install'],
       ['downloadUpdate', 'update-download']
     ]) {
-      assert(preloadSource.includes(`${api}: () => ipcRenderer.invoke('${channel}')`), `preload must expose ${api} over ${channel}`);
+      const pattern = new RegExp(`${api}:\\s*\\([^)]*\\)\\s*=>\\s*ipcRenderer\\.invoke\\('${channel}'`);
+      assert(pattern.test(preloadSource), `preload must expose ${api} over ${channel}`);
     }
     assert(preloadSource.includes("ipcRenderer.on('update-status', subscription)"), 'preload must subscribe to update-status events');
     const subIdx = preloadSource.indexOf('onUpdateStatus: (callback) =>');

@@ -462,6 +462,15 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  let lastFocusCheck = 0;
+  mainWindow.on('focus', () => {
+    const now = Date.now();
+    if (now - lastFocusCheck > 15 * 60 * 1000) {
+      lastFocusCheck = now;
+      checkForAppUpdate(false);
+    }
+  });
 }
 
 // ── Auto-Update (GitHub Releases feed) ───────────────────────────────────────
@@ -481,32 +490,125 @@ function broadcastUpdateStatus(status) {
   }
 }
 
-function loadAutoUpdater() {
-  // Updates ship only for packaged installs, and only for platforms a real
-  // update feed is published for: the release workflow publishes the Windows
-  // latest.yml feed (NSIS installer). Linux GUI packages are artifacts only —
-  // there is no latest-linux.yml, so checking there would surface recurring
-  // feed errors instead of updates.
-  if (!app.isPackaged || process.platform !== 'win32') return null;
+/**
+ * Creates or retrieves the rotating updater file logger.
+ * Logs timestamped events to %APPDATA%/reconcentral-ratecard-worker/logs/updater.log.
+ * @returns {{ info: Function, warn: Function, error: Function, debug: Function }}
+ */
+function getUpdaterLogger() {
+  const logDir = path.join(app.getPath('userData'), 'logs');
+  const logFile = path.join(logDir, 'updater.log');
+  const write = (level, ...args) => {
+    const timestamp = new Date().toISOString();
+    const line = "[" + timestamp + "] [" + level.toUpperCase() + "] " + args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ') + "\n";
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+      fs.appendFileSync(logFile, line, 'utf8');
+    } catch {}
+    if (level === 'error') console.error("[AutoUpdate]", ...args);
+    else if (level === 'warn') console.warn("[AutoUpdate]", ...args);
+    else console.log("[AutoUpdate]", ...args);
+  };
+  return {
+    info: (...args) => write('info', ...args),
+    warn: (...args) => write('warn', ...args),
+    error: (...args) => write('error', ...args),
+    debug: (...args) => write('debug', ...args)
+  };
+}
+
+/**
+ * Inspects the updater cache directory for a setup installer downloaded in a prior session.
+ * @returns {{ version: string, fileName: string, size: number, path: string } | null}
+ */
+function getPendingUpdateInfo() {
   try {
-    return require('electron-updater').autoUpdater;
-  } catch (err) {
-    console.warn(`[AutoUpdate] Unavailable: ${err.message}`);
+    const localAppData = process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local');
+    const pendingDir = path.join(localAppData, 'reconcentral-ratecard-worker-updater', 'pending');
+    const infoFile = path.join(pendingDir, 'update-info.json');
+    if (!fs.existsSync(infoFile)) return null;
+    const info = JSON.parse(fs.readFileSync(infoFile, 'utf8'));
+    if (!info?.fileName) return null;
+    const installerFile = path.join(pendingDir, info.fileName);
+    if (!fs.existsSync(installerFile)) return null;
+    const stat = fs.statSync(installerFile);
+    if (stat.size <= 0) return null;
+    const match = info.fileName.match(/(\d+\.\d+\.\d+)/);
+    const version = match ? match[1] : '';
+    return { version, fileName: info.fileName, size: stat.size, path: installerFile };
+  } catch {
     return null;
   }
 }
 
-function checkForAppUpdate() {
+/**
+ * Loads and initializes electron-updater for packaged Windows production environments.
+ * @returns {object|null} The electron-updater instance or null if unavailable.
+ */
+function loadAutoUpdater() {
+  if (!app.isPackaged || process.platform !== 'win32') return null;
+  try {
+    const updater = require('electron-updater').autoUpdater;
+    updater.logger = getUpdaterLogger();
+    return updater;
+  } catch (err) {
+    console.warn("[AutoUpdate] Unavailable: " + err.message);
+    return null;
+  }
+}
+
+let lastUpdateCheckTime = null;
+let isLastCheckManual = false;
+
+/**
+ * Dispatches an asynchronous update check against GitHub Releases feed.
+ * @param {boolean} [manual=false] Whether check was manually triggered by user action.
+ * @returns {Promise<boolean>} True if update check initiated successfully.
+ */
+function checkForAppUpdate(manual = false) {
   if (!autoUpdater) return Promise.resolve(false);
-  // Failures also flow to the 'error' event; the catch keeps an offline
-  // machine from surfacing an unhandled rejection at startup.
+  isLastCheckManual = Boolean(manual);
+  lastUpdateCheckTime = new Date().toISOString();
+  broadcastUpdateStatus({
+    status: 'checking',
+    manual: isLastCheckManual,
+    currentVersion: app.getVersion(),
+    checkedAt: lastUpdateCheckTime
+  });
   return autoUpdater.checkForUpdates().then(() => true).catch((err) => {
-    console.warn(`[AutoUpdate] Check failed: ${err.message}`);
-    broadcastUpdateStatus({ status: 'error', message: err.message });
+    autoUpdater?.logger?.warn?.("[AutoUpdate] Check failed: " + err.message);
+    broadcastUpdateStatus({
+      status: 'error',
+      message: err.message,
+      manual: isLastCheckManual,
+      currentVersion: app.getVersion(),
+      checkedAt: lastUpdateCheckTime
+    });
     return false;
   });
 }
 
+/**
+ * Checks disk staging cache for a pre-downloaded installer and sets status if present.
+ */
+function checkStagedCachedUpdate() {
+  const pendingInfo = getPendingUpdateInfo();
+  if (pendingInfo && pendingInfo.version && pendingInfo.version !== app.getVersion()) {
+    pendingUpdateVersion = pendingInfo.version;
+    lastUpdateStatus = {
+      status: 'downloaded',
+      version: pendingInfo.version,
+      currentVersion: app.getVersion(),
+      cached: true,
+      checkedAt: new Date().toISOString()
+    };
+    broadcastUpdateStatus(lastUpdateStatus);
+  }
+}
+
+/**
+ * Registers electron-updater lifecycle handlers and recurring check timers.
+ */
 function setupAutoUpdate() {
   autoUpdater = loadAutoUpdater();
   if (!autoUpdater) return;
@@ -514,39 +616,28 @@ function setupAutoUpdate() {
   autoUpdater.autoDownload = false;         // download only after the user clicks Update Now
   autoUpdater.autoInstallOnAppQuit = false; // installs only run from the explicit Restart control
 
-  autoUpdater.on('checking-for-update', () => broadcastUpdateStatus({ status: 'checking' }));
+  autoUpdater.on('checking-for-update', () => broadcastUpdateStatus({ status: 'checking', currentVersion: app.getVersion() }));
   autoUpdater.on('update-available', (info) => {
     pendingUpdateVersion = info?.version || '';
-    broadcastUpdateStatus({ status: 'available', version: pendingUpdateVersion });
+    broadcastUpdateStatus({ status: 'available', version: pendingUpdateVersion, currentVersion: app.getVersion() });
   });
-  autoUpdater.on('update-not-available', () => broadcastUpdateStatus({ status: 'not-available' }));
-  autoUpdater.on('download-progress', (progress) => broadcastUpdateStatus({
-    status: 'downloading',
-    version: pendingUpdateVersion,
-    percent: Math.round(progress?.percent || 0)
-  }));
+  autoUpdater.on('update-not-available', () => broadcastUpdateStatus({ status: 'not-available', manual: isLastCheckManual, version: app.getVersion(), currentVersion: app.getVersion() }));
+  autoUpdater.on('download-progress', (progress) => broadcastUpdateStatus({ status: 'downloading', version: pendingUpdateVersion, currentVersion: app.getVersion(), percent: Math.round(progress?.percent || 0) }));
   autoUpdater.on('update-downloaded', (info) => {
     pendingUpdateVersion = info?.version || pendingUpdateVersion;
-    broadcastUpdateStatus({ status: 'downloaded', version: pendingUpdateVersion });
+    broadcastUpdateStatus({ status: 'downloaded', version: pendingUpdateVersion, currentVersion: app.getVersion() });
     if (Notification.isSupported()) {
-      new Notification({
-        title: 'ReconCentral RateCard Worker — update ready',
-        body: `Version ${pendingUpdateVersion} is downloaded. Restart the app to apply it.`
-      }).show();
+      new Notification({ title: 'ReconCentral RateCard Worker — update ready', body: 'Version ' + pendingUpdateVersion + ' is downloaded. Restart the app to apply it.' }).show();
     }
   });
-  autoUpdater.on('error', (err) => broadcastUpdateStatus({
-    status: 'error',
-    message: String(err?.message || err)
-  }));
+  autoUpdater.on('error', (err) => broadcastUpdateStatus({ status: 'error', message: String(err?.message || err), currentVersion: app.getVersion() }));
 
-  // First check shortly after launch (after sign-in and UI settle), then every 6 hours.
-  setTimeout(() => { checkForAppUpdate(); }, 10 * 1000);
-  setInterval(() => { checkForAppUpdate(); }, 6 * 60 * 60 * 1000);
+  checkStagedCachedUpdate();
+
+  setTimeout(() => { checkForAppUpdate(); }, 3 * 1000);
+  setInterval(() => { checkForAppUpdate(); }, 30 * 60 * 1000);
 }
 
-// Windows groups the app's native toasts (update ready, scheduled scrape
-// done) under this identity; it must match build.appId in package.json.
 app.setAppUserModelId('com.reconcentral.ratecardworker');
 
 app.whenReady().then(async () => {
@@ -1505,7 +1596,7 @@ const PUBLIC_CHANNELS = new Set([
   // Update lifecycle is app-level, not session/data-level: checking for a new
   // release and applying it must work before sign-in and can never touch
   // database or session data.
-  'update-get-status', 'update-check', 'update-download', 'update-install'
+  'update-get-status', 'update-check', 'update-download', 'update-install', 'app-get-version'
 ]);
 const MUTATION_CHANNELS = new Set(['save-config', 'sync-brand-rate-cards', 'upload-database-details']);
 
@@ -1553,22 +1644,26 @@ registerHandler('save-config', (e, config) => {
 });
 
 // ── Auto-Update IPC Handlers ─────────────────────────────────────────────────
-registerHandler('update-get-status', () => ({ success: true, status: lastUpdateStatus }));
-registerHandler('update-check', async () => {
+registerHandler('app-get-version', () => ({
+  success: true,
+  version: app.getVersion()
+}));
+registerHandler('update-get-status', () => ({
+  success: true,
+  status: lastUpdateStatus,
+  currentVersion: app.getVersion()
+}));
+registerHandler('update-check', async (event, opts = {}) => {
   if (!autoUpdater) {
     return { success: false, error: 'Updates are only available in the installed desktop app.' };
   }
-  // Progress and results arrive through update-status events; this only
-  // reports whether a check actually ran.
-  const started = await checkForAppUpdate();
-  return started ? { success: true } : { success: false, error: 'Update check failed. It will be retried automatically.' };
+  const started = await checkForAppUpdate(Boolean(opts?.manual));
+  return started ? { success: true, status: lastUpdateStatus } : { success: false, error: 'Update check failed. It will be retried automatically.' };
 });
 registerHandler('update-download', async () => {
   if (!autoUpdater) {
     return { success: false, error: 'Updates are only available in the installed desktop app.' };
   }
-  // Explicit user consent (Update Now) starts the download; progress and
-  // completion arrive through update-status events.
   try {
     await autoUpdater.downloadUpdate();
     return { success: true };
@@ -1586,7 +1681,6 @@ registerHandler('update-install', () => {
   if (lastUpdateStatus?.status !== 'downloaded') {
     return { success: false, error: 'No downloaded update is ready to install yet.' };
   }
-  // Explicit restart with the downloaded version. Never fires without the user clicking Restart.
   autoUpdater.quitAndInstall(true, true);
   return { success: true };
 });

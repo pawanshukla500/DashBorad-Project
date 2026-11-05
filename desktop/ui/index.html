@@ -18,7 +18,7 @@
           <img src="icon.png" alt="ReconCentral" style="width: 38px; height: 38px; object-fit: contain; border-radius: 8px; background: rgba(144, 42, 74, 0.15); padding: 2px; border: 1px solid rgba(144, 42, 74, 0.4);">
           <div class="logo-text">
             <span class="logo-title">ReconCentral</span>
-            <span class="logo-sub">RateCard Desktop Center v2.0</span>
+            <span class="logo-sub" id="app-sidebar-version">RateCard Center</span>
           </div>
         </div>
       </div>
@@ -498,6 +498,41 @@
         <!-- 6. SETTINGS VIEW -->
         <section id="view-settings" class="tab-view">
           <div class="card settings-card">
+            <!-- Application Updates & Version Control -->
+            <div style="background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; margin-bottom: 24px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+                <div style="display: flex; align-items: center; gap: 14px;">
+                  <span style="font-size: 28px;">🚀</span>
+                  <div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <h4 style="margin: 0; font-size: 15px; font-weight: 700; color: var(--text-main);">ReconCentral RateCard Worker</h4>
+                      <span class="badge" id="settings-app-version" style="background: var(--primary); color: #fff; font-family: 'JetBrains Mono', monospace; font-size: 11px;">—</span>
+                      <span class="badge" style="background: rgba(16, 185, 129, 0.12); border: 1px solid var(--success); color: var(--success-strong); font-size: 10px;">Production (GitHub)</span>
+                    </div>
+                    <div id="settings-update-status-msg" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+                      Initializing update status...
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                  <button type="button" class="btn btn-secondary" id="btn-settings-check-update" style="font-size: 12px; padding: 6px 14px;">
+                    🔄 Check for Updates
+                  </button>
+                  <button type="button" class="btn btn-primary" id="btn-settings-download-update" style="display: none; font-size: 12px; padding: 6px 14px;">
+                    ⬇️ Download Update
+                  </button>
+                  <button type="button" class="btn btn-primary" id="btn-settings-restart-update" style="display: none; background: #15803d; color: #fff; font-size: 12px; padding: 6px 14px;">
+                    🚀 Restart to Apply
+                  </button>
+                </div>
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted);">
+                <span>Last checked: <strong id="settings-update-last-checked">—</strong></span>
+                <span>Auto-check: Every 30 min &bull; Focus trigger &bull; Scraper safe</span>
+              </div>
+            </div>
+
             <h3>Seller Hub Sign-in</h3>
             <p class="muted">Sign in manually from Live Browser. The desktop app keeps the authenticated browser profile and an encrypted cookie snapshot; it does not store or submit Seller Hub passwords.</p>
 
@@ -819,7 +854,7 @@
       <div style="background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;">
         <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px;">
           <span style="color: var(--text-muted);">Installed Version:</span>
-          <strong id="app-update-current-ver" style="font-family: 'JetBrains Mono', monospace;">1.8.0</strong>
+          <strong id="app-update-current-ver" style="font-family: 'JetBrains Mono', monospace;">—</strong>
         </div>
         <div style="display: flex; justify-content: space-between; font-size: 13px;">
           <span style="color: var(--text-muted);">Available Version:</span>
