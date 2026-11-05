@@ -236,7 +236,10 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
   const checkedCollectionFeeCategories = new Set();
 
   for (const card of brandRateCards) {
-    const { marketplace, category, brand, commissions } = card;
+    const marketplace = card.marketplace;
+    const category = card.category || card.vertical || "All";
+    const brand = card.brand;
+    const commissions = card.commissions || [];
 
     const activeCommissions = await p.query(`
       SELECT price_min, price_max, rate 
@@ -572,7 +575,7 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
       if (!checkedCollectionFeeCategories.has('pp:' + pickPackKey)) {
         checkedCollectionFeeCategories.add('pp:' + pickPackKey);
         const activePickPack = await p.query(`
-          SELECT fulfilment_type, weight_min, weight_max, price_min, price_max, rate, local_fee, zonal_fee, national_fee, price_scope, base_weight, increment_weight, local_additional_fee, zonal_additional_fee, national_additional_fee
+          SELECT *
           FROM rc_pick_pack
           WHERE marketplace = $1
             AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
@@ -585,8 +588,8 @@ export async function detectBrandRateChanges(brandRateCards, pool = null, option
             (ap.fulfilment_type || 'FBF') === (pp.fulfilment_type || 'FBF') &&
             Math.abs(parseFloat(ap.price_min) - pp.price_min) < 0.01 &&
             Math.abs(parseFloat(ap.price_max) - pp.price_max) < 1.0 &&
-            Math.abs(parseFloat(ap.weight_min || 0) - (pp.weight_min || 0)) < 0.001 &&
-            Math.abs(parseFloat(ap.weight_max || 999999) - (pp.weight_max || 999999)) < 0.001
+            Math.abs(parseFloat(ap.weight_min ?? 0) - (pp.weight_min || 0)) < 0.001 &&
+            Math.abs(parseFloat(ap.weight_max ?? 999999) - (pp.weight_max || 999999)) < 0.001
           );
           const slab = `${pp.fulfilment_type || 'FBF'} · ${pp.weight_min || 0}-${pp.weight_max || 999999}kg · ₹${pp.price_min}-₹${pp.price_max}`;
           const newFee = pp.rate ?? pp.local_fee ?? 0;

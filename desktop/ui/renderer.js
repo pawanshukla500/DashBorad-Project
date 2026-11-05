@@ -142,6 +142,7 @@ function showAppUpdateModal(version, isDownloaded = false) {
     if (btnNow) btnNow.style.display = 'inline-flex';
     if (btnRestart) btnRestart.style.display = 'none';
   }
+
   modal.style.display = 'flex';
 }
 
@@ -1049,17 +1050,25 @@ function renderDiffTable() {
   if (!tbody) return;
   const rows = [];
 
+  const matchedChanges = new Set();
+
   for (const card of currentRateCards) {
-    const { marketplace, category, brand, commissions, fixedFees, reverseShipping, collectionFees = [], pickPackFees = [] } = card;
+    const marketplace = card.marketplace;
+    const category = card.category || card.vertical || 'All';
+    const brand = card.brand;
+    const { commissions = [], fixedFees = [], reverseShipping = [], collectionFees = [], pickPackFees = [] } = card;
 
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission' || activeDiffFilter === 'anomalies') {
       for (const c of commissions) {
-        const change = currentChanges.find(ch =>
-          ch.marketplace === marketplace && ch.category === category && ch.brand === brand && ch.type === 'commission' &&
-          (ch.priceMin == null ||
-            (Math.abs(ch.priceMin - c.price_min) < 0.01 && Math.abs(ch.priceMax - c.price_max) < 1.0))
-        );
+        const matchesCommissionSlab = (ch) =>
+          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
+          (ch.table === 'rc_commission' || ch.type === 'commission') &&
+          ch.priceMin != null &&
+          (Math.abs(ch.priceMin - c.price_min) < 0.01 && Math.abs(ch.priceMax - c.price_max) < 1.0);
+        const change = currentChanges.find(ch => matchesCommissionSlab(ch) && ch.brand === brand) ||
+          currentChanges.find(ch => matchesCommissionSlab(ch) && (!ch.brand || ch.brand === 'All' || ch.brand === 'General'));
+        if (change) matchedChanges.add(change);
         const oldRateStr = change?.oldRate != null ? (Number(change.oldRate) * 100).toFixed(4) + '%' : (change ? '—' : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared'));
         const newRateStr = (Number(c.rate) * 100).toFixed(4) + '%';
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
@@ -1087,13 +1096,13 @@ function renderDiffTable() {
     if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed' || activeDiffFilter === 'anomalies') {
       for (const f of fixedFees) {
         const change = currentChanges.find(ch =>
-          ch.marketplace === marketplace && ch.category === category && ch.type === 'fixed_fee' &&
-          (ch.priceMin != null
-            ? (ch.fulfilmentType === f.fulfilment_type &&
-               Math.abs(ch.priceMin - f.price_min) < 0.01 &&
-               Math.abs(ch.priceMax - f.price_max) < 1.0)
-            : (ch.slab == null || (ch.fulfilmentType ? ch.fulfilmentType === f.fulfilment_type : ch.slab.includes(f.fulfilment_type))))
+          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
+          (ch.table === 'rc_fixed_fee' || ch.type === 'fixed_fee') &&
+          ch.priceMin != null &&
+          Math.abs(ch.priceMin - f.price_min) < 0.01 && Math.abs(ch.priceMax - f.price_max) < 1.0 &&
+          (ch.fulfilmentType == null || ch.fulfilmentType === f.fulfilment_type)
         );
+        if (change) matchedChanges.add(change);
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
           type: 'Fixed Fee',
@@ -1120,10 +1129,12 @@ function renderDiffTable() {
       const fmtColl = (value, type) => (type === 'pct' ? (Number(value) * 100).toFixed(2) + '%' : '₹' + value);
       for (const cf of collectionFees) {
         const change = currentChanges.find(ch =>
-          ch.marketplace === marketplace && ch.category === category && ch.type === 'collection_fee' &&
-          (ch.priceMin == null ||
-            (Math.abs(ch.priceMin - cf.price_min) < 0.01 && Math.abs(ch.priceMax - cf.price_max) < 1.0))
+          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
+          (ch.table === 'rc_collection_fee' || ch.type === 'collection_fee') &&
+          ch.priceMin != null &&
+          Math.abs(ch.priceMin - cf.price_min) < 0.01 && Math.abs(ch.priceMax - cf.price_max) < 1.0
         );
+        if (change) matchedChanges.add(change);
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
           type: 'Collection Fee',
@@ -1149,13 +1160,13 @@ function renderDiffTable() {
     if (activeDiffFilter === 'all' || activeDiffFilter === 'reverse' || activeDiffFilter === 'anomalies') {
       for (const r of reverseShipping) {
         const change = currentChanges.find(ch =>
-          ch.marketplace === marketplace && ch.category === category && ch.type === 'reverse_shipping' &&
-          (ch.priceMin != null
-            ? (ch.weightSlab === r.weight_slab &&
-               Math.abs(ch.priceMin - r.price_min) < 0.01 &&
-               Math.abs(ch.priceMax - r.price_max) < 1.0)
-            : (ch.slab == null || (ch.weightSlab ? ch.weightSlab === r.weight_slab : ch.slab.includes(r.weight_slab))))
+          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
+          (ch.table === 'rc_reverse_shipping' || ch.type === 'reverse_shipping') &&
+          ch.priceMin != null &&
+          Math.abs(ch.priceMin - r.price_min) < 0.01 && Math.abs(ch.priceMax - r.price_max) < 1.0 &&
+          (ch.weightSlab ? ch.weightSlab === r.weight_slab : true)
         );
+        if (change) matchedChanges.add(change);
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
           type: 'Reverse Shipping',
@@ -1180,11 +1191,15 @@ function renderDiffTable() {
     // 5. FBF pick-and-pack
     if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed' || activeDiffFilter === 'pickpack' || activeDiffFilter === 'anomalies') {
       for (const fee of pickPackFees) {
-        const change = currentChanges.find(ch => ch.table === 'rc_pick_pack' &&
-          ch.marketplace === marketplace && ch.category === category &&
-          ch.fulfilmentType === fee.fulfilment_type &&
+        const change = currentChanges.find(ch =>
+          (ch.table === 'rc_pick_pack' || ch.type === 'pick_pack') &&
+          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
+          (ch.fulfilmentType == null || ch.fulfilmentType === fee.fulfilment_type) &&
           (ch.priceMin == null || (Math.abs(ch.priceMin - fee.price_min) < 0.01 && Math.abs(ch.priceMax - fee.price_max) < 1.0)) &&
-          (ch.weightMin == null || (Math.abs(ch.weightMin - fee.weight_min) < 0.001 && Math.abs(ch.weightMax - fee.weight_max) < 0.001)));
+          (ch.weightMin == null || Math.abs(ch.weightMin - fee.weight_min) < 0.001) &&
+          (ch.weightMax == null || Math.abs(ch.weightMax - fee.weight_max) < 0.001)
+        );
+        if (change) matchedChanges.add(change);
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
           type: 'FBF Pick & Pack',
@@ -1215,19 +1230,34 @@ function renderDiffTable() {
     rc_reverse_shipping: 'reverse', reverse_shipping: 'reverse'
   };
   for (const change of currentChanges) {
+    if (matchedChanges.has(change)) continue;
     if (!window.rateCardReviewHelpers?.shouldRenderChangeDetail(change)) continue;
     if (activeDiffFilter !== 'all' && activeDiffFilter !== 'anomalies' &&
         changeFilterByTable[change.table] !== activeDiffFilter &&
         changeFilterByTable[change.type] !== activeDiffFilter &&
         !(activeDiffFilter === 'fixed' && (change.table === 'rc_pick_pack' || change.type === 'pick_pack'))) continue;
+
+    let oldRateDisplay = change.oldRow ? describeRateRecord(change.table, change.oldRow) : '—';
+    if (oldRateDisplay === '—' && change.oldRate != null) {
+      oldRateDisplay = change.table === 'rc_commission' || change.type === 'commission'
+        ? (Number(change.oldRate) * 100).toFixed(4) + '%'
+        : '₹' + change.oldRate;
+    }
+    let newRateDisplay = change.newRow ? describeRateRecord(change.table, change.newRow) : (change.changeType === 'REMOVED' ? 'Removed' : '—');
+    if (newRateDisplay === '—' && change.newRate != null) {
+      newRateDisplay = change.table === 'rc_commission' || change.type === 'commission'
+        ? (Number(change.newRate) * 100).toFixed(4) + '%'
+        : '₹' + change.newRate;
+    }
+
     rows.push({
       type: change.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : (change.type ? change.type.replace('_', ' ') : 'Change detail'),
       marketplace: (change.marketplace || 'FLIPKART').toUpperCase(),
       category: change.category,
       brand: change.brand || 'All',
       slab: change.slab || '—',
-      oldRate: describeRateRecord(change.table, change.oldRow),
-      newRate: change.newRow ? describeRateRecord(change.table, change.newRow) : 'Removed',
+      oldRate: oldRateDisplay,
+      newRate: newRateDisplay,
       difference: change.difference || '—',
       effectiveDate: change.effectiveDate || currentEffectiveDate || 'Immediate',
       status: change.reason || change.changeType || 'Modified',
@@ -1246,7 +1276,10 @@ function renderDiffTable() {
   const modifiedCount = changedRows.filter(r => String(r.status).toLowerCase().includes('mod') || r.financialImpact !== 'neutral').length;
   const addedCount = changedRows.filter(r => String(r.status).toLowerCase().includes('add') || String(r.status).toLowerCase().includes('new')).length;
   const removedCount = changedRows.filter(r => String(r.status).toLowerCase().includes('rem') || r.newRate === 'Removed').length;
-  const anomalyCount = rows.filter(r => r.anomaly).length;
+  const anomalyCount = Math.max(
+    currentChanges.filter(c => c.anomaly).length,
+    rows.filter(r => r.anomaly).length
+  );
 
   const setKpi = (id, val) => {
     const el = document.getElementById(id);
@@ -1271,7 +1304,7 @@ function renderDiffTable() {
   const isCostDecrease = (impact) => impact === 'cost_decrease' || impact === 'decrease' || impact === 'fee_removed';
 
   // Filter for anomalies if requested
-  const filteredRows = activeDiffFilter === 'anomalies' ? statusFiltered.filter(r => r.anomaly) : statusFiltered;
+  const filteredRows = activeDiffFilter === 'anomalies' ? rows.filter(r => r.anomaly) : statusFiltered;
 
   if (filteredRows.length === 0) {
     const emptyMsg = activeDiffFilter === 'anomalies'
@@ -1399,9 +1432,30 @@ function showRateChangeApprovalModal() {
       tbody.innerHTML = sortedChanges.map(ch => {
         const component = ch.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : (ch.type ? ch.type.replace('_', ' ') : 'Fee');
         const scope = (ch.category || 'All') + (ch.brand && ch.brand !== 'All' ? ' (' + ch.brand + ')' : '') + ' · ' + (ch.slab || ch.fulfilmentType || 'All slabs');
-        const oldR = describeRateRecord(ch.table, ch.oldRow) || (ch.oldRate != null ? (ch.table === 'rc_commission' ? (Number(ch.oldRate) * 100).toFixed(4) + '%' : '₹' + ch.oldRate) : '—');
-        const newR = describeRateRecord(ch.table, ch.newRow) || (ch.newRate != null ? (ch.table === 'rc_commission' ? (Number(ch.newRate) * 100).toFixed(4) + '%' : '₹' + ch.newRate) : '—');
-        const diff = ch.difference || '—';
+        let oldR = '—';
+        if (ch.oldRow) oldR = describeRateRecord(ch.table, ch.oldRow);
+        else if (ch.oldRate != null) oldR = ch.table === 'rc_commission' || ch.type === 'commission' ? (Number(ch.oldRate) * 100).toFixed(4) + '%' : '₹' + ch.oldRate;
+
+        let newR = '—';
+        if (ch.newRow) newR = describeRateRecord(ch.table, ch.newRow);
+        else if (ch.newRate != null) newR = ch.table === 'rc_commission' || ch.type === 'commission' ? (Number(ch.newRate) * 100).toFixed(4) + '%' : '₹' + ch.newRate;
+
+        let diff = ch.difference || '—';
+        if (diff === '—' && ch.oldRate != null && ch.newRate != null) {
+          if (ch.table === 'rc_commission' || ch.type === 'commission') {
+            const delta = (Number(ch.newRate) - Number(ch.oldRate)) * 100;
+            diff = (delta > 0 ? '+' : '') + delta.toFixed(2) + ' pp';
+          } else {
+            const delta = Number(ch.newRate) - Number(ch.oldRate);
+            diff = (delta > 0 ? '+' : '') + '₹' + delta.toFixed(2);
+          }
+        } else if (diff === '—' && ch.oldRate == null && ch.newRate != null) {
+          if (ch.table === 'rc_commission' || ch.type === 'commission') {
+            diff = '+' + (Number(ch.newRate) * 100).toFixed(2) + '% (New)';
+          } else {
+            diff = '+₹' + Number(ch.newRate).toFixed(2) + ' (New)';
+          }
+        }
         const impact = ch.recommendation || (isCostIncrease(ch.financialImpact) ? 'Higher cost' : (isCostDecrease(ch.financialImpact) ? 'Cost saving' : 'Neutral'));
 
         return '<tr>' +
@@ -1416,6 +1470,16 @@ function showRateChangeApprovalModal() {
     }
   }
 
+  const btnApprovePublish = document.getElementById('btn-modal-approve-publish');
+  if (btnApprovePublish) {
+    btnApprovePublish.disabled = !currentCanSync;
+    btnApprovePublish.title = currentCanSync
+      ? 'Commit reviewed rates to PostgreSQL'
+      : 'Publication is disabled: Run a full extraction covering all categories or check comparison status.';
+  }
+  if (!currentCanSync && impactTitle) {
+    impactTitle.textContent = (anomalies.length > 0 ? '⚠️ CAUTION: ' + anomalies.length + ' Anomalies' : 'Rate Changes Preview') + ' (Publication Disabled)';
+  }
   modal.style.display = 'flex';
 }
 
@@ -1787,7 +1851,10 @@ function setupEventListeners() {
   // Commit to Database
   async function executePublishToDatabase() {
     if (currentRateCards.length === 0 || !currentCanSync) {
-      alert('Run a successful extraction first. Generated template rates cannot be committed as live rates.');
+      const reason = !currentComparisonAvailable
+        ? 'PostgreSQL comparison is unavailable. Please check database connectivity.'
+        : 'Publication requires a complete, verified extraction covering all configured categories before committing live rates to PostgreSQL.';
+      alert('Cannot publish to database: ' + reason);
       return;
     }
 
@@ -1843,8 +1910,8 @@ function setupEventListeners() {
   }
 
   btnCommitDb?.addEventListener('click', () => {
-    if (currentRateCards.length === 0 || !currentCanSync) {
-      alert('Run a successful extraction first. Generated template rates cannot be committed as live rates.');
+    if (currentRateCards.length === 0) {
+      alert('No staged rate cards available. Run an extraction first.');
       return;
     }
     showRateChangeApprovalModal();
@@ -1873,7 +1940,12 @@ function setupEventListeners() {
 
   const handleOpenExcel = async () => {
     appendTerminalLine('Launching Desktop Excel file in Microsoft Excel...');
-    const res = await window.ratecardAPI.openExcelFile();
+    let res = await window.ratecardAPI.openExcelFile();
+    if (!res.success && String(res.error).toLowerCase().includes('not found')) {
+      appendTerminalLine('Excel workbook not found on disk. Generating workbook now...');
+      await handleGenerateExcel();
+      res = await window.ratecardAPI.openExcelFile();
+    }
     if (res.success) {
       appendTerminalLine(`✓ Opened: ${res.filePath}`);
       const excelPathEl = document.getElementById('excel-path-display');
