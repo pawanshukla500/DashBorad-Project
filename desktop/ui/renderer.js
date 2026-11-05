@@ -212,17 +212,26 @@ function updateSettingsUpdateUI(status) {
       alert('✓ You are running the latest release (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.19') + '). No update is required.');
     }
   } else if (kind === 'available') {
-    if (settingsMsg) settingsMsg.textContent = '⚡ Update available: v' + rawVersion + '! Ready to download.';
     if (settingsCheckBtn) {
       settingsCheckBtn.disabled = false;
       settingsCheckBtn.textContent = '🔄 Check for Updates';
     }
-    if (settingsDlBtn) {
-      settingsDlBtn.style.display = 'inline-flex';
-      settingsDlBtn.disabled = false;
-      settingsDlBtn.textContent = '⬇️ Download v' + rawVersion;
+    if (pendingUpdateDownloaded && pendingUpdateDownloaded === rawVersion) {
+      if (settingsMsg) settingsMsg.textContent = '✅ Update v' + rawVersion + ' is ready! Restart the worker to apply.';
+      if (settingsDlBtn) settingsDlBtn.style.display = 'none';
+      if (settingsRestartBtn) {
+        settingsRestartBtn.style.display = 'inline-flex';
+        settingsRestartBtn.disabled = false;
+      }
+    } else {
+      if (settingsMsg) settingsMsg.textContent = '⚡ Update available: v' + rawVersion + '! Ready to download.';
+      if (settingsDlBtn) {
+        settingsDlBtn.style.display = 'inline-flex';
+        settingsDlBtn.disabled = false;
+        settingsDlBtn.textContent = '⬇️ Download v' + rawVersion;
+      }
+      if (settingsRestartBtn) settingsRestartBtn.style.display = 'none';
     }
-    if (settingsRestartBtn) settingsRestartBtn.style.display = 'none';
   } else if (kind === 'downloading') {
     const pct = status?.percent || 0;
     if (settingsMsg) settingsMsg.textContent = '⬇️ Downloading update v' + rawVersion + ' (' + pct + '%)...';

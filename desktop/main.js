@@ -490,6 +490,11 @@ function broadcastUpdateStatus(status) {
   }
 }
 
+/**
+ * Creates or retrieves the rotating updater file logger.
+ * Logs timestamped events to %APPDATA%/reconcentral-ratecard-worker/logs/updater.log.
+ * @returns {{ info: Function, warn: Function, error: Function, debug: Function }}
+ */
 function getUpdaterLogger() {
   const logDir = path.join(app.getPath('userData'), 'logs');
   const logFile = path.join(logDir, 'updater.log');
@@ -512,6 +517,10 @@ function getUpdaterLogger() {
   };
 }
 
+/**
+ * Inspects the updater cache directory for a setup installer downloaded in a prior session.
+ * @returns {{ version: string, fileName: string, size: number, path: string } | null}
+ */
 function getPendingUpdateInfo() {
   try {
     const localAppData = process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local');
@@ -532,7 +541,10 @@ function getPendingUpdateInfo() {
   }
 }
 
-// Updates ship only for packaged installs on Windows (NSIS installer with latest.yml).
+/**
+ * Loads and initializes electron-updater for packaged Windows production environments.
+ * @returns {object|null} The electron-updater instance or null if unavailable.
+ */
 function loadAutoUpdater() {
   if (!app.isPackaged || process.platform !== 'win32') return null;
   try {
@@ -546,13 +558,20 @@ function loadAutoUpdater() {
 }
 
 let lastUpdateCheckTime = null;
+let isLastCheckManual = false;
 
+/**
+ * Dispatches an asynchronous update check against GitHub Releases feed.
+ * @param {boolean} [manual=false] Whether check was manually triggered by user action.
+ * @returns {Promise<boolean>} True if update check initiated successfully.
+ */
 function checkForAppUpdate(manual = false) {
   if (!autoUpdater) return Promise.resolve(false);
+  isLastCheckManual = Boolean(manual);
   lastUpdateCheckTime = new Date().toISOString();
   broadcastUpdateStatus({
     status: 'checking',
-    manual,
+    manual: isLastCheckManual,
     currentVersion: app.getVersion(),
     checkedAt: lastUpdateCheckTime
   });
@@ -561,7 +580,7 @@ function checkForAppUpdate(manual = false) {
     broadcastUpdateStatus({
       status: 'error',
       message: err.message,
-      manual,
+      manual: isLastCheckManual,
       currentVersion: app.getVersion(),
       checkedAt: lastUpdateCheckTime
     });
@@ -569,6 +588,9 @@ function checkForAppUpdate(manual = false) {
   });
 }
 
+/**
+ * Checks disk staging cache for a pre-downloaded installer and sets status if present.
+ */
 function checkStagedCachedUpdate() {
   const pendingInfo = getPendingUpdateInfo();
   if (pendingInfo && pendingInfo.version && pendingInfo.version !== app.getVersion()) {
@@ -584,6 +606,9 @@ function checkStagedCachedUpdate() {
   }
 }
 
+/**
+ * Registers electron-updater lifecycle handlers and recurring check timers.
+ */
 function setupAutoUpdate() {
   autoUpdater = loadAutoUpdater();
   if (!autoUpdater) return;
@@ -596,7 +621,7 @@ function setupAutoUpdate() {
     pendingUpdateVersion = info?.version || '';
     broadcastUpdateStatus({ status: 'available', version: pendingUpdateVersion, currentVersion: app.getVersion() });
   });
-  autoUpdater.on('update-not-available', () => broadcastUpdateStatus({ status: 'not-available', version: app.getVersion(), currentVersion: app.getVersion() }));
+  autoUpdater.on('update-not-available', () => broadcastUpdateStatus({ status: 'not-available', manual: isLastCheckManual, version: app.getVersion(), currentVersion: app.getVersion() }));
   autoUpdater.on('download-progress', (progress) => broadcastUpdateStatus({ status: 'downloading', version: pendingUpdateVersion, currentVersion: app.getVersion(), percent: Math.round(progress?.percent || 0) }));
   autoUpdater.on('update-downloaded', (info) => {
     pendingUpdateVersion = info?.version || pendingUpdateVersion;
@@ -1653,8 +1678,7 @@ registerHandler('update-install', () => {
   if (withBrowserTask.busy || isWorkerExecutingJob || stagedExtraction.publicationInProgress) {
     return { success: false, error: 'An extraction or publication is running. Wait for it to finish, then restart to update.' };
   }
-  const pendingInfo = getPendingUpdateInfo();
-  if (lastUpdateStatus?.status !== 'downloaded' && !pendingInfo) {
+  if (lastUpdateStatus?.status !== 'downloaded') {
     return { success: false, error: 'No downloaded update is ready to install yet.' };
   }
   autoUpdater.quitAndInstall(true, true);
