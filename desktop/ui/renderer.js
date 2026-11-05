@@ -1061,13 +1061,13 @@ function renderDiffTable() {
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission' || activeDiffFilter === 'anomalies') {
       for (const c of commissions) {
-        const change = currentChanges.find(ch =>
+        const matchesCommissionSlab = (ch) =>
           ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
-          (ch.brand === brand || !ch.brand || ch.brand === 'All' || ch.brand === 'General') &&
           (ch.table === 'rc_commission' || ch.type === 'commission') &&
           ch.priceMin != null &&
-          (Math.abs(ch.priceMin - c.price_min) < 0.01 && Math.abs(ch.priceMax - c.price_max) < 1.0)
-        );
+          (Math.abs(ch.priceMin - c.price_min) < 0.01 && Math.abs(ch.priceMax - c.price_max) < 1.0);
+        const change = currentChanges.find(ch => matchesCommissionSlab(ch) && ch.brand === brand) ||
+          currentChanges.find(ch => matchesCommissionSlab(ch) && (!ch.brand || ch.brand === 'All' || ch.brand === 'General'));
         if (change) matchedChanges.add(change);
         const oldRateStr = change?.oldRate != null ? (Number(change.oldRate) * 100).toFixed(4) + '%' : (change ? '—' : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared'));
         const newRateStr = (Number(c.rate) * 100).toFixed(4) + '%';

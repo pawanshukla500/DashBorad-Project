@@ -2296,7 +2296,7 @@ registerHandler('export-desktop-excel', async (e, customPath) => {
 // Open File in Native App (Excel)
 registerHandler('open-excel-file', async (e, targetPath) => {
   try {
-    const { DEFAULT_EXCEL_PATH, exportBrandWiseRateCardWorkbook } = await import('./excelExport.js');
+    const { DEFAULT_EXCEL_PATH, generateBrandwiseRateCardExcel } = await import('./excelExport.js');
     let filePath = targetPath || DEFAULT_EXCEL_PATH;
     if (!fs.existsSync(filePath)) {
       const jsonAlt = filePath.replace(/\.xlsx$/, '.json');
@@ -2305,8 +2305,9 @@ registerHandler('open-excel-file', async (e, targetPath) => {
     if (!fs.existsSync(filePath)) {
       try {
         const config = loadConfig();
-        if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
-        await exportBrandWiseRateCardWorkbook({ filePath: DEFAULT_EXCEL_PATH });
+        const { getDesktopPool } = await import('./db.js');
+        const pool = getDesktopPool(config.databaseUrl);
+        await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
         if (fs.existsSync(DEFAULT_EXCEL_PATH)) filePath = DEFAULT_EXCEL_PATH;
       } catch (_) {}
     }
