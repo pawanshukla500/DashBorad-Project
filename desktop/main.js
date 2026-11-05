@@ -2296,17 +2296,25 @@ registerHandler('export-desktop-excel', async (e, customPath) => {
 // Open File in Native App (Excel)
 registerHandler('open-excel-file', async (e, targetPath) => {
   try {
-    const { DEFAULT_EXCEL_PATH } = await import('./excelExport.js');
+    const { DEFAULT_EXCEL_PATH, exportBrandWiseRateCardWorkbook } = await import('./excelExport.js');
     let filePath = targetPath || DEFAULT_EXCEL_PATH;
     if (!fs.existsSync(filePath)) {
       const jsonAlt = filePath.replace(/\.xlsx$/, '.json');
       if (fs.existsSync(jsonAlt)) filePath = jsonAlt;
     }
+    if (!fs.existsSync(filePath)) {
+      try {
+        const config = loadConfig();
+        if (config.databaseUrl) process.env.DATABASE_URL = config.databaseUrl;
+        await exportBrandWiseRateCardWorkbook({ filePath: DEFAULT_EXCEL_PATH });
+        if (fs.existsSync(DEFAULT_EXCEL_PATH)) filePath = DEFAULT_EXCEL_PATH;
+      } catch (_) {}
+    }
     if (fs.existsSync(filePath)) {
       await shell.openPath(filePath);
       return { success: true, filePath };
     }
-    return { success: false, error: `File not found on disk: ${filePath}` };
+    return { success: false, error: `File not found on disk: ${filePath}. Click "Export Excel" to generate it.` };
   } catch (err) {
     return { success: false, error: err.message };
   }
