@@ -204,7 +204,7 @@ function updateSettingsUpdateUI(status) {
       settingsCheckBtn.textContent = 'Checking...';
     }
   } else if (kind === 'not-available') {
-    if (settingsMsg) settingsMsg.textContent = '✓ You are running the latest version (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.20') + ').';
+    if (settingsMsg) settingsMsg.textContent = '✓ You are running the latest version (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.21') + ').';
     if (settingsCheckBtn) {
       settingsCheckBtn.disabled = false;
       settingsCheckBtn.textContent = '🔄 Check for Updates';
@@ -212,7 +212,7 @@ function updateSettingsUpdateUI(status) {
     if (settingsDlBtn) settingsDlBtn.style.display = 'none';
     if (settingsRestartBtn) settingsRestartBtn.style.display = 'none';
     if (isManual) {
-      alert('✓ You are running the latest release (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.20') + '). No update is required.');
+      alert('✓ You are running the latest release (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.21') + '). No update is required.');
     }
   } else if (kind === 'available') {
     if (settingsCheckBtn) {
