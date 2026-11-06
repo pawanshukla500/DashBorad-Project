@@ -20,17 +20,33 @@ export const ANOMALY_THRESHOLDS = {
   SLAB_COUNT_JUMP: 3               // >= 3 slabs added or removed in one vertical
 };
 
+/**
+ * Returns date string (YYYY-MM-DD) for the calendar day prior to the given ISO date.
+ * @param {string} isoDate - Date in YYYY-MM-DD format.
+ * @returns {string} Day before date string.
+ */
 export function dayBefore(isoDate) {
   const d = new Date(isoDate + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * Safely parses and normalizes a numeric value with fallback.
+ * @param {*} val - Input value.
+ * @param {number} [fallback=0] - Fallback when input is not finite.
+ * @returns {number} Normalized number.
+ */
 function num(val, fallback = 0) {
   const n = Number(val);
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * Normalizes marketplace name to canonical internal identifier.
+ * @param {string} mp - Marketplace identifier.
+ * @returns {string} Canonical lowercase marketplace name.
+ */
 export function normalizeMarketplace(mp) {
   const s = String(mp || '').trim().toLowerCase();
   if (s.includes('shopsy')) return 'shopsy';
@@ -41,6 +57,12 @@ export function normalizeMarketplace(mp) {
   return s || 'flipkart';
 }
 
+/**
+ * Validates the completeness and schema integrity of scraped rate cards.
+ * @param {Array<object>} scrapedCards - Extracted rate card profiles.
+ * @param {object} [options={}] - Validation options.
+ * @returns {{valid: boolean, errors: string[], warnings: string[], parametersFound: object}} Validation outcome.
+ */
 export function validateExtractionCompleteness(scrapedCards, options = {}) {
   const errors = [];
   const warnings = [];
@@ -141,6 +163,14 @@ export function validateExtractionCompleteness(scrapedCards, options = {}) {
   };
 }
 
+/**
+ * Compares current extracted rate cards against a previous extraction snapshot.
+ * Detects parameter shifts, new/missing parameters, and multi-day extraction gaps.
+ * @param {Array<object>} currentCards - Newly extracted rate cards.
+ * @param {object} previousExtractionRecord - Prior validated extraction record from DB.
+ * @param {object} [options={}] - Options including currentDate.
+ * @returns {object} Comparison results detailing added, removed, modified, and gap metrics.
+ */
 export function compareWithPreviousExtraction(currentCards, previousExtractionRecord, options = {}) {
   const currentDate = String(options.currentDate || new Date().toISOString().slice(0, 10));
   
@@ -317,10 +347,18 @@ export function compareWithPreviousExtraction(currentCards, previousExtractionRe
   };
 }
 
+/**
+ * Scans changes from both comparisons (vs previous extraction and vs active DB)
+ * and flags anomalies according to defined financial and structural thresholds.
+ * @param {object} vsPrevious - Result from compareWithPreviousExtraction.
+ * @param {Array<object>} vsDbChanges - Diffs from compareScrapedRatesWithActive.
+ * @param {object} [options={}] - Options including marketplace, effectiveDate, currentDate.
+ * @returns {object} Flagged anomalies and auto-update qualification.
+ */
 export function detectExtractionAnomalies(vsPrevious, vsDbChanges = [], options = {}) {
   const anomalies = [];
-  const effectiveDate = options.effectiveDate || new Date().toISOString().slice(0, 10);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = options.currentDate || new Date().toISOString().slice(0, 10);
+  const effectiveDate = options.effectiveDate || today;
 
   let futureEffectiveDateFlag = false;
   if (effectiveDate > today) {
@@ -432,6 +470,12 @@ export function detectExtractionAnomalies(vsPrevious, vsDbChanges = [], options 
   };
 }
 
+/**
+ * Compiles a comprehensive daily validation report combining completeness,
+ * comparison against last validated extraction (gap-aware), and active DB validation.
+ * @param {object} params - Input parameters.
+ * @returns {object} Full daily validation report.
+ */
 export function compileDailyValidationReport({
   currentCards,
   previousExtractionRecord,
@@ -490,6 +534,12 @@ export function compileDailyValidationReport({
   };
 }
 
+/**
+ * Queries the last successfully validated extraction from PostgreSQL.
+ * @param {import('pg').Pool|null} [pool=null] - Optional pool instance.
+ * @param {object} [options={}] - Query options.
+ * @returns {Promise<object|null>} Prior extraction snapshot.
+ */
 export async function getLastValidatedExtraction(pool = null, { marketplace = 'flipkart', sellerAccount = 'default', beforeDate = null } = {}) {
   const p = pool || getDesktopPool();
   try {
@@ -516,6 +566,12 @@ export async function getLastValidatedExtraction(pool = null, { marketplace = 'f
   }
 }
 
+/**
+ * Saves an extraction snapshot record to rate_card_extractions in PostgreSQL.
+ * @param {import('pg').Pool|null} [pool=null] - Optional pool instance.
+ * @param {object} [record={}] - Extraction snapshot data.
+ * @returns {Promise<object|null>} Saved extraction row.
+ */
 export async function saveRateCardExtraction(pool = null, record = {}) {
   const p = pool || getDesktopPool();
   try {

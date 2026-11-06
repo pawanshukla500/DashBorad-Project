@@ -270,16 +270,21 @@ async function runWorker() {
         marketplace: targetMp,
         sellerAccount: 'default',
         extractionDate: new Date().toISOString().slice(0, 10),
-        status: dailyReport.anomalyCount > 0 ? 'anomalies_detected' : (syncResult?.updated ? 'published' : 'validated'),
+        status: dailyReport.validationStatus === 'incomplete_extraction'
+          ? 'incomplete'
+          : (dailyReport.anomalyCount > 0
+            ? 'anomalies_detected'
+            : (syncResult?.updated ? 'published' : 'validated')),
         source: 'desktop_worker_cli',
         rateCards,
         parametersSummary: dailyReport.summary,
         dualComparison: {
           vsPrevious: dailyReport.vsPreviousExtraction,
-          vsActiveDb: dailyReport.vsActiveDatabase
+          vsActiveDb: dailyReport.vsActiveDatabase,
+          publishedVersionName: syncResult?.versionName || null,
         },
         anomalies: dailyReport.anomalies,
-        versionId: syncResult?.versionName || null,
+        versionId: Number.isInteger(syncResult?.versionId) ? syncResult.versionId : null,
       });
     } catch (saveExtErr) {
       console.warn('⚠️ Could not save rate card extraction record:', saveExtErr.message);

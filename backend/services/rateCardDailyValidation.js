@@ -357,8 +357,8 @@ export function compareWithPreviousExtraction(currentCards, previousExtractionRe
 export function detectExtractionAnomalies(vsPrevious, vsDbChanges = [], options = {}) {
   const anomalies = [];
   const marketplace = options.marketplace || 'flipkart';
-  const effectiveDate = options.effectiveDate || new Date().toISOString().slice(0, 10);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = options.currentDate || new Date().toISOString().slice(0, 10);
+  const effectiveDate = options.effectiveDate || today;
 
   // Check if effective date is in the future
   let futureEffectiveDateFlag = false;
