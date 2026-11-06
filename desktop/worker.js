@@ -198,29 +198,29 @@ async function runWorker() {
       if (autoSync) {
         if (!rateCards || rateCards.length === 0 || !rateCards.some(r => (r.commissions && r.commissions.length > 0) || (r.fixedFees && r.fixedFees.length > 0))) {
           console.warn('⚠️ Auto-sync blocked: Current rate cards cannot be verified. Review Seller Hub extraction first.');
-          return;
-        }
-        const anomalyChanges = changes.filter(c => c.anomaly);
-        if (anomalyChanges.length > 0 && !allowAnomalies) {
-          console.warn(`\n⚠️ Auto-sync skipped: ${anomalyChanges.length} rate anomaly/anomalies detected that require human verification.`);
-          console.warn('   Run with --allow-anomalies to commit anomalous rates autonomously, or review in the desktop UI.');
         } else {
-          onProgress(`⚡ Autonomous Auto-Sync active: Committing ${changes.length} rate adjustments to PostgreSQL...`);
-          const syncResult = await syncBrandRateCardsToDatabase(rateCards, {
-            sellerAccount: 'default',
-            actor: 'worker-cli-autosync',
-            runMetadata: { source: 'worker-cli', marketplace: marketplaceArg }
-          }, pool);
-          console.log(`✓ PostgreSQL Auto-Sync Completed: ${syncResult.message}`);
-          if (syncResult.updated !== false) {
-            console.log(`  Audit Version: ${syncResult.versionName}`);
-            console.log(`  Commissions: ${syncResult.insertedCommissions}, Fixed: ${syncResult.insertedFixed}, Reverse: ${syncResult.insertedRev}, Collection: ${syncResult.insertedCollection}, Pick&Pack: ${syncResult.insertedPickPack || 0}`);
-            if (syncResult.anomaliesCount > 0) {
-              console.log(`⚠️ ${syncResult.anomaliesCount} anomalies recorded in version audit snapshot.`);
-            }
-            console.log(`\nℹ️ [NOTIFICATION] Rate changes recorded. No automated email sent directly by worker CLI (use ReconCentral cloud alerts).`);
+          const anomalyChanges = changes.filter(c => c.anomaly);
+          if (anomalyChanges.length > 0 && !allowAnomalies) {
+            console.warn(`\n⚠️ Auto-sync skipped: ${anomalyChanges.length} rate anomaly/anomalies detected that require human verification.`);
+            console.warn('   Run with --allow-anomalies to commit anomalous rates autonomously, or review in the desktop UI.');
           } else {
-            console.log('  Database already matches active rates. 0 updates applied.');
+            onProgress(`⚡ Autonomous Auto-Sync active: Committing ${changes.length} rate adjustments to PostgreSQL...`);
+            const syncResult = await syncBrandRateCardsToDatabase(rateCards, {
+              sellerAccount: 'default',
+              actor: 'worker-cli-autosync',
+              runMetadata: { source: 'worker-cli', marketplace: marketplaceArg }
+            }, pool);
+            console.log(`✓ PostgreSQL Auto-Sync Completed: ${syncResult.message}`);
+            if (syncResult.updated !== false) {
+              console.log(`  Audit Version: ${syncResult.versionName}`);
+              console.log(`  Commissions: ${syncResult.insertedCommissions}, Fixed: ${syncResult.insertedFixed}, Reverse: ${syncResult.insertedRev}, Collection: ${syncResult.insertedCollection}, Pick&Pack: ${syncResult.insertedPickPack || 0}`);
+              if (syncResult.anomaliesCount > 0) {
+                console.log(`⚠️ ${syncResult.anomaliesCount} anomalies recorded in version audit snapshot.`);
+              }
+              console.log(`\nℹ️ [NOTIFICATION] Rate changes recorded. No automated email sent directly by worker CLI (use ReconCentral cloud alerts).`);
+            } else {
+              console.log('  Database already matches active rates. 0 updates applied.');
+            }
           }
         }
       } else {
