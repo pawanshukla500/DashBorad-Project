@@ -392,3 +392,51 @@ export async function publishJobViaApi(session, jobId) {
   }
   return await res.json();
 }
+
+export async function fetchLastValidatedExtractionViaApi(session, { marketplace = 'flipkart', sellerAccount = 'default', beforeDate = null } = {}) {
+  const baseUrl = await getActiveBackendUrl();
+  const query = new URLSearchParams({ marketplace, seller_account: sellerAccount });
+  if (beforeDate) query.set('before_date', beforeDate);
+  const res = await safeFetch(`${baseUrl}/api/rate-card/daily-validation/last?${query}`, {
+    timeoutMs: 15000,
+    headers: getHeaders(session?.idToken, baseUrl)
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `Failed to fetch last validated extraction: HTTP ${res.status}`);
+  }
+  const body = await res.json();
+  return body.extraction || null;
+}
+
+export async function evaluateDailyValidationViaApi(session, payload = {}) {
+  const baseUrl = await getActiveBackendUrl();
+  const res = await safeFetch(`${baseUrl}/api/rate-card/daily-validation/evaluate`, {
+    timeoutMs: 30000,
+    method: 'POST',
+    headers: getHeaders(session?.idToken, baseUrl),
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `Daily validation evaluation failed: HTTP ${res.status}`);
+  }
+  const body = await res.json();
+  return body.report;
+}
+
+export async function saveDailyValidationExtractionViaApi(session, record = {}) {
+  const baseUrl = await getActiveBackendUrl();
+  const res = await safeFetch(`${baseUrl}/api/rate-card/daily-validation/save`, {
+    timeoutMs: 25000,
+    method: 'POST',
+    headers: getHeaders(session?.idToken, baseUrl),
+    body: JSON.stringify(record)
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `Failed to save extraction record: HTTP ${res.status}`);
+  }
+  const body = await res.json();
+  return body.saved;
+}

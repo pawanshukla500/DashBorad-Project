@@ -593,6 +593,27 @@ const TABLES = [`
     CONSTRAINT ck_rate_card_version_status CHECK (status IN ('draft','published','archived'))
   )`,
 
+  /* Historical marketplace fee extraction log & dual-comparison snapshots.
+     Enables comparing new extractions against both the last successfully
+     validated extraction and the active database rate card, regardless of multi-day gaps. */
+  `CREATE TABLE IF NOT EXISTS rate_card_extractions (
+    id                  BIGSERIAL PRIMARY KEY,
+    marketplace         TEXT NOT NULL DEFAULT 'flipkart',
+    seller_account      TEXT NOT NULL DEFAULT 'default',
+    extraction_date     DATE NOT NULL,
+    extracted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status              TEXT NOT NULL DEFAULT 'staged',
+    source              TEXT NOT NULL DEFAULT 'desktop_worker',
+    rate_cards          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    parameters_summary  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    dual_comparison     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    anomalies           JSONB NOT NULL DEFAULT '[]'::jsonb,
+    version_id          BIGINT,
+    error_message       TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_rate_card_extraction_status CHECK (status IN ('staged','validated','anomalies_detected','published','failed','incomplete'))
+  )`,
+
   /* Delivery record for rate-card change emails. A successful Resend API
      request means accepted by Resend; final mailbox delivery/open events need
      a Resend webhook and are deliberately not inferred here. */
@@ -764,6 +785,7 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_audit_created ON audit_events(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS IX_audit_actor ON audit_events(actor_user_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS IX_rate_versions_scope ON rate_card_versions(marketplace, seller_account, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS IX_rate_card_extractions_scope ON rate_card_extractions(marketplace, seller_account, extraction_date DESC, id DESC)`,
   `CREATE INDEX IF NOT EXISTS IX_rate_card_notification_log_created ON rate_card_notification_log(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS IX_amazon_rate_rules_match ON amazon_rate_card_rules(seller_account, fee_code, program, is_active, start_date DESC)`,
   `CREATE INDEX IF NOT EXISTS IX_orders_date_cat   ON orders(order_date, category, delivery_state, orders_status)`,
@@ -3444,6 +3466,34 @@ export async function ensureRateCardWorkerSchema(pool) {
   const mig3 = await runRateCardDimensionalMigration(pool, runVersionedMigration);
   if (mig3 === false) {
     throw new Error('Migration 2026.10.ratecard-worker-jobs-3 failed to apply');
+  }
+
+  const mig4 = await runVersionedMigration(pool, '2026.11.ratecard-extractions-1', async (tx) => {
+    await tx.query(`
+      CREATE TABLE IF NOT EXISTS rate_card_extractions (
+        id                  BIGSERIAL PRIMARY KEY,
+        marketplace         TEXT NOT NULL DEFAULT 'flipkart',
+        seller_account      TEXT NOT NULL DEFAULT 'default',
+        extraction_date     DATE NOT NULL,
+        extracted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status              TEXT NOT NULL DEFAULT 'staged',
+        source              TEXT NOT NULL DEFAULT 'desktop_worker',
+        rate_cards          JSONB NOT NULL DEFAULT '[]'::jsonb,
+        parameters_summary  JSONB NOT NULL DEFAULT '{}'::jsonb,
+        dual_comparison     JSONB NOT NULL DEFAULT '{}'::jsonb,
+        anomalies           JSONB NOT NULL DEFAULT '[]'::jsonb,
+        version_id          BIGINT,
+        error_message       TEXT,
+        created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT ck_rate_card_extraction_status CHECK (status IN ('staged','validated','anomalies_detected','published','failed','incomplete'))
+      );
+
+      CREATE INDEX IF NOT EXISTS ix_rate_card_extractions_mp_acc_date 
+        ON rate_card_extractions(marketplace, seller_account, extraction_date DESC, id DESC);
+    `);
+  }, { lockTimeout: '5s' });
+  if (mig4 === false) {
+    throw new Error('Migration 2026.11.ratecard-extractions-1 failed to apply');
   }
 
   if (mig2 === false) {

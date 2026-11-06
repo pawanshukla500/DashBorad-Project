@@ -18,6 +18,15 @@ import { getRealTimeBrandFsnSamples } from '../services/brandRateCardService.js'
 import { generateBrandwiseRateCardExcel, DEFAULT_EXCEL_PATH } from '../services/brandwiseExcelExport.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { resolveRateCardEffectiveDate } from '../utils/rateCardDate.js';
+import {
+  getLastValidatedExtraction,
+  saveRateCardExtraction,
+  compileDailyValidationReport,
+  validateExtractionCompleteness,
+  compareWithPreviousExtraction,
+  detectExtractionAnomalies
+} from '../services/rateCardDailyValidation.js';
+import { sendAdminRateCardAlert } from '../services/rateCardNotifications.js';
 
 const router = express.Router();
 const RATE_CARD_PUBLISH_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('rate_card_publish_lock'))";
@@ -1778,6 +1787,119 @@ router.get('/export-brandwise-excel', async (req, res) => {
     const pool = getPool();
     const excelResult = await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
     res.download(excelResult.filePath, 'Flipkart_Shopsy_Brandwise_RateCard.xlsx');
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/rate-card/daily-validation/last
+ * Query the last successfully validated extraction snapshot
+ */
+router.get('/daily-validation/last', async (req, res) => {
+  try {
+    const pool = getPool();
+    const marketplace = req.query.marketplace || 'flipkart';
+    const sellerAccount = req.query.seller_account || req.query.sellerAccount || 'default';
+    const beforeDate = req.query.before_date || req.query.beforeDate || null;
+    const extraction = await getLastValidatedExtraction(pool, { marketplace, sellerAccount, beforeDate });
+    res.json({ success: true, extraction });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/daily-validation/evaluate
+ * Run dual comparison (vs last extraction & vs active DB) and detect anomalies
+ */
+router.post('/daily-validation/evaluate', async (req, res) => {
+  try {
+    const pool = getPool();
+    const {
+      currentCards = [],
+      previousExtractionRecord = null,
+      activeDbChanges = null,
+      marketplace = 'flipkart',
+      sellerAccount = 'default',
+      extractionDate = new Date().toISOString().slice(0, 10),
+      effectiveDate = extractionDate,
+      notifyOnAnomalies = false,
+    } = req.body;
+
+    let prevRecord = previousExtractionRecord;
+    if (!prevRecord) {
+      prevRecord = await getLastValidatedExtraction(pool, { marketplace, sellerAccount, beforeDate: extractionDate });
+    }
+
+    let dbDiffs = activeDbChanges;
+    if (!dbDiffs) {
+      const dbReview = await compareScrapedRatesWithActive(currentCards, {
+        marketplace,
+        sellerAccount,
+        effectiveDate,
+      });
+      dbDiffs = dbReview.diffs || [];
+    }
+
+    const report = compileDailyValidationReport({
+      currentCards,
+      previousExtractionRecord: prevRecord,
+      activeDbChanges: dbDiffs,
+      options: {
+        marketplace,
+        sellerAccount,
+        currentDate: extractionDate,
+        effectiveDate,
+      }
+    });
+
+    if (notifyOnAnomalies && (report.anomalies.length > 0 || !report.completeness.valid)) {
+      try {
+        await sendAdminRateCardAlert(pool, {
+          marketplace,
+          sellerAccount,
+          extractionDate,
+          effectiveDate,
+          validationStatus: report.validationStatus,
+          anomalies: report.anomalies,
+          changes: dbDiffs,
+          autoApplied: false,
+          requiresApproval: true,
+        });
+      } catch (notifyErr) {
+        console.warn('[daily-validation] Alert notification failed:', notifyErr.message);
+      }
+    }
+
+    res.json({ success: true, report });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/rate-card/daily-validation/save
+ * Persist extraction snapshot into rate_card_extractions
+ */
+router.post('/daily-validation/save', async (req, res) => {
+  try {
+    const pool = getPool();
+    const record = {
+      marketplace: req.body.marketplace || 'flipkart',
+      sellerAccount: req.body.sellerAccount || req.body.seller_account || 'default',
+      extractionDate: req.body.extractionDate || req.body.extraction_date || new Date().toISOString().slice(0, 10),
+      status: req.body.status || 'staged',
+      source: req.body.source || 'desktop_worker',
+      rateCards: req.body.rateCards || req.body.rate_cards || [],
+      parametersSummary: req.body.parametersSummary || req.body.parameters_summary || {},
+      dualComparison: req.body.dualComparison || req.body.dual_comparison || {},
+      anomalies: req.body.anomalies || [],
+      versionId: req.body.versionId || req.body.version_id || null,
+      errorMessage: req.body.errorMessage || req.body.error_message || null,
+    };
+    const saved = await saveRateCardExtraction(pool, record);
+    res.json({ success: true, saved });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

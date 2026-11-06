@@ -248,6 +248,7 @@ export const ALLOWED_TABLES = new Set([
   'rc_pick_pack',
   'rc_franchise_fee',
   'rate_card_versions',
+  'rate_card_extractions',
   'sku_master',
   'vb_sku_master'
 ]);
@@ -263,7 +264,8 @@ export const READ_ONLY_TABLES = new Set([
   'rc_reverse_shipping',
   'rc_pick_pack',
   'rc_franchise_fee',
-  'rate_card_versions'
+  'rate_card_versions',
+  'rate_card_extractions'
 ]);
 
 const IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;

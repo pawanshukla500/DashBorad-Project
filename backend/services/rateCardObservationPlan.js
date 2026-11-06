@@ -173,8 +173,8 @@ function calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next, pr
   let financialImpact = 'neutral';
   let recommendation = '';
 
-  const numOld = typeof oldRate === 'number' ? oldRate : null;
-  const numNew = typeof newRate === 'number' ? newRate : null;
+  const numOld = (oldRate !== null && oldRate !== undefined && !isNaN(Number(oldRate))) ? Number(oldRate) : null;
+  const numNew = (newRate !== null && newRate !== undefined && !isNaN(Number(newRate))) ? Number(newRate) : null;
 
   if (changeType === 'ADDED') {
     financialImpact = 'new_fee_introduced';
@@ -311,8 +311,35 @@ export async function planRateCardChanges(client, observations, { marketplace, s
     const push = (changeType, previous, row) => {
       const next = row || previous.row;
       const oldRate = display(descriptor, previous?.row), newRate = display(descriptor, row);
-      const delta = typeof oldRate === 'number' && typeof newRate === 'number' ? Math.abs(oldRate - newRate) : 0;
+      const numOld = (oldRate !== null && oldRate !== undefined && !isNaN(Number(oldRate))) ? Number(oldRate) : null;
+      const numNew = (newRate !== null && newRate !== undefined && !isNaN(Number(newRate))) ? Number(newRate) : null;
+      const delta = (numOld !== null && numNew !== null) ? Math.abs(numOld - numNew) : 0;
       const metrics = calculateDiffMetrics(descriptor, changeType, oldRate, newRate, next, previous?.row, row);
+      
+      let isAnomaly = false;
+      if (delta > 0) {
+        if (descriptor.table === 'rc_commission') {
+          isAnomaly = delta >= 0.05 || (numOld > 0 && delta / numOld >= 0.5);
+        } else if (descriptor.table === 'rc_fixed_fee') {
+          isAnomaly = delta >= 20 || (numOld > 0 && delta / numOld >= 0.5);
+        } else {
+          isAnomaly = Boolean(numOld && numOld > 0 && delta / numOld >= 0.5);
+        }
+      } else if (descriptor.table === 'rc_reverse_shipping' && previous?.row && row) {
+        const lDelta = Math.abs((Number(row.local_fee) || 0) - (Number(previous.row.local_fee) || 0));
+        const zDelta = Math.abs((Number(row.zonal_fee) || 0) - (Number(previous.row.zonal_fee) || 0));
+        const nDelta = Math.abs((Number(row.national_fee) || 0) - (Number(previous.row.national_fee) || 0));
+        if (Math.max(lDelta, zDelta, nDelta) >= 25) {
+          isAnomaly = true;
+        }
+      } else if (changeType === 'ADDED') {
+        if (descriptor.table === 'rc_commission' && numNew !== null && numNew >= 0.25) {
+          isAnomaly = true;
+        } else if (descriptor.table === 'rc_fixed_fee' && numNew !== null && numNew >= 50) {
+          isAnomaly = true;
+        }
+      }
+
       diffs.push({ table: descriptor.table, category: next.category, brand_name: next.brand_name || null,
         fulfilment_type: next.fulfilment_type || null,
         slab: descriptor.table === 'rc_reverse_shipping' ? `${next.weight_slab}: ₹${next.price_min} - ₹${next.price_max}` : `₹${next.price_min} - ₹${next.price_max}`,
@@ -322,7 +349,7 @@ export async function planRateCardChanges(client, observations, { marketplace, s
         difference: metrics.difference,
         financialImpact: metrics.financialImpact,
         recommendation: metrics.recommendation,
-        anomaly: delta > 0 && ((oldRate > 0 && delta / oldRate >= 0.5) || (descriptor.table === 'rc_commission' && delta >= 0.05)),
+        anomaly: isAnomaly,
         oldRow: previous?.raw || null, newRow: row || null, details: `${changeType}: ${descriptor.field} for ${next.category}` });
     };
     for (const row of incoming) {
