@@ -82,13 +82,20 @@ export async function publishRateCardObservations(observations, options = {}) {
     const snapshot = { effectiveDate, publishedBy, jobId, diffs: plan.diffs, summary: plan.summary };
 
     // Auto-close prior active rate card version so validity periods never overlap
-    await client.query(`
-      UPDATE rate_card_versions
-      SET effective_to = $1::date, status = 'archived'
-      WHERE marketplace = $2 AND seller_account = $3
-        AND effective_from < $4::date
-        AND (effective_to IS NULL OR effective_to >= $4::date)
-    `, [before(effectiveDate), marketplace, sellerAccount, effectiveDate]);
+    const hasEffectiveToCol = await client.query(`
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'rate_card_versions' AND column_name = 'effective_to'
+      LIMIT 1
+    `);
+    if (hasEffectiveToCol.rows.length > 0) {
+      await client.query(`
+        UPDATE rate_card_versions
+        SET effective_to = $1::date, status = 'archived'
+        WHERE marketplace = $2 AND seller_account = $3
+          AND effective_from < $4::date
+          AND (effective_to IS NULL OR effective_to >= $4::date)
+      `, [before(effectiveDate), marketplace, sellerAccount, effectiveDate]);
+    }
 
     let version;
     await forEachDbBatch([snapshot], 5, async () => {

@@ -30,7 +30,7 @@ describe.skipIf(!url)('Real PostgreSQL isolated rate-card migration and publicat
         ['rc_reverse_shipping','weight_slab TEXT, local_fee NUMERIC(12,2), zonal_fee NUMERIC(12,2), national_fee NUMERIC(12,2)'],
         ['rc_pick_pack','fulfilment_type TEXT, rate NUMERIC(12,2)']
       ]) await client.query(`CREATE TABLE ${table}(id SERIAL PRIMARY KEY,marketplace TEXT,seller_account TEXT,category TEXT,start_date DATE,end_date DATE,price_min NUMERIC(12,2),price_max NUMERIC(12,2),updated_at TIMESTAMPTZ DEFAULT now(),${extra})`);
-      await client.query('CREATE TABLE rate_card_versions(id SERIAL PRIMARY KEY,marketplace TEXT,seller_account TEXT,version_name TEXT,status TEXT,effective_from DATE,snapshot JSONB,created_at TIMESTAMPTZ,published_at TIMESTAMPTZ)');
+      await client.query('CREATE TABLE rate_card_versions(id SERIAL PRIMARY KEY,marketplace TEXT,seller_account TEXT,version_name TEXT,status TEXT,effective_from DATE,effective_to DATE,snapshot JSONB,created_at TIMESTAMPTZ,published_at TIMESTAMPTZ)');
       await client.query('CREATE TABLE orders(id SERIAL PRIMARY KEY,marketplace TEXT,seller_account TEXT,category TEXT,brand_name TEXT,brand TEXT,fsn TEXT,sku TEXT)');
       await client.query(fs.readFileSync(new URL('../db/migrations/2026-10-30-ratecard-portal-dimensions.sql',import.meta.url),'utf8'));
     } finally {client.release();}
