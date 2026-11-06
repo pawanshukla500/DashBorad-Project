@@ -372,7 +372,24 @@ export function detectExtractionAnomalies(vsPrevious, vsDbChanges = [], options 
   }
 
   for (const c of vsDbChanges) {
-    const { type, oldRate, newRate } = c;
+    const type = c.type || (
+      c.table === 'rc_commission' ? 'commission' :
+      c.table === 'rc_fixed_fee' ? 'fixed_fee' :
+      c.table === 'rc_collection_fee' ? 'collection_fee' :
+      c.table === 'rc_reverse_shipping' ? 'reverse_shipping' :
+      c.table
+    );
+    const oldRate = typeof c.oldRate === 'number' ? c.oldRate : (c.oldRate != null ? Number(c.oldRate) : null);
+    const newRate = typeof c.newRate === 'number' ? c.newRate : (c.newRate != null ? Number(c.newRate) : null);
+
+    if (c.anomaly && !anomalies.some(a => a.item === c)) {
+      anomalies.push({
+        type: `${type || 'rate'}_anomaly`,
+        severity: 'high',
+        item: c,
+        reason: c.details || `Fee shifted beyond expected threshold in ${c.table || type}.`
+      });
+    }
 
     if (type === 'commission') {
       if (typeof oldRate === 'number' && typeof newRate === 'number') {

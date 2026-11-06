@@ -92,6 +92,7 @@ export async function publishRateCardObservations(observations, options = {}) {
         UPDATE rate_card_versions
         SET effective_to = $1::date, status = 'archived'
         WHERE marketplace = $2 AND seller_account = $3
+          AND status = 'published'
           AND effective_from < $4::date
           AND (effective_to IS NULL OR effective_to >= $4::date)
       `, [before(effectiveDate), marketplace, sellerAccount, effectiveDate]);
@@ -112,17 +113,29 @@ export async function publishRateCardObservations(observations, options = {}) {
 
     // Link published version to corresponding extraction record if present
     try {
-      const q = sidePool && typeof sidePool.query === 'function'
-        ? sidePool
-        : (sidePool && typeof sidePool.connect === 'function' ? await sidePool.connect() : getPool());
-      await q.query(`
-        UPDATE rate_card_extractions
-        SET status = 'published', version_id = $1
-        WHERE marketplace = $2 AND seller_account = $3
-          AND extraction_date = $4::date
-          AND status IN ('staged', 'validated', 'anomalies_detected')
-      `, [version.rows[0]?.id, marketplace, sellerAccount, effectiveDate]);
-      if (q !== sidePool && typeof q.release === 'function') q.release();
+      let q = sidePool;
+      let shouldRelease = false;
+      if (!q || typeof q.query !== 'function') {
+        if (sidePool && typeof sidePool.connect === 'function') {
+          q = await sidePool.connect();
+          shouldRelease = true;
+        } else {
+          q = getPool();
+        }
+      }
+      try {
+        await q.query(`
+          UPDATE rate_card_extractions
+          SET status = 'published', version_id = $1
+          WHERE marketplace = $2 AND seller_account = $3
+            AND extraction_date = $4::date
+            AND status IN ('staged', 'validated', 'anomalies_detected')
+        `, [version.rows[0]?.id, marketplace, sellerAccount, effectiveDate]);
+      } finally {
+        if (shouldRelease && typeof q?.release === 'function') {
+          q.release();
+        }
+      }
     } catch {
       // Non-fatal if table not yet initialized in legacy environments
     }

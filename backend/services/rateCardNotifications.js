@@ -19,7 +19,7 @@ function whatsAppConfig() {
     .map(value => value.trim())
     .filter(Boolean);
   return {
-    recipient: recipient.length ? recipient : ['+919876543210'],
+    recipient,
     apiUrl: process.env.WHATSAPP_API_URL?.trim() || process.env.WHATSAPP_WEBHOOK_URL?.trim() || '',
     token: process.env.WHATSAPP_AUTH_TOKEN?.trim() || process.env.WHATSAPP_API_KEY?.trim() || '',
     from: process.env.WHATSAPP_FROM?.trim() || '',
@@ -76,6 +76,7 @@ export function getRateCardNotificationConfig() {
   if (!config.from) missing.push('RESEND_FROM_EMAIL');
   const waMissing = [];
   if (!wa.apiUrl) waMissing.push('WHATSAPP_API_URL');
+  if (!wa.recipient.length) waMissing.push('WHATSAPP_TO');
   return {
     recipient: config.recipient.join(', '),
     configured: missing.length === 0,
@@ -133,23 +134,34 @@ function messageFor(change) {
 }
 
 async function writeLog(pool, values) {
-  const queryable = pool && typeof pool.query === 'function'
-    ? pool
-    : (pool && typeof pool.connect === 'function' ? await pool.connect() : getPool());
-  const result = await queryable.query(
-    `INSERT INTO rate_card_notification_log
-      (event_type, recipient, subject, payload, status, provider_message_id, error_message, sent_at)
-     VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8)
-     RETURNING id, event_type, recipient, subject, status, provider_message_id, error_message, created_at, sent_at`,
-    [
-      values.eventType, values.recipient, values.subject, JSON.stringify(values.payload), values.status,
-      values.providerMessageId || null, values.errorMessage || null, values.sentAt || null,
-    ]
-  );
-  if (queryable !== pool && typeof queryable.release === 'function') {
-    queryable.release();
+  let queryable = pool;
+  let shouldRelease = false;
+  if (!queryable || typeof queryable.query !== 'function') {
+    if (pool && typeof pool.connect === 'function') {
+      queryable = await pool.connect();
+      shouldRelease = true;
+    } else {
+      queryable = getPool();
+    }
   }
-  return result.rows[0];
+
+  try {
+    const result = await queryable.query(
+      `INSERT INTO rate_card_notification_log
+        (event_type, recipient, subject, payload, status, provider_message_id, error_message, sent_at)
+       VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8)
+       RETURNING id, event_type, recipient, subject, status, provider_message_id, error_message, created_at, sent_at`,
+      [
+        values.eventType, values.recipient, values.subject, JSON.stringify(values.payload), values.status,
+        values.providerMessageId || null, values.errorMessage || null, values.sentAt || null,
+      ]
+    );
+    return result.rows[0];
+  } finally {
+    if (shouldRelease && typeof queryable?.release === 'function') {
+      queryable.release();
+    }
+  }
 }
 
 export async function sendRateCardNotification(pool, change) {
@@ -257,14 +269,16 @@ export async function sendRateCardNotificationTest(pool, actor) {
 export async function sendWhatsAppNotification(pool, { eventType = 'rate_card_alert', subject = 'Rate Card Alert', text, payload = {} }) {
   const config = whatsAppConfig();
   const recipient = config.recipient.join(', ');
-  if (!config.apiUrl) {
+  if (!config.apiUrl || !config.recipient.length) {
     return writeLog(pool, {
       eventType: `whatsapp_${eventType}`,
       recipient: recipient || 'unconfigured',
       subject: `[WhatsApp] ${subject}`,
       payload: { ...payload, channel: 'whatsapp' },
       status: 'skipped',
-      errorMessage: 'Missing WHATSAPP_API_URL or WHATSAPP_WEBHOOK_URL',
+      errorMessage: !config.apiUrl
+        ? 'Missing WHATSAPP_API_URL or WHATSAPP_WEBHOOK_URL'
+        : 'Missing RATE_CARD_WHATSAPP_TO or WHATSAPP_TO recipient',
     });
   }
 

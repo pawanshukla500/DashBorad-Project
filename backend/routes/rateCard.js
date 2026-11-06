@@ -1839,7 +1839,18 @@ router.post('/daily-validation/evaluate', async (req, res) => {
         sellerAccount,
         effectiveDate,
       });
-      dbDiffs = dbReview.diffs || [];
+      dbDiffs = (dbReview.diffs || []).map(d => ({
+        ...d,
+        type: d.type || (
+          d.table === 'rc_commission' ? 'commission' :
+          d.table === 'rc_fixed_fee' ? 'fixed_fee' :
+          d.table === 'rc_collection_fee' ? 'collection_fee' :
+          d.table === 'rc_reverse_shipping' ? 'reverse_shipping' :
+          d.table
+        ),
+        oldRate: typeof d.oldRate === 'number' ? d.oldRate : (d.oldRate != null ? Number(d.oldRate) : null),
+        newRate: typeof d.newRate === 'number' ? d.newRate : (d.newRate != null ? Number(d.newRate) : null),
+      }));
     }
 
     const report = compileDailyValidationReport({
