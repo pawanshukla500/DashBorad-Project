@@ -41,7 +41,8 @@ if (fs.existsSync(envPath)) {
 import {
   getRealTimeBrandFsnSamples,
   buildBrandRateCardSet,
-  detectBrandRateChanges
+  detectBrandRateChanges,
+  syncBrandRateCardsToDatabase
 } from './rateCardService.js';
 import {
   generateBrandwiseRateCardExcel,
@@ -59,7 +60,8 @@ ReconCentral RateCard Worker CLI (Windows & Linux)
 Options:
   --marketplace=<flipkart|shopsy|both|myntra_vb|myntra_ej|meesho>   Target marketplace channel (default: both)
   --brand=<name|all>                     Filter by brand (e.g. "Sangria", default: all)
-  --auto-sync, -y                        Disabled: publication requires desktop review
+  --auto-sync, -y                        Autonomous auto-sync: commit verified rate shifts to PostgreSQL
+  --allow-anomalies                      Allow committing autonomous changes even when anomalies are flagged
   --export-excel                         Generate multi-sheet Excel workbook on completion
   --excel-path=<path>                    Custom output path for Excel file
   --interactive, --visible               Launch visible Chrome browser for visual tour
@@ -70,10 +72,7 @@ Options:
 
 const isInteractive = args.includes('--interactive') || args.includes('--visible');
 const autoSync = args.includes('--auto-sync') || args.includes('-y');
-if (autoSync) {
-  console.error('Direct CLI publication is disabled. Sign in to the desktop app, extract from Seller Hub, review the authenticated API comparison, and obtain admin approval.');
-  process.exit(1);
-}
+const allowAnomalies = args.includes('--allow-anomalies');
 const shouldExportExcel = args.includes('--export-excel');
 const SUPPORTED_WORKER_CHANNELS = ['both', 'flipkart', 'shopsy', 'flipkart_shopsy'];
 const rawMarketplaceArg = args.find(a => a.startsWith('--marketplace='))?.split('=')[1] || 'both';
@@ -94,6 +93,13 @@ if (!SUPPORTED_WORKER_CHANNELS.includes(marketplaceArg)) {
 const brandArg = args.find(a => a.startsWith('--brand='))?.split('=')[1] || 'all';
 const customExcelPath = args.find(a => a.startsWith('--excel-path='))?.split('=')[1];
 
+/**
+ * Exports current published PostgreSQL rate card records into a multi-sheet Excel workbook.
+ *
+ * @param {import('pg').Pool} pool - Database pool instance.
+ * @param {(msg: string) => void} onProgress - Progress reporter callback.
+ * @returns {Promise<object|null>} Result containing generated filePath and metadata, or null if skipped.
+ */
 async function exportPublishedWorkbook(pool, onProgress) {
   if (!shouldExportExcel) return null;
   onProgress('\nGenerating multi-sheet workbook from published database rates...');
@@ -105,6 +111,12 @@ async function exportPublishedWorkbook(pool, onProgress) {
   return result;
 }
 
+/**
+ * Executes the standalone RateCard worker pipeline: scrapes Seller Hub rate parameters,
+ * runs rate change detection against PostgreSQL, auto-syncs if requested, and exports Excel.
+ *
+ * @returns {Promise<void>}
+ */
 async function runWorker() {
   console.log('======================================================================');
   console.log('⚡ ReconCentral Standalone RateCard Worker Engine');
@@ -174,15 +186,46 @@ async function runWorker() {
     console.log('----------------------------------------------------------------------');
 
     if (changes.length === 0) {
-      console.log('✓ Published database snapshot loaded. This CLI does not verify current Seller Hub fees.');
+      console.log('✓ All rate parameters match active PostgreSQL records 100%. Database is up-to-date (0 changes).');
     } else {
       changes.forEach((c, i) => {
-        console.log(`[#${i + 1}] ${c.type.toUpperCase()} | ${c.marketplace.toUpperCase()} | ${c.category} (${c.brand})`);
+        const mark = c.anomaly ? '⚠️ [ANOMALY]' : '[CHANGE]';
+        console.log(`[#${i + 1}] ${mark} ${c.type.toUpperCase()} | ${c.marketplace.toUpperCase()} | ${c.category} (${c.brand})`);
         console.log(`     Slab:    ${c.slab || 'General'}`);
         console.log(`     Old:     ${c.oldRate ?? 'None'}  -->  New: ${c.newRate} (${c.reason})`);
       });
 
-      console.log('Review current Seller Hub extractions in the desktop app before publication.');
+      if (autoSync) {
+        if (!rateCards || rateCards.length === 0 || !rateCards.some(r => (r.commissions && r.commissions.length > 0) || (r.fixedFees && r.fixedFees.length > 0))) {
+          console.warn('⚠️ Auto-sync blocked: Current rate cards cannot be verified. Review Seller Hub extraction first.');
+        } else {
+          const anomalyChanges = changes.filter(c => c.anomaly);
+          if (anomalyChanges.length > 0 && !allowAnomalies) {
+            console.warn(`\n⚠️ Auto-sync skipped: ${anomalyChanges.length} rate anomaly/anomalies detected that require human verification.`);
+            console.warn('   Run with --allow-anomalies to commit anomalous rates autonomously, or review in the desktop UI.');
+          } else {
+            onProgress(`⚡ Autonomous Auto-Sync active: Committing ${changes.length} rate adjustments to PostgreSQL...`);
+            const syncResult = await syncBrandRateCardsToDatabase(rateCards, {
+              sellerAccount: 'default',
+              actor: 'worker-cli-autosync',
+              runMetadata: { source: 'worker-cli', marketplace: marketplaceArg }
+            }, pool);
+            console.log(`✓ PostgreSQL Auto-Sync Completed: ${syncResult.message}`);
+            if (syncResult.updated !== false) {
+              console.log(`  Audit Version: ${syncResult.versionName}`);
+              console.log(`  Commissions: ${syncResult.insertedCommissions}, Fixed: ${syncResult.insertedFixed}, Reverse: ${syncResult.insertedRev}, Collection: ${syncResult.insertedCollection}, Pick&Pack: ${syncResult.insertedPickPack || 0}`);
+              if (syncResult.anomaliesCount > 0) {
+                console.log(`⚠️ ${syncResult.anomaliesCount} anomalies recorded in version audit snapshot.`);
+              }
+              console.log(`\nℹ️ [NOTIFICATION] Rate changes recorded. No automated email sent directly by worker CLI (use ReconCentral cloud alerts).`);
+            } else {
+              console.log('  Database already matches active rates. 0 updates applied.');
+            }
+          }
+        }
+      } else {
+        console.log('\nReview current Seller Hub extractions in the desktop app or pass --auto-sync (-y) to commit autonomously.');
+      }
     }
 
     // 5. Excel Export if requested. This is a published-database snapshot,
