@@ -49,6 +49,11 @@ import {
   DEFAULT_EXCEL_PATH
 } from './excelExport.js';
 import { getDesktopPool, getDesktopPool as getPool } from './db.js';
+import {
+  getLastValidatedExtraction,
+  saveRateCardExtraction,
+  compileDailyValidationReport
+} from './rateCardDailyValidation.js';
 
 // Parse CLI arguments
 const args = process.argv.slice(2);
@@ -177,14 +182,45 @@ async function runWorker() {
 
     console.log(`✓ Staged ${rateCards.length} rate card profiles.\n`);
 
-    // 3. Change Detection Against Active PostgreSQL Records
-    onProgress('Running change detection against active database tables (rc_commission, rc_fixed_fee, rc_reverse_shipping)...');
+    // 3. Dual Daily Validation: Compare against both last validated extraction snapshot AND active DB
+    onProgress('Running dual daily validation against last extraction snapshot and active database...');
+    const targetMp = ['shopsy', 'flipkart'].includes(marketplaceArg) ? marketplaceArg : 'flipkart';
+    const prevExtraction = await getLastValidatedExtraction(pool, { marketplace: targetMp }).catch(() => null);
+    
     const changes = await detectBrandRateChanges(rateCards, pool);
+    const dailyReport = compileDailyValidationReport({
+      currentCards: rateCards,
+      previousExtractionRecord: prevExtraction,
+      activeDbChanges: changes,
+      options: {
+        marketplace: targetMp,
+        sellerAccount: 'default',
+        currentDate: new Date().toISOString().slice(0, 10),
+      }
+    });
+
+    if (dailyReport.vsPreviousExtraction?.hasPreviousExtraction) {
+      console.log(`\n📅 Previous Validated Extraction: ${dailyReport.vsPreviousExtraction.previousDate}`);
+      console.log(`   ${dailyReport.vsPreviousExtraction.gapText}`);
+      if (dailyReport.vsPreviousExtraction.newParameters?.length) {
+        console.log(`   ✨ New Parameters: ${dailyReport.vsPreviousExtraction.newParameters.length}`);
+      }
+      if (dailyReport.vsPreviousExtraction.missingParameters?.length) {
+        console.log(`   ⚠️ Missing Parameters: ${dailyReport.vsPreviousExtraction.missingParameters.length}`);
+      }
+      if (dailyReport.vsPreviousExtraction.modifiedParameters?.length) {
+        console.log(`   🔄 Modified Parameters: ${dailyReport.vsPreviousExtraction.modifiedParameters.length}`);
+      }
+    } else {
+      console.log(`\n📅 First recorded extraction snapshot for ${targetMp.toUpperCase()}.`);
+    }
 
     console.log('\n----------------------------------------------------------------------');
-    console.log(`🔍 Change Detection Summary: ${changes.length} rate adjustments detected`);
+    console.log(`🔍 Change Detection Summary: ${changes.length} rate adjustments detected (${dailyReport.anomalyCount} anomalies)`);
+    console.log(`   Daily Validation Status: ${dailyReport.validationStatus}`);
     console.log('----------------------------------------------------------------------');
 
+    let syncResult = null;
     if (changes.length === 0) {
       console.log('✓ All rate parameters match active PostgreSQL records 100%. Database is up-to-date (0 changes).');
     } else {
@@ -205,7 +241,7 @@ async function runWorker() {
             console.warn('   Run with --allow-anomalies to commit anomalous rates autonomously, or review in the desktop UI.');
           } else {
             onProgress(`⚡ Autonomous Auto-Sync active: Committing ${changes.length} rate adjustments to PostgreSQL...`);
-            const syncResult = await syncBrandRateCardsToDatabase(rateCards, {
+            syncResult = await syncBrandRateCardsToDatabase(rateCards, {
               sellerAccount: 'default',
               actor: 'worker-cli-autosync',
               runMetadata: { source: 'worker-cli', marketplace: marketplaceArg }
@@ -226,6 +262,32 @@ async function runWorker() {
       } else {
         console.log('\nReview current Seller Hub extractions in the desktop app or pass --auto-sync (-y) to commit autonomously.');
       }
+    }
+
+    // 4. Save Extraction Snapshot to rate_card_extractions
+    try {
+      await saveRateCardExtraction(pool, {
+        marketplace: targetMp,
+        sellerAccount: 'default',
+        extractionDate: new Date().toISOString().slice(0, 10),
+        status: dailyReport.validationStatus === 'incomplete_extraction'
+          ? 'incomplete'
+          : (dailyReport.anomalyCount > 0
+            ? 'anomalies_detected'
+            : (syncResult?.updated ? 'published' : 'validated')),
+        source: 'desktop_worker_cli',
+        rateCards,
+        parametersSummary: dailyReport.summary,
+        dualComparison: {
+          vsPrevious: dailyReport.vsPreviousExtraction,
+          vsActiveDb: dailyReport.vsActiveDatabase,
+          publishedVersionName: syncResult?.versionName || null,
+        },
+        anomalies: dailyReport.anomalies,
+        versionId: Number.isInteger(syncResult?.versionId) ? syncResult.versionId : null,
+      });
+    } catch (saveExtErr) {
+      console.warn('⚠️ Could not save rate card extraction record:', saveExtErr.message);
     }
 
     // 5. Excel Export if requested. This is a published-database snapshot,

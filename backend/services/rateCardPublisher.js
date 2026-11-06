@@ -1,7 +1,7 @@
 import { getPool } from '../db/index.js';
 import { clearRateCardCache } from './rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
-import { sendPaymentNotification } from './rateCardNotifications.js';
+import { sendPaymentNotification, sendAdminRateCardAlert } from './rateCardNotifications.js';
 import { refreshOrderSettlementTotals } from './orderSettlementTotals.js';
 import { compareScrapedRatesWithActive } from './rateCardCanonicalEngine.js';
 import { RATE_TABLES, validateRateObservations } from './rateCardObservationPlan.js';
@@ -80,17 +80,65 @@ export async function publishRateCardObservations(observations, options = {}) {
     }
     const versionName = `rc-${marketplace}-${effectiveDate}-${Date.now()}`;
     const snapshot = { effectiveDate, publishedBy, jobId, diffs: plan.diffs, summary: plan.summary };
+
+    // Auto-close prior active rate card version so validity periods never overlap
+    const hasEffectiveToCol = await client.query(`
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'rate_card_versions' AND column_name = 'effective_to'
+      LIMIT 1
+    `);
+    if (hasEffectiveToCol.rows.length > 0) {
+      await client.query(`
+        UPDATE rate_card_versions
+        SET effective_to = $1::date, status = 'archived'
+        WHERE marketplace = $2 AND seller_account = $3
+          AND status = 'published'
+          AND effective_from < $4::date
+          AND (effective_to IS NULL OR effective_to >= $4::date)
+      `, [before(effectiveDate), marketplace, sellerAccount, effectiveDate]);
+    }
+
     let version;
     await forEachDbBatch([snapshot], 5, async () => {
       version = await client.query(`INSERT INTO rate_card_versions (marketplace,seller_account,version_name,status,effective_from,snapshot,created_at,published_at)
         VALUES ($1,$2,$3,'published',$4,$5,NOW(),NOW()) RETURNING id,version_name`,
       [marketplace, sellerAccount, versionName, effectiveDate, JSON.stringify(snapshot)]);
     });
+
     await client.query('COMMIT');
     clearRateCardCache();
     // Post-publish side effects run outside the publish transaction: email
-    // failures or settlement refresh issues must never roll back committed rates.
+    // failures, extraction linkage, or settlement refresh issues must never roll back committed rates.
     const sidePool = options.pool || getPool();
+
+    // Link published version to corresponding extraction record if present
+    try {
+      let q = sidePool;
+      let shouldRelease = false;
+      if (!q || typeof q.query !== 'function') {
+        if (sidePool && typeof sidePool.connect === 'function') {
+          q = await sidePool.connect();
+          shouldRelease = true;
+        } else {
+          q = getPool();
+        }
+      }
+      try {
+        await q.query(`
+          UPDATE rate_card_extractions
+          SET status = 'published', version_id = $1
+          WHERE marketplace = $2 AND seller_account = $3
+            AND extraction_date = $4::date
+            AND status IN ('staged', 'validated', 'anomalies_detected')
+        `, [version.rows[0]?.id, marketplace, sellerAccount, effectiveDate]);
+      } finally {
+        if (shouldRelease && typeof q?.release === 'function') {
+          q.release();
+        }
+      }
+    } catch {
+      // Non-fatal if table not yet initialized in legacy environments
+    }
     const anomalyCount = plan.summary?.anomalies || 0;
     const summaryText = [
       `Rate version ${versionName} was published by ${publishedBy}.`,
@@ -99,13 +147,18 @@ export async function publishRateCardObservations(observations, options = {}) {
       anomalyCount ? `Flagged for review (>=50% move or >=5pp commission change): ${anomalyCount}` : 'No flagged anomalies.',
     ].join('\n');
     try {
-      await sendPaymentNotification(client, {
-        eventType: 'version_published',
-        subject: `[Payments] ${marketplace}/${sellerAccount}: rate version ${versionName} published` +
-          (anomalyCount ? ` — ${anomalyCount} flagged change${anomalyCount === 1 ? '' : 's'}` : ''),
-        text: summaryText,
-        html: `<div style="font-family:Arial,sans-serif"><h2>Rate version published</h2><pre>${summaryText}</pre></div>`,
-        payload: { versionName, versionId: version.rows[0]?.id || null, marketplace, sellerAccount, effectiveDate, jobId, summary: plan.summary },
+      await sendAdminRateCardAlert(sidePool, {
+        marketplace,
+        sellerAccount,
+        extractionDate: effectiveDate,
+        effectiveDate,
+        validationStatus: 'published',
+        anomalies: plan.diffs?.filter(d => d.anomaly) || [],
+        changes: plan.diffs || [],
+        previousVersionName: 'Prior Published Version',
+        proposedVersionName: versionName,
+        autoApplied: true,
+        requiresApproval: false,
       });
     } catch (notifyError) {
       console.warn('[rate-card] Publish notification failed:', notifyError.message);

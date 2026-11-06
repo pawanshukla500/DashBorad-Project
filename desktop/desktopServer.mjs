@@ -1847,8 +1847,18 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/open-excel' && req.method === 'POST') {
       if (!(await requireDesktopAuth())) return;
       const body = await parseJsonBody();
-      const filePath = body.path || DEFAULT_EXCEL_PATH;
+      let filePath = body.path || DEFAULT_EXCEL_PATH;
       try {
+        if (!fs.existsSync(filePath)) {
+          broadcastProgress(`Excel workbook not found at ${filePath}. Generating now from active rate cards...`);
+          const pool = getPool();
+          const targetXlsx = filePath.endsWith('.xlsx') ? filePath : DEFAULT_EXCEL_PATH;
+          const result = await generateBrandwiseRateCardExcel(targetXlsx, pool);
+          if (result && result.filePath && fs.existsSync(result.filePath)) {
+            filePath = result.filePath;
+            broadcastProgress(`✓ Generated rate card workbook at ${filePath}`);
+          }
+        }
         await openFileCrossPlatform(filePath);
         broadcastProgress(`✓ Launched spreadsheet viewer with: ${filePath}`);
         return sendJson(200, { success: true, filePath });
