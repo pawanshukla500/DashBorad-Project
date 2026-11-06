@@ -24,7 +24,8 @@ import {
   compileDailyValidationReport,
   validateExtractionCompleteness,
   compareWithPreviousExtraction,
-  detectExtractionAnomalies
+  detectExtractionAnomalies,
+  parseRateNumber
 } from '../services/rateCardDailyValidation.js';
 import { sendAdminRateCardAlert } from '../services/rateCardNotifications.js';
 
@@ -1848,8 +1849,8 @@ router.post('/daily-validation/evaluate', async (req, res) => {
           d.table === 'rc_reverse_shipping' ? 'reverse_shipping' :
           d.table
         ),
-        oldRate: typeof d.oldRate === 'number' ? d.oldRate : (d.oldRate != null ? Number(d.oldRate) : null),
-        newRate: typeof d.newRate === 'number' ? d.newRate : (d.newRate != null ? Number(d.newRate) : null),
+        oldRate: parseRateNumber(d.oldRate),
+        newRate: parseRateNumber(d.newRate),
       }));
     }
 

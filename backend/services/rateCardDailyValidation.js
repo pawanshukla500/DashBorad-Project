@@ -38,7 +38,23 @@ export function dayBefore(isoDate) {
 }
 
 /**
+ * Safely parses a rate numeric value.
+ * Converts null, undefined, empty strings, and non-finite values to null.
+ * Preserves finite numeric values.
+ * @param {*} val - Value to parse.
+ * @returns {number|null} Valid finite number or null.
+ */
+export function parseRateNumber(val) {
+  if (val === null || val === undefined || val === '') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Formats decimal value safely.
+ * @param {*} val - Value to parse.
+ * @param {number} [fallback=0] - Fallback when non-finite.
+ * @returns {number} Valid finite number or fallback.
  */
 function num(val, fallback = 0) {
   const n = Number(val);
@@ -381,8 +397,8 @@ export function detectExtractionAnomalies(vsPrevious, vsDbChanges = [], options 
       c.table === 'rc_reverse_shipping' ? 'reverse_shipping' :
       c.table
     );
-    const oldRate = typeof c.oldRate === 'number' ? c.oldRate : (c.oldRate != null ? Number(c.oldRate) : null);
-    const newRate = typeof c.newRate === 'number' ? c.newRate : (c.newRate != null ? Number(c.newRate) : null);
+    const oldRate = parseRateNumber(c.oldRate);
+    const newRate = parseRateNumber(c.newRate);
     const difference = c.difference;
 
     if (c.anomaly && !anomalies.some(a => a.item === c)) {
