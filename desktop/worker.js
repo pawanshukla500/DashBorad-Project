@@ -208,12 +208,16 @@ async function runWorker() {
             runMetadata: { source: 'worker-cli', marketplace: marketplaceArg }
           }, pool);
           console.log(`✓ PostgreSQL Auto-Sync Completed: ${syncResult.message}`);
-          console.log(`  Audit Version: ${syncResult.versionName}`);
-          console.log(`  Commissions: ${syncResult.insertedCommissions}, Fixed: ${syncResult.insertedFixed}, Reverse: ${syncResult.insertedRev}, Collection: ${syncResult.insertedCollection}, Pick&Pack: ${syncResult.insertedPickPack || 0}`);
-          if (syncResult.anomaliesCount > 0) {
-            console.log(`⚠️ ${syncResult.anomaliesCount} anomalies recorded in version audit snapshot.`);
+          if (syncResult.updated !== false) {
+            console.log(`  Audit Version: ${syncResult.versionName}`);
+            console.log(`  Commissions: ${syncResult.insertedCommissions}, Fixed: ${syncResult.insertedFixed}, Reverse: ${syncResult.insertedRev}, Collection: ${syncResult.insertedCollection}, Pick&Pack: ${syncResult.insertedPickPack || 0}`);
+            if (syncResult.anomaliesCount > 0) {
+              console.log(`⚠️ ${syncResult.anomaliesCount} anomalies recorded in version audit snapshot.`);
+            }
+            console.log(`\nℹ️ [NOTIFICATION] Rate changes recorded. No automated email sent directly by worker CLI (use ReconCentral cloud alerts).`);
+          } else {
+            console.log('  Database already matches active rates. 0 updates applied.');
           }
-          console.log(`\nℹ️ [NOTIFICATION] Rate changes recorded. No automated email sent directly by worker CLI (use ReconCentral cloud alerts).`);
         }
       } else {
         console.log('\nReview current Seller Hub extractions in the desktop app or pass --auto-sync (-y) to commit autonomously.');

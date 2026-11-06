@@ -1461,6 +1461,8 @@ function renderDiffTable() {
         changeFilterByTable[change.type] !== activeDiffFilter &&
         !(activeDiffFilter === 'fixed' && (change.table === 'rc_pick_pack' || change.type === 'pick_pack'))) continue;
 
+    matchedChanges.add(change);
+
     let oldRateDisplay = change.oldRow ? describeRateRecord(change.table, change.oldRow) : '—';
     if (oldRateDisplay === '—' && change.oldRate != null) {
       oldRateDisplay = change.table === 'rc_commission' || change.type === 'commission'
@@ -1553,7 +1555,7 @@ function renderDiffTable() {
     }
   } else {
     if (inSyncBanner) inSyncBanner.style.display = 'none';
-    if (commitBtn && currentCanSync) {
+    if (commitBtn) {
       commitBtn.innerText = '✓ Publish Reviewed Rates';
     }
   }
@@ -1916,7 +1918,12 @@ async function executePublishToDatabase(options = {}) {
   } finally {
     btnCommitDb.disabled = !currentCanSync;
     if (btnCommitDb) {
-      btnCommitDb.innerText = '✓ Commit & Auto-Close in Database';
+      if (currentChanges.length === 0 && currentComparisonAvailable) {
+        btnCommitDb.innerText = '✓ Database In Sync (0 Changes)';
+        btnCommitDb.disabled = true;
+      } else {
+        btnCommitDb.innerText = '✓ Commit & Auto-Close in Database';
+      }
     }
     isPublishingToDatabase = false;
     if (btnApprovePublish) {
