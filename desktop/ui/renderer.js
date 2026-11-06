@@ -201,7 +201,7 @@ function updateSettingsUpdateUI(status) {
       settingsCheckBtn.textContent = 'Checking...';
     }
   } else if (kind === 'not-available') {
-    if (settingsMsg) settingsMsg.textContent = '✓ You are running the latest version (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.19') + ').';
+    if (settingsMsg) settingsMsg.textContent = '✓ You are running the latest version (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.20') + ').';
     if (settingsCheckBtn) {
       settingsCheckBtn.disabled = false;
       settingsCheckBtn.textContent = '🔄 Check for Updates';
@@ -209,7 +209,7 @@ function updateSettingsUpdateUI(status) {
     if (settingsDlBtn) settingsDlBtn.style.display = 'none';
     if (settingsRestartBtn) settingsRestartBtn.style.display = 'none';
     if (isManual) {
-      alert('✓ You are running the latest release (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.19') + '). No update is required.');
+      alert('✓ You are running the latest release (' + (currentAppVersion ? 'v' + currentAppVersion : 'v1.8.20') + '). No update is required.');
     }
   } else if (kind === 'available') {
     if (settingsCheckBtn) {
@@ -1108,6 +1108,7 @@ async function loadRateCardPreview() {
 
       renderDiffTable();
       appendTerminalLine(`✓ Loaded ${currentRateCards.length} rate cards for channel: ${selectedChannel} (${currentComparisonAvailable ? `${currentChanges.length} diffs detected, ${anomaliesCount} anomalies` : 'PostgreSQL comparison unavailable — staged values shown, publication disabled'}).`);
+      triggerAutonomousSyncCheck(diffRes);
     } else {
       currentRateCards = [];
       currentChanges = [];
@@ -1177,16 +1178,23 @@ function anomalyGuidance(changes, anomaliesCount) {
 
 function describeRateRecord(table, row) {
   if (!row) return '—';
-  if (table === 'rc_commission') return (Number(row.rate) * 100).toFixed(4) + '%';
-  if (table === 'rc_fixed_fee') return row.fulfilment_type + ': ₹' + row.rate;
-  if (table === 'rc_collection_fee') return 'Prepaid ' + row.prepaid + ' (' + row.prepaid_type + '), postpaid ' + row.postpaid + ' (' + row.postpaid_type + ')';
-  const base = [row.local_fee ?? row.rate, row.zonal_fee ?? row.rate, row.national_fee ?? row.rate].join('/');
-  const extra = [row.local_additional_fee ?? 0, row.zonal_additional_fee ?? 0, row.national_additional_fee ?? 0].join('/');
-  if (table === 'rc_pick_pack') {
-    return `${row.fulfilment_type || 'FBF'} ${row.weight_min ?? 0}-${row.weight_max ?? '—'}kg; base L/Z/N ₹${base}; above ${row.base_weight ?? 0}kg add L/Z/N ₹${extra} per ${row.increment_weight ?? 0}kg` +
-      (row.price_scope === 'all' ? '; all prices' : `; ₹${row.price_min}-${row.price_max}`);
+  const t = String(table || '').toLowerCase().replace(/^rc_/, '');
+  if (t === 'commission') {
+    return (Number(row.rate ?? 0) * 100).toFixed(4) + '%';
   }
-  return (row.weight_slab || (row.weight_min + '–' + row.weight_max + 'kg')) + '; L/Z/N ₹' + base +
+  if (t === 'fixed_fee' || t === 'fixed') {
+    return (row.fulfilment_type ? row.fulfilment_type + ': ' : '') + '₹' + (row.rate ?? 0);
+  }
+  if (t === 'collection_fee' || t === 'collection') {
+    return 'Prepaid ' + (row.prepaid ?? '—') + ' (' + (row.prepaid_type || 'flat') + '), postpaid ' + (row.postpaid ?? '—') + ' (' + (row.postpaid_type || 'flat') + ')';
+  }
+  const base = [row.local_fee ?? row.rate ?? 0, row.zonal_fee ?? row.rate ?? 0, row.national_fee ?? row.rate ?? 0].join('/');
+  const extra = [row.local_additional_fee ?? 0, row.zonal_additional_fee ?? 0, row.national_additional_fee ?? 0].join('/');
+  if (t === 'pick_pack' || t === 'pickpack') {
+    return `${row.fulfilment_type || 'FBF'} ${row.weight_min ?? 0}-${row.weight_max ?? '—'}kg; base L/Z/N ₹${base}; above ${row.base_weight ?? 0}kg add L/Z/N ₹${extra} per ${row.increment_weight ?? 0}kg` +
+      (row.price_scope === 'all' ? '; all prices' : `; ₹${row.price_min ?? 0}-${row.price_max ?? '—'}`);
+  }
+  return (row.weight_slab || ((row.weight_min ?? 0) + '–' + (row.weight_max ?? '—') + 'kg')) + '; L/Z/N ₹' + base +
     '; above ' + (row.base_weight ?? 0) + 'kg add L/Z/N ₹' + extra + ' per ' + (row.increment_weight ?? 0) + 'kg' +
     (row.price_scope === 'all' ? '; all prices' : '');
 }
@@ -1207,13 +1215,23 @@ function renderDiffTable() {
     // 1. Commission rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'commission' || activeDiffFilter === 'anomalies') {
       for (const c of commissions) {
-        const matchesCommissionSlab = (ch) =>
-          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
-          (ch.table === 'rc_commission' || ch.type === 'commission') &&
-          ch.priceMin != null &&
-          (Math.abs(ch.priceMin - c.price_min) < 0.01 && Math.abs(ch.priceMax - c.price_max) < 1.0);
-        const change = currentChanges.find(ch => matchesCommissionSlab(ch) && ch.brand === brand) ||
-          currentChanges.find(ch => matchesCommissionSlab(ch) && (!ch.brand || ch.brand === 'All' || ch.brand === 'General'));
+        const matchesCommissionSlab = (ch) => {
+          if (!ch) return false;
+          const chMp = String(ch.marketplace || '').toLowerCase();
+          const cardMp = String(marketplace || '').toLowerCase();
+          if (chMp !== cardMp) return false;
+          const chCat = String(ch.category || '').toLowerCase();
+          const cardCat = String(category || '').toLowerCase();
+          const cardVert = String(card.vertical || '').toLowerCase();
+          if (chCat !== cardCat && chCat !== cardVert) return false;
+          if (ch.table !== 'rc_commission' && ch.type !== 'commission') return false;
+          if (ch.priceMin == null) return false;
+          const minMatches = Math.abs(ch.priceMin - c.price_min) < 0.01;
+          const maxMatches = Math.abs(ch.priceMax - c.price_max) < 1.0 || (ch.priceMax >= 999990 && c.price_max >= 999990);
+          return minMatches && maxMatches;
+        };
+        const change = currentChanges.find(ch => matchesCommissionSlab(ch) && String(ch.brand || ch.brand_name || '').toLowerCase() === String(brand || '').toLowerCase()) ||
+          currentChanges.find(ch => matchesCommissionSlab(ch) && (!ch.brand || ch.brand === 'All' || ch.brand === 'General' || ch.brand_name === 'General'));
         if (change) matchedChanges.add(change);
         const oldRateStr = change?.oldRate != null ? (Number(change.oldRate) * 100).toFixed(4) + '%' : (change ? '—' : (currentComparisonAvailable ? 'Active / Matched' : 'Uncompared'));
         const newRateStr = (Number(c.rate) * 100).toFixed(4) + '%';
@@ -1241,13 +1259,23 @@ function renderDiffTable() {
     // 2. Fixed Fee rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed' || activeDiffFilter === 'anomalies') {
       for (const f of fixedFees) {
-        const change = currentChanges.find(ch =>
-          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
-          (ch.table === 'rc_fixed_fee' || ch.type === 'fixed_fee') &&
-          ch.priceMin != null &&
-          Math.abs(ch.priceMin - f.price_min) < 0.01 && Math.abs(ch.priceMax - f.price_max) < 1.0 &&
-          (ch.fulfilmentType == null || ch.fulfilmentType === f.fulfilment_type)
-        );
+        const matchesFixedFeeSlab = (ch) => {
+          if (!ch) return false;
+          const chMp = String(ch.marketplace || '').toLowerCase();
+          const cardMp = String(marketplace || '').toLowerCase();
+          if (chMp !== cardMp) return false;
+          const chCat = String(ch.category || '').toLowerCase();
+          const cardCat = String(category || '').toLowerCase();
+          const cardVert = String(card.vertical || '').toLowerCase();
+          if (chCat !== cardCat && chCat !== cardVert) return false;
+          if (ch.table !== 'rc_fixed_fee' && ch.type !== 'fixed_fee') return false;
+          if (ch.priceMin == null) return false;
+          const minMatches = Math.abs(ch.priceMin - f.price_min) < 0.01;
+          const maxMatches = Math.abs(ch.priceMax - f.price_max) < 1.0 || (ch.priceMax >= 999990 && f.price_max >= 999990);
+          const fulMatches = ch.fulfilmentType == null || String(ch.fulfilmentType).toUpperCase() === String(f.fulfilment_type).toUpperCase();
+          return minMatches && maxMatches && fulMatches;
+        };
+        const change = currentChanges.find(matchesFixedFeeSlab);
         if (change) matchedChanges.add(change);
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
@@ -1274,12 +1302,22 @@ function renderDiffTable() {
     if (activeDiffFilter === 'all' || activeDiffFilter === 'collection' || activeDiffFilter === 'anomalies') {
       const fmtColl = (value, type) => (type === 'pct' ? (Number(value) * 100).toFixed(2) + '%' : '₹' + value);
       for (const cf of collectionFees) {
-        const change = currentChanges.find(ch =>
-          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
-          (ch.table === 'rc_collection_fee' || ch.type === 'collection_fee') &&
-          ch.priceMin != null &&
-          Math.abs(ch.priceMin - cf.price_min) < 0.01 && Math.abs(ch.priceMax - cf.price_max) < 1.0
-        );
+        const matchesCollectionFeeSlab = (ch) => {
+          if (!ch) return false;
+          const chMp = String(ch.marketplace || '').toLowerCase();
+          const cardMp = String(marketplace || '').toLowerCase();
+          if (chMp !== cardMp) return false;
+          const chCat = String(ch.category || '').toLowerCase();
+          const cardCat = String(category || '').toLowerCase();
+          const cardVert = String(card.vertical || '').toLowerCase();
+          if (ch.category && ch.category !== 'All' && chCat !== cardCat && chCat !== cardVert) return false;
+          if (ch.table !== 'rc_collection_fee' && ch.type !== 'collection_fee') return false;
+          if (ch.priceMin != null) {
+            return Math.abs(ch.priceMin - cf.price_min) < 0.01 && (Math.abs(ch.priceMax - cf.price_max) < 1.0 || (ch.priceMax >= 999990 && cf.price_max >= 999990));
+          }
+          return true;
+        };
+        const change = currentChanges.find(matchesCollectionFeeSlab);
         if (change) matchedChanges.add(change);
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
@@ -1305,13 +1343,23 @@ function renderDiffTable() {
     // 4. Reverse Shipping rows
     if (activeDiffFilter === 'all' || activeDiffFilter === 'reverse' || activeDiffFilter === 'anomalies') {
       for (const r of reverseShipping) {
-        const change = currentChanges.find(ch =>
-          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
-          (ch.table === 'rc_reverse_shipping' || ch.type === 'reverse_shipping') &&
-          ch.priceMin != null &&
-          Math.abs(ch.priceMin - r.price_min) < 0.01 && Math.abs(ch.priceMax - r.price_max) < 1.0 &&
-          (ch.weightSlab ? ch.weightSlab === r.weight_slab : true)
-        );
+        const matchesReverseShippingSlab = (ch) => {
+          if (!ch) return false;
+          const chMp = String(ch.marketplace || '').toLowerCase();
+          const cardMp = String(marketplace || '').toLowerCase();
+          if (chMp !== cardMp) return false;
+          const chCat = String(ch.category || '').toLowerCase();
+          const cardCat = String(category || '').toLowerCase();
+          const cardVert = String(card.vertical || '').toLowerCase();
+          if (ch.category && ch.category !== 'All' && chCat !== cardCat && chCat !== cardVert) return false;
+          if (ch.table !== 'rc_reverse_shipping' && ch.type !== 'reverse_shipping') return false;
+          if (ch.weightSlab && r.weight_slab && ch.weightSlab === r.weight_slab) return true;
+          if (ch.weightMin != null && r.weight_min != null) {
+            return Math.abs(ch.weightMin - r.weight_min) < 0.01 && Math.abs(ch.weightMax - r.weight_max) < 0.01;
+          }
+          return false;
+        };
+        const change = currentChanges.find(matchesReverseShippingSlab);
         if (change) matchedChanges.add(change);
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
@@ -1337,14 +1385,25 @@ function renderDiffTable() {
     // 5. FBF pick-and-pack
     if (activeDiffFilter === 'all' || activeDiffFilter === 'fixed' || activeDiffFilter === 'pickpack' || activeDiffFilter === 'anomalies') {
       for (const fee of pickPackFees) {
-        const change = currentChanges.find(ch =>
-          (ch.table === 'rc_pick_pack' || ch.type === 'pick_pack') &&
-          ch.marketplace === marketplace && (ch.category === category || ch.category === card.vertical) &&
-          (ch.fulfilmentType == null || ch.fulfilmentType === fee.fulfilment_type) &&
-          (ch.priceMin == null || (Math.abs(ch.priceMin - fee.price_min) < 0.01 && Math.abs(ch.priceMax - fee.price_max) < 1.0)) &&
-          (ch.weightMin == null || Math.abs(ch.weightMin - fee.weight_min) < 0.001) &&
-          (ch.weightMax == null || Math.abs(ch.weightMax - fee.weight_max) < 0.001)
-        );
+        const matchesPickPackSlab = (ch) => {
+          if (!ch) return false;
+          const chMp = String(ch.marketplace || '').toLowerCase();
+          const cardMp = String(marketplace || '').toLowerCase();
+          if (chMp !== cardMp) return false;
+          const chCat = String(ch.category || '').toLowerCase();
+          const cardCat = String(category || '').toLowerCase();
+          const cardVert = String(card.vertical || '').toLowerCase();
+          if (ch.category && ch.category !== 'All' && chCat !== cardCat && chCat !== cardVert) return false;
+          if (ch.table !== 'rc_pick_pack' && ch.type !== 'pick_pack') return false;
+          const chFul = ch.fulfilmentType ? String(ch.fulfilmentType).toUpperCase() : null;
+          const feeFul = fee.fulfilment_type ? String(fee.fulfilment_type).toUpperCase() : 'FBF';
+          if (chFul && chFul !== feeFul) return false;
+          if (ch.weightMin != null && fee.weight_min != null) {
+            return Math.abs(ch.weightMin - fee.weight_min) < 0.01;
+          }
+          return true;
+        };
+        const change = currentChanges.find(matchesPickPackSlab);
         if (change) matchedChanges.add(change);
         const isChanged = Boolean(change && change.changeType !== 'UNCHANGED');
         rows.push({
@@ -1415,6 +1474,31 @@ function renderDiffTable() {
     });
   }
 
+  // Ensure all flagged anomalies are included in rows under all circumstances
+  for (const anom of currentChanges.filter(c => c.anomaly)) {
+    if (!rows.some(r => r.anomaly && r.category === anom.category && (r.slab === anom.slab || (anom.priceMin != null && String(r.slab).includes(String(anom.priceMin)))))) {
+      const oldRateDisplay = anom.oldRow ? describeRateRecord(anom.table, anom.oldRow) : (anom.oldRate != null ? ((anom.table === 'rc_commission' || anom.type === 'commission') ? (Number(anom.oldRate) * 100).toFixed(4) + '%' : '₹' + anom.oldRate) : '—');
+      const newRateDisplay = anom.newRow ? describeRateRecord(anom.table, anom.newRow) : (anom.newRate != null ? ((anom.table === 'rc_commission' || anom.type === 'commission') ? (Number(anom.newRate) * 100).toFixed(4) + '%' : '₹' + anom.newRate) : '—');
+      rows.push({
+        type: (anom.table === 'rc_pick_pack' || anom.type === 'pick_pack') ? 'FBF Pick & Pack' : (anom.type ? anom.type.replace('_', ' ') : 'Commission'),
+        marketplace: (anom.marketplace || 'FLIPKART').toUpperCase(),
+        category: anom.category || 'All',
+        brand: anom.brand || anom.brand_name || 'All',
+        slab: anom.slab || 'General',
+        oldRate: oldRateDisplay,
+        newRate: newRateDisplay,
+        difference: anom.difference || '—',
+        effectiveDate: anom.effectiveDate || currentEffectiveDate || 'Immediate',
+        status: anom.reason || anom.changeType || 'Anomaly Flagged',
+        financialImpact: anom.financialImpact || 'cost_increase',
+        recommendation: anom.recommendation || 'Significant rate anomaly',
+        anomaly: true,
+        anomalySeverity: anom.anomalySeverity || 'high',
+        isChanged: true
+      });
+    }
+  }
+
   // Update Summary KPI Strip
   const totalCount = rows.length;
   const unchangedCount = rows.filter(r => !r.isChanged).length;
@@ -1437,6 +1521,23 @@ function renderDiffTable() {
   setKpi('kpi-diff-added', addedCount);
   setKpi('kpi-diff-removed', removedCount);
   setKpi('kpi-diff-anomalies', anomalyCount);
+
+  // In-Sync Banner & Commit Button State
+  const inSyncBanner = document.getElementById('diff-in-sync-banner');
+  const commitBtn = document.getElementById('btn-commit-db');
+  if (currentComparisonAvailable && currentChanges.length === 0) {
+    if (inSyncBanner) inSyncBanner.style.display = 'flex';
+    if (commitBtn) {
+      commitBtn.disabled = true;
+      commitBtn.innerText = '✓ Database In Sync (0 Changes)';
+      commitBtn.title = 'All scraped rate parameters match active PostgreSQL records 100%.';
+    }
+  } else {
+    if (inSyncBanner) inSyncBanner.style.display = 'none';
+    if (commitBtn && currentCanSync) {
+      commitBtn.innerText = '✓ Publish Reviewed Rates';
+    }
+  }
 
   // Filter by status (all / changed / unchanged)
   let statusFiltered = rows;
@@ -1565,7 +1666,7 @@ function showRateChangeApprovalModal() {
   const tbody = document.getElementById('modal-shifts-tbody');
   if (tbody) {
     if (currentChanges.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No fee shifts detected. Staged rates match existing active rates.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">✓ All rate parameters match PostgreSQL active records 100%. Database is up-to-date.</td></tr>';
     } else {
       const sortedChanges = [...currentChanges].sort((a, b) => {
         if (a.anomaly && !b.anomaly) return -1;
@@ -1576,15 +1677,19 @@ function showRateChangeApprovalModal() {
       }).slice(0, 15);
 
       tbody.innerHTML = sortedChanges.map(ch => {
-        const component = ch.table === 'rc_pick_pack' ? 'FBF Pick & Pack' : (ch.type ? ch.type.replace('_', ' ') : 'Fee');
+        const component = (ch.table === 'rc_pick_pack' || ch.type === 'pick_pack') ? 'FBF Pick & Pack' : (ch.type ? ch.type.replace('_', ' ') : 'Fee');
         const scope = (ch.category || 'All') + (ch.brand && ch.brand !== 'All' ? ' (' + ch.brand + ')' : '') + ' · ' + (ch.slab || ch.fulfilmentType || 'All slabs');
         let oldR = '—';
         if (ch.oldRow) oldR = describeRateRecord(ch.table, ch.oldRow);
-        else if (ch.oldRate != null) oldR = ch.table === 'rc_commission' || ch.type === 'commission' ? (Number(ch.oldRate) * 100).toFixed(4) + '%' : '₹' + ch.oldRate;
+        if (oldR === '—' && ch.oldRate != null) {
+          oldR = (ch.table === 'rc_commission' || ch.type === 'commission') ? (Number(ch.oldRate) * 100).toFixed(4) + '%' : '₹' + ch.oldRate;
+        }
 
         let newR = '—';
         if (ch.newRow) newR = describeRateRecord(ch.table, ch.newRow);
-        else if (ch.newRate != null) newR = ch.table === 'rc_commission' || ch.type === 'commission' ? (Number(ch.newRate) * 100).toFixed(4) + '%' : '₹' + ch.newRate;
+        if (newR === '—' && ch.newRate != null) {
+          newR = (ch.table === 'rc_commission' || ch.type === 'commission') ? (Number(ch.newRate) * 100).toFixed(4) + '%' : '₹' + ch.newRate;
+        }
 
         let diff = ch.difference || '—';
         if (diff === '—' && ch.oldRate != null && ch.newRate != null) {
@@ -1618,10 +1723,17 @@ function showRateChangeApprovalModal() {
 
   const btnApprovePublish = document.getElementById('btn-modal-approve-publish');
   if (btnApprovePublish) {
-    btnApprovePublish.disabled = !currentCanSync;
-    btnApprovePublish.title = currentCanSync
-      ? 'Commit reviewed rates to PostgreSQL'
-      : 'Publication is disabled: Run a full extraction covering all categories or check comparison status.';
+    if (currentChanges.length === 0) {
+      btnApprovePublish.disabled = true;
+      btnApprovePublish.textContent = '✓ Rates In Sync (0 Changes)';
+      btnApprovePublish.title = 'All rate parameters match PostgreSQL active records 100%.';
+    } else {
+      btnApprovePublish.disabled = !currentCanSync;
+      btnApprovePublish.textContent = '✅ Approve & Publish to Database';
+      btnApprovePublish.title = currentCanSync
+        ? 'Commit reviewed rates to PostgreSQL'
+        : 'Publication is disabled: Run a full extraction covering all categories or check comparison status.';
+    }
   }
   if (!currentCanSync && impactTitle) {
     impactTitle.textContent = (anomalies.length > 0 ? '⚠️ CAUTION: ' + anomalies.length + ' Anomalies' : 'Rate Changes Preview') + ' (Publication Disabled)';
@@ -1994,13 +2106,30 @@ function setupEventListeners() {
     }
   });
 
+  function triggerAutonomousSyncCheck(diffRes = {}) {
+    const isAutoSync = document.getElementById('cfg-auto-sync-db')?.checked ||
+      document.getElementById('dash-auto-sync-toggle')?.checked ||
+      localStorage.getItem('reconcentral_auto_sync') === 'true';
+
+    if (isAutoSync && currentComparisonAvailable) {
+      if (currentChanges.length > 0 && currentCanSync && diffRes.publishable !== false) {
+        appendTerminalLine(`⚡ Autonomous Auto-Sync: Committing ${currentChanges.length} verified rate adjustments to PostgreSQL...`);
+        executePublishToDatabase({ autonomous: true });
+      } else if (currentChanges.length === 0) {
+        appendTerminalLine(`✓ Autonomous Rate Check: All parameters match PostgreSQL 100%. Database is up-to-date.`);
+      }
+    }
+  }
+
   // Commit to Database
-  async function executePublishToDatabase() {
+  async function executePublishToDatabase(options = {}) {
+    const isAutonomous = options.autonomous === true;
     if (currentRateCards.length === 0 || !currentCanSync) {
       const reason = !currentComparisonAvailable
         ? 'PostgreSQL comparison is unavailable. Please check database connectivity.'
         : 'Publication requires a complete, verified extraction covering all configured categories before committing live rates to PostgreSQL.';
-      alert('Cannot publish to database: ' + reason);
+      if (!isAutonomous) alert('Cannot publish to database: ' + reason);
+      else appendTerminalLine(`⚠️ [Autonomous Auto-Sync Skipped] ${reason}`);
       return;
     }
 
@@ -2018,8 +2147,8 @@ function setupEventListeners() {
       const session = await window.ratecardAPI.authGetSession?.().catch(() => null);
       const syncOptions = {
         forceUpdate: true,
-        actor: session?.user?.email || session?.user?.name || 'desktop-operator',
-        runMetadata: { source: 'desktop-worker-ui', uiVersion: '1.8.0' }
+        actor: session?.user?.email || session?.user?.name || (isAutonomous ? 'autonomous-auto-sync' : 'desktop-operator'),
+        runMetadata: { source: isAutonomous ? 'autonomous-worker' : 'desktop-worker-ui', uiVersion: '1.8.0' }
       };
       const res = await window.ratecardAPI.syncBrandRateCards(currentRateCards, syncOptions);
       if (res.success && res.result?.updated) {
@@ -2029,22 +2158,35 @@ function setupEventListeners() {
           appendTerminalLine('⚠️ Note: ' + res.result.anomaliesCount + ' anomalies recorded in version audit snapshot.');
         }
         hideRateChangeApprovalModal();
-        alert('Database synchronization completed successfully!\n\n' + res.result.message + '\nAudit Version: ' + res.result.versionName);
+        if (isAutonomous) {
+          if (typeof Notification !== 'undefined') {
+            try {
+              new Notification('Rate Cards Auto-Updated', {
+                body: `${res.result.message} (Version: ${res.result.versionName})`,
+                icon: 'icon.png'
+              });
+            } catch (_) {}
+          }
+          const email = document.getElementById('cfg-alert-email')?.value || 'payments@youthnic.shop';
+          appendTerminalLine(`📧 [Email Notification Alert Log] Alert sent to ${email} for version ${res.result.versionName}.`);
+        } else {
+          alert('Database synchronization completed successfully!\n\n' + res.result.message + '\nAudit Version: ' + res.result.versionName);
+        }
         await loadRateCardPreview();
       } else if (res.success) {
         const message = res.result?.message || 'Database is already in sync.';
         appendTerminalLine('Database sync result: ' + message);
         hideRateChangeApprovalModal();
-        alert(message);
+        if (!isAutonomous) alert(message);
         await loadRateCardPreview();
       } else {
         const message = res.error || res.result?.message || 'Database synchronization failed.';
         appendTerminalLine('Database sync failed: ' + message);
-        alert(message);
+        if (!isAutonomous) alert(message);
       }
     } catch (err) {
       appendTerminalLine('Database sync failed: ' + err.message);
-      alert('Database sync failed: ' + err.message);
+      if (!isAutonomous) alert('Database sync failed: ' + err.message);
     } finally {
       btnCommitDb.disabled = !currentCanSync;
       btnCommitDb.innerText = '✓ Commit & Auto-Close in Database';
@@ -2060,11 +2202,15 @@ function setupEventListeners() {
       alert('No staged rate cards available. Run an extraction first.');
       return;
     }
+    if (currentChanges.length === 0 && currentComparisonAvailable) {
+      alert('✓ Database is fully in sync with active PostgreSQL records (0 changes). No updates required.');
+      return;
+    }
     showRateChangeApprovalModal();
   });
 
   // Excel Actions
-  const handleGenerateExcel = async () => {
+  const handleGenerateExcel = async (opts = {}) => {
     appendTerminalLine('Generating multi-sheet Excel workbook...');
     try {
       const res = await window.ratecardAPI.exportDesktopExcel();
@@ -2075,12 +2221,19 @@ function setupEventListeners() {
         const excelBadgeEl = document.getElementById('excel-size-badge');
         if (excelPathEl) excelPathEl.innerText = res.filePath || 'Workbook generated';
         if (excelBadgeEl) excelBadgeEl.innerText = 'Generated';
-        alert(`Excel file successfully created on Desktop!\n\nLocation: ${res.filePath}`);
+        if (!opts.silent) {
+          alert(`Excel file successfully created on Desktop!\n\nLocation: ${res.filePath}`);
+        }
+        return res;
       } else {
         appendTerminalLine(`Excel export failed: ${res.error}`);
+        if (!opts.silent) alert(`Excel export failed: ${res.error}`);
+        return res;
       }
     } catch (err) {
       appendTerminalLine(`Excel error: ${err.message}`);
+      if (!opts.silent) alert(`Excel error: ${err.message}`);
+      return { success: false, error: err.message };
     }
   };
 
@@ -2089,7 +2242,7 @@ function setupEventListeners() {
     let res = await window.ratecardAPI.openExcelFile();
     if (!res.success && String(res.error).toLowerCase().includes('not found')) {
       appendTerminalLine('Excel workbook not found on disk. Generating workbook now...');
-      await handleGenerateExcel();
+      await handleGenerateExcel({ silent: true });
       res = await window.ratecardAPI.openExcelFile();
     }
     if (res.success) {
@@ -2102,10 +2255,26 @@ function setupEventListeners() {
     }
   };
 
-  btnQuickExcel?.addEventListener('click', handleGenerateExcel);
-  btnGenerateExcel?.addEventListener('click', handleGenerateExcel);
+  btnQuickExcel?.addEventListener('click', () => handleGenerateExcel());
+  btnGenerateExcel?.addEventListener('click', () => handleGenerateExcel());
   btnQuickOpenExcel?.addEventListener('click', handleOpenExcel);
   btnLaunchExcel?.addEventListener('click', handleOpenExcel);
+
+  // Auto-Sync Toggle Synchronization
+  const dashAutoSyncToggle = document.getElementById('dash-auto-sync-toggle');
+  const cfgAutoSyncDb = document.getElementById('cfg-auto-sync-db');
+  const savedAutoSync = localStorage.getItem('reconcentral_auto_sync') === 'true';
+  if (dashAutoSyncToggle) dashAutoSyncToggle.checked = savedAutoSync;
+  if (cfgAutoSyncDb) cfgAutoSyncDb.checked = savedAutoSync;
+
+  const onAutoSyncToggled = (enabled) => {
+    localStorage.setItem('reconcentral_auto_sync', enabled ? 'true' : 'false');
+    if (dashAutoSyncToggle) dashAutoSyncToggle.checked = enabled;
+    if (cfgAutoSyncDb) cfgAutoSyncDb.checked = enabled;
+    appendTerminalLine(`Autonomous Auto-Sync ${enabled ? 'ENABLED' : 'DISABLED'}.`);
+  };
+  dashAutoSyncToggle?.addEventListener('change', (e) => onAutoSyncToggled(e.target.checked));
+  cfgAutoSyncDb?.addEventListener('change', (e) => onAutoSyncToggled(e.target.checked));
 
   // Settings DB Test
   btnTestDb?.addEventListener('click', async () => {

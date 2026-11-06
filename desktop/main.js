@@ -2403,10 +2403,15 @@ registerHandler('open-excel-file', async (e, targetPath) => {
         const pool = getDesktopPool(config.databaseUrl);
         await generateBrandwiseRateCardExcel(DEFAULT_EXCEL_PATH, pool);
         if (fs.existsSync(DEFAULT_EXCEL_PATH)) filePath = DEFAULT_EXCEL_PATH;
-      } catch (_) {}
+      } catch (genErr) {
+        desktopLogger.warn('excel.auto_generate_failed', genErr.message);
+      }
     }
     if (fs.existsSync(filePath)) {
-      await shell.openPath(filePath);
+      const openErr = await shell.openPath(filePath);
+      if (openErr) {
+        return { success: false, error: `Could not launch viewer: ${openErr}` };
+      }
       return { success: true, filePath };
     }
     return { success: false, error: `File not found on disk: ${filePath}. Click "Export Excel" to generate it.` };

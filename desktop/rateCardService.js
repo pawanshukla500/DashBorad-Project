@@ -701,9 +701,11 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
     let insertedFixed = 0;
     let insertedRev = 0;
     let insertedCollection = 0;
+    let insertedPickPack = 0;
     const processedFixedFeeCategories = new Set();
     const processedRevShippingCategories = new Set();
     const processedCollectionFeeCategories = new Set();
+    const processedPickPackCategories = new Set();
 
     for (const card of brandRateCards) {
       const { marketplace, category, brand, commissions, fixedFees, reverseShipping } = card;
@@ -862,6 +864,60 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
           insertedCollection++;
         }
       }
+
+      // 5. FBF Pick & Pack Fee Sync (category-level, warehouse fulfilment)
+      const pickPackFees = card.pickPackFees || [];
+      const pickPackKey = `${marketplace}_${sellerAccount}_${category}`;
+      if (!processedPickPackCategories.has(pickPackKey) && pickPackFees.length > 0) {
+        processedPickPackCategories.add(pickPackKey);
+
+        await client.query(`
+          DELETE FROM rc_pick_pack 
+          WHERE marketplace = $1 
+            AND (seller_account = $2 OR ($2 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $3 
+            AND start_date >= $4::date 
+            AND end_date IS NULL
+        `, [marketplace, sellerAccount, category, effectiveDate]);
+
+        await client.query(`
+          UPDATE rc_pick_pack 
+          SET end_date = $1::date, updated_at = NOW() 
+          WHERE marketplace = $2 
+            AND (seller_account = $3 OR ($3 = 'default' AND (seller_account IS NULL OR seller_account = 'default')))
+            AND category = $4 
+            AND start_date < $5::date
+            AND (end_date IS NULL OR end_date >= $5::date)
+        `, [previousEndDate, marketplace, sellerAccount, category, effectiveDate]);
+
+        for (const pp of pickPackFees) {
+          await client.query(`
+            INSERT INTO rc_pick_pack (
+              marketplace, seller_account, category, fulfilment_type,
+              weight_min, weight_max, base_weight, increment_weight,
+              price_scope, price_min, price_max,
+              rate, local_fee, zonal_fee, national_fee,
+              local_additional_fee, zonal_additional_fee, national_additional_fee,
+              start_date, end_date, updated_at
+            ) VALUES (
+              $1, $2, $3, $4,
+              $5, $6, $7, $8,
+              $9, $10, $11,
+              $12, $13, $14, $15,
+              $16, $17, $18,
+              $19::date, NULL, NOW()
+            )
+          `, [
+            marketplace, sellerAccount, category, pp.fulfilment_type || 'FBF',
+            pp.weight_min ?? 0, pp.weight_max ?? 999999, pp.base_weight ?? 0, pp.increment_weight ?? 0,
+            pp.price_scope || 'all', pp.price_min ?? 0, pp.price_max ?? 999999,
+            pp.rate ?? pp.local_fee ?? 0, pp.local_fee ?? pp.rate ?? 0, pp.zonal_fee ?? pp.rate ?? 0, pp.national_fee ?? pp.rate ?? 0,
+            pp.local_additional_fee ?? 0, pp.zonal_additional_fee ?? 0, pp.national_additional_fee ?? 0,
+            effectiveDate
+          ]);
+          insertedPickPack++;
+        }
+      }
     }
 
     // Rich audit snapshot for rate_card_versions
@@ -884,13 +940,15 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
         insertedCommissions,
         insertedFixed,
         insertedRev,
-        insertedCollection
+        insertedCollection,
+        insertedPickPack
       },
       summary: {
         commissionChanges: changes.filter(c => c.type === 'commission').length,
         fixedFeeChanges: changes.filter(c => c.type === 'fixed_fee').length,
         reverseShippingChanges: changes.filter(c => c.type === 'reverse_shipping').length,
         collectionFeeChanges: changes.filter(c => c.type === 'collection_fee').length,
+        pickPackChanges: changes.filter(c => c.type === 'pick_pack').length,
         anomalies: changes.filter(c => c.anomaly).map(c => ({
           type: c.type,
           marketplace: c.marketplace,
@@ -935,6 +993,7 @@ export async function syncBrandRateCardsToDatabase(brandRateCards, options = {},
       insertedFixed,
       insertedRev,
       insertedCollection,
+      insertedPickPack,
       versionName,
       snapshot: richSnapshot
     };
