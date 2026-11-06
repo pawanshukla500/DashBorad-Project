@@ -1809,7 +1809,10 @@ function triggerAutonomousSyncCheck(diffRes = {}) {
     localStorage.getItem('reconcentral_auto_sync') === 'true';
 
   if (isAutoSync && currentComparisonAvailable) {
-    const fingerprint = diffRes.reviewFingerprint || `${currentRateCards.length}:${currentChanges.length}:${currentEffectiveDate}`;
+    const fingerprint = diffRes.reviewFingerprint ||
+      (diffRes.fingerprints ? JSON.stringify(diffRes.fingerprints) : null) ||
+      (currentChanges.length > 0 ? JSON.stringify(currentChanges.map(c => [c.table, c.category, c.slab, c.newRate, c.effectiveDate])) : null) ||
+      `${currentRateCards.length}:${currentChanges.length}:${currentEffectiveDate}`;
     if (currentChanges.length > 0 && currentCanSync && diffRes.publishable !== false) {
       if (isAutoSyncInFlight || lastAutoSyncedFingerprint === fingerprint) {
         return;

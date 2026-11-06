@@ -196,6 +196,10 @@ async function runWorker() {
       });
 
       if (autoSync) {
+        if (!rateCards || rateCards.length === 0 || !rateCards.some(r => (r.commissions && r.commissions.length > 0) || (r.fixedFees && r.fixedFees.length > 0))) {
+          console.warn('⚠️ Auto-sync blocked: Current rate cards cannot be verified. Review Seller Hub extraction first.');
+          return;
+        }
         const anomalyChanges = changes.filter(c => c.anomaly);
         if (anomalyChanges.length > 0 && !allowAnomalies) {
           console.warn(`\n⚠️ Auto-sync skipped: ${anomalyChanges.length} rate anomaly/anomalies detected that require human verification.`);
