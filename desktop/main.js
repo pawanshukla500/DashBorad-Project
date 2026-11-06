@@ -2388,6 +2388,14 @@ registerHandler('export-desktop-excel', async (e, customPath) => {
 });
 
 // Open File in Native App (Excel)
+/**
+ * IPC handler to open the rate card Excel file with the native desktop spreadsheet viewer.
+ * Auto-generates the workbook if missing, and captures viewer launch errors.
+ *
+ * @param {Electron.IpcMainInvokeEvent} e - IPC invoke event.
+ * @param {string} [targetPath] - Optional custom path to Excel file.
+ * @returns {Promise<{success: boolean, filePath?: string, error?: string}>}
+ */
 registerHandler('open-excel-file', async (e, targetPath) => {
   try {
     const { DEFAULT_EXCEL_PATH, generateBrandwiseRateCardExcel } = await import('./excelExport.js');

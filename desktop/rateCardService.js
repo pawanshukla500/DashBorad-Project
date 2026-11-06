@@ -666,7 +666,15 @@ export function resolveSyncEffectiveDate(options = {}, brandRateCards = []) {
 }
 
 /**
- * 7. Synchronize Brand-Wise Rate Cards to Database with automatic period closure
+ * Synchronizes brand-wise rate cards to PostgreSQL database with automatic period closure.
+ * Auto-closes prior active records the day before the effective date, performs transactional
+ * multi-table inserts (commissions, fixed fees, collection fees, reverse shipping, pick & pack),
+ * and creates an immutable audit snapshot in rate_card_versions.
+ *
+ * @param {Array<object>} brandRateCards - Brand rate card objects to synchronize.
+ * @param {object} [options={}] - Synchronization options (sellerAccount, actor, runMetadata, effectiveDate).
+ * @param {import('pg').Pool} [pool=null] - Optional PostgreSQL pool instance.
+ * @returns {Promise<object>} Sync summary containing update status, insertion counts, and version name.
  */
 export async function syncBrandRateCardsToDatabase(brandRateCards, options = {}, pool = null) {
   const p = pool || getDesktopPool();

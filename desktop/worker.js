@@ -61,6 +61,7 @@ Options:
   --marketplace=<flipkart|shopsy|both|myntra_vb|myntra_ej|meesho>   Target marketplace channel (default: both)
   --brand=<name|all>                     Filter by brand (e.g. "Sangria", default: all)
   --auto-sync, -y                        Autonomous auto-sync: commit verified rate shifts to PostgreSQL
+  --allow-anomalies                      Allow committing autonomous changes even when anomalies are flagged
   --export-excel                         Generate multi-sheet Excel workbook on completion
   --excel-path=<path>                    Custom output path for Excel file
   --interactive, --visible               Launch visible Chrome browser for visual tour
@@ -71,6 +72,7 @@ Options:
 
 const isInteractive = args.includes('--interactive') || args.includes('--visible');
 const autoSync = args.includes('--auto-sync') || args.includes('-y');
+const allowAnomalies = args.includes('--allow-anomalies');
 const shouldExportExcel = args.includes('--export-excel');
 const SUPPORTED_WORKER_CHANNELS = ['both', 'flipkart', 'shopsy', 'flipkart_shopsy'];
 const rawMarketplaceArg = args.find(a => a.startsWith('--marketplace='))?.split('=')[1] || 'both';
@@ -91,6 +93,13 @@ if (!SUPPORTED_WORKER_CHANNELS.includes(marketplaceArg)) {
 const brandArg = args.find(a => a.startsWith('--brand='))?.split('=')[1] || 'all';
 const customExcelPath = args.find(a => a.startsWith('--excel-path='))?.split('=')[1];
 
+/**
+ * Exports current published PostgreSQL rate card records into a multi-sheet Excel workbook.
+ *
+ * @param {import('pg').Pool} pool - Database pool instance.
+ * @param {(msg: string) => void} onProgress - Progress reporter callback.
+ * @returns {Promise<object|null>} Result containing generated filePath and metadata, or null if skipped.
+ */
 async function exportPublishedWorkbook(pool, onProgress) {
   if (!shouldExportExcel) return null;
   onProgress('\nGenerating multi-sheet workbook from published database rates...');
@@ -102,6 +111,12 @@ async function exportPublishedWorkbook(pool, onProgress) {
   return result;
 }
 
+/**
+ * Executes the standalone RateCard worker pipeline: scrapes Seller Hub rate parameters,
+ * runs rate change detection against PostgreSQL, auto-syncs if requested, and exports Excel.
+ *
+ * @returns {Promise<void>}
+ */
 async function runWorker() {
   console.log('======================================================================');
   console.log('⚡ ReconCentral Standalone RateCard Worker Engine');
@@ -181,22 +196,25 @@ async function runWorker() {
       });
 
       if (autoSync) {
-        onProgress(`⚡ Autonomous Auto-Sync active: Committing ${changes.length} rate adjustments to PostgreSQL...`);
-        const syncResult = await syncBrandRateCardsToDatabase(rateCards, {
-          sellerAccount: 'default',
-          actor: 'worker-cli-autosync',
-          runMetadata: { source: 'worker-cli', marketplace: marketplaceArg }
-        }, pool);
-        console.log(`✓ PostgreSQL Auto-Sync Completed: ${syncResult.message}`);
-        console.log(`  Audit Version: ${syncResult.versionName}`);
-        console.log(`  Commissions: ${syncResult.insertedCommissions}, Fixed: ${syncResult.insertedFixed}, Reverse: ${syncResult.insertedRev}, Collection: ${syncResult.insertedCollection}, Pick&Pack: ${syncResult.insertedPickPack || 0}`);
-        if (syncResult.anomaliesCount > 0) {
-          console.log(`⚠️ ${syncResult.anomaliesCount} anomalies recorded in version audit snapshot.`);
+        const anomalyChanges = changes.filter(c => c.anomaly);
+        if (anomalyChanges.length > 0 && !allowAnomalies) {
+          console.warn(`\n⚠️ Auto-sync skipped: ${anomalyChanges.length} rate anomaly/anomalies detected that require human verification.`);
+          console.warn('   Run with --allow-anomalies to commit anomalous rates autonomously, or review in the desktop UI.');
+        } else {
+          onProgress(`⚡ Autonomous Auto-Sync active: Committing ${changes.length} rate adjustments to PostgreSQL...`);
+          const syncResult = await syncBrandRateCardsToDatabase(rateCards, {
+            sellerAccount: 'default',
+            actor: 'worker-cli-autosync',
+            runMetadata: { source: 'worker-cli', marketplace: marketplaceArg }
+          }, pool);
+          console.log(`✓ PostgreSQL Auto-Sync Completed: ${syncResult.message}`);
+          console.log(`  Audit Version: ${syncResult.versionName}`);
+          console.log(`  Commissions: ${syncResult.insertedCommissions}, Fixed: ${syncResult.insertedFixed}, Reverse: ${syncResult.insertedRev}, Collection: ${syncResult.insertedCollection}, Pick&Pack: ${syncResult.insertedPickPack || 0}`);
+          if (syncResult.anomaliesCount > 0) {
+            console.log(`⚠️ ${syncResult.anomaliesCount} anomalies recorded in version audit snapshot.`);
+          }
+          console.log(`\nℹ️ [NOTIFICATION] Rate changes recorded. No automated email sent directly by worker CLI (use ReconCentral cloud alerts).`);
         }
-        console.log(`\n📧 [EMAIL NOTIFICATION LOG]`);
-        console.log(`  To:      payments@youthnic.shop`);
-        console.log(`  Subject: ReconCentral Rate Card Auto-Update: ${changes.length} Fee Changes (${marketplaceArg.toUpperCase()})`);
-        console.log(`  Summary: ${syncResult.message} - Version: ${syncResult.versionName}`);
       } else {
         console.log('\nReview current Seller Hub extractions in the desktop app or pass --auto-sync (-y) to commit autonomously.');
       }

@@ -1,8 +1,22 @@
 (() => {
   const helpers = {
+    /**
+     * Determines whether a status or progress message represents a success outcome.
+     *
+     * @param {string} message - Message string to evaluate.
+     * @returns {boolean} True if message signifies successful completion.
+     */
     isSuccessfulMessage(message) {
       return String(message).includes('✓') || /\b(?:success(?:ful(?:ly)?)?|completed|complete)\b/i.test(String(message));
     },
+
+    /**
+     * Evaluates whether a detected rate card change should be rendered as an explicit detail row
+     * in the review table.
+     *
+     * @param {object} change - Detected change object.
+     * @returns {boolean} True if detail row should be rendered.
+     */
     shouldRenderChangeDetail(change) {
       if (!change || typeof change !== 'object') return false;
       // All flagged anomalies and removed fees must always be rendered

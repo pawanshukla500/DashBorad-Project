@@ -80,6 +80,9 @@ let currentEffectiveDate = '';
 let currentDiffSummary = {};
 let currentUserSession = null;
 let currentCanSync = false;
+let isPublishingToDatabase = false;
+let isAutoSyncInFlight = false;
+let lastAutoSyncedFingerprint = null;
 
 async function checkAuthSession() {
   try {
@@ -1176,6 +1179,13 @@ function anomalyGuidance(changes, anomaliesCount) {
     (parts.length ? parts.join('; ') + '. Approve only after reviewing impact.' : 'review before publishing.');
 }
 
+/**
+ * Formats a single rate card row or diff record into a human-readable summary string.
+ *
+ * @param {string} table - Table name or component type (e.g. 'rc_commission', 'pick_pack').
+ * @param {object} row - Rate record or change object.
+ * @returns {string} Formatted display string.
+ */
 function describeRateRecord(table, row) {
   if (!row) return '—';
   const t = String(table || '').toLowerCase().replace(/^rc_/, '');
@@ -1199,6 +1209,12 @@ function describeRateRecord(table, row) {
     (row.price_scope === 'all' ? '; all prices' : '');
 }
 
+/**
+ * Renders the rate comparison diff table across all active rate cards and fee components,
+ * mapping detected changes, calculating summary KPIs, and applying active component filters.
+ *
+ * @returns {void}
+ */
 function renderDiffTable() {
   const tbody = document.getElementById('diff-tbody');
   if (!tbody) return;
@@ -1401,7 +1417,10 @@ function renderDiffTable() {
           if (ch.weightMin != null && fee.weight_min != null) {
             return Math.abs(ch.weightMin - fee.weight_min) < 0.01;
           }
-          return true;
+          if (ch.priceMin != null && fee.price_min != null) {
+            return Math.abs(ch.priceMin - fee.price_min) < 1.0;
+          }
+          return false;
         };
         const change = currentChanges.find(matchesPickPackSlab);
         if (change) matchedChanges.add(change);
@@ -1476,27 +1495,27 @@ function renderDiffTable() {
 
   // Ensure all flagged anomalies are included in rows under all circumstances
   for (const anom of currentChanges.filter(c => c.anomaly)) {
-    if (!rows.some(r => r.anomaly && r.category === anom.category && (r.slab === anom.slab || (anom.priceMin != null && String(r.slab).includes(String(anom.priceMin)))))) {
-      const oldRateDisplay = anom.oldRow ? describeRateRecord(anom.table, anom.oldRow) : (anom.oldRate != null ? ((anom.table === 'rc_commission' || anom.type === 'commission') ? (Number(anom.oldRate) * 100).toFixed(4) + '%' : '₹' + anom.oldRate) : '—');
-      const newRateDisplay = anom.newRow ? describeRateRecord(anom.table, anom.newRow) : (anom.newRate != null ? ((anom.table === 'rc_commission' || anom.type === 'commission') ? (Number(anom.newRate) * 100).toFixed(4) + '%' : '₹' + anom.newRate) : '—');
-      rows.push({
-        type: (anom.table === 'rc_pick_pack' || anom.type === 'pick_pack') ? 'FBF Pick & Pack' : (anom.type ? anom.type.replace('_', ' ') : 'Commission'),
-        marketplace: (anom.marketplace || 'FLIPKART').toUpperCase(),
-        category: anom.category || 'All',
-        brand: anom.brand || anom.brand_name || 'All',
-        slab: anom.slab || 'General',
-        oldRate: oldRateDisplay,
-        newRate: newRateDisplay,
-        difference: anom.difference || '—',
-        effectiveDate: anom.effectiveDate || currentEffectiveDate || 'Immediate',
-        status: anom.reason || anom.changeType || 'Anomaly Flagged',
-        financialImpact: anom.financialImpact || 'cost_increase',
-        recommendation: anom.recommendation || 'Significant rate anomaly',
-        anomaly: true,
-        anomalySeverity: anom.anomalySeverity || 'high',
-        isChanged: true
-      });
-    }
+    if (matchedChanges.has(anom)) continue;
+    matchedChanges.add(anom);
+    const oldRateDisplay = anom.oldRow ? describeRateRecord(anom.table, anom.oldRow) : (anom.oldRate != null ? ((anom.table === 'rc_commission' || anom.type === 'commission') ? (Number(anom.oldRate) * 100).toFixed(4) + '%' : '₹' + anom.oldRate) : '—');
+    const newRateDisplay = anom.newRow ? describeRateRecord(anom.table, anom.newRow) : (anom.newRate != null ? ((anom.table === 'rc_commission' || anom.type === 'commission') ? (Number(anom.newRate) * 100).toFixed(4) + '%' : '₹' + anom.newRate) : '—');
+    rows.push({
+      type: (anom.table === 'rc_pick_pack' || anom.type === 'pick_pack') ? 'FBF Pick & Pack' : (anom.type ? anom.type.replace('_', ' ') : 'Commission'),
+      marketplace: (anom.marketplace || 'FLIPKART').toUpperCase(),
+      category: anom.category || 'All',
+      brand: anom.brand || anom.brand_name || 'All',
+      slab: anom.slab || 'General',
+      oldRate: oldRateDisplay,
+      newRate: newRateDisplay,
+      difference: anom.difference || '—',
+      effectiveDate: anom.effectiveDate || currentEffectiveDate || 'Immediate',
+      status: anom.reason || anom.changeType || 'Anomaly Flagged',
+      financialImpact: anom.financialImpact || 'cost_increase',
+      recommendation: anom.recommendation || 'Significant rate anomaly',
+      anomaly: true,
+      anomalySeverity: anom.anomalySeverity || 'high',
+      isChanged: true
+    });
   }
 
   // Update Summary KPI Strip
@@ -1770,6 +1789,140 @@ function triggerRateChangeNotification(changesCount, increasesCount) {
     Notification.requestPermission().then(perm => {
       if (perm === 'granted') createNotice();
     });
+  }
+}
+
+/**
+ * Triggers an autonomous synchronization check when auto-sync is enabled.
+ * If verified differences exist and no anomalies are flagged, commits changes to PostgreSQL.
+ * If parameters match 100%, confirms the in-sync state.
+ * Guards against concurrent publication and repeated attempts for the same review fingerprint.
+ *
+ * @param {object} [diffRes={}] - Result from detectBrandRateChanges.
+ * @returns {void}
+ */
+function triggerAutonomousSyncCheck(diffRes = {}) {
+  const isAutoSync = document.getElementById('cfg-auto-sync-db')?.checked ||
+    document.getElementById('dash-auto-sync-toggle')?.checked ||
+    localStorage.getItem('reconcentral_auto_sync') === 'true';
+
+  if (isAutoSync && currentComparisonAvailable) {
+    const fingerprint = diffRes.reviewFingerprint || `${currentRateCards.length}:${currentChanges.length}:${currentEffectiveDate}`;
+    if (currentChanges.length > 0 && currentCanSync && diffRes.publishable !== false) {
+      if (isAutoSyncInFlight || lastAutoSyncedFingerprint === fingerprint) {
+        return;
+      }
+      const hasAnomalies = currentChanges.some(c => c.anomaly);
+      if (hasAnomalies) {
+        appendTerminalLine(`⚠️ [Autonomous Auto-Sync] Skipped: ${currentChanges.filter(c => c.anomaly).length} anomalies flagged. Manual operator review required.`);
+        return;
+      }
+      isAutoSyncInFlight = true;
+      lastAutoSyncedFingerprint = fingerprint;
+      appendTerminalLine(`⚡ Autonomous Auto-Sync: Committing ${currentChanges.length} verified rate adjustments to PostgreSQL...`);
+      executePublishToDatabase({ autonomous: true }).finally(() => {
+        isAutoSyncInFlight = false;
+      });
+    } else if (currentChanges.length === 0) {
+      appendTerminalLine('✓ Autonomous Rate Check: All parameters match PostgreSQL 100%. Database is up-to-date.');
+    }
+  }
+}
+
+// Commit to Database
+/**
+ * Commits staged rate card changes to PostgreSQL with version snapshot and auto-closure.
+ * Enforces mutual exclusion so manual and autonomous operations cannot overlap.
+ *
+ * @param {object} [options={}] - Execution options.
+ * @param {boolean} [options.autonomous=false] - True if triggered by autonomous auto-sync.
+ * @returns {Promise<void>}
+ */
+async function executePublishToDatabase(options = {}) {
+  if (isPublishingToDatabase) {
+    appendTerminalLine('⚠️ Database publication is already in progress. Skipping duplicate request.');
+    return;
+  }
+  isPublishingToDatabase = true;
+
+  const isAutonomous = options.autonomous === true;
+  const btnCommitDb = document.getElementById('btn-commit-db');
+
+  if (currentRateCards.length === 0 || !currentCanSync) {
+    const reason = !currentComparisonAvailable
+      ? 'PostgreSQL comparison is unavailable. Please check database connectivity.'
+      : 'Publication requires a complete, verified extraction covering all configured categories before committing live rates to PostgreSQL.';
+    if (!isAutonomous) alert('Cannot publish to database: ' + reason);
+    else appendTerminalLine(`⚠️ [Autonomous Auto-Sync Skipped] ${reason}`);
+    isPublishingToDatabase = false;
+    return;
+  }
+
+  const btnApprovePublish = document.getElementById('btn-modal-approve-publish');
+  if (btnApprovePublish) {
+    btnApprovePublish.disabled = true;
+    btnApprovePublish.textContent = '⏳ Publishing to Database...';
+  }
+  if (btnCommitDb) {
+    btnCommitDb.disabled = true;
+    btnCommitDb.innerText = '⏳ Syncing...';
+  }
+
+  appendTerminalLine('Committing brand-wise rate cards to PostgreSQL database...');
+
+  try {
+    const session = await window.ratecardAPI.authGetSession?.().catch(() => null);
+    const syncOptions = {
+      forceUpdate: true,
+      actor: session?.user?.email || session?.user?.name || (isAutonomous ? 'autonomous-auto-sync' : 'desktop-operator'),
+      runMetadata: { source: isAutonomous ? 'autonomous-worker' : 'desktop-worker-ui', uiVersion: '1.8.0' }
+    };
+    const res = await window.ratecardAPI.syncBrandRateCards(currentRateCards, syncOptions);
+    if (res.success && res.result?.updated) {
+      appendTerminalLine('✓ ' + res.result.message);
+      appendTerminalLine('✓ Version snapshot: ' + res.result.versionName);
+      if (res.result?.anomaliesCount > 0) {
+        appendTerminalLine('⚠️ Note: ' + res.result.anomaliesCount + ' anomalies recorded in version audit snapshot.');
+      }
+      hideRateChangeApprovalModal();
+      if (isAutonomous) {
+        if (typeof Notification !== 'undefined') {
+          try {
+            new Notification('Rate Cards Auto-Updated', {
+              body: `${res.result.message} (Version: ${res.result.versionName})`,
+              icon: 'icon.png'
+            });
+          } catch (_) {}
+        }
+        appendTerminalLine(`ℹ️ [Notification] Auto-sync version ${res.result.versionName} recorded. No email sent directly from desktop client.`);
+      } else {
+        alert('Database synchronization completed successfully!\n\n' + res.result.message + '\nAudit Version: ' + res.result.versionName);
+      }
+      await loadRateCardPreview();
+    } else if (res.success) {
+      const message = res.result?.message || 'Database is already in sync.';
+      appendTerminalLine('Database sync result: ' + message);
+      hideRateChangeApprovalModal();
+      if (!isAutonomous) alert(message);
+      await loadRateCardPreview();
+    } else {
+      const message = res.error || res.result?.message || 'Database synchronization failed.';
+      appendTerminalLine('Database sync failed: ' + message);
+      if (!isAutonomous) alert(message);
+    }
+  } catch (err) {
+    appendTerminalLine('Database sync failed: ' + err.message);
+    if (!isAutonomous) alert('Database sync failed: ' + err.message);
+  } finally {
+    btnCommitDb.disabled = !currentCanSync;
+    if (btnCommitDb) {
+      btnCommitDb.innerText = '✓ Commit & Auto-Close in Database';
+    }
+    isPublishingToDatabase = false;
+    if (btnApprovePublish) {
+      btnApprovePublish.disabled = false;
+      btnApprovePublish.textContent = '✅ Approve & Publish to Database';
+    }
   }
 }
 
@@ -2106,97 +2259,6 @@ function setupEventListeners() {
     }
   });
 
-  function triggerAutonomousSyncCheck(diffRes = {}) {
-    const isAutoSync = document.getElementById('cfg-auto-sync-db')?.checked ||
-      document.getElementById('dash-auto-sync-toggle')?.checked ||
-      localStorage.getItem('reconcentral_auto_sync') === 'true';
-
-    if (isAutoSync && currentComparisonAvailable) {
-      if (currentChanges.length > 0 && currentCanSync && diffRes.publishable !== false) {
-        appendTerminalLine(`⚡ Autonomous Auto-Sync: Committing ${currentChanges.length} verified rate adjustments to PostgreSQL...`);
-        executePublishToDatabase({ autonomous: true });
-      } else if (currentChanges.length === 0) {
-        appendTerminalLine(`✓ Autonomous Rate Check: All parameters match PostgreSQL 100%. Database is up-to-date.`);
-      }
-    }
-  }
-
-  // Commit to Database
-  async function executePublishToDatabase(options = {}) {
-    const isAutonomous = options.autonomous === true;
-    if (currentRateCards.length === 0 || !currentCanSync) {
-      const reason = !currentComparisonAvailable
-        ? 'PostgreSQL comparison is unavailable. Please check database connectivity.'
-        : 'Publication requires a complete, verified extraction covering all configured categories before committing live rates to PostgreSQL.';
-      if (!isAutonomous) alert('Cannot publish to database: ' + reason);
-      else appendTerminalLine(`⚠️ [Autonomous Auto-Sync Skipped] ${reason}`);
-      return;
-    }
-
-    const btnApprovePublish = document.getElementById('btn-modal-approve-publish');
-    if (btnApprovePublish) {
-      btnApprovePublish.disabled = true;
-      btnApprovePublish.textContent = '⏳ Publishing to Database...';
-    }
-    btnCommitDb.disabled = true;
-    btnCommitDb.innerText = '⏳ Syncing...';
-
-    appendTerminalLine('Committing brand-wise rate cards to PostgreSQL database...');
-
-    try {
-      const session = await window.ratecardAPI.authGetSession?.().catch(() => null);
-      const syncOptions = {
-        forceUpdate: true,
-        actor: session?.user?.email || session?.user?.name || (isAutonomous ? 'autonomous-auto-sync' : 'desktop-operator'),
-        runMetadata: { source: isAutonomous ? 'autonomous-worker' : 'desktop-worker-ui', uiVersion: '1.8.0' }
-      };
-      const res = await window.ratecardAPI.syncBrandRateCards(currentRateCards, syncOptions);
-      if (res.success && res.result?.updated) {
-        appendTerminalLine('✓ ' + res.result.message);
-        appendTerminalLine('✓ Version snapshot: ' + res.result.versionName);
-        if (res.result?.anomaliesCount > 0) {
-          appendTerminalLine('⚠️ Note: ' + res.result.anomaliesCount + ' anomalies recorded in version audit snapshot.');
-        }
-        hideRateChangeApprovalModal();
-        if (isAutonomous) {
-          if (typeof Notification !== 'undefined') {
-            try {
-              new Notification('Rate Cards Auto-Updated', {
-                body: `${res.result.message} (Version: ${res.result.versionName})`,
-                icon: 'icon.png'
-              });
-            } catch (_) {}
-          }
-          const email = document.getElementById('cfg-alert-email')?.value || 'payments@youthnic.shop';
-          appendTerminalLine(`📧 [Email Notification Alert Log] Alert sent to ${email} for version ${res.result.versionName}.`);
-        } else {
-          alert('Database synchronization completed successfully!\n\n' + res.result.message + '\nAudit Version: ' + res.result.versionName);
-        }
-        await loadRateCardPreview();
-      } else if (res.success) {
-        const message = res.result?.message || 'Database is already in sync.';
-        appendTerminalLine('Database sync result: ' + message);
-        hideRateChangeApprovalModal();
-        if (!isAutonomous) alert(message);
-        await loadRateCardPreview();
-      } else {
-        const message = res.error || res.result?.message || 'Database synchronization failed.';
-        appendTerminalLine('Database sync failed: ' + message);
-        if (!isAutonomous) alert(message);
-      }
-    } catch (err) {
-      appendTerminalLine('Database sync failed: ' + err.message);
-      if (!isAutonomous) alert('Database sync failed: ' + err.message);
-    } finally {
-      btnCommitDb.disabled = !currentCanSync;
-      btnCommitDb.innerText = '✓ Commit & Auto-Close in Database';
-      if (btnApprovePublish) {
-        btnApprovePublish.disabled = false;
-        btnApprovePublish.textContent = '✅ Approve & Publish to Database';
-      }
-    }
-  }
-
   btnCommitDb?.addEventListener('click', () => {
     if (currentRateCards.length === 0) {
       alert('No staged rate cards available. Run an extraction first.');
@@ -2210,6 +2272,12 @@ function setupEventListeners() {
   });
 
   // Excel Actions
+  /**
+   * Generates a multi-sheet Excel workbook from published rate cards.
+   *
+   * @param {object} [opts={}] - Options (silent: boolean to suppress alert).
+   * @returns {Promise<object>} Export result.
+   */
   const handleGenerateExcel = async (opts = {}) => {
     appendTerminalLine('Generating multi-sheet Excel workbook...');
     try {
@@ -2237,6 +2305,12 @@ function setupEventListeners() {
     }
   };
 
+  /**
+   * Launches the desktop rate card Excel workbook in Microsoft Excel,
+   * auto-generating it if the file is not yet present on disk.
+   *
+   * @returns {Promise<void>}
+   */
   const handleOpenExcel = async () => {
     appendTerminalLine('Launching Desktop Excel file in Microsoft Excel...');
     let res = await window.ratecardAPI.openExcelFile();
