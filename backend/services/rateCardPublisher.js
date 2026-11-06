@@ -104,24 +104,28 @@ export async function publishRateCardObservations(observations, options = {}) {
       [marketplace, sellerAccount, versionName, effectiveDate, JSON.stringify(snapshot)]);
     });
 
+    await client.query('COMMIT');
+    clearRateCardCache();
+    // Post-publish side effects run outside the publish transaction: email
+    // failures, extraction linkage, or settlement refresh issues must never roll back committed rates.
+    const sidePool = options.pool || getPool();
+
     // Link published version to corresponding extraction record if present
     try {
-      await client.query(`
+      const q = sidePool && typeof sidePool.query === 'function'
+        ? sidePool
+        : (sidePool && typeof sidePool.connect === 'function' ? await sidePool.connect() : getPool());
+      await q.query(`
         UPDATE rate_card_extractions
         SET status = 'published', version_id = $1
         WHERE marketplace = $2 AND seller_account = $3
           AND extraction_date = $4::date
           AND status IN ('staged', 'validated', 'anomalies_detected')
       `, [version.rows[0]?.id, marketplace, sellerAccount, effectiveDate]);
+      if (q !== sidePool && typeof q.release === 'function') q.release();
     } catch {
       // Non-fatal if table not yet initialized in legacy environments
     }
-
-    await client.query('COMMIT');
-    clearRateCardCache();
-    // Post-publish side effects run outside the publish transaction: email
-    // failures or settlement refresh issues must never roll back committed rates.
-    const sidePool = options.pool || getPool();
     const anomalyCount = plan.summary?.anomalies || 0;
     const summaryText = [
       `Rate version ${versionName} was published by ${publishedBy}.`,
