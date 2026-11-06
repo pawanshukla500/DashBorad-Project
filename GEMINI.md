@@ -110,6 +110,14 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
      - Session cookies are encrypted at rest with AES-256-GCM using hardware-derived keys.
      - Linux daemon and directories strictly enforce `0700` directory permissions and `0600` config file permissions (`/etc/reconcentral-ratecard/worker-config.json`).
      - Systemd service `reconcentral-ratecard.service` runs in `/opt/reconcentral-ratecard/` with automatic respawn and isolation.
+12. **Marketplace Fee Monitoring, Dual Anomaly Detection & Versioning Architecture**:
+    - **Full Parameter Extraction Coverage**: Validates all fee components (commissions, fixed/closing fees, collection fees, reverse shipping, and FBF pick & pack) fail-closed. Enforces Shopsy 0.00% commission invariant across all verticals.
+    - **Dual Comparison Engine**: Compares newly extracted rate cards against both (1) the last successfully validated extraction snapshot in `rate_card_extractions`, and (2) active PostgreSQL rates (`end_date IS NULL`). Automatically tracks and bridges multi-day gaps when extraction days are skipped.
+    - **Non-Overlapping Contiguous Versioning**: When changes are published, prior published rate card records are automatically closed with `effective_to = dayBefore(new_effective_from)` and `status = 'archived'`. Uncommitted draft records are strictly preserved.
+    - **Admin Alerts & Error Containment**: Automated dual notification via Resend Email and WhatsApp reporting fee shifts, absolute and percentage diffs, previous/new versions, and validation status, backed by persistent delivery logging in `rate_card_notification_log`.
+    - **FBF Pick & Pack Invariant**: Warehouse units (FBF) incur pick & pack fees; non-FBF seller fulfillment is strictly ₹0.
+    - **Missing Excel Auto-Generation**: `/api/open-excel` automatically generates `Flipkart_Shopsy_Brandwise_RateCard.xlsx` on demand from active database rates if absent from disk.
+    - **Automated GitHub Releases**: Desktop installer releases publish versioned Windows installer (`ReconCentral-RateCard-Worker-Setup-X.Y.Z.exe`), auto-update metadata (`latest.yml`, `.blockmap`), and Linux AppImage on tag push and manual workflow dispatch.
 
 ### Mandatory Review Gate: CodeAnt AI Review on All PRs
 - **Branch & PR Workflow**: All feature work, fixes, and audits must be proposed via dedicated PR branches.
