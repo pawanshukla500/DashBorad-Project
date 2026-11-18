@@ -1,23 +1,20 @@
 import pg from 'pg';
-import dotenv from 'dotenv';
-import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { isTestEnvironment, loadEnvFiles } from '../utils/loadEnv.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Ensure .env is loaded reliably regardless of current working directory
-for (const envPath of [
+// Ensure .env is loaded reliably regardless of current working directory.
+// Skipped under a test runner (see utils/loadEnv.js): tests never pick up the
+// developer's production DATABASE_URL from backend/.env.
+loadEnvFiles([
   path.resolve(__dirname, '../.env'),
   path.resolve(__dirname, '../../.env'),
   path.resolve(process.cwd(), '.env'),
   path.resolve(process.cwd(), 'backend/.env')
-]) {
-  if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath, override: false });
-  }
-}
+]);
 
 const { Pool } = pg;
 
@@ -150,10 +147,6 @@ function databaseHost(connectionString) {
 function isLoopbackHost(host) {
   const normalized = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
   return normalized === 'localhost' || normalized === '::1' || normalized === '127.0.0.1';
-}
-
-function isTestEnvironment(env) {
-  return Boolean(env.VITEST) || env.NODE_ENV === 'test';
 }
 
 // scripts/db-tunnel.js forwards localhost:5432 to the production database over

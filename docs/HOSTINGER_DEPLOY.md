@@ -123,6 +123,14 @@ is set. Even then it never does so under a test runner (`VITEST` set or
 tunnel with `npm run tunnel` or `START.bat` first; the backend reconnects
 automatically once `localhost:5432` is reachable.
 
+The backend reads `.env` files only outside tests. `backend/db/index.js`,
+`backend/server.js` and the other loaders go through `backend/utils/loadEnv.js`,
+which loads nothing when `VITEST` is set or `NODE_ENV=test`. So `npm test`
+never sees the production `DATABASE_URL` in `backend/.env`, even with the
+tunnel up: like CI, which has no `.env`, each test sets the variables it needs.
+A test that needs a database must set its own `DATABASE_URL`, pointing at a
+disposable database, never at the tunnel.
+
 `/health` returns HTTP 200 only when the API can reach PostgreSQL. If the
 database is temporarily unavailable, the API stays running, returns a clear
 503, and retries its database connection automatically.

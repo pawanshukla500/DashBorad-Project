@@ -43,6 +43,7 @@ New mutation endpoints must be placed below an appropriate access guard.
 1. **Multi-Path Cascade `.env` Resolution**:
    - Both `backend/db/index.js` and `backend/server.js` load configuration from a priority cascade: `../.env`, `../../.env`, `process.cwd()/.env`, and `process.cwd()/backend/.env`.
    - Prevents database disconnects when commands, workers, or scrapers are launched from different directory roots.
+   - Every loader goes through `loadEnvFiles()` in `backend/utils/loadEnv.js`, which loads nothing under a test runner (`VITEST` set or `NODE_ENV=test`). Tests see only the variables they set, as in CI, never the developer's production `DATABASE_URL` (guarded by `backend/tests/testsNeverLoadDotenv.test.js`).
 
 2. **Connection Pooling & Session Limits**:
    - Configured via `pg.Pool` with `keepAlive: true`, `keepAliveInitialDelayMillis: 10_000`, `idleTimeoutMillis`, and bounded `statement_timeout` (`PG_READ_STATEMENT_TIMEOUT_MS`, default 45s).
