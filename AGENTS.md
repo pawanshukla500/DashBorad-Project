@@ -156,7 +156,8 @@ reported done or a PR is opened:
    `docs/ARCHITECTURE.md`.
 4. **PR:** the description lists which context and doc files changed, or
    states why none needed to. A behaviour change without its doc update is not
-   ready for review.
+   ready for review. The agent then runs the review, fix and merge loop of the
+   review gate (near the end of this file) until the PR is merged.
 5. **Tooling versions:** when graphify or ponytail is upgraded, update
    `MIN_GRAPHIFY_VERSION` in `scripts/agent-bootstrap.mjs`, the vendored
    ponytail files and the commit in 0.3, following `docs/AGENT_TOOLING.md`.
@@ -428,9 +429,15 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
     - **Missing Excel Auto-Generation**: `/api/open-excel` automatically generates `Flipkart_Shopsy_Brandwise_RateCard.xlsx` on demand from active database rates if absent from disk.
     - **Automated GitHub Releases**: Desktop installer releases publish versioned Windows installer (`ReconCentral-RateCard-Worker-Setup-X.Y.Z.exe`), auto-update metadata (`latest.yml`, `.blockmap`), and Linux AppImage on tag push and manual workflow dispatch.
 
-### Mandatory Review Gate: CodeAnt AI Review on All PRs
-- **Branch & PR Workflow**: All feature work, fixes, and audits must be proposed via dedicated PR branches.
-- **No Early Merging**: A PR must NEVER be merged until every commit and diff has been reviewed and verified by **CodeAnt AI**.
+### Mandatory Review Gate: CodeAnt AI Review, then Automatic Merge
+- **Branch & PR Workflow**: All feature work, fixes, and audits must be proposed via dedicated PR branches. A PR built on another open PR says so in its title ("stacked on #N").
+- **Review, fix, merge (owner-authorised 2026-11-18)**: the agent that opens or updates a PR carries it through to the merge itself, without waiting to be asked:
+  1. After every push, wait for all CI checks to finish (`gh pr checks <n> --watch`).
+  2. Wait for **CodeAnt AI** to review the latest commit (its "Review Status" and "PR Risk" comments). If it has not started within 15 minutes, comment `@codeant-ai review`. CodeRabbit does not review this repo automatically; comment `@coderabbitai review` for a second opinion.
+  3. Fix every actionable finding (CodeAnt, CodeRabbit, a human reviewer, a failed check) in a new commit, or reply on the PR with why it does not apply. Then go back to step 1.
+  4. Merge with `gh pr merge <n> --squash` once all of these hold: every check passes, CodeAnt has reviewed the PR and rates it low risk or every finding is fixed or answered, no human review comment is unanswered, and the branch is mergeable. Stacked PRs merge bottom-up, each after the one below it.
+- **No Early Merging**: A PR must NEVER be merged before step 4 holds. A failing check, an unanswered finding or a missing CodeAnt review blocks the merge.
+- **Merging is not deploying**: a push to `master` only runs CI. Production (Hostinger) deploys only through a manual `workflow_dispatch` of `.github/workflows/deploy-hostinger.yml`.
 - **Test Integrity**: Full backend test suite (`cd backend && npm test`; on `master` as of 2026-11-18: 96 files, 701 tests, of which 1 file / 8 tests are skipped) and frontend build (`cd frontend && npm run build`) must pass 100% green before any PR review transition. Keep these counts current (section 0.4).
 
 ## graphify
