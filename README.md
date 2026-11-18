@@ -108,6 +108,30 @@ For automated rate card scraping and live portal extraction without browser exte
 - **Authentication:** Authenticates securely against Firebase Auth and PostgreSQL role claims. Zero administrative secrets or raw database credentials are stored in the client binary.
 - **Marketplace Accounts:** Configurable in Admin Center with AES-256-GCM encrypted portal credentials.
 
+## AI Agents & Contributor Tooling (mandatory)
+
+Every coding agent (Claude Code, Codex, Gemini CLI / Antigravity, Cursor,
+Copilot, …) bootstraps two tools before any other work, as
+[AGENTS.md section 0](AGENTS.md#0-mandatory-agent-bootstrap-graphify--ponytail)
+requires:
+
+- **[graphify](https://github.com/Graphify-Labs/graphify)**: a local, code-only
+  knowledge graph of this repo in `graphify-out/` (git-ignored). Agents query it
+  (`graphify query`, `explain`, `path`, `affected`) before grepping or reading
+  whole files.
+- **[ponytail](https://github.com/DietrichGebert/ponytail)**: the "lazy senior
+  dev" ruleset and skills (smallest complete change; never cut validation, error
+  handling, security or accessibility).
+
+```bash
+npm run agent:bootstrap   # first run / after tooling changes: install graphify, build the graph, hooks, ponytail
+npm run agent:check       # every session (Claude Code runs it automatically)
+npm run graph:update      # after code changes
+```
+
+Every change also updates the project context and docs it affects (AGENTS.md
+section 0.4). Full guide: [docs/AGENT_TOOLING.md](docs/AGENT_TOOLING.md).
+
 ## Architecture and Development
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the route/service/data
@@ -120,7 +144,7 @@ see [docs/SAAS_OPERATING_BASELINE.md](docs/SAAS_OPERATING_BASELINE.md).
 ## Verification & Testing
 
 - **Backend Test Suite:** From `backend/`, run `npm test` (or `node ./node_modules/vitest/vitest.mjs run`).
-  - **84 test files, 511 tests passing 100% green**.
+  - Must pass 100% green (on `master` as of 2026-11-18: 96 test files / 701 tests, of which 1 file / 8 tests are skipped).
 - **Desktop Auth Suite:** From root, run `node desktop/tests/test_desktop_auth.js` (6 tests passing).
 - **Frontend Production Build:** From `frontend/`, run `npm run build` (Rollup vendor chunks, ~5.0s build).
 

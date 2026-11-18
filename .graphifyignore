@@ -1,0 +1,33 @@
+# graphify ignore rules (in addition to .gitignore, which graphify honours).
+# Keep the knowledge graph to the application's own source: backend/, frontend/src,
+# desktop/, scripts/ and the SQL migrations. Everything below is generated,
+# binary, local scratch, or third-party material that would only add noise.
+
+# Local scratch and one-off investigation files (untracked in most checkouts)
+scratch/
+tools/
+reports/
+graphify-out/
+.claude/
+.agents/
+.codex-tmp/
+.freebuff/
+
+# Build output and release binaries
+released/
+desktop/dist/
+desktop/dist-release/
+frontend/dist/
+backend/dist/
+coverage/
+**/*.min.js
+**/*.map
+
+# Generated or captured artefacts
+backend/*.html
+backend/*.png
+backend/fbf_ratecard_deep*
+docs/ratecard-ui/
+**/*.xlsx
+**/*.csv
+**/*.pdf

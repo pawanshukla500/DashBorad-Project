@@ -7,6 +7,9 @@
     "tunnel": "node scripts/db-tunnel.js",
     "backend": "cd backend && npm run dev",
     "frontend": "cd frontend && npm run dev",
+    "agent:bootstrap": "node scripts/agent-bootstrap.mjs",
+    "agent:check": "node scripts/agent-bootstrap.mjs --check",
+    "graph:update": "node scripts/agent-bootstrap.mjs --session",
     "install": "cd backend && npm install && cd ../frontend && npm install"
   },
   "devDependencies": {

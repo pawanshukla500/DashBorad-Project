@@ -1,5 +1,181 @@
 # Agent Guidelines & Project Memory
 
+## 0. Mandatory Agent Bootstrap: graphify + ponytail
+
+This section applies to **every** coding agent and assistant that touches this
+repository, without exception: Claude Code (CLI, desktop, web), Codex, Gemini CLI
+and Google Antigravity, Cursor, GitHub Copilot, Kimi, OpenCode, Devin, and every
+subagent any of them spawns. A new agent that has never seen this project must
+complete 0.1 **before any other work**, including TaskFlow sync, planning or code
+reading. The in-depth guide (how it works, per-agent matrix, upgrades,
+troubleshooting) is [`docs/AGENT_TOOLING.md`](docs/AGENT_TOOLING.md).
+
+Two tools are mandatory:
+
+| Tool | What it gives every agent | Upstream |
+|---|---|---|
+| **graphify** | A local, code-only knowledge graph of this repo (`graphify-out/`): symbols, call/import edges, communities, god nodes. Agents query it instead of grepping and reading whole files. | [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) (PyPI `graphifyy`, Apache-2.0) |
+| **ponytail** | The "lazy senior dev" ruleset and skills: the smallest complete change, reuse before writing, and never cutting validation, error handling, security or accessibility. | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) (MIT) |
+
+### 0.1 Session start (every session, every agent)
+
+1. **First run on a machine, after pulling tooling changes, or whenever 0.1.2
+   reports a problem:** `npm run agent:bootstrap` from the repository root. It:
+   - installs or upgrades the graphify CLI (`graphifyy[sql]`, minimum version
+     pinned in `scripts/agent-bootstrap.mjs`), trying `uv tool install`, then
+     `pipx install`, then `python -m pip install`;
+   - builds the graph on first run (`graphify extract . --code-only`, then
+     `graphify cluster-only . --no-label`) or refreshes it incrementally
+     (`graphify update .`), always with `GRAPHIFY_BACKEND=none`;
+   - installs graphify's git hooks (graph rebuilds after commit, checkout,
+     merge and rebase; `--no-hooks` skips this);
+   - restores missing project skills (`graphify install --project`);
+   - installs the ponytail plugin into every agent CLI it finds on `PATH`
+     (Gemini CLI, Codex, Copilot CLI; `--no-plugins` skips this).
+2. **Every session:** `npm run agent:check` must exit 0. Claude Code runs the
+   same check automatically (`node scripts/agent-bootstrap.mjs --session`
+   from the `SessionStart` hook in `.claude/settings.json`), which also
+   refreshes the graph.
+3. **Ponytail per agent:**
+   - Claude Code: the plugin is declared in `.claude/settings.json`
+     (`extraKnownMarketplaces` + `enabledPlugins`); accept the install prompt
+     when the folder is trusted, or type `/plugin marketplace add DietrichGebert/ponytail`
+     and then `/plugin install ponytail@ponytail` as two separate prompts.
+   - Gemini CLI / Antigravity: `gemini extensions install https://github.com/DietrichGebert/ponytail`
+     (Antigravity CLI: `agy plugin install https://github.com/DietrichGebert/ponytail`).
+   - Codex: `codex plugin marketplace add DietrichGebert/ponytail` and
+     `codex plugin add ponytail@ponytail`, then trust its hooks under `/hooks`.
+   - Every other agent: the ruleset in 0.3 below plus the vendored skills in
+     `.agents/skills/ponytail*/` and `.agents/rules/ponytail.md` (Cursor:
+     `.cursor/rules/ponytail.mdc`).
+4. An agent that cannot run shell commands must still follow 0.2–0.4 by hand
+   and state in its reply that the bootstrap could not be run.
+5. Hooks are a convenience, never the guarantee: a user setting such as
+   `"disableAllHooks": true` turns them off. These written rules bind every
+   agent regardless.
+
+### 0.2 graphify: graph first, then targeted reads
+
+- Before the first grep, search or file read for any codebase question, query
+  the graph: `graphify query "<question>"`, `graphify explain "<symbol>"`,
+  `graphify path "<A>" "<B>"`, `graphify affected "<symbol>"` (what a change
+  breaks), `graphify god-nodes` (architectural hubs). Read raw files only for
+  the lines the graph located. Put this rule into every subagent prompt that
+  explores code.
+- `graphify-out/GRAPH_REPORT.md` is for broad architecture review;
+  `graphify-out/graph.html` is the interactive map for humans.
+- **Privacy (non-negotiable):** this repository is public and its history holds
+  business data. Build the graph code-only and offline:
+  `GRAPHIFY_BACKEND=none`, `--code-only`. Never run a graphify LLM backend,
+  `--mode deep`, `graphify add <url>` or the semantic `/graphify` pass over
+  docs on this repo, and never commit `graphify-out/` (it is git-ignored).
+- `.graphifyignore` keeps scratch, build output, binaries and spreadsheets out
+  of the graph; update it when a new generated or local-only folder appears.
+- After modifying code, refresh the graph: `npm run graph:update` (or
+  `graphify update .`). Stale graph files are never a reason to skip graphify.
+
+### 0.3 Ponytail ruleset (always on)
+
+The rules below are Ponytail's agent ruleset, vendored from
+[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) at commit
+`96608e078b2d5ea607c5c3b8b5a54d1c1fba6846` (MIT, copyright 2026 DietrichGebert;
+licence in `.agents/skills/ponytail/LICENSE`). They apply to every change in
+this repo. Where a project invariant elsewhere in this file is stricter (data
+integrity, security, migrations, brand tokens, the review gate), the invariant
+wins; Ponytail never removes a check.
+
+You are a lazy senior developer. The best code is the code never written. You
+solve the whole problem with the least new code. End your reply with one or two
+lines: what you skipped or did not check, and any risk the user must know.
+
+#### Before you write
+
+Read the task and the code it touches. List every place your change must reach:
+callers, tests, fixtures, config, exports. Check what your change could break for
+users: data it would destroy or expose, callers that stop working. That is
+scope. Extra features are not.
+
+#### The smallest complete change
+
+Take the first option that fully works:
+
+1. Does it need to exist? Skip features, options and flexibility nobody asked
+   for, and name them in one line. A vague request ("build me X") gets the
+   smallest version that does the core job.
+2. Already in this codebase (a helper, component, service, pattern)? Use it the
+   way the surrounding code does.
+3. Standard library or a platform feature? Use it, unless the project has its
+   own. A house component beats a native widget.
+4. An installed dependency? Use it. Never add a dependency for a few lines.
+5. Can it be one line a reader gets at a glance? One line.
+6. Otherwise: the minimum code that works.
+
+- Be lazy about the solution, never about the change itself: finish every part
+  the task needs, including the callers, tests and fixtures your change breaks.
+- No abstraction, wrapper, type conversion, option, config, boilerplate or "for
+  later" code nobody asked for. Keep values in the form the platform already
+  gives you. Deletion beats addition. Keep the structure the codebase already
+  has: its layers, interfaces and conventions.
+- The shortest working diff wins, once you know everything it must touch. A
+  one-liner that needs decoding is not short.
+- Comment only the why the code cannot show, in one line.
+- Bug fix: before you edit, grep every caller of the function you touch (start
+  with `graphify affected "<function>"`), then fix the root cause once in the
+  shared code.
+- Code you move or merge keeps its error handling and validation.
+- Between options of equal size, take the one that is correct on edge cases.
+- Lazy code without its check is unfinished: new non-trivial logic (a branch, a
+  loop, a parser, money or security, or a whole new script or app) leaves one
+  small test or an assert-based self-check. Trivial changes need none.
+- A shortcut with a known limit gets a code comment in this form:
+  `shortcut: <the limit>, <when to upgrade>`.
+
+Never cut: validation at trust boundaries, error handling that prevents data
+loss, security, accessibility, the calibration real hardware needs, anything
+the user asked for.
+
+Ponytail skills (in the Claude Code plugin and in `.agents/skills/`):
+`/ponytail` (levels `lite`, `full`, `ultra`, `off`), `/ponytail-review`
+(review a change, including the code it touches outside the diff),
+`/ponytail-audit` (rank the whole repo's risks), `/ponytail-debt`,
+`/ponytail-gain`, `/ponytail-help`.
+
+### 0.4 Keep project context and documentation current (every change)
+
+Context and docs are part of the change, not a follow-up. Before a task is
+reported done or a PR is opened:
+
+1. **Graph:** `npm run graph:update` so the next agent queries current code.
+2. **Core memory:** update this file (and mirror it in `GEMINI.md`) when an
+   invariant, architecture rule, workflow, schema rule or command changes, and
+   keep the test counts in the review gate accurate.
+3. **Docs:** update the doc that owns the area (`docs/ARCHITECTURE.md`,
+   `MARKETPLACE_DATA_UPLOAD_SPEC.md`, `docs/SOR_LEVEL_PAYMENT_RECO.md`, the
+   relevant audit ledger, `docs/AGENT_TOOLING.md`, `README.md`); a new
+   subsystem gets its own doc, linked from `README.md` and
+   `docs/ARCHITECTURE.md`.
+4. **PR:** the description lists which context and doc files changed, or
+   states why none needed to. A behaviour change without its doc update is not
+   ready for review.
+5. **Tooling versions:** when graphify or ponytail is upgraded, update
+   `MIN_GRAPHIFY_VERSION` in `scripts/agent-bootstrap.mjs`, the vendored
+   ponytail files and the commit in 0.3, following `docs/AGENT_TOOLING.md`.
+
+### 0.5 Files that implement this section
+
+| File | Purpose |
+|---|---|
+| `scripts/agent-bootstrap.mjs` | Bootstrap / check / session script (`npm run agent:bootstrap`, `agent:check`, `graph:update`) |
+| `.claude/settings.json` | Claude Code: ponytail marketplace + plugin, `SessionStart` bootstrap check, graphify `PreToolUse` guards |
+| `.claude/skills/graphify/` | graphify skill for Claude Code (`graphify install --project`) |
+| `.agents/skills/graphify/`, `.agents/skills/ponytail*/`, `.agents/rules/ponytail.md` | Agent Skills / rules for Codex and other spec-compliant agents |
+| `.gemini/settings.json` | Gemini CLI `BeforeTool` graphify guard |
+| `.cursor/rules/graphify.mdc`, `.cursor/rules/ponytail.mdc` | Cursor always-on rules |
+| `.github/copilot-instructions.md` | VS Code Copilot Chat instructions |
+| `.graphifyignore` | What the graph leaves out |
+| `GEMINI.md` | Mirror of this section for Gemini CLI / Antigravity |
+| `docs/AGENT_TOOLING.md` | Full guide |
+
 ## TaskFlow Pro Integration (Mandatory Workflow)
 
 All autonomous agents and coding assistants operating on this codebase must track and record their work on **TaskFlow Pro**.
@@ -255,8 +431,18 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
 ### Mandatory Review Gate: CodeAnt AI Review on All PRs
 - **Branch & PR Workflow**: All feature work, fixes, and audits must be proposed via dedicated PR branches.
 - **No Early Merging**: A PR must NEVER be merged until every commit and diff has been reviewed and verified by **CodeAnt AI**.
-- **Test Integrity**: Full test suite (`npm test`, 84 files, 511 tests) and frontend build (`npm run build`) must pass 100% green before any PR review transition.
+- **Test Integrity**: Full backend test suite (`cd backend && npm test`; on `master` as of 2026-11-18: 96 files, 701 tests, of which 1 file / 8 tests are skipped) and frontend build (`cd frontend && npm run build`) must pass 100% green before any PR review transition. Keep these counts current (section 0.4).
 
+## graphify
 
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
 
+Rules:
+- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. When the answer is under a Markdown heading, `graphify section "<heading>"` prints that section's text, so the .md need not be opened. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
