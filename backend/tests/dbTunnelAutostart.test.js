@@ -38,6 +38,8 @@ async function loadDbModule() {
   vi.doMock('../../scripts/db-tunnel.js', () => ({ ensureTunnel: ensureTunnelMock }));
   vi.stubEnv('DATABASE_URL', 'postgresql://dev:dev@127.0.0.1:5432/paymentapp');
   vi.stubEnv('DB_TUNNEL_AUTOSTART', 'true');
+  // Pin the tunnel port so a value exported in the developer's shell cannot change the outcome.
+  vi.stubEnv('DB_TUNNEL_LOCAL_PORT', '5432');
   vi.stubEnv('PG_SSL', 'false');
   return import('../db/index.js');
 }
