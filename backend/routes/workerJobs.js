@@ -1,6 +1,7 @@
 import express from 'express';
 import { getPool } from '../db/index.js';
 import { requireRole } from '../utils/authMiddleware.js';
+import { requireFeatureReady } from '../services/featureReadiness.js';
 import { compareScrapedRatesWithActive } from '../services/rateCardCanonicalEngine.js';
 import { publishRateCardObservations } from '../services/rateCardPublisher.js';
 import { validateRateObservations } from '../services/rateCardObservationPlan.js';
@@ -9,6 +10,12 @@ import { resolveRateCardEffectiveDate } from '../utils/rateCardDate.js';
 
 export const workersRouter = express.Router();
 export const workerJobsRouter = express.Router();
+
+// While the rate-card worker migration is pending (it failed on this start and
+// retries on the next), workers / worker_jobs may not exist: answer a clear
+// 503 instead of raw database errors.
+workersRouter.use(requireFeatureReady('rate-card-worker'));
+workerJobsRouter.use(requireFeatureReady('rate-card-worker'));
 
 /**
  * Register or update desktop worker instance

@@ -19,6 +19,7 @@ import {
 } from './db/index.js';
 import { syncFirebaseRoleClaims } from './services/firebaseRoleClaims.js';
 import { publicApiError } from './utils/apiError.js';
+import { activeBackgroundJobs, waitForBackgroundJobs } from './utils/backgroundJobs.js';
 
 // ── Crash safety net ───────────────────────────────────────────────────────
 // If an unhandled rejection or exception escapes all try/catch blocks the
@@ -289,7 +290,33 @@ async function initialiseDatabaseWhenReachable() {
 
 let activeServer = null;
 let shuttingDown = false;
-const SHUTDOWN_TIMEOUT_MS = 5_000;
+// Development keeps a short drain so nodemon restarts stay quick. Production
+// gives in-flight uploads and background imports time to commit and rebuild
+// their read models: 5 s cut them mid-way on every deploy, leaving totals stale
+// and no upload_log row. docker-compose.production.yml's stop_grace_period must
+// stay above this value or Docker SIGKILLs the container first.
+export function resolveShutdownTimeoutMs(env = process.env) {
+  const fallback = env.NODE_ENV === 'production' ? 60_000 : 5_000;
+  const raw = env.SHUTDOWN_TIMEOUT_MS;
+  // Whole milliseconds only: parseInt('1000ms') is 1000 and silently cut the
+  // 60 s production drain to 1 s.
+  let timeout = raw != null && /^\s*\d+\s*$/.test(String(raw)) ? Number(raw) : fallback;
+  if (timeout < 1_000 || timeout > 10 * 60_000) timeout = fallback;
+  // Compose passes its stop_grace_period in as STOP_GRACE_PERIOD ("75s"). The
+  // drain must end before Docker SIGKILLs the container, so it stays 5 s
+  // under that grace period.
+  const grace = /^\s*(\d+)s\s*$/.exec(String(env.STOP_GRACE_PERIOD ?? ''));
+  if (grace) {
+    const cap = Number(grace[1]) * 1_000 - 5_000;
+    if (cap >= 1_000 && timeout > cap) {
+      console.warn(`[server] SHUTDOWN_TIMEOUT_MS ${timeout} exceeds STOP_GRACE_PERIOD ${grace[1]}s - 5s; using ${cap} ms.`);
+      timeout = cap;
+    }
+  }
+  return timeout;
+}
+
+const SHUTDOWN_TIMEOUT_MS = resolveShutdownTimeoutMs();
 
 async function gracefulShutdown(signal) {
   if (shuttingDown) return;
@@ -310,9 +337,19 @@ async function gracefulShutdown(signal) {
   databaseSchemaReady = false;
 
   // 1. Stop accepting new HTTP requests.
+  const shutdownStarted = Date.now();
   if (activeServer) {
     await new Promise(resolve => activeServer.close(resolve));
     console.log('[server] HTTP server closed.');
+  }
+
+  // 1b. Let background imports (which outlive their HTTP response) finish
+  //     before the pool closes under them, within the drain budget.
+  if (activeBackgroundJobs()) {
+    console.log(`[server] Waiting for ${activeBackgroundJobs()} background import(s)…`);
+    const budget = SHUTDOWN_TIMEOUT_MS - (Date.now() - shutdownStarted) - 2_000;
+    const stillRunning = await waitForBackgroundJobs(budget);
+    if (stillRunning) console.warn(`[server] ${stillRunning} background import(s) still running at shutdown.`);
   }
 
   // 2. Drain the database pool so every in-flight query finishes, then

@@ -75,6 +75,26 @@ function readStatementTimeoutMs() {
   });
 }
 
+// How long a transaction client may sit idle inside an open transaction before
+// PostgreSQL ends the session. Generous, because imports parse and build rows
+// between statements, but finite. PG_TX_IDLE_TIMEOUT_MS=0 disables it.
+const DEFAULT_TX_IDLE_TIMEOUT_MS = 15 * 60_000;
+
+export function transactionIdleTimeoutMs() {
+  const raw = process.env.PG_TX_IDLE_TIMEOUT_MS;
+  // Whole milliseconds only: parseInt('0.5') is 0, which would silently
+  // disable the limit; "0" stays the explicit opt-out.
+  if (raw != null && raw !== '' && !/^\s*\d+\s*$/.test(String(raw))) return DEFAULT_TX_IDLE_TIMEOUT_MS;
+  return positiveInteger(raw, DEFAULT_TX_IDLE_TIMEOUT_MS, {
+    min: 0,
+    max: 24 * 60 * 60_000,
+  });
+}
+
+export function transactionSessionLimitsSql() {
+  return `SET statement_timeout = 0; SET idle_in_transaction_session_timeout = ${transactionIdleTimeoutMs()};`;
+}
+
 function poolIdleTimeoutMs() {
   return positiveInteger(process.env.PG_POOL_IDLE_TIMEOUT_MS, DEFAULT_POOL_IDLE_TIMEOUT_MS, {
     min: 10_000,
@@ -526,7 +546,26 @@ function describeConnection(connectionString) {
   }
 }
 
+// pg-pool hands the same Client back on every checkout and never resets its
+// query method, so wrapping it each time nested one more wrapper per checkout
+// for the client's whole lifetime. Wrap once.
+const INSTRUMENTED = Symbol('reconcentral.instrumentedClient');
+const SESSION_ERROR = Symbol('reconcentral.sessionError');
+
 function instrumentClient(client) {
+  if (client[INSTRUMENTED]) return client;
+  client[INSTRUMENTED] = true;
+  // pg-pool removes its idle 'error' listener when a client is checked out.
+  // The server can end a checked-out session (idle_in_transaction_session_timeout,
+  // admin termination, network break); without a listener node-postgres'
+  // 'error' event became an uncaught exception that exited the API. Record it;
+  // release() then discards this client instead of returning it to the pool.
+  if (typeof client.on === 'function') {
+    client.on('error', error => {
+      client[SESSION_ERROR] = error;
+      console.warn('[db] A checked-out PostgreSQL session ended:', error?.message || error);
+    });
+  }
   const query = client.query.bind(client);
   // Transactional callers use client.query directly. Mark a broken client as
   // offline as well, so the background recovery path is not limited to pool
@@ -558,7 +597,8 @@ function restoreSessionLimitsOnRelease(client) {
   client.release = (error) => {
     if (released) return undefined;
     released = true;
-    if (error) return release(error);
+    const sessionError = error || client[SESSION_ERROR];
+    if (sessionError) return release(sessionError);
     client.query('RESET statement_timeout; RESET idle_in_transaction_session_timeout;')
       .then(() => release(), resetError => release(resetError instanceof Error ? resetError : new Error(String(resetError))));
     return undefined;
@@ -588,13 +628,12 @@ export function getPool() {
         } catch (error) {
           lastError = error;
           if (!isRetryableConnectionError(error)) throw error;
-          // A saturated local pool does not mean PostgreSQL is down. Retrying
-          // reads may still help after another dashboard request completes,
-          // but do not flip the whole service into its offline state.
-          if (isPoolAcquireTimeout(error)) {
-            if (!retryableRead || attempt === READ_RETRY_DELAYS_MS.length - 1) break;
-            continue;
-          }
+          // A saturated local pool does not mean PostgreSQL is down, so the
+          // service is not marked offline. The request already waited the full
+          // connection timeout in the pool queue; re-queuing it (up to four
+          // times) held a dashboard request ~2 minutes while long uploads held
+          // the clients, and every retry deepened the queue. Fail fast (503).
+          if (isPoolAcquireTimeout(error)) break;
 
           if (!isPoolAcquireTimeout(error)) poolRecreateRequested = true;
 
@@ -622,8 +661,12 @@ export function getPool() {
         }
         try {
           const client = instrumentClient(await _realPool.connect());
-          // Ensure long tasks don't get killed by Postgres session limits
-          await client.query('SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 0;').catch(() => {});
+          // Long import/rebuild statements must not hit the read timeout, so
+          // statement_timeout is cleared. The idle-in-transaction limit stays
+          // finite: with 0, a transaction leaked by an error path held its row
+          // locks (and the settlement-totals advisory lock) until the process
+          // restarted, blocking every later upload and draining the pool.
+          await client.query(transactionSessionLimitsSql()).catch(() => {});
           restoreSessionLimitsOnRelease(client);
           markDatabaseOnline();
           return client;

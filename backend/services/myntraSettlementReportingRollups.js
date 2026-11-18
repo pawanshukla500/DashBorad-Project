@@ -90,31 +90,154 @@ GROUP BY i.seller_account, i.order_release_id, i.order_line_id, i.payment_date
 `;
 }
 
+// Order columns written from Myntra payment rows (see the backfill below).
+export const MYNTRA_PAYMENT_ORDER_COLUMNS = [
+  'settlement_amount', 'commission', 'fixed_fee', 'pick_pack_fee', 'shipping_fee', 'reverse_shipping',
+  'tcs', 'tds', 'gst_on_mp', 'collection_fee', 'return_received_amount',
+];
+
+/**
+ * Reasons the blank-tracking rule writes on synthesized "cancelled before
+ * dispatch" returns (return_id RTO-<line>): the current upload's spelling and
+ * the one an older repair backfill wrote.
+ */
+export const MYNTRA_SYNTHESIZED_RETURN_REASONS = ['Cancel Before Dispached', 'Cancel before ship'];
+
+const uniqueTexts = values => [...new Set((values || []).map(value => String(value ?? '').trim()).filter(Boolean))];
+
+/**
+ * A refresh scope: null = the whole account (or every account); otherwise the
+ * order lines named in `lineIds` plus every line of the release ids in
+ * `releaseIds` (from orders or payment rows). A plain array means release ids.
+ */
+function normalizeMyntraScope(scope) {
+  if (scope == null) return null;
+  if (Array.isArray(scope)) return { lineIds: [], releaseIds: uniqueTexts(scope) };
+  return { lineIds: uniqueTexts(scope.lineIds), releaseIds: uniqueTexts(scope.releaseIds) };
+}
+
+/**
+ * SQL (and params) selecting the affected Myntra order line ids. Payments link
+ * to an order by (seller_account, order_line_id = orders.order_item_id); reset
+ * and backfill both work on that same identity, so a payment that has a line
+ * id but no release id is never missed by one of them.
+ */
+function myntraScopeSql(params, sellerAccount, scope) {
+  let sellerParam = null;
+  if (sellerAccount && sellerAccount !== 'all') {
+    params.push(sellerAccount);
+    sellerParam = `$${params.length}`;
+  }
+  const seller = alias => (sellerParam ? ` AND ${alias}.seller_account = ${sellerParam}` : '');
+  if (!scope) return { seller, lines: null };
+  params.push(scope.lineIds);
+  const lineParam = `$${params.length}::text[]`;
+  params.push(scope.releaseIds);
+  const releaseParam = `$${params.length}::text[]`;
+  const lines = `(
+      SELECT unnest(${lineParam})
+      UNION SELECT so.order_item_id FROM orders so
+        WHERE so.marketplace = 'myntra'${seller('so')} AND so.order_id = ANY(${releaseParam})
+      UNION SELECT si.order_line_id FROM mp_invoices si
+        WHERE si.marketplace = 'myntra'${seller('si')} AND si.order_release_id = ANY(${releaseParam})
+          AND si.order_line_id IS NOT NULL
+    )`;
+  return { seller, lines };
+}
+
+/**
+ * Clear the payment-derived columns of Myntra orders that no longer have any
+ * payment row, after payments were deleted or cleared. The backfill below only
+ * updates orders that still have rows, so removed payments stayed on the orders
+ * themselves. The Myntra orders upload never sets these columns, so NULL is
+ * their state before any payment. `scope` limits the reset (see
+ * normalizeMyntraScope); null means the whole account.
+ */
+export async function resetOrdersWithoutMyntraPayment(pool, sellerAccount = null, scope = null) {
+  const normalized = normalizeMyntraScope(scope);
+  if (normalized && !normalized.lineIds.length && !normalized.releaseIds.length) return { ordersReset: 0 };
+  const params = [];
+  const { seller, lines } = myntraScopeSql(params, sellerAccount, normalized);
+  const result = await pool.query(`
+    UPDATE orders o
+    SET ${MYNTRA_PAYMENT_ORDER_COLUMNS.map(column => `${column} = NULL`).join(', ')}
+    WHERE o.marketplace = 'myntra'${seller('o')}${lines ? ` AND o.order_item_id IN ${lines}` : ''}
+      AND (${MYNTRA_PAYMENT_ORDER_COLUMNS.map(column => `o.${column} IS NOT NULL`).join(' OR ')})
+      AND NOT EXISTS (
+        SELECT 1 FROM mp_invoices i
+        WHERE i.marketplace = 'myntra'
+          AND i.seller_account = o.seller_account
+          AND i.order_line_id = o.order_item_id
+          AND COALESCE(i.order_type, '') <> 'nod'
+      )
+  `, params);
+  return { ordersReset: result.rowCount || 0 };
+}
+
+/**
+ * The backfill turns a Delivered/Shipped order into "Return Initiated" when it
+ * sees a reverse payment. When that reverse payment is deleted and no actual
+ * return record supports the status, put back the status the orders upload
+ * derives from the stored order details (same rules as orderLifecycle in
+ * routes/myntraUpload.js).
+ */
+export async function restoreMyntraStatusesWithoutReverse(pool, sellerAccount = null, scope = null) {
+  const normalized = normalizeMyntraScope(scope);
+  if (normalized && !normalized.lineIds.length && !normalized.releaseIds.length) return { ordersRestored: 0 };
+  const params = [];
+  const { seller, lines } = myntraScopeSql(params, sellerAccount, normalized);
+  const result = await pool.query(`
+    UPDATE orders o
+    SET orders_status = lc.status
+    FROM (
+      SELECT d.seller_account, d.order_line_id,
+        CASE
+          WHEN NULLIF(BTRIM(d.tracking_number), '') IS NULL THEN 'Cancelled'
+          WHEN d.cancelled_on IS NOT NULL THEN 'Cancelled'
+          WHEN d.rto_creation_date IS NOT NULL THEN 'RTO'
+          WHEN d.return_creation_date IS NOT NULL THEN 'Return Initiated'
+          WHEN d.delivered_on IS NOT NULL THEN 'Delivered'
+          ELSE d.order_status
+        END AS status
+      FROM myntra_order_details d
+      WHERE d.marketplace = 'myntra'${seller('d')}${lines ? ` AND d.order_line_id IN ${lines}` : ''}
+    ) lc
+    WHERE o.marketplace = 'myntra'
+      AND o.seller_account = lc.seller_account
+      AND o.order_item_id = lc.order_line_id
+      AND o.orders_status = 'Return Initiated'
+      AND lc.status IS DISTINCT FROM 'Return Initiated'
+      AND NOT EXISTS (
+        SELECT 1 FROM mp_invoices i
+        WHERE i.marketplace = 'myntra' AND i.seller_account = o.seller_account
+          AND i.order_line_id = o.order_item_id AND COALESCE(i.order_type, '') = 'reverse'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM returns r
+        WHERE r.marketplace = 'myntra' AND r.seller_account = o.seller_account AND r.order_item_id = o.order_item_id
+      )
+  `, params);
+  return { ordersRestored: result.rowCount || 0 };
+}
+
 /**
  * Propagate Myntra settlement calculations back into the orders table.
  * Populates settlement_amount, commission, fixed_fee, shipping_fee, reverse_shipping,
  * tcs, tds, gst_on_mp, collection_fee, return_received_amount, and orders_status.
+ * `scope` (see normalizeMyntraScope) limits it to the affected order lines;
+ * every payment of an affected line is aggregated, not only the payments
+ * matching the scope, so partial sums are never written. An empty scope is a
+ * no-op; null means the whole account.
  */
-export async function backfillOrdersFromMyntraPayment(pool, sellerAccount = null, affectedOrderIds = null) {
-  const scopedOrderIds = Array.isArray(affectedOrderIds)
-    ? [...new Set(affectedOrderIds.map(v => String(v || '').trim()).filter(Boolean))]
-    : null;
+export async function backfillOrdersFromMyntraPayment(pool, sellerAccount = null, scope = null) {
+  const normalized = normalizeMyntraScope(scope);
+  if (normalized && !normalized.lineIds.length && !normalized.releaseIds.length) return { ordersUpdated: 0 };
 
   const params = [];
-  let invoiceFilter = "WHERE i.marketplace = 'myntra' AND i.order_line_id IS NOT NULL AND COALESCE(i.order_type, '') <> 'nod'";
-  let ordersFilter = "WHERE o.marketplace = 'myntra'";
-
-  if (sellerAccount && sellerAccount !== 'all') {
-    params.push(sellerAccount);
-    invoiceFilter += ` AND i.seller_account = $${params.length}`;
-    ordersFilter += ` AND o.seller_account = $${params.length}`;
-  }
-
-  if (scopedOrderIds && scopedOrderIds.length > 0) {
-    params.push(scopedOrderIds);
-    invoiceFilter += ` AND i.order_release_id = ANY($${params.length}::text[])`;
-    ordersFilter += ` AND o.order_id = ANY($${params.length}::text[])`;
-  }
+  const { seller, lines } = myntraScopeSql(params, sellerAccount, normalized);
+  let invoiceFilter = "WHERE i.marketplace = 'myntra' AND i.order_line_id IS NOT NULL AND COALESCE(i.order_type, '') <> 'nod'"
+    + seller('i') + (lines ? ` AND i.order_line_id IN ${lines}` : '');
+  let ordersFilter = "WHERE o.marketplace = 'myntra'" + seller('o') + (lines ? ` AND o.order_item_id IN ${lines}` : '');
 
   const query = `
     UPDATE orders o
