@@ -4,7 +4,11 @@
 // everything. Read-only except repairMyntraPaymentColumns. Every check is
 // independent: one that fails (for example a table that does not exist yet) is
 // reported as unavailable and the others still run.
-import { resetOrdersWithoutMyntraPayment } from './myntraSettlementReportingRollups.js';
+import {
+  MYNTRA_PAYMENT_ORDER_COLUMNS,
+  resetOrdersWithoutMyntraPayment,
+  restoreMyntraStatusesWithoutReverse,
+} from './myntraSettlementReportingRollups.js';
 
 const CHECKS = [
   {
@@ -90,7 +94,8 @@ const CHECKS = [
              MIN(o.order_date)::text AS first_date, MAX(o.order_date)::text AS last_date
       FROM orders o
       WHERE o.marketplace = 'myntra'
-        AND o.settlement_amount IS NOT NULL
+        -- The same columns the repair clears, so the count matches what it fixes.
+        AND (${MYNTRA_PAYMENT_ORDER_COLUMNS.map(column => `o.${column} IS NOT NULL`).join(' OR ')})
         AND NOT EXISTS (
           SELECT 1 FROM mp_invoices i
           WHERE i.marketplace = 'myntra'
@@ -110,7 +115,10 @@ const CHECKS = [
              MIN(o.order_date)::text AS first_date, MAX(o.order_date)::text AS last_date
       FROM orders o
       WHERE o.marketplace = 'amazon'
-        AND o.order_item_id LIKE 'AMZ:%'
+        -- Only the Sale Orders upload writes product_amount (before and after
+        -- the ledger). order_item_id cannot tell: the settlement backfill
+        -- replaces the AMZ:<order>:<sku> key with Amazon's order item code.
+        AND o.product_amount IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM amazon_sale_order_shipments s WHERE s.order_id = o.order_id AND s.sku = o.sku)
       HAVING COUNT(*) > 0`,
   },
@@ -118,21 +126,27 @@ const CHECKS = [
 
 export const DATA_HEALTH_CHECK_KEYS = CHECKS.map(check => check.key);
 
+async function runCheck(pool, { sql, ...check }) {
+  try {
+    const { rows } = await pool.query(sql);
+    const items = rows.filter(row => Number(row.count) > 0).map(row => ({
+      scope: row.scope,
+      count: Number(row.count),
+      firstDate: row.first_date || null,
+      lastDate: row.last_date || null,
+    }));
+    return { ...check, count: items.reduce((sum, item) => sum + item.count, 0), items };
+  } catch (error) {
+    return { ...check, count: 0, items: [], unavailable: error.message };
+  }
+}
+
 export async function collectDataHealth(pool) {
-  const results = await Promise.all(CHECKS.map(async ({ sql, ...check }) => {
-    try {
-      const { rows } = await pool.query(sql);
-      const items = rows.filter(row => Number(row.count) > 0).map(row => ({
-        scope: row.scope,
-        count: Number(row.count),
-        firstDate: row.first_date || null,
-        lastDate: row.last_date || null,
-      }));
-      return { ...check, count: items.reduce((sum, item) => sum + item.count, 0), items };
-    } catch (error) {
-      return { ...check, count: 0, items: [], unavailable: error.message };
-    }
-  }));
+  // One check at a time: each is a large join or full-table aggregate, and
+  // running all of them together held seven pool connections while dashboards
+  // competed for the same (fail-fast) pool.
+  const results = [];
+  for (const check of CHECKS) results.push(await runCheck(pool, check));
   return {
     checkedAt: new Date().toISOString(),
     issues: results.filter(result => result.count > 0).length,
@@ -140,7 +154,13 @@ export async function collectDataHealth(pool) {
   };
 }
 
-/** Clear payment columns of Myntra orders that have no payment row left. */
+/**
+ * Clear payment columns of Myntra orders that have no payment row left, and
+ * put back the status of orders whose only reverse payment was removed (the
+ * backfill had set "Return Initiated"), as POST /invoices/backfill-myntra does.
+ */
 export async function repairMyntraPaymentColumns(pool) {
-  return resetOrdersWithoutMyntraPayment(pool, null, null);
+  const { ordersReset } = await resetOrdersWithoutMyntraPayment(pool, null, null);
+  const { ordersRestored } = await restoreMyntraStatusesWithoutReverse(pool, null, null);
+  return { ordersReset, ordersRestored };
 }

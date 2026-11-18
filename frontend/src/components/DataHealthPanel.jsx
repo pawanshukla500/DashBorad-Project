@@ -21,9 +21,10 @@ export default function DataHealthPanel() {
   const repair = async () => {
     setState(previous => ({ ...previous, status: 'loading', error: null }));
     try {
-      const { ordersReset } = await repairMyntraPaymentColumns();
+      const { ordersReset, ordersRestored = 0 } = await repairMyntraPaymentColumns();
       const report = await fetchDataHealth();
-      setState({ status: 'done', report, error: null, message: `Cleared removed payments from ${ordersReset} Myntra orders.` });
+      const restored = ordersRestored ? ` Restored the status of ${ordersRestored} orders whose reverse payment was removed.` : '';
+      setState({ status: 'done', report, error: null, message: `Cleared removed payments from ${ordersReset} Myntra orders.${restored}` });
     } catch (error) {
       setState(previous => ({ ...previous, status: 'done', error: error?.response?.data?.error || error.message }));
     }

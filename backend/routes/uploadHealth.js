@@ -136,9 +136,9 @@ router.post('/data-health/repair/myntra-payment-columns', async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   try {
     const pool = getPool();
-    const { ordersReset } = await repairMyntraPaymentColumns(pool);
+    const { ordersReset, ordersRestored } = await repairMyntraPaymentColumns(pool);
     await refreshOrderSettlementTotals(pool);
-    res.json({ ok: true, ordersReset });
+    res.json({ ok: true, ordersReset, ordersRestored });
   } catch (e) {
     console.error('[data-health repair]', e);
     res.status(500).json({ error: e.message });

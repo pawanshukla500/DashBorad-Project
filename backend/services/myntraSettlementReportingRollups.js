@@ -91,7 +91,7 @@ GROUP BY i.seller_account, i.order_release_id, i.order_line_id, i.payment_date
 }
 
 // Order columns written from Myntra payment rows (see the backfill below).
-const MYNTRA_PAYMENT_ORDER_COLUMNS = [
+export const MYNTRA_PAYMENT_ORDER_COLUMNS = [
   'settlement_amount', 'commission', 'fixed_fee', 'pick_pack_fee', 'shipping_fee', 'reverse_shipping',
   'tcs', 'tds', 'gst_on_mp', 'collection_fee', 'return_received_amount',
 ];

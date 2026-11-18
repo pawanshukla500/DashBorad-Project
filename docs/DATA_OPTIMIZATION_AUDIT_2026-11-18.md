@@ -100,7 +100,7 @@ is affected and what to re-upload:
 | Marketplace payments dated before their invoice | old CSV date guessing (05/04 → 4 May) | re-upload the payment / invoice CSVs |
 | Dates in the future | swapped day / month | re-upload the files holding them |
 | Uploads that dropped rows for an invalid date or amount | rows lost to the old parsing (`4/25/26`, `-₹1,234`), by file name | re-upload each listed file |
-| Myntra orders still carrying removed payments | stale columns from deletes made before the fix | **Repair** button (operator / admin) clears them and rebuilds totals |
+| Myntra orders still carrying removed payments | stale payment or fee columns from deletes made before the fix | **Repair** button (operator / admin) clears them, restores a "Return Initiated" status that only a removed reverse payment set, and rebuilds totals |
 | Amazon orders imported before the shipment ledger | orders whose multi-file shipments may have been overwritten | re-upload every Sale Orders file imported before the ledger existed (the ledger only holds shipments from files uploaded after it) |
 
 Every check was run against PostgreSQL 17 with one affected and one clean row
