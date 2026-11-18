@@ -30,4 +30,4 @@ only for broad architecture review or when query/path/explain do not surface eno
 source files when (a) modifying/debugging specific code, (b) the graph lacks the needed detail, or
 (c) the graph is missing or stale.
 
-Type `/graphify` in Copilot Chat to build or update the graph.
+Build or update the graph with `npm run graph:update` (code-only, offline). Do not run the `/graphify` semantic pass on this repo: it sends docs to an LLM.

@@ -23,7 +23,7 @@
 // graphify-out/ (it is git-ignored).
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,7 +61,10 @@ function run(command, commandArgs = [], { timeout = 600_000, env = process.env }
   };
 }
 
-const onPath = command => run(IS_WINDOWS ? 'where' : 'command', IS_WINDOWS ? [command] : ['-v', command], { timeout: 10_000 }).ok;
+// `command -v` is a shell builtin (Debian/Ubuntu ship no /usr/bin/command), so it needs sh.
+const onPath = command => (IS_WINDOWS
+  ? run('where', [command], { timeout: 10_000 })
+  : run('sh', ['-c', 'command -v "$1"', 'sh', command], { timeout: 10_000 })).ok;
 
 export function compareVersions(a, b) {
   const pa = String(a).split('.').map(n => Number.parseInt(n, 10) || 0);
@@ -136,7 +139,8 @@ function ensureGraph(hasGraphify) {
     else report.push(`     graphify extract failed: ${extract.out.split('\n').slice(-3).join(' | ')}`);
   } else if (before && MODE !== 'check') {
     // Incremental, AST-only: re-parses changed files only.
-    run('graphify', ['update', '.'], { env: GRAPH_ENV, timeout: MODE === 'session' ? 150_000 : 900_000 });
+    // Session budget: 30 s version check + 120 s update + PATH probes stays under the hook's 200 s timeout.
+    run('graphify', ['update', '.'], { env: GRAPH_ENV, timeout: MODE === 'session' ? 120_000 : 900_000 });
   }
   const after = graphStats();
   if (!after) {
@@ -150,7 +154,8 @@ function ensureGraph(hasGraphify) {
 function ensureGitHooks(hasGraphify) {
   if (!hasGraphify || MODE === 'session') return;
   const status = run('graphify', ['hook', 'status'], { timeout: 30_000 });
-  const installed = status.ok && /post-commit:\s*installed/i.test(status.out);
+  // "installed (out of date ...)" counts as not installed, so the bootstrap refreshes those hooks.
+  const installed = status.ok && /post-commit:\s*installed(?!\s*\(out of date)/i.test(status.out);
   if (!installed && MODE === 'full' && !args.has('--no-hooks') && !IN_CI) {
     // hook install also registers a merge driver for graph.json; graphify-out/ is git-ignored here,
     // so undo it to leave the tracked .gitattributes and the git config unchanged.
@@ -271,6 +276,8 @@ function main() {
   return problems.length ? 1 : 0;
 }
 
-if (resolve(process.argv[1] || '') === fileURLToPath(import.meta.url)) {
+// Compare real paths: run through a symlink or junction, argv[1] and import.meta.url differ.
+const realPath = path => { try { return realpathSync(path); } catch { return resolve(path); } };
+if (process.argv[1] && realPath(process.argv[1]) === realPath(fileURLToPath(import.meta.url))) {
   process.exitCode = main();
 }

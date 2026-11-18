@@ -32,10 +32,11 @@ Two tools are mandatory:
    - restores missing project skills (`graphify install --project`);
    - installs the ponytail plugin into every agent CLI it finds on `PATH`
      (Gemini CLI, Codex, Copilot CLI; `--no-plugins` skips this).
-2. **Every session:** `npm run agent:check` must exit 0. Claude Code runs the
-   same check automatically (`node scripts/agent-bootstrap.mjs --session`
-   from the `SessionStart` hook in `.claude/settings.json`), which also
-   refreshes the graph.
+2. **Every session:** `npm run agent:check` must exit 0. In Claude Code the
+   `SessionStart` hook in `.claude/settings.json` runs
+   `node scripts/agent-bootstrap.mjs --session` instead: it refreshes the graph
+   and reports the same checks but never fails the session, so read its `MISS`
+   lines.
 3. **Ponytail per agent:**
    - Claude Code: the plugin is declared in `.claude/settings.json`
      (`extraKnownMarketplaces` + `enabledPlugins`); accept the install prompt
@@ -69,6 +70,12 @@ Two tools are mandatory:
   `GRAPHIFY_BACKEND=none`, `--code-only`. Never run a graphify LLM backend,
   `--mode deep`, `graphify add <url>` or the semantic `/graphify` pass over
   docs on this repo, and never commit `graphify-out/` (it is git-ignored).
+- The `## graphify` block that graphify's installer appends to this file, and
+  the generated text in `.github/copilot-instructions.md`, are upstream
+  boilerplate; where they differ from this section, this section wins. The
+  `/graphify` skill sends docs to an LLM for its semantic pass whenever an API
+  key such as `GEMINI_API_KEY` is set, so on this repo use only the code-only
+  CLI commands above.
 - `.graphifyignore` keeps scratch, build output, binaries and spreadsheets out
   of the graph; update it when a new generated or local-only folder appears.
 - After modifying code, refresh the graph: `npm run graph:update` (or
@@ -160,7 +167,8 @@ reported done or a PR is opened:
    review gate (near the end of this file) until the PR is merged.
 5. **Tooling versions:** when graphify or ponytail is upgraded, update
    `MIN_GRAPHIFY_VERSION` in `scripts/agent-bootstrap.mjs`, the vendored
-   ponytail files and the commit in 0.3, following `docs/AGENT_TOOLING.md`.
+   ponytail files, the commit in 0.3 and the matching `ref` pin in
+   `.claude/settings.json`, following `docs/AGENT_TOOLING.md`.
 
 ### 0.5 Files that implement this section
 
@@ -444,7 +452,7 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
-When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+When the user types `/graphify`, use the installed graphify skill in code-only mode only (`GRAPHIFY_BACKEND=none`, `--code-only`, no semantic pass over docs; see section 0.2).
 
 Rules:
 - When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. When the answer is under a Markdown heading, `graphify section "<heading>"` prints that section's text, so the .md need not be opened. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
@@ -452,4 +460,4 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
+- graphify-out/ is git-ignored in this repo and must never be committed (section 0.2). Do not suggest skipping the graph rebuild or its hooks.

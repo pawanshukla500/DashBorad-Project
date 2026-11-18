@@ -47,9 +47,9 @@ graphify), and optionally `uv` or `pipx` for an isolated graphify install.
 |---|---|---|
 | `AGENTS.md` section 0 + `## graphify` block + `# graphify` registration | hand + `graphify install --project` / `graphify codex install` | Claude Code, Codex, Aider, OpenCode, Amp and most agents |
 | `GEMINI.md` section 0 mirror + `## graphify` block | hand + `graphify gemini install` | Gemini CLI, Google Antigravity |
-| `.claude/settings.json` | hand + `graphify install --project` | Claude Code (ponytail plugin declaration, `SessionStart` bootstrap check, graphify `PreToolUse` guards) |
-| `.claude/skills/graphify/` | `graphify install --project` | Claude Code (`/graphify`) |
-| `.agents/skills/graphify/` | `graphify install --project --platform agents` | Agent Skills-compatible agents (Codex, `npx skills`, others) |
+| `.claude/settings.json` | hand + `graphify install --project` | Claude Code (ponytail plugin declaration pinned to the audited commit, `SessionStart` bootstrap check, graphify `PreToolUse` guards that do nothing where graphify is not installed) |
+| `.claude/skills/graphify/` | `graphify install --project`, plus upstream `LICENSE` (Apache-2.0), `LICENSE-MIT` and `NOTICE` | Claude Code (`/graphify`, code-only on this repo) |
+| `.agents/skills/graphify/` | `graphify install --project --platform agents`, plus the same licence files | Agent Skills-compatible agents (Codex, `npx skills`, others) |
 | `.agents/skills/ponytail*/`, `.agents/rules/ponytail.md`, `.agents/skills/ponytail/LICENSE` | vendored from ponytail at a pinned commit (section 6) | Agent Skills-compatible agents |
 | `.gemini/settings.json` | `graphify gemini install` (command made portable) | Gemini CLI `BeforeTool` guard |
 | `.cursor/rules/graphify.mdc`, `.cursor/rules/ponytail.mdc` | `graphify cursor install`, vendored from ponytail | Cursor (always-apply rules) |
@@ -105,7 +105,9 @@ agent-CLI plugin installs), `--force-graph` (full code-only rebuild). In CI
 
 The Claude Code `SessionStart` hook runs `--session` on `startup`, `resume` and
 `clear`, so the agent starts every session with a fresh graph and the
-reminder in its context.
+reminder in its context. `--session` reports the same checks as `--check` but
+never fails the session, so read its `MISS` lines; its graph update is capped
+at 120 s to stay inside the hook's 200 s timeout.
 
 ---
 
@@ -207,6 +209,12 @@ the repo with `git ls-files`. `ponytail-band-import.js` (started only by
 `/ponytail band import`) reads local Claude Code session transcripts to build a
 local cost ledger in `~/.config/ponytail/band`. No hook makes a network call.
 
+Claude Code loads the plugin at exactly this commit: the marketplace entry in
+`.claude/settings.json` carries `"ref": "<full commit SHA>"` (SHA pins need
+Claude Code 2.1.324 or later). The Gemini, Codex and Copilot installs made by
+the bootstrap follow upstream's default branch; re-audit before trusting a
+newer upstream.
+
 ---
 
 ## 6. Upgrading
@@ -226,7 +234,13 @@ Then review the diff before committing:
   `.gemini/settings.json` or `.codex/hooks.json`; keep the portable command
   (`graphify hook-guard gemini`) and do not commit `.codex/hooks.json` (the
   Codex hook is an intentional no-op; AGENTS.md carries the guidance);
-- keep `.claude/settings.json`'s ponytail and `SessionStart` entries;
+- keep `.claude/settings.json`'s ponytail and `SessionStart` entries, and the
+  `command -v graphify >/dev/null 2>&1 || exit 0;` prefix on each
+  `graphify hook-guard` command;
+- keep the code-only wording in the `## graphify` blocks of AGENTS.md /
+  GEMINI.md and in `.github/copilot-instructions.md` (section 0.2 of AGENTS.md
+  overrides the installer text), and keep the `LICENSE`, `LICENSE-MIT` and
+  `NOTICE` files next to each graphify skill;
 - bump `MIN_GRAPHIFY_VERSION` in `scripts/agent-bootstrap.mjs`;
 - run `npm run agent:check`.
 
@@ -240,8 +254,10 @@ Then review the diff before committing:
 3. Diff upstream `AGENTS.md` against AGENTS.md section 0.3, apply the changes
    to both AGENTS.md and GEMINI.md, and update the commit hash there and in
    section 5.3 above.
-4. Claude Code users get plugin updates through `/plugin` (marketplace
-   `ponytail`).
+4. Set the `ref` of the `ponytail` marketplace in `.claude/settings.json` to
+   the same full SHA, and `PONYTAIL_COMMIT` in
+   `backend/tests/agentTooling.test.js` (the test fails if they disagree).
+   Claude Code users then get the update through `/plugin`.
 
 ---
 

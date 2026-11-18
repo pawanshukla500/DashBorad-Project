@@ -125,7 +125,7 @@ requires:
 
 ```bash
 npm run agent:bootstrap   # first run / after tooling changes: install graphify, build the graph, hooks, ponytail
-npm run agent:check       # every session (Claude Code runs it automatically)
+npm run agent:check       # every session (Claude Code runs the --session variant automatically)
 npm run graph:update      # after code changes
 ```
 

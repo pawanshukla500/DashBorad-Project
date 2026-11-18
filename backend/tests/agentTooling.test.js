@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import { compareVersions, MIN_GRAPHIFY_VERSION, PONYTAIL_REPO } from '../../scripts/agent-bootstrap.mjs';
 
+// The audited upstream commit: pinned in .claude/settings.json and named in AGENTS.md 0.3.
+const PONYTAIL_COMMIT = '96608e078b2d5ea607c5c3b8b5a54d1c1fba6846';
 const root = path.resolve('..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n');
 const section0 = text => text.slice(text.indexOf('## 0. Mandatory Agent Bootstrap'), text.search(/\n## (TaskFlow Pro Integration|Mandatory Workflow: TaskFlow Pro Integration)/));
@@ -18,12 +20,15 @@ describe('agent tooling bootstrap (graphify + ponytail)', () => {
 
   it('declares the ponytail plugin and the session bootstrap for Claude Code', () => {
     const settings = JSON.parse(read('.claude/settings.json'));
-    expect(settings.extraKnownMarketplaces.ponytail.source).toEqual({ source: 'github', repo: PONYTAIL_REPO });
+    expect(settings.extraKnownMarketplaces.ponytail.source).toEqual({ source: 'github', repo: PONYTAIL_REPO, ref: PONYTAIL_COMMIT });
     expect(settings.enabledPlugins['ponytail@ponytail']).toBe(true);
     const sessionCommands = settings.hooks.SessionStart.flatMap(entry => entry.hooks.map(hook => hook.command));
     expect(sessionCommands).toContain('node "$CLAUDE_PROJECT_DIR/scripts/agent-bootstrap.mjs" --session');
     const guards = settings.hooks.PreToolUse.flatMap(entry => entry.hooks.map(hook => hook.command));
-    expect(guards).toEqual(expect.arrayContaining(['graphify hook-guard search', 'graphify hook-guard read']));
+    // Each guard is a no-op where graphify is not installed, so a fresh clone gets no hook errors.
+    const guarded = mode => `command -v graphify >/dev/null 2>&1 || exit 0; graphify hook-guard ${mode}`;
+    expect(guards).toEqual(expect.arrayContaining([guarded('search'), guarded('read')]));
+    expect(sessionCommands).toContain(guarded('compact'));
   });
 
   it('keeps committed agent config portable (no machine-specific executable paths)', () => {
@@ -43,7 +48,7 @@ describe('agent tooling bootstrap (graphify + ponytail)', () => {
       'GRAPHIFY_BACKEND=none',
       'Never cut: validation at trust boundaries',
       '### 0.4 Keep project context and documentation current',
-      '96608e078b2d5ea607c5c3b8b5a54d1c1fba6846',
+      PONYTAIL_COMMIT,
     ]) {
       expect(agents).toContain(required);
     }
@@ -54,6 +59,10 @@ describe('agent tooling bootstrap (graphify + ponytail)', () => {
       expect(fs.existsSync(path.join(root, '.agents/skills', skill, 'SKILL.md')), skill).toBe(true);
     }
     expect(read('.agents/skills/ponytail/LICENSE')).toMatch(/^MIT License/);
+    for (const dir of ['.claude/skills/graphify', '.agents/skills/graphify']) {
+      expect(read(`${dir}/LICENSE`), dir).toContain('Apache License');
+      expect(read(`${dir}/NOTICE`), dir).toContain('Graphify');
+    }
     const ignore = read('.graphifyignore');
     for (const entry of ['scratch/', 'released/', 'graphify-out/', '**/*.xlsx']) expect(ignore).toContain(entry);
     expect(read('.gitignore')).toMatch(/^graphify-out\/$/m);
