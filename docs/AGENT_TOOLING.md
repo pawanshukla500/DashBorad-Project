@@ -156,10 +156,23 @@ folders to `.graphifyignore` when they appear.
 
 ### 4.4 Git hooks
 
-`graphify hook install` adds `post-commit`, `post-checkout`, `post-merge` and
-`post-rewrite` hooks that rebuild the graph, and registers a merge driver for
-`graph.json`. Check with `graphify hook status`; remove with
-`graphify hook uninstall`. After `git pull`, run `npm run graph:update`.
+`npm run agent:bootstrap` installs graphify's `post-commit`, `post-checkout`,
+`post-merge` and `post-rewrite` hooks. Each hook starts a detached background
+rebuild of only the changed files and returns at once, so commits, checkouts
+and pulls are not slowed down. The rebuild log is
+`~/.cache/graphify-rebuild.log`. The hooks live in the shared `.git/hooks`,
+so every worktree of the clone gets them.
+
+`graphify hook install` on its own also registers a merge driver for
+`graph.json` (git config `merge.graphify.*` plus a line in `.gitattributes`).
+This repo git-ignores `graphify-out/`, so the bootstrap removes both again.
+If you run `graphify hook install` by hand, undo it with
+`git checkout -- .gitattributes`, `git config --unset merge.graphify.name`
+and `git config --unset merge.graphify.driver`.
+
+Check with `graphify hook status` (it should say `merge driver: not
+registered`); remove the hooks with `graphify hook uninstall`. Without hooks,
+run `npm run graph:update` after `git pull`.
 
 ---
 

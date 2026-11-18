@@ -23,7 +23,7 @@
 // graphify-out/ (it is git-ignored).
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -152,8 +152,16 @@ function ensureGitHooks(hasGraphify) {
   const status = run('graphify', ['hook', 'status'], { timeout: 30_000 });
   const installed = status.ok && /post-commit:\s*installed/i.test(status.out);
   if (!installed && MODE === 'full' && !args.has('--no-hooks') && !IN_CI) {
+    // hook install also registers a merge driver for graph.json; graphify-out/ is git-ignored here,
+    // so undo it to leave the tracked .gitattributes and the git config unchanged.
+    const attributesPath = join(ROOT, '.gitattributes');
+    const attributesBefore = existsSync(attributesPath) ? readFileSync(attributesPath) : null;
     const result = run('graphify', ['hook', 'install'], { timeout: 60_000 });
-    note(result.ok, 'graphify git hooks', result.ok ? 'installed (graph rebuilds after commit / checkout / merge)' : result.out.split('\n').pop());
+    if (attributesBefore) writeFileSync(attributesPath, attributesBefore);
+    else if (existsSync(attributesPath)) unlinkSync(attributesPath);
+    run('git', ['config', '--unset', 'merge.graphify.name']);
+    run('git', ['config', '--unset', 'merge.graphify.driver']);
+    note(result.ok, 'graphify git hooks', result.ok ? 'installed (graph rebuilds in the background after commit / checkout / merge / rebase)' : result.out.split('\n').pop());
     return;
   }
   note(installed, 'graphify git hooks', installed ? 'installed' : 'not installed (optional). Run: graphify hook install');
