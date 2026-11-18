@@ -82,8 +82,27 @@ Also fixed in the second pass:
 - New optional env vars: `PG_TX_IDLE_TIMEOUT_MS` (default 900000; 0 disables), `SHUTDOWN_TIMEOUT_MS`.
 - Visible behaviour changes: Insights category breakdowns include an "Uncategorized" bucket and merge marketplace taxonomies; the Returns list shows Amazon and unmatched returns under filters; Sale Statement fees and Myntra VB/EJ cash flows are lower where they were double-counted or mixed; fee-leaks Amazon fees are netted, so refunded orders stop appearing as leaks.
 
-## Not fixable in code (needs the original files)
+## Data already stored: Data Hub → "Stored data health"
 
-- Dates or amounts already stored by the old parsing cannot be told apart from correct ones in the database; re-upload the affected CSV/XLSX files and the new parsing replaces them.
-- Amazon orders imported before the shipment ledger have no shipment rows; re-uploading the earlier Sale Orders file once restores multi-file sums.
-- A continuation settlement file repeating a byte-identical line that is also in part A collapses those two on its first upload: the export carries no per-line id that could tell them apart.
+Rows saved by the old parsing are only fully corrected by uploading their file
+again, so the Upload page (Data Hub) now has an on-demand **Stored data health**
+check (`GET /api/upload/data-health`, `services/dataHealth.js`) that lists what
+is affected and what to re-upload:
+
+| Check | What it finds | What to do |
+|---|---|---|
+| Returns dated before their order | swapped return / order dates | re-upload those months' Orders + Returns |
+| Flipkart payments dated before their order | swapped order / payment dates | re-upload Orders + FK Settlement |
+| Marketplace payments dated before their invoice | old CSV date guessing (05/04 → 4 May) | re-upload the payment / invoice CSVs |
+| Dates in the future | swapped day / month | re-upload the files holding them |
+| Uploads that dropped rows for an invalid date or amount | rows lost to the old parsing (`4/25/26`, `-₹1,234`), by file name | re-upload each listed file |
+| Myntra orders still carrying removed payments | stale columns from deletes made before the fix | **Repair** button (operator / admin) clears them and rebuilds totals |
+| Amazon orders imported before the shipment ledger | orders whose multi-file shipments may have been overwritten | re-upload earlier Sale Orders files once |
+
+Every check was run against PostgreSQL 17 with one affected and one clean row
+each. A swapped date that still looks plausible (e.g. 4 May vs 5 April with no
+contradicting date) cannot be detected from the database alone.
+
+One edge case remains by design: a continuation settlement file repeating a
+byte-identical line that is also in part A collapses those two on its first
+upload, because the export carries no per-line id that could tell them apart.

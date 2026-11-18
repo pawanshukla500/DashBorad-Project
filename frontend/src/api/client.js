@@ -658,6 +658,10 @@ export const clearCatalogCogs = (marketplace) =>
 // ── AI APIs ──────────────────────────────────────────────────────────────────
 export const fetchLinkageHealth  = (marketplace) =>
   api.get('/upload/linkage-health', { params: marketplace ? { marketplace } : {} }).then(r => r.data);
+// Stored data showing the marks of old parsing bugs, and what to re-upload.
+export const fetchDataHealth     = () => api.get('/upload/data-health', { cache: false }).then(r => r.data);
+export const repairMyntraPaymentColumns = () =>
+  api.post('/upload/data-health/repair/myntra-payment-columns').then(r => r.data);
 export const saveUploadRemark    = (id, remark) => api.post(`/upload/log/${id}/remark`, { remark }).then(r => r.data);
 export const fetchSkippedRows    = (id, page=1) => api.get(`/upload/log/${id}/skipped`, { params: { page } }).then(r => r.data);
 export const clearUploadData     = (type, marketplace, reason) =>

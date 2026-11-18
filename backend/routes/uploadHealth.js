@@ -1,5 +1,7 @@
 import express from 'express';
 import { getPool, isDbConfigured } from '../db/index.js';
+import { collectDataHealth, repairMyntraPaymentColumns } from '../services/dataHealth.js';
+import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 
 const router = express.Router();
 
@@ -105,6 +107,40 @@ router.get('/linkage-health', async (req, res) => {
     });
   } catch (e) {
     console.error('[linkage-health]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * GET /api/upload/data-health
+ * Stored rows that show the marks of the old upload parsing / derivation bugs,
+ * and what to re-upload or repair (services/dataHealth.js). Run on demand: some
+ * checks join large tables, so the Data Hub never loads it automatically.
+ */
+router.get('/data-health', async (req, res) => {
+  if (!(await isDbConfigured())) return res.json({ configured: false });
+  try {
+    res.json({ configured: true, ...(await collectDataHealth(getPool())) });
+  } catch (e) {
+    console.error('[data-health]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * POST /api/upload/data-health/repair/myntra-payment-columns
+ * Clears payment columns of Myntra orders left without any payment row, then
+ * rebuilds the settlement totals read model. Operator / admin (mutation guard on /api/upload).
+ */
+router.post('/data-health/repair/myntra-payment-columns', async (req, res) => {
+  if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
+  try {
+    const pool = getPool();
+    const { ordersReset } = await repairMyntraPaymentColumns(pool);
+    await refreshOrderSettlementTotals(pool);
+    res.json({ ok: true, ordersReset });
+  } catch (e) {
+    console.error('[data-health repair]', e);
     res.status(500).json({ error: e.message });
   }
 });
