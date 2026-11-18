@@ -577,7 +577,8 @@ export const downloadMpLedgerTemplate = (mp)         => api.get(`/mp-settlement/
 // request silently truncated workspaces with more historical rows than that.
 // Keep export responses out of the short-lived report cache: retaining several
 // 50k-row payloads can otherwise make a normal browser session memory-heavy.
-const EXPORT_PAGE_SIZE = 50_000;
+// Matches the API list cap (LIST_MAX_PAGE_SIZE in backend/routes/data.js).
+const EXPORT_PAGE_SIZE = 10_000;
 const EXCEL_MAX_DATA_ROWS = 1_048_575;
 
 async function fetchAllPages(url, params) {
@@ -596,16 +597,24 @@ async function fetchAllPages(url, params) {
     throw new Error(`This export has ${expectedRows.toLocaleString()} rows, above Excel's ${EXCEL_MAX_DATA_ROWS.toLocaleString()}-row worksheet limit. Narrow the filters and export in parts.`);
   }
 
+  // Pages are separate requests over OFFSET; rows added or removed between them
+  // shift later pages, repeating or skipping rows silently. Every page reports
+  // the filtered total, so a changed total (or a short page before the end)
+  // means the set moved: fail without creating a file rather than export a
+  // shifted list.
+  const changed = () => new Error('The report changed while the export was being collected. No partial file was created; please retry.');
   const rows = [...firstPayload.data];
+  if (rows.length < expectedRows && rows.length !== EXPORT_PAGE_SIZE) throw changed();
   for (let page = 2; rows.length < expectedRows; page += 1) {
     const next = await api.get(url, {
       params: { ...params, page, pageSize: EXPORT_PAGE_SIZE },
       cache: false,
     });
     const batch = next.data?.data;
-    if (!Array.isArray(batch) || batch.length === 0) {
-      throw new Error('The report changed while the export was being collected. No partial file was created; please retry.');
-    }
+    if (!Array.isArray(batch) || batch.length === 0) throw changed();
+    const pageTotal = Number(next.data?.total);
+    if (Number.isSafeInteger(total) && Number.isSafeInteger(pageTotal) && pageTotal !== total) throw changed();
+    if (rows.length + batch.length < expectedRows && batch.length !== EXPORT_PAGE_SIZE) throw changed();
     rows.push(...batch);
   }
   return rows.slice(0, expectedRows);
@@ -657,6 +666,10 @@ export const clearCatalogCogs = (marketplace) =>
 // ── AI APIs ──────────────────────────────────────────────────────────────────
 export const fetchLinkageHealth  = (marketplace) =>
   api.get('/upload/linkage-health', { params: marketplace ? { marketplace } : {} }).then(r => r.data);
+// Stored data showing the marks of old parsing bugs, and what to re-upload.
+export const fetchDataHealth     = () => api.get('/upload/data-health', { cache: false }).then(r => r.data);
+export const repairMyntraPaymentColumns = () =>
+  api.post('/upload/data-health/repair/myntra-payment-columns').then(r => r.data);
 export const saveUploadRemark    = (id, remark) => api.post(`/upload/log/${id}/remark`, { remark }).then(r => r.data);
 export const fetchSkippedRows    = (id, page=1) => api.get(`/upload/log/${id}/skipped`, { params: { page } }).then(r => r.data);
 export const clearUploadData     = (type, marketplace, reason) =>

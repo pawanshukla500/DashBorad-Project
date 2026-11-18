@@ -218,10 +218,12 @@ describe('mirrorAjioInvoicesToSor — persistence', () => {
     const tx = statements.filter(s => !s.viaPool).map(s => s.text.split(' ').slice(0, 3).join(' '));
     expect(tx).toEqual([
       'BEGIN',
+      'SAVEPOINT isolated_item',
       'INSERT INTO sor_invoice',
       'DELETE FROM sor_invoice_line',
       'SELECT invoice_id, line_type,', // components SOR uploads already own
       'INSERT INTO sor_invoice_line',
+      'RELEASE SAVEPOINT isolated_item',
       'COMMIT',
     ]);
     const header = statements.find(s => s.text.startsWith('INSERT INTO sor_invoice '));
@@ -259,8 +261,17 @@ describe('mirrorAjioInvoicesToSor — persistence', () => {
     ]);
     expect(result.mirrored).toBe(1);
     expect(result.errors).toEqual([expect.stringContaining('AJ-BAD')]);
-    const control = statements.filter(s => ['BEGIN', 'ROLLBACK', 'COMMIT'].includes(s.text)).map(s => s.text);
-    expect(control).toEqual(['BEGIN', 'ROLLBACK', 'BEGIN', 'COMMIT']);
+    // One group transaction: the bad invoice rolls back to its savepoint and
+    // the good one still commits.
+    const control = statements
+      .filter(s => /^(BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE SAVEPOINT)\b/.test(s.text))
+      .map(s => s.text);
+    expect(control).toEqual([
+      'BEGIN',
+      'SAVEPOINT isolated_item', 'ROLLBACK TO SAVEPOINT isolated_item',
+      'SAVEPOINT isolated_item', 'RELEASE SAVEPOINT isolated_item',
+      'COMMIT',
+    ]);
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 

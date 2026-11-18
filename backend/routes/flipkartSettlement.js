@@ -4,6 +4,7 @@ import { getPool, isDbConfigured } from '../db/index.js';
 import { buildDateFormatMap, normalizeSqlDate, summarizeDateFormats } from '../utils/dateNormalizer.js';
 import { logUpload } from '../services/uploadLog.js';
 import { forEachDbBatch, UPLOAD_BATCH_SIZE } from '../utils/dbBatch.js';
+import { runInBackground } from '../utils/backgroundJobs.js';
 import { optionalNumber as num, optionalString as str } from '../utils/valueParsers.js';
 import { clearSkuSettlementBenchmarkCache } from '../services/skuSettlementBenchmark.js';
 import { notifySkuSettlementBenchmarkAfterImport } from '../services/skuSettlementNotifications.js';
@@ -85,31 +86,66 @@ async function batchSimpleInsert(pool, table, colDefs, rows) {
   const colNames = colDefs.map(([n]) => n).join(', ');
   let inserted   = 0;
 
+  // One attempt per statement. Re-running a single INSERT after a connection
+  // error could duplicate rows that had already committed, and inside a
+  // transaction it can never succeed; replaceNeftRows retries the whole
+  // (idempotent) replacement instead.
   await forEachDbBatch(rows, colDefs.length, async batch => {
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      try {
-        const values = [];
-        const valueGroups = batch.map((row) => {
-          const startIdx = values.length;
-          values.push(...row);
-          return `(${row.map((_, ci) => `$${startIdx + ci + 1}`).join(', ')})`;
-        });
-        await pool.query(`INSERT INTO ${table} (${colNames}) VALUES ${valueGroups.join(', ')}`, values);
-        inserted += batch.length;
-        break;
-      } catch (err) {
-        const msg = err.message || '';
-        const transient = /econnreset|connection|timeout/i.test(msg);
-        if (!transient || attempt === 5) throw err;
-        await sleep(3000 * attempt);
-      }
-    }
+    const values = [];
+    const valueGroups = batch.map((row) => {
+      const startIdx = values.length;
+      values.push(...row);
+      return `(${row.map((_, ci) => `$${startIdx + ci + 1}`).join(', ')})`;
+    });
+    await pool.query(`INSERT INTO ${table} (${colNames}) VALUES ${valueGroups.join(', ')}`, values);
+    inserted += batch.length;
   });
   return inserted;
 }
 
 // autoWiden is a no-op in PostgreSQL — all string columns are TEXT (no length limit)
 async function autoWiden() { return false; }
+
+const TRANSIENT_DB_ERROR = /econnreset|connection|timeout|terminat/i;
+
+/**
+ * Replace a sheet's rows for the uploaded NEFT ids in ONE transaction. The
+ * SPF, Storage & Recall, Ads and Google Ads sheets used to DELETE and then
+ * INSERT as separate auto-committed statements: an insert failure left the
+ * NEFT's old rows deleted and nothing in their place. Deleting by NEFT id makes
+ * the replacement idempotent, so a transient connection failure retries the
+ * whole transaction (never a single statement, which could double rows).
+ */
+// Transaction-scoped lock per settlement sheet table. Taken before the
+// settlement-totals lock (refreshOrderSettlementTotals), never after it.
+async function lockNeftReplacement(client, table) {
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`fk_neft_replace:${table}`]);
+}
+
+async function replaceNeftRows(pool, table, colDefs, records, neftIds) {
+  for (let attempt = 1; ; attempt++) {
+    const client = await pool.connect();
+    let releaseError;
+    try {
+      await client.query('BEGIN');
+      // Serialize replacements of the same sheet: two overlapping uploads could
+      // otherwise both DELETE before either INSERTs and commit the union.
+      await lockNeftReplacement(client, table);
+      await deleteByNeftIds(client, table, neftIds);
+      const inserted = await batchSimpleInsert(client, table, colDefs, records);
+      await client.query('COMMIT');
+      return inserted;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      const transient = TRANSIENT_DB_ERROR.test(error?.message || '');
+      if (transient) releaseError = error;
+      if (!transient || attempt >= 3) throw error;
+    } finally {
+      client.release(releaseError);
+    }
+    await sleep(3000 * attempt);
+  }
+}
 
 // Delete existing rows by NEFT IDs (before re-inserting) to support re-uploads
 async function deleteByNeftIds(pool, tableName, neftIds) {
@@ -282,6 +318,7 @@ async function insertOrders(pool, sheetRows, marketplace, onProgress) {
     // Re-uploading a NEFT is an all-or-nothing replacement. The compact
     // dashboard totals are refreshed in the same transaction, so no tab can
     // observe a mixture of old rows and a new read model.
+    await lockNeftReplacement(client, 'fk_settlement_orders');
     await deleteByNeftIds(client, 'fk_settlement_orders', neftIds);
     const inserted = await batchSimpleInsert(client, 'fk_settlement_orders', ORDER_COLS, safeRecords);
     await refreshOrderSettlementTotals(client);
@@ -340,6 +377,11 @@ async function insertSpfClaims(pool, sheetRows, marketplace) {
     const row = data[i];
     const claimId = str(g(row, 'claimid'));
     if (!claimId) { skipped++; continue; }
+    // A claim without a NEFT id cannot be replaced on re-import (the delete is
+    // by NEFT and UNIQUE (claim_id, neft_id) never conflicts on NULL), so it
+    // would be inserted again on every upload and double-counted. Skip it,
+    // like the other NEFT sheets do.
+    if (!str(g(row, 'neftid'))) { skipped++; continue; }
     const orderItemId = str(g(row, 'orderitemid')) || str(g(row, 'orderitem'));
     const claimStatus = str(g(row, 'status')) || str(g(row, 'claimstatus'));
     records.push([str(g(row,'neftid')), dt(g(row,'paymentdate'),dateFormats.paymentdate),
@@ -349,8 +391,7 @@ async function insertSpfClaims(pool, sheetRows, marketplace) {
   }
   const neftIds = [...new Set(records.map(record => record[0]).filter(Boolean))];
   if (!records.length) throw new Error('No valid SPF claim rows were found; existing claim data was left unchanged.');
-  await deleteByNeftIds(pool, 'fk_spf_claims', neftIds);
-  const inserted = await batchSimpleInsert(pool, 'fk_spf_claims', SPF_COLS, records);
+  const inserted = await replaceNeftRows(pool, 'fk_spf_claims', SPF_COLS, records, neftIds);
   return { inserted, skipped, dateFormats: summarizeDateFormats(dateFormats) };
 }
 
@@ -389,8 +430,7 @@ async function insertStorageRecall(pool, sheetRows, marketplace) {
   }
   const neftIds = [...new Set(records.map(record => record[0]).filter(Boolean))];
   if (!records.length) throw new Error('No valid Storage & Recall rows were found; existing data was left unchanged.');
-  await deleteByNeftIds(pool, 'fk_storage_recall', neftIds);
-  const inserted = await batchSimpleInsert(pool, 'fk_storage_recall', SR_COLS, records);
+  const inserted = await replaceNeftRows(pool, 'fk_storage_recall', SR_COLS, records, neftIds);
   return { inserted, skipped, dateFormats: summarizeDateFormats(dateFormats) };
 }
 
@@ -421,8 +461,7 @@ async function insertAds(pool, sheetRows, marketplace) {
   }
   const neftIds = [...new Set(records.map(record => record[0]).filter(Boolean))];
   if (!records.length) throw new Error('No valid Ads rows were found; existing data was left unchanged.');
-  await deleteByNeftIds(pool, 'fk_ads', neftIds);
-  const inserted = await batchSimpleInsert(pool, 'fk_ads', ADS_COLS, records);
+  const inserted = await replaceNeftRows(pool, 'fk_ads', ADS_COLS, records, neftIds);
   return { inserted, skipped, dateFormats: summarizeDateFormats(dateFormats) };
 }
 
@@ -453,8 +492,7 @@ async function insertGoogleAds(pool, sheetRows, marketplace) {
   }
   const neftIds = [...new Set(records.map(record => record[0]).filter(Boolean))];
   if (!records.length) throw new Error('No valid Google Ads rows were found; existing data was left unchanged.');
-  await deleteByNeftIds(pool, 'fk_google_ads', neftIds);
-  const inserted = await batchSimpleInsert(pool, 'fk_google_ads', GA_COLS, records);
+  const inserted = await replaceNeftRows(pool, 'fk_google_ads', GA_COLS, records, neftIds);
   return { inserted, skipped, dateFormats: summarizeDateFormats(dateFormats) };
 }
 
@@ -580,14 +618,18 @@ router.post('/', upload.single('file'), async (req, res) => {
   // ← Response sent here, BEFORE any parsing or DB work
   res.json({ jobId, status: 'started' });
 
-  // Everything below runs after the response is already delivered
-  setImmediate(async () => {
+  // Everything below runs after the response is already delivered; tracked
+  // so graceful shutdown waits for it before closing the pool.
+  runInBackground('fk-settlement', async () => {
     const job = jobs.get(jobId);
     try {
       const pool = getPool();
       job.sheet = 'Reading workbook…';
       const wb = await parseSpreadsheet(buffer, {
-        read: { raw: false },
+        // dateNF: default-format Excel date cells display as US "4/5/26" text,
+        // which the day-first column inference swapped or rejected. ISO text
+        // is unambiguous; custom-formatted dates are unaffected.
+        read: { raw: false, dateNF: 'yyyy-mm-dd' },
         sheets: settlementSheets(sheetKey),
         json: SHEET_ROWS,
         transfer: true,

@@ -120,7 +120,9 @@ describe('PostgreSQL connection recovery', () => {
     const db = await loadDbModule();
     const client = await db.getPool().connect();
     const [raw] = connectedClients;
-    expect(raw.query).toHaveBeenCalledWith('SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 0;');
+    // Long imports may run any statement, but a leaked transaction must not
+    // hold its locks forever (default 15 minutes idle-in-transaction).
+    expect(raw.query).toHaveBeenCalledWith('SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 900000;');
 
     client.release();
     client.release(); // a double release must not reach pg-pool twice

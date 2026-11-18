@@ -25,12 +25,17 @@ const MAX_TRACKED_KEYS = 5_000;
 // Several report requests arrive together when a page opens; share one
 // version lookup between them.
 const VERSION_MEMO_MS = 1_500;
-// Writes to these tables never change a report result.
-const VERSION_IGNORED_TABLES = [
+// Writes to these tables never change a report result. `workers` and
+// `worker_jobs` are rewritten by every desktop-worker heartbeat (every 2 s);
+// counting them made the version change constantly, so no cached report was
+// ever served while a worker was online.
+export const VERSION_IGNORED_TABLES = [
   'audit_events',
   'rate_card_notification_log',
   'schema_version',
   'upload_skipped_rows',
+  'worker_jobs',
+  'workers',
 ];
 
 const entries = new Map();
@@ -174,7 +179,9 @@ export function reportCacheMiddleware(shouldCache) {
       const stillCurrent = generation === startedGeneration && keyGenerations.get(key) === keyGeneration;
       if (statusCode >= 200 && statusCode < 300 && stillCurrent) {
         const ttl = ttlMs();
-        if (ttl > 0) remember(key, { body, version, expiresAt: Date.now() + ttl });
+        // A route marks a partial result (res.locals.reportCacheSkip) so it is
+        // not stored and served again until the TTL expires.
+        if (ttl > 0 && !res.locals?.reportCacheSkip) remember(key, { body, version, expiresAt: Date.now() + ttl });
         res.set('X-Report-Cache', forceRefresh ? 'REFRESHED' : 'MISS');
       }
       settle({ statusCode, body });
