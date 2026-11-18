@@ -62,7 +62,7 @@ describe('order search', () => {
     expect(likeContainsPattern('OD_12%3')).toBe('%OD\\_12\\%3%');
     expect(likeContainsPattern('171-55')).toBe('%171-55%');
     const route = source('routes/data.js');
-    expect(route.indexOf("run('= $1', q)")).toBeLessThan(route.indexOf("run('ILIKE $1', likeContainsPattern(q))"));
+    expect(route.indexOf("run('= $1', q)")).toBeLessThan(route.indexOf("searchOrderQueries('ILIKE $1')"));
   });
 });
 
@@ -249,5 +249,42 @@ describe('database layer', () => {
     const db = source('db/index.js');
     expect(db).toContain('if (isPoolAcquireTimeout(error)) break;');
     expect(db).toContain('if (client[INSTRUMENTED]) return client;');
+  });
+});
+
+describe('third pass: search index, month-pl totals, fee-leaks netting, Myntra repair', () => {
+  const data = source('routes/data.js');
+  const initDb = source('db/initDb.js');
+
+  it('substring search runs only on orders and fetches settlements/returns by id', () => {
+    const route = data.slice(data.indexOf("router.get('/search-order'"));
+    expect(route).toContain("searchOrderQueries('ILIKE $1')");
+    expect(route).toContain("searchOrderQueries('= ANY($1::text[])')");
+    expect(route).not.toContain("run('ILIKE $1'");
+    expect(initDb).toContain("['ix_orders_order_id_trgm', 'orders USING gin (order_id gin_trgm_ops)']");
+    expect(initDb).toContain("CREATE EXTENSION IF NOT EXISTS pg_trgm");
+    expect(initDb.match(/await ensureSearchTrigramIndexes\(pool\);/g)).toHaveLength(2);
+  });
+
+  it('month-pl reads per-order fees from order_settlement_totals with its own paid-row rules', () => {
+    const monthPl = data.slice(data.indexOf("router.get('/settlement/month-pl'"), data.indexOf("router.get('/settlement/non-order-detail'"));
+    expect(monthPl).toContain('settled_reverse_shipping AS reverse_shipping');
+    expect(monthPl).toContain('settled_protection_fund  AS protection_fund');
+    expect(monthPl).not.toContain('FROM unified_settlements fk\n        GROUP BY fk.order_item_id');
+    const totals = source('services/orderSettlementTotals.js');
+    expect(totals).toContain('ELSE 0 END) AS settled_reverse_shipping');
+    expect(totals).toContain("['settled_protection_fund', 'NUMERIC(14,2) NOT NULL DEFAULT 0']");
+  });
+
+  it('fee-leaks nets Amazon fees per order without merging identical lines', () => {
+    const feeLeaks = data.slice(data.indexOf("router.get('/settlement/fee-leaks'"));
+    expect(feeLeaks).not.toContain('GROUP BY order_id, sku, amount, amount_description, amount_type');
+    expect(feeLeaks).toContain("ABS(SUM(CASE WHEN category = 'order_commission' THEN amount ELSE 0 END)) AS mp_comm");
+  });
+
+  it('repairs stored synthesized Myntra returns of lines that shipped later, once', () => {
+    expect(initDb).toContain("const MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION = '2026.11.myntra-shipped-synthetic-returns-1';");
+    expect(initDb).toContain("AND NULLIF(BTRIM(d.tracking_number), '') IS NOT NULL");
+    expect(initDb.match(/await ensureMyntraShippedSyntheticReturnsCleanup\(pool\);/g)).toHaveLength(2);
   });
 });

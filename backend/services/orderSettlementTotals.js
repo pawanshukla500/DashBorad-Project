@@ -24,7 +24,12 @@ export const ORDER_SETTLEMENT_TOTALS_SELECT = `
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(franchise_fee,0))    ELSE 0 END) AS franchise_fee,
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(tcs,0))              ELSE 0 END) AS tcs,
     SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(tds,0))              ELSE 0 END) AS tds,
-    SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(gst_on_mp_fees,0))   ELSE 0 END) AS gst_on_mp_fees
+    SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(gst_on_mp_fees,0))   ELSE 0 END) AS gst_on_mp_fees,
+    -- Month P&L counts reverse shipping and SPF on paid rows only (unlike
+    -- reverse_shipping above); these let it read this model instead of
+    -- re-aggregating unified_settlements on every request.
+    SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(reverse_shipping,0)) ELSE 0 END) AS settled_reverse_shipping,
+    SUM(CASE WHEN bank_settlement > 0 THEN ABS(COALESCE(protection_fund,0))  ELSE 0 END) AS settled_protection_fund
   FROM unified_settlements
   -- A null settlement key cannot join an order, so excluding it preserves all
   -- dashboard/report results while allowing a strong primary key on the read model.
@@ -36,6 +41,16 @@ const COLUMNS = [
   'order_item_id', 'net_bank', 'negative_bank_amount', 'refund_amount', 'payment_date', 'row_count', 'refund_count', 'settled_row_count',
   'commission', 'fixed_fee', 'collection_fee', 'pick_pack_fee', 'shipping_fee',
   'reverse_shipping', 'franchise_fee', 'tcs', 'tds', 'gst_on_mp_fees',
+  'settled_reverse_shipping', 'settled_protection_fund',
+];
+
+// Metric columns added after the table first shipped; a database missing any
+// of them gets it added and the model rebuilt once.
+const LATER_COLUMNS = [
+  ['settled_row_count', 'BIGINT NOT NULL DEFAULT 0'],
+  ['negative_bank_amount', 'NUMERIC(14,2) NOT NULL DEFAULT 0'],
+  ['settled_reverse_shipping', 'NUMERIC(14,2) NOT NULL DEFAULT 0'],
+  ['settled_protection_fund', 'NUMERIC(14,2) NOT NULL DEFAULT 0'],
 ];
 
 /**
@@ -63,7 +78,9 @@ export async function ensureOrderSettlementTotals(pool, ddl = pool) {
       franchise_fee NUMERIC(14,2) NOT NULL DEFAULT 0,
       tcs NUMERIC(14,2) NOT NULL DEFAULT 0,
       tds NUMERIC(14,2) NOT NULL DEFAULT 0,
-      gst_on_mp_fees NUMERIC(14,2) NOT NULL DEFAULT 0
+      gst_on_mp_fees NUMERIC(14,2) NOT NULL DEFAULT 0,
+      settled_reverse_shipping NUMERIC(14,2) NOT NULL DEFAULT 0,
+      settled_protection_fund NUMERIC(14,2) NOT NULL DEFAULT 0
     )
   `);
   // This model evolves independently of the broader schema version. Detect
@@ -74,17 +91,16 @@ export async function ensureOrderSettlementTotals(pool, ddl = pool) {
     FROM information_schema.columns
     WHERE table_schema = current_schema()
       AND table_name = $1
-      AND column_name IN ('settled_row_count', 'negative_bank_amount')
-  `, [ORDER_SETTLEMENT_TOTALS_TABLE]);
+      AND column_name = ANY($2::text[])
+  `, [ORDER_SETTLEMENT_TOTALS_TABLE, LATER_COLUMNS.map(([column]) => column)]);
   const existingColumnNames = new Set(existingColumns.map(row => row.column_name));
-  const needsMetricBackfill = existingColumnNames.size < 2;
+  const needsMetricBackfill = existingColumnNames.size < LATER_COLUMNS.length;
   // ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the column exists,
   // and every dashboard report joins this table, so only add what is missing.
-  if (!existingColumnNames.has('settled_row_count')) {
-    await ddl.query(`ALTER TABLE ${ORDER_SETTLEMENT_TOTALS_TABLE} ADD COLUMN IF NOT EXISTS settled_row_count BIGINT NOT NULL DEFAULT 0`);
-  }
-  if (!existingColumnNames.has('negative_bank_amount')) {
-    await ddl.query(`ALTER TABLE ${ORDER_SETTLEMENT_TOTALS_TABLE} ADD COLUMN IF NOT EXISTS negative_bank_amount NUMERIC(14,2) NOT NULL DEFAULT 0`);
+  for (const [column, type] of LATER_COLUMNS) {
+    if (!existingColumnNames.has(column)) {
+      await ddl.query(`ALTER TABLE ${ORDER_SETTLEMENT_TOTALS_TABLE} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+    }
   }
   const { rows } = await pool.query(`
     SELECT COUNT(*) AS count, COALESCE(SUM(settled_row_count), 0) AS settled_rows

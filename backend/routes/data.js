@@ -2149,23 +2149,25 @@ router.get('/settlement/month-pl', async (req, res) => {
 
     // ── 1. Main: per order_month (order placed in that month) ──
     const mainRes = await pool.query(`
+      -- Per-order fees from the compact read model (same rules as before:
+      -- every fee, reverse shipping and SPF on paid rows only) instead of
+      -- re-aggregating all of unified_settlements on every request.
       WITH order_fees AS (
         SELECT
-          fk.order_item_id,
-          SUM(fk.bank_settlement)                                                            AS net_bank,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.commission,0))       ELSE 0 END) AS commission,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.fixed_fee,0))        ELSE 0 END) AS fixed_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.collection_fee,0))   ELSE 0 END) AS collection_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.pick_pack_fee,0))    ELSE 0 END) AS pick_pack_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.shipping_fee,0))     ELSE 0 END) AS shipping_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.reverse_shipping,0)) ELSE 0 END) AS reverse_shipping,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.franchise_fee,0))    ELSE 0 END) AS franchise_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.tcs,0))              ELSE 0 END) AS tcs,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.tds,0))              ELSE 0 END) AS tds,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.gst_on_mp_fees,0))   ELSE 0 END) AS gst_on_mp_fees,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.protection_fund,0))  ELSE 0 END) AS protection_fund
-        FROM unified_settlements fk
-        GROUP BY fk.order_item_id
+          order_item_id,
+          net_bank,
+          commission,
+          fixed_fee,
+          collection_fee,
+          pick_pack_fee,
+          shipping_fee,
+          settled_reverse_shipping AS reverse_shipping,
+          franchise_fee,
+          tcs,
+          tds,
+          gst_on_mp_fees,
+          settled_protection_fund  AS protection_fund
+        FROM ${ORDER_SETTLEMENT_TOTALS_TABLE}
       )
       SELECT
         TO_CHAR(o.order_date, 'YYYY-MM')          AS month,
@@ -3638,10 +3640,12 @@ router.get('/settlement/sale-statement', async (req, res) => {
 // ── GET /api/search-order?q=<order_id or order_item_id> ──────────────────────
 // Exact IDs first: users paste a full order / order item id, and equality
 // uses the order_item_id / order_id indexes on every table and pushes into each
-// unified_settlements branch. The substring ILIKE '%q%' scan (no trigram index
-// exists) ran on every keystroke over all orders, returns and the whole
-// unified_settlements view; it now runs only when nothing matches exactly.
-// LIKE wildcards typed by the user are matched literally.
+// unified_settlements branch. Only when nothing matches exactly does a
+// substring search run, and only on orders (trigram-indexed by
+// ensureSearchTrigramIndexes when pg_trgm is available); the matched orders'
+// settlements and returns are then fetched by exact id. The previous ILIKE
+// '%q%' scanned all orders, returns and the whole unified_settlements view on
+// every keystroke. LIKE wildcards typed by the user are matched literally.
 export function searchOrderQueries(condition) {
   return {
     orders: `
@@ -3705,7 +3709,19 @@ router.get('/search-order', async (req, res) => {
 
     let found = await run('= $1', q);
     if (!found.orders.length && !found.settlements.length && !found.returns.length) {
-      found = await run('ILIKE $1', likeContainsPattern(q));
+      const sql = searchOrderQueries('ILIKE $1');
+      const { rows: orders } = await pool.query(sql.orders, [likeContainsPattern(q)]);
+      const ids = [...new Set(orders.flatMap(order => [order.order_item_id, order.order_id]).filter(Boolean))];
+      if (ids.length) {
+        const byIds = searchOrderQueries('= ANY($1::text[])');
+        const [settlements, returns] = await Promise.all([
+          pool.query(byIds.settlements, [ids]),
+          pool.query(byIds.returns, [ids]),
+        ]);
+        found = { orders, settlements: settlements.rows, returns: returns.rows };
+      } else {
+        found = { orders, settlements: [], returns: [] };
+      }
     }
     res.json(found);
   } catch (err) {
@@ -3925,8 +3941,14 @@ router.get('/settlement/fee-leaks', async (req, res) => {
 
     if (marketplace === 'amazon') {
       settCTE = `
+      -- One row per settlement line (no GROUP BY on amount: that merged
+      -- identical fee lines, e.g. the same commission on two shipments, and
+      -- undercounted fees). Each fee is netted per order (charges negative,
+      -- reversals positive) and then made positive, the same ABS(SUM()) rule
+      -- the Amazon reporting rollups use; summing ABS() per line counted a
+      -- charge and its reversal twice and flagged refunded orders as leaks.
       amazon_classified AS (
-        SELECT order_id, sku, MIN(posted_date) AS payment_date, amount,
+        SELECT order_id, sku, posted_date, amount,
           CASE
             WHEN amount_description ILIKE 'Commission%' OR amount_description ILIKE 'Refund commission%' THEN 'order_commission'
             WHEN amount_description ILIKE 'Fixed closing fee%' THEN 'order_closing_fee'
@@ -3939,17 +3961,15 @@ router.get('/settlement/fee-leaks', async (req, res) => {
           END AS category
         FROM amazon_settlement_lines
         WHERE order_id IS NOT NULL
-        GROUP BY order_id, sku, amount, amount_description, amount_type
       ),
       sett AS (
         SELECT order_id, sku,
-          MIN(payment_date) AS payment_date,
-          SUM(CASE WHEN category = 'order_commission' THEN ABS(amount) ELSE 0 END) AS mp_comm,
-          SUM(CASE WHEN category IN ('order_closing_fee', 'order_tech_fee') THEN ABS(amount) ELSE 0 END) AS mp_fixed,
+          MIN(posted_date) AS payment_date,
+          ABS(SUM(CASE WHEN category = 'order_commission' THEN amount ELSE 0 END)) AS mp_comm,
+          ABS(SUM(CASE WHEN category IN ('order_closing_fee', 'order_tech_fee') THEN amount ELSE 0 END)) AS mp_fixed,
           0 AS mp_coll,
-          SUM(CASE WHEN category = 'order_fba_fee' THEN ABS(amount) ELSE 0 END) AS mp_pack,
-          SUM(CASE WHEN category = 'other' THEN ABS(amount) ELSE 0 END) AS mp_other_fee
-        FROM amazon_classified 
+          ABS(SUM(CASE WHEN category = 'order_fba_fee' THEN amount ELSE 0 END)) AS mp_pack
+        FROM amazon_classified
         GROUP BY order_id, sku
       )
       `;

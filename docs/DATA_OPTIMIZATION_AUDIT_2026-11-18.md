@@ -62,19 +62,28 @@ Also fixed in the second pass:
 - `sor_outstanding` view replaced (ACCESS EXCLUSIVE) on every boot → only when its definition changes.
 - Pool clients re-wrapped `query` on every checkout → wrapped once.
 
+## Fixed — third pass (previous limitations)
+
+| Problem | Fix |
+|---|---|
+| Order search's substring fallback still scanned every order, return and the whole `unified_settlements` view | Substring match runs on `orders` only, backed by GIN trigram indexes (`2026.11.search-trgm-1`, needs `pg_trgm`; plan verified as a bitmap index scan); the matched orders' settlements and returns are fetched by exact id |
+| `month-pl` re-aggregated all of `unified_settlements` per request (a switch to the totals table looked like it needed a reverse-shipping decision) | `order_settlement_totals` gains `settled_reverse_shipping` and `settled_protection_fund` with month-pl's own paid-row rules; month-pl reads them. Verified: identical figures for every month × marketplace |
+| fee-leaks Amazon branch merged identical fee lines (`GROUP BY … amount`) and summed `ABS()` per line (a charge plus its reversal counted twice) | One row per line; fees netted per order with `ABS(SUM())` like the Amazon rollups. Verified: refunded order ₹20 retained (was ₹220), two identical lines ₹100 (was ₹50) |
+| Stored synthesized Myntra returns of lines that later shipped stayed counted | One-time repair `2026.11.myntra-shipped-synthetic-returns-1` removes only those rows (verified: blank-tracking, real and other-account returns kept) |
+| month-pl `warnings` "not shown in the UI" | No page calls this endpoint (`fetchMonthPL` is unused in the frontend); the API response carries the warnings for any consumer |
+
 ## Deployment notes
 
 - New table `amazon_sale_order_shipments` (`CREATE TABLE IF NOT EXISTS`, both startup paths, also created lazily by the upload).
+- `order_settlement_totals` gains two columns (added once, then the model is rebuilt once).
 - Migration `2026.11.redundant-indexes-1` drops `ix_amzn_lines_settlement`, `ix_amzn_lines_order_id`, `ix_returns_order_item_id`, `ix_returns_order_id`, `ix_sor_invoice_line_invoice` (5 s lock timeout; retried next start if a table is busy).
+- `2026.11.search-trgm-1` runs `CREATE EXTENSION IF NOT EXISTS pg_trgm` (a trusted extension; the database owner can create it) and builds two GIN indexes on `orders` concurrently. If the extension cannot be created, search keeps working as a scan and the step is retried on the next start.
+- `2026.11.myntra-shipped-synthetic-returns-1` deletes stale synthesized Myntra returns (see above).
 - New optional env vars: `PG_TX_IDLE_TIMEOUT_MS` (default 900000; 0 disables), `SHUTDOWN_TIMEOUT_MS`.
-- Visible behaviour changes: Insights category breakdowns now include an "Uncategorized" bucket and merge marketplace taxonomies; the Returns list shows Amazon and unmatched returns under filters; Sale Statement fees and Myntra VB/EJ cash flows are lower where they were double-counted or mixed.
+- Visible behaviour changes: Insights category breakdowns include an "Uncategorized" bucket and merge marketplace taxonomies; the Returns list shows Amazon and unmatched returns under filters; Sale Statement fees and Myntra VB/EJ cash flows are lower where they were double-counted or mixed; fee-leaks Amazon fees are netted, so refunded orders stop appearing as leaks.
 
-## Remaining limitations (by design or needing data)
+## Not fixable in code (needs the original files)
 
-- Data stored before this branch by the old date/number parsing is not corrected retroactively — re-upload affected CSV/XLSX files.
-- Amazon orders imported before the shipment ledger have no shipment rows; re-upload the earlier Sale Orders file once to restore multi-file sums.
-- A continuation file that repeats a byte-identical line also present in part A collapses those two on its first upload (no per-line source id exists in the export).
-- Order search still falls back to a substring scan when no id matches exactly; a `pg_trgm` index would make that indexed too (needs the extension on the shared server).
-- `month-pl`'s per-order fee aggregate still reads `unified_settlements` directly: switching it to `order_settlement_totals` would change its reverse-shipping figure (the two use different rules), so it needs a business decision. The endpoint is report-cached.
-- The fee-leaks Amazon branch groups raw settlement lines by amount (identical fee lines merge); left unchanged pending a check against production data.
-- The month-pl `warnings` field is returned by the API but not yet shown in the UI.
+- Dates or amounts already stored by the old parsing cannot be told apart from correct ones in the database; re-upload the affected CSV/XLSX files and the new parsing replaces them.
+- Amazon orders imported before the shipment ledger have no shipment rows; re-uploading the earlier Sale Orders file once restores multi-file sums.
+- A continuation settlement file repeating a byte-identical line that is also in part A collapses those two on its first upload: the export carries no per-line id that could tell them apart.

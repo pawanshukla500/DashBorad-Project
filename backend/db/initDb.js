@@ -50,6 +50,8 @@ const MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION = '2026.09.myntra-ej-rate-cards-1';
 const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimization-1';
 const LOOKUP_INDEXES_SCHEMA_VERSION = '2026.09.lookup-indexes-1';
 const REDUNDANT_INDEX_CLEANUP_SCHEMA_VERSION = '2026.11.redundant-indexes-1';
+const SEARCH_TRGM_SCHEMA_VERSION = '2026.11.search-trgm-1';
+const MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION = '2026.11.myntra-shipped-synthetic-returns-1';
 const MARKETPLACE_CREDENTIALS_SCHEMA_VERSION = '2026.10.marketplace-credentials-1';
 export const RATE_CARD_WORKER_SCHEMA_VERSION = '2026.10.ratecard-worker-jobs-1';
 // Dimensional rate-card migration version lives in ./rateCardDimensionalMigration.js.
@@ -1107,11 +1109,13 @@ export async function initDb() {
       await ensureMyntraPartnerWarehouseSchema(db);
       await ensureMyntraBlankTrackingRtoFix(db);
       await ensureMyntraBlankTrackingCancelledFix(db);
+      await ensureMyntraShippedSyntheticReturnsCleanup(pool);
       await ensureMyntraEjRateCardsSeed(db);
       await ensureSorSchema(pool);
       await ensureDbConnectionOptimization(db);
       await ensureLookupIndexes(pool);
       await ensureRedundantIndexCleanup(pool);
+      await ensureSearchTrigramIndexes(pool);
       await ensureMarketplaceCredentialsSchema(db);
       await ensureRateCardWorkerSchema(pool);
       // A read-model migration changes the view definition as well as the
@@ -1808,11 +1812,13 @@ export async function initDb() {
     await ensureMyntraPartnerWarehouseSchema(db);
     await ensureMyntraBlankTrackingRtoFix(db);
     await ensureMyntraBlankTrackingCancelledFix(db);
+    await ensureMyntraShippedSyntheticReturnsCleanup(pool);
     await ensureMyntraEjRateCardsSeed(db);
     await ensureSorSchema(pool);
     await ensureDbConnectionOptimization(db);
     await ensureLookupIndexes(pool);
     await ensureRedundantIndexCleanup(pool);
+    await ensureSearchTrigramIndexes(pool);
     await ensureMarketplaceCredentialsSchema(db);
     await ensureRateCardWorkerSchema(pool);
 
@@ -2994,6 +3000,31 @@ async function ensureMyntraBlankTrackingRtoFix(pool) {
  * with return_type 'Courier Return', and have a matching entry in returns table with
  * return_status = 'Cancelled' and return_reason = 'Cancel Before Dispached'.
  */
+/**
+ * One-time repair matching the Myntra orders-upload rule added with it: a
+ * synthesized "Cancel Before Dispached" return (blank tracking number) is
+ * removed once the stored order line has a tracking number, i.e. it shipped
+ * after all. Before that rule such returns stayed counted as courier returns
+ * forever. Only rows the blank-tracking rule synthesized are touched
+ * (return_id RTO-<line>, that reason); a real return keeps its own id.
+ */
+export async function ensureMyntraShippedSyntheticReturnsCleanup(pool) {
+  return runVersionedMigration(pool, MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION, async client => {
+    const { rowCount } = await client.query(`
+      DELETE FROM returns r
+      USING myntra_order_details d
+      WHERE r.marketplace = 'myntra'
+        AND r.return_id = 'RTO-' || r.order_item_id
+        AND r.return_reason = 'Cancel Before Dispached'
+        AND d.marketplace = 'myntra'
+        AND d.seller_account = r.seller_account
+        AND d.order_line_id = r.order_item_id
+        AND NULLIF(BTRIM(d.tracking_number), '') IS NOT NULL
+    `);
+    if (rowCount) console.log(`[db] Removed ${rowCount} synthesized Myntra returns for lines that later shipped.`);
+  });
+}
+
 async function ensureMyntraBlankTrackingCancelledFix(pool) {
   const { rowCount } = await pool.query(
     `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
@@ -3185,6 +3216,62 @@ export async function ensureRedundantIndexCleanup(pool) {
       await client.query(`DROP INDEX IF EXISTS ${index}`);
     }
   });
+}
+
+/**
+ * Trigram indexes for the order search's substring fallback (GET
+ * /api/search-order), which otherwise scans every order. Needs the pg_trgm
+ * extension (trusted since PostgreSQL 13, so the database owner can create
+ * it); when it cannot be created the search keeps working as a scan and this
+ * is retried on the next start. GIN indexes buffer inserts in their pending
+ * list, so order uploads pay little for them. Built CONCURRENTLY on a
+ * dedicated client (no statement timeout) like the lookup indexes.
+ */
+const SEARCH_TRGM_INDEXES = [
+  ['ix_orders_order_id_trgm', 'orders USING gin (order_id gin_trgm_ops)'],
+  ['ix_orders_order_item_id_trgm', 'orders USING gin (order_item_id gin_trgm_ops)'],
+];
+
+export async function ensureSearchTrigramIndexes(pool) {
+  try {
+    const { rowCount } = await pool.query(
+      `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+      [SEARCH_TRGM_SCHEMA_VERSION],
+    );
+    if (rowCount) return true;
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+    } catch (error) {
+      console.warn('[db] Non-critical: pg_trgm is unavailable; order search substring fallback stays a scan:', error.message);
+      return false;
+    }
+    for (const [name, definition] of SEARCH_TRGM_INDEXES) {
+      const { rows } = await pool.query(`
+        SELECT i.indisvalid AS valid
+        FROM pg_class c
+        JOIN pg_index i ON i.indexrelid = c.oid
+        WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
+      `, [name]);
+      if (rows[0]?.valid) continue;
+      const builder = await pool.connect();
+      try {
+        if (rows.length) await builder.query(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+        console.log(`[db] Building search index ${name}…`);
+        await builder.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${definition}`);
+      } finally {
+        builder.release();
+      }
+    }
+    await pool.query(
+      `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+      [SEARCH_TRGM_SCHEMA_VERSION],
+    );
+    console.log(`[db] Schema ${SEARCH_TRGM_SCHEMA_VERSION} applied.`);
+    return true;
+  } catch (error) {
+    console.warn('[db] Non-critical: search index build failed:', error.message);
+    return false;
+  }
 }
 
 async function ensureLookupIndexes(pool) {
