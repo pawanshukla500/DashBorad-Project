@@ -2874,7 +2874,7 @@ async function ensureMyntraRtoReturnDateFix(pool) {
  * Backfills warehouse_id and partner_warehouse_code from source_data JSONB if present,
  * maintaining full backwards compatibility for historical and new reports alike.
  */
-async function ensureMyntraPartnerWarehouseSchema(pool) {
+export async function ensureMyntraPartnerWarehouseSchema(pool) {
   const { rowCount } = await pool.query(
     `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
     [MYNTRA_PARTNER_WH_SCHEMA_VERSION],

@@ -44,6 +44,7 @@ New mutation endpoints must be placed below an appropriate access guard.
    - Both `backend/db/index.js` and `backend/server.js` load configuration from a priority cascade: `../.env`, `../../.env`, `process.cwd()/.env`, and `process.cwd()/backend/.env`.
    - Prevents database disconnects when commands, workers, or scrapers are launched from different directory roots.
    - Every loader goes through `loadEnvFiles()` in `backend/utils/loadEnv.js`, which loads nothing under a test runner (`VITEST` set or `NODE_ENV=test`). Tests see only the variables they set, as in CI, never the developer's production `DATABASE_URL` (guarded by `backend/tests/testsNeverLoadDotenv.test.js`).
+   - Nor does a test inherit a database from the shell: tests either mock `db/index.js` or call `stubNoDatabaseEnv()` from `backend/tests/helpers/databaseEnv.js`, which unsets every connection variable the backend reads (`backend/tests/databaseEnvIsolation.test.js` fails if the code starts reading one it does not cover).
 
 2. **Connection Pooling & Session Limits**:
    - Configured via `pg.Pool` with `keepAlive: true`, `keepAliveInitialDelayMillis: 10_000`, `idleTimeoutMillis`, and bounded `statement_timeout` (`PG_READ_STATEMENT_TIMEOUT_MS`, default 45s).

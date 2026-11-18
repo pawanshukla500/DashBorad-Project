@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DatabaseUnavailableError, getDatabaseStatus, resolvePgConfig } from '../db/index.js';
+import { stubNoDatabaseEnv } from './helpers/databaseEnv.js';
 
 const ENV_KEYS = [
   'NODE_ENV', 'DATABASE_URL', 'POSTGRES_DATABASE_URL',
@@ -22,7 +23,13 @@ function restoreEnvironment() {
   }
 }
 
-afterEach(restoreEnvironment);
+// Each test configures only DATABASE_URL; PG_* exported by the shell would
+// otherwise configure a database where a test expects none.
+beforeEach(stubNoDatabaseEnv);
+afterEach(() => {
+  vi.unstubAllEnvs();
+  restoreEnvironment();
+});
 
 describe('PostgreSQL transport policy', () => {
   it('uses certificate validation for an explicitly enabled TLS connection', () => {

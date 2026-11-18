@@ -129,7 +129,9 @@ which loads nothing when `VITEST` is set or `NODE_ENV=test`. So `npm test`
 never sees the production `DATABASE_URL` in `backend/.env`, even with the
 tunnel up: like CI, which has no `.env`, each test sets the variables it needs.
 A test that needs a database must set its own `DATABASE_URL`, pointing at a
-disposable database, never at the tunnel.
+disposable database, never at the tunnel. Tests also ignore database variables
+exported in your shell: they mock `db/index.js` or call `stubNoDatabaseEnv()`
+(`backend/tests/helpers/databaseEnv.js`).
 
 `/health` returns HTTP 200 only when the API can reach PostgreSQL. If the
 database is temporarily unavailable, the API stays running, returns a clear
