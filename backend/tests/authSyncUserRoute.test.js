@@ -1,5 +1,6 @@
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { stubNoDatabaseEnv } from './helpers/databaseEnv.js';
 
 let decodedToken;
 let directory;
@@ -44,6 +45,9 @@ const { default: authRouter } = await import('../routes/auth.js');
 let server;
 let baseUrl;
 beforeEach(async () => {
+  // Desktop provisioning reads DATABASE_URL, PG_DATABASE and DESKTOP_*; each
+  // test sets the ones it needs, whatever the shell exports.
+  stubNoDatabaseEnv();
   setFirebaseRole.mockClear();
   directory = [{ id: 7, email: 'ops@example.com', username: 'Ops', role: 'operator', firebase_uid: null }];
   const app = express();
@@ -53,7 +57,10 @@ beforeEach(async () => {
   await new Promise(resolve => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}/api/auth`;
 });
-afterEach(() => new Promise(resolve => server.close(resolve)));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  return new Promise(resolve => server.close(resolve));
+});
 
 const syncUser = () => fetch(`${baseUrl}/sync-user`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
 
@@ -120,60 +127,37 @@ describe('POST /api/auth/desktop-login', () => {
   });
 
   it('never leaks a container-internal DATABASE_URL to desktop clients', async () => {
-    const prevDatabaseUrl = process.env.DATABASE_URL;
-    const prevDesktopDatabaseUrl = process.env.DESKTOP_DATABASE_URL;
-    process.env.DESKTOP_DATABASE_URL = '';
-    process.env.DATABASE_URL = 'postgresql://app:pass@postgres:5432/paymentapp';
-    try {
-      decodedToken = { uid: 'fb-7', email: 'ops@example.com', email_verified: true };
-      const response = await desktopLogin();
-      expect(response.status).toBe(200);
-      expect((await response.json()).databaseUrl).toBe('');
-    } finally {
-      process.env.DATABASE_URL = prevDatabaseUrl;
-      process.env.DESKTOP_DATABASE_URL = prevDesktopDatabaseUrl;
-    }
+    vi.stubEnv('DATABASE_URL', 'postgresql://app:pass@postgres:5432/paymentapp');
+    decodedToken = { uid: 'fb-7', email: 'ops@example.com', email_verified: true };
+    const response = await desktopLogin();
+    expect(response.status).toBe(200);
+    expect((await response.json()).databaseUrl).toBe('');
   });
 
   it('provisions DESKTOP_DATABASE_URL so desktop login auto-configures the database', async () => {
-    const prevDesktopDatabaseUrl = process.env.DESKTOP_DATABASE_URL;
-    process.env.DESKTOP_DATABASE_URL = 'postgresql://worker:pass@db.example.com:5432/paymentapp';
-    try {
-      decodedToken = { uid: 'fb-7', email: 'ops@example.com', email_verified: true };
-      const response = await desktopLogin();
-      expect(response.status).toBe(200);
-      expect((await response.json()).databaseUrl).toBe('postgresql://worker:pass@db.example.com:5432/paymentapp');
-    } finally {
-      process.env.DESKTOP_DATABASE_URL = prevDesktopDatabaseUrl;
-    }
+    vi.stubEnv('DESKTOP_DATABASE_URL', 'postgresql://worker:pass@db.example.com:5432/paymentapp');
+    decodedToken = { uid: 'fb-7', email: 'ops@example.com', email_verified: true };
+    const response = await desktopLogin();
+    expect(response.status).toBe(200);
+    expect((await response.json()).databaseUrl).toBe('postgresql://worker:pass@db.example.com:5432/paymentapp');
   });
 
   it('does not provision raw database credentials to analyst desktop sessions', async () => {
-    const previousUrl = process.env.DESKTOP_DATABASE_URL;
-    const previousAnalystUrl = process.env.DESKTOP_ANALYST_DATABASE_URL;
-    process.env.DESKTOP_DATABASE_URL = 'postgresql://worker:pass@db.example.com:5432/paymentapp';
-    process.env.DESKTOP_ANALYST_DATABASE_URL = '';
+    vi.stubEnv('DESKTOP_DATABASE_URL', 'postgresql://worker:pass@db.example.com:5432/paymentapp');
     directory = [{ id: 9, email: 'analyst@example.com', username: 'Analyst', role: 'analyst', firebase_uid: null }];
     decodedToken = { uid: 'fb-analyst', email: 'analyst@example.com', email_verified: true };
-    try {
-      const response = await desktopLogin();
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      expect(data.user.role).toBe('analyst');
-      expect(data.databaseUrl).toBe('');
-      expect(data.databaseAccess).toBe('read-only');
-    } finally {
-      process.env.DESKTOP_DATABASE_URL = previousUrl;
-      process.env.DESKTOP_ANALYST_DATABASE_URL = previousAnalystUrl;
-    }
+    const response = await desktopLogin();
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.user.role).toBe('analyst');
+    expect(data.databaseUrl).toBe('');
+    expect(data.databaseAccess).toBe('read-only');
   });
 
   it('provisions an analyst only the separate read-only database URL', async () => {
-    const previousUrl = process.env.DESKTOP_DATABASE_URL;
-    const previousAnalystUrl = process.env.DESKTOP_ANALYST_DATABASE_URL;
     const readonlyUrl = 'postgresql://analyst:readonly@db.example.com:5432/paymentapp';
-    process.env.DESKTOP_DATABASE_URL = 'postgresql://worker:write@db.example.com:5432/paymentapp';
-    process.env.DESKTOP_ANALYST_DATABASE_URL = readonlyUrl;
+    vi.stubEnv('DESKTOP_DATABASE_URL', 'postgresql://worker:write@db.example.com:5432/paymentapp');
+    vi.stubEnv('DESKTOP_ANALYST_DATABASE_URL', readonlyUrl);
     directory = [{ id: 9, email: 'analyst@example.com', username: 'Analyst', role: 'analyst', firebase_uid: null }];
     decodedToken = { uid: 'fb-analyst-readonly', email: 'analyst@example.com', email_verified: true };
     try {
@@ -184,17 +168,13 @@ describe('POST /api/auth/desktop-login', () => {
       expect(data.databaseAccess).toBe('read-only');
       expect(verifyAnalystPrincipal).toHaveBeenCalledWith(readonlyUrl);
     } finally {
-      process.env.DESKTOP_DATABASE_URL = previousUrl;
-      process.env.DESKTOP_ANALYST_DATABASE_URL = previousAnalystUrl;
       verifyAnalystPrincipal.mockClear();
     }
   });
 
   it('withholds the analyst URL when the principal fails server-side read-only verification (fail-closed)', async () => {
-    const previousUrl = process.env.DESKTOP_DATABASE_URL;
-    const previousAnalystUrl = process.env.DESKTOP_ANALYST_DATABASE_URL;
-    process.env.DESKTOP_DATABASE_URL = 'postgresql://worker:write@db.example.com:5432/paymentapp';
-    process.env.DESKTOP_ANALYST_DATABASE_URL = 'postgresql://analyst:writer@db.example.com:5432/paymentapp';
+    vi.stubEnv('DESKTOP_DATABASE_URL', 'postgresql://worker:write@db.example.com:5432/paymentapp');
+    vi.stubEnv('DESKTOP_ANALYST_DATABASE_URL', 'postgresql://analyst:writer@db.example.com:5432/paymentapp');
     directory = [{ id: 9, email: 'analyst@example.com', username: 'Analyst', role: 'analyst', firebase_uid: null }];
     decodedToken = { uid: 'fb-analyst-writer', email: 'analyst@example.com', email_verified: true };
     verifyAnalystPrincipal.mockResolvedValueOnce(false);
@@ -205,8 +185,6 @@ describe('POST /api/auth/desktop-login', () => {
       expect(data.databaseUrl).toBe('');
       expect(data.databaseAccess).toBe('read-only');
     } finally {
-      process.env.DESKTOP_DATABASE_URL = previousUrl;
-      process.env.DESKTOP_ANALYST_DATABASE_URL = previousAnalystUrl;
       verifyAnalystPrincipal.mockClear();
     }
   });
@@ -214,55 +192,40 @@ describe('POST /api/auth/desktop-login', () => {
 
 describe('GET /api/auth/desktop-config', () => {
   it('does not provision raw database credentials to analyst desktop sessions', async () => {
-    const previousUrl = process.env.DESKTOP_DATABASE_URL;
-    const previousAnalystUrl = process.env.DESKTOP_ANALYST_DATABASE_URL;
-    process.env.DESKTOP_DATABASE_URL = 'postgresql://worker:pass@db.example.com:5432/paymentapp';
-    process.env.DESKTOP_ANALYST_DATABASE_URL = '';
+    vi.stubEnv('DESKTOP_DATABASE_URL', 'postgresql://worker:pass@db.example.com:5432/paymentapp');
     decodedToken = {
       uid: 'fb-analyst-config',
       email: 'analyst@example.com',
       recon_role: 'analyst',
       iat: Math.floor(Date.now() / 1000)
     };
-    try {
-      const response = await fetch(`${baseUrl}/desktop-config`, {
-        headers: { Authorization: 'Bearer token' }
-      });
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      expect(data.user.role).toBe('analyst');
-      expect(data.databaseUrl).toBe('');
-      expect(data.databaseAccess).toBe('read-only');
-    } finally {
-      process.env.DESKTOP_DATABASE_URL = previousUrl;
-      process.env.DESKTOP_ANALYST_DATABASE_URL = previousAnalystUrl;
-    }
+    const response = await fetch(`${baseUrl}/desktop-config`, {
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.user.role).toBe('analyst');
+    expect(data.databaseUrl).toBe('');
+    expect(data.databaseAccess).toBe('read-only');
   });
 
   it('uses the analyst read-only URL on the token-backed configuration endpoint', async () => {
-    const previousUrl = process.env.DESKTOP_DATABASE_URL;
-    const previousAnalystUrl = process.env.DESKTOP_ANALYST_DATABASE_URL;
     const readonlyUrl = 'postgresql://analyst:readonly@db.example.com:5432/paymentapp';
-    process.env.DESKTOP_DATABASE_URL = 'postgresql://worker:write@db.example.com:5432/paymentapp';
-    process.env.DESKTOP_ANALYST_DATABASE_URL = readonlyUrl;
+    vi.stubEnv('DESKTOP_DATABASE_URL', 'postgresql://worker:write@db.example.com:5432/paymentapp');
+    vi.stubEnv('DESKTOP_ANALYST_DATABASE_URL', readonlyUrl);
     decodedToken = {
       uid: 'fb-analyst-config-readonly',
       email: 'analyst@example.com',
       recon_role: 'analyst',
       iat: Math.floor(Date.now() / 1000)
     };
-    try {
-      const response = await fetch(`${baseUrl}/desktop-config`, {
-        headers: { Authorization: 'Bearer token' }
-      });
-      expect(response.status).toBe(200);
-      const data = await response.json();
-      expect(data.databaseUrl).toBe(readonlyUrl);
-      expect(data.databaseAccess).toBe('read-only');
-    } finally {
-      process.env.DESKTOP_DATABASE_URL = previousUrl;
-      process.env.DESKTOP_ANALYST_DATABASE_URL = previousAnalystUrl;
-    }
+    const response = await fetch(`${baseUrl}/desktop-config`, {
+      headers: { Authorization: 'Bearer token' }
+    });
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.databaseUrl).toBe(readonlyUrl);
+    expect(data.databaseAccess).toBe('read-only');
   });
 });
 

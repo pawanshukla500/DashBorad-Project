@@ -1,198 +1,172 @@
-import { describe, expect, it } from 'vitest';
 import express from 'express';
-import reconcileRouter from '../routes/reconcile.js';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-describe('Outstanding Payments Endpoints', () => {
+// These routes run against a mocked db/index.js and outstandingPaymentsService,
+// so they never reach a real database, whatever the environment holds. (They
+// used to call the live endpoints: with backend/.env and the SSH tunnel up that
+// read production and PUT grace_period_days on its Myntra config.)
+const mocks = vi.hoisted(() => {
+  const pool = { query: vi.fn(async () => ({ rows: [] })) };
+  return {
+    state: { dbConfigured: false },
+    pool,
+    getPool: vi.fn(() => pool),
+    computeOutstandingMatrix: vi.fn(),
+    getOutstandingConfig: vi.fn(),
+    updateOutstandingConfig: vi.fn(),
+  };
+});
+
+vi.mock('../db/index.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  isDbConfigured: async () => mocks.state.dbConfigured,
+  getPool: (...args) => mocks.getPool(...args),
+}));
+vi.mock('../services/outstandingPaymentsService.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  computeOutstandingMatrix: (...args) => mocks.computeOutstandingMatrix(...args),
+  getOutstandingConfig: (...args) => mocks.getOutstandingConfig(...args),
+  updateOutstandingConfig: (...args) => mocks.updateOutstandingConfig(...args),
+}));
+
+const { default: reconcileRouter } = await import('../routes/reconcile.js');
+
+let server;
+let baseUrl;
+
+beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use('/reconcile', reconcileRouter);
+  server = app.listen(0);
+  await new Promise(resolve => server.once('listening', resolve));
+  baseUrl = `http://127.0.0.1:${server.address().port}/reconcile`;
+});
 
-  it('GET /reconcile/outstanding/summary returns valid summary shape', async () => {
-    const server = app.listen(0);
-    const port = server.address().port;
+afterAll(() => new Promise(resolve => server.close(resolve)));
 
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/summary`);
-      expect(res.status).toBe(200);
-      const data = await res.json();
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.pool.query.mockImplementation(async () => ({ rows: [] }));
+  mocks.state.dbConfigured = false;
+});
 
-      expect(data).toHaveProperty('configured');
-      if (data.configured) {
-        expect(typeof data.total_outstanding_amount).toBe('number');
-        expect(typeof data.total_unsettled_orders).toBe('number');
-        expect(typeof data.total_unsettled_amount).toBe('number');
-        expect(data).toHaveProperty('aging');
-        expect(data.aging).toHaveProperty('0-15 days');
-        expect(data.aging).toHaveProperty('16-30 days');
-        expect(data.aging).toHaveProperty('31-60 days');
-        expect(data.aging).toHaveProperty('60+ days');
-        expect(Array.isArray(data.by_marketplace)).toBe(true);
-      }
-    } finally {
-      server.close();
-    }
-  }, 60_000);
+const getJson = async (path) => {
+  const res = await fetch(`${baseUrl}${path}`);
+  return { status: res.status, body: await res.json() };
+};
 
-  it('GET /reconcile/outstanding/orders supports pagination and aging buckets', async () => {
-    const server = app.listen(0);
-    const port = server.address().port;
+const putJson = async (path, body) => {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json() };
+};
 
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/orders?pageSize=10&page=1`);
-      expect(res.status).toBe(200);
-      const json = await res.json();
+describe('Outstanding Payments endpoints without a configured database', () => {
+  it('GET /outstanding/summary reports configured: false', async () => {
+    expect(await getJson('/outstanding/summary')).toEqual({ status: 200, body: { configured: false } });
+  });
 
-      expect(json).toHaveProperty('data');
-      expect(Array.isArray(json.data)).toBe(true);
-      expect(json).toHaveProperty('total');
-      expect(json).toHaveProperty('page', 1);
-      expect(json).toHaveProperty('pageSize', 10);
+  it('GET /outstanding/orders returns an empty page that echoes the pagination', async () => {
+    expect(await getJson('/outstanding/orders?pageSize=10&page=2')).toEqual({
+      status: 200,
+      body: { configured: false, data: [], total: 0, total_amount: 0, page: 2, pageSize: 10 },
+    });
+  });
 
-      if (json.data.length > 0) {
-        const order = json.data[0];
-        expect(order).toHaveProperty('order_id');
-        expect(order).toHaveProperty('order_item_id');
-        expect(order).toHaveProperty('marketplace');
-        expect(order).toHaveProperty('aging_bucket');
-        expect(['0-15 days', '16-30 days', '31-60 days', '60+ days']).toContain(order.aging_bucket);
-      }
-    } finally {
-      server.close();
-    }
-  }, 60_000);
+  it('GET /outstanding/invoices returns an empty page that echoes the pagination', async () => {
+    expect(await getJson('/outstanding/invoices?pageSize=10')).toEqual({
+      status: 200,
+      body: {
+        configured: false, data: [], total: 0, total_pending: 0, total_net_payable: 0, total_received: 0,
+        page: 1, pageSize: 10,
+      },
+    });
+  });
 
-  it('GET /reconcile/outstanding/orders filters by marketplace', async () => {
-    const server = app.listen(0);
-    const port = server.address().port;
+  it('GET and PUT /outstanding/config neither read nor write', async () => {
+    expect(await getJson('/outstanding/config')).toEqual({ status: 200, body: { configured: false, data: [] } });
+    expect(await putJson('/outstanding/config/myntra', { grace_period_days: 16 }))
+      .toEqual({ status: 200, body: { configured: false } });
 
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/orders?marketplace=flipkart&pageSize=5`);
-      expect(res.status).toBe(200);
-      const json = await res.json();
+    expect(mocks.getPool).not.toHaveBeenCalled();
+    expect(mocks.getOutstandingConfig).not.toHaveBeenCalled();
+    expect(mocks.updateOutstandingConfig).not.toHaveBeenCalled();
+  });
+});
 
-      if (json.data?.length > 0) {
-        for (const o of json.data) {
-          expect(o.marketplace).toBe('flipkart');
-        }
-      }
-    } finally {
-      server.close();
-    }
-  }, 60_000);
+describe('Outstanding Payments endpoints with a (mocked) database', () => {
+  beforeEach(() => {
+    mocks.state.dbConfigured = true;
+  });
 
-  it('GET /reconcile/outstanding/invoices returns paginated pending invoices', async () => {
-    const server = app.listen(0);
-    const port = server.address().port;
+  it('GET /outstanding/summary returns the computed matrix for the request filters', async () => {
+    const matrix = {
+      configured: true,
+      kpis: { unsettled: 1200, settled_not_paid: 300, settled_adjusted: 0, cashback: 0, total_outstanding: 1500 },
+      b2c: { channels: [{ channel_key: 'myntra', has_accounts: true, accounts: [{ account_key: 'myntra_ej' }, { account_key: 'myntra_vb' }] }] },
+      d2c: { vendors: [{ vendor_key: 'phonepe', vendor_name: 'PhonePe' }] },
+    };
+    mocks.computeOutstandingMatrix.mockResolvedValueOnce(matrix);
 
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/invoices?pageSize=10`);
-      expect(res.status).toBe(200);
-      const json = await res.json();
+    expect(await getJson('/outstanding/summary?marketplace=myntra')).toEqual({ status: 200, body: matrix });
+    expect(mocks.computeOutstandingMatrix).toHaveBeenCalledWith(mocks.pool, { marketplace: 'myntra' });
+  });
 
-      expect(json).toHaveProperty('data');
-      expect(Array.isArray(json.data)).toBe(true);
-      expect(json).toHaveProperty('total');
-    } finally {
-      server.close();
-    }
-  }, 60_000);
+  it('GET /outstanding/orders scopes the query to the requested marketplace', async () => {
+    // The route runs a page query and a count query together.
+    mocks.pool.query.mockResolvedValue({ rows: [{ total: 0, total_amount: 0 }] });
 
-  it('GET /reconcile/outstanding/summary returns B2C channels, Myntra accounts, and D2C vendors', async () => {
-    const server = app.listen(0);
-    const port = server.address().port;
+    const { status, body } = await getJson('/outstanding/orders?marketplace=flipkart&pageSize=5');
 
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/summary`);
-      expect(res.status).toBe(200);
-      const data = await res.json();
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ total: 0, page: 1, pageSize: 5 });
+    const scoped = mocks.pool.query.mock.calls.filter(([sql, params]) =>
+      /o\.marketplace = \$1/.test(sql) && params?.[0] === 'flipkart');
+    expect(scoped.length).toBeGreaterThan(0);
+  });
 
-      expect(data).toHaveProperty('configured');
-      if (data.configured) {
-        expect(data).toHaveProperty('kpis');
-        expect(typeof data.kpis.unsettled).toBe('number');
-        expect(typeof data.kpis.settled_not_paid).toBe('number');
-        expect(typeof data.kpis.settled_adjusted).toBe('number');
-        expect(typeof data.kpis.cashback).toBe('number');
-        expect(typeof data.kpis.total_outstanding).toBe('number');
+  it('GET /outstanding/config returns the stored channel configs', async () => {
+    const rows = [{ channel_key: 'myntra', grace_period_days: 15, payment_cycle_days: 30, is_active: true }];
+    mocks.getOutstandingConfig.mockResolvedValueOnce(rows);
 
-        expect(data).toHaveProperty('b2c');
-        expect(Array.isArray(data.b2c.channels)).toBe(true);
-        expect(data.b2c.channels.length).toBeGreaterThan(0);
+    expect(await getJson('/outstanding/config')).toEqual({ status: 200, body: { success: true, data: rows } });
+    expect(mocks.getOutstandingConfig).toHaveBeenCalledWith(mocks.pool);
+  });
 
-        // Verify Myntra accounts hierarchy
-        const myntra = data.b2c.channels.find(c => c.channel_key === 'myntra');
-        expect(myntra).toBeDefined();
-        expect(myntra.has_accounts).toBe(true);
-        expect(Array.isArray(myntra.accounts)).toBe(true);
-        expect(myntra.accounts.length).toBe(2);
+  it('PUT /outstanding/config/:channelKey passes only the validated fields', async () => {
+    const updated = { channel_key: 'myntra', grace_period_days: 16, payment_cycle_days: 30, is_active: true };
+    mocks.updateOutstandingConfig.mockResolvedValueOnce(updated);
 
-        const ej = myntra.accounts.find(a => a.seller_id === '45833' || a.account_key === 'myntra_ej');
-        const vb = myntra.accounts.find(a => a.seller_id === '10708' || a.account_key === 'myntra_vb');
-        expect(ej).toBeDefined();
-        expect(vb).toBeDefined();
-        expect(ej.unsettled).toBeGreaterThan(0);
-        expect(vb.unsettled).toBeGreaterThan(0);
+    expect(await putJson('/outstanding/config/myntra', { grace_period_days: 16 }))
+      .toEqual({ status: 200, body: { success: true, data: updated } });
+    expect(mocks.updateOutstandingConfig).toHaveBeenCalledWith(mocks.pool, 'myntra', {
+      grace_period_days: 16,
+      payment_cycle_days: null,
+      is_active: null,
+    });
+  });
 
-        // Verify D2C section
-        expect(data).toHaveProperty('d2c');
-        expect(Array.isArray(data.d2c.vendors)).toBe(true);
-        expect(data.d2c.vendors.length).toBeGreaterThanOrEqual(7);
+  it('PUT /outstanding/config/:channelKey answers 404 for an unknown channel', async () => {
+    mocks.updateOutstandingConfig.mockResolvedValueOnce(undefined);
 
-        const phonePe = data.d2c.vendors.find(v => v.vendor_key === 'phonepe');
-        expect(phonePe).toBeDefined();
-        expect(phonePe.vendor_name).toBe('PhonePe');
-      }
-    } finally {
-      server.close();
-    }
-  }, 60_000);
+    const { status, body } = await putJson('/outstanding/config/unknown_nonexistent_channel', { grace_period_days: 20 });
+    expect(status).toBe(404);
+    expect(body.error).toContain('not found');
+  });
 
-  it('GET /reconcile/outstanding/config returns channel configs and PUT updates config', async () => {
-    const server = app.listen(0);
-    const port = server.address().port;
-
-    try {
-      const getRes = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config`);
-      expect(getRes.status).toBe(200);
-      const configJson = await getRes.json();
-      if (configJson.configured !== false) {
-        expect(configJson.success).toBe(true);
-        expect(Array.isArray(configJson.data)).toBe(true);
-        expect(configJson.data.length).toBeGreaterThan(0);
-
-        const myntraCfg = configJson.data.find(c => c.channel_key === 'myntra');
-        expect(myntraCfg).toBeDefined();
-        expect(myntraCfg.grace_period_days).toBeDefined();
-
-        const putRes = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config/myntra`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ grace_period_days: 16 }),
-        });
-        expect(putRes.status).toBe(200);
-        const putJson = await putRes.json();
-        expect(putJson.success).toBe(true);
-        expect(putJson.data.grace_period_days).toBe(16);
-
-        // Verify 404 for unknown channel
-        const notFoundRes = await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config/unknown_nonexistent_channel`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ grace_period_days: 20 }),
-        });
-        expect(notFoundRes.status).toBe(404);
-        const notFoundJson = await notFoundRes.json();
-        expect(notFoundJson.error).toContain('not found');
-
-        // Revert back
-        await fetch(`http://127.0.0.1:${port}/reconcile/outstanding/config/myntra`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ grace_period_days: 15 }),
-        });
-      }
-    } finally {
-      server.close();
-    }
-  }, 60_000);
+  it.each([
+    [{ grace_period_days: 366 }, 'grace_period_days'],
+    [{ grace_period_days: 'soon' }, 'grace_period_days'],
+    [{ payment_cycle_days: -1 }, 'payment_cycle_days'],
+    [{ is_active: 'yes' }, 'is_active'],
+  ])('PUT /outstanding/config/:channelKey rejects %j before writing', async (body, field) => {
+    const res = await putJson('/outstanding/config/myntra', body);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain(field);
+    expect(mocks.updateOutstandingConfig).not.toHaveBeenCalled();
+  });
 });

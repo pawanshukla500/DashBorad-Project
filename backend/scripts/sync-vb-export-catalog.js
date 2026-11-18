@@ -1,11 +1,13 @@
-import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { getPool } from '../db/index.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
+import { loadEnvFiles } from '../utils/loadEnv.js';
 
-dotenv.config();
+// routes/upload.js imports this module, so it is part of the server (and test)
+// graph: same file dotenv.config() reads by default, skipped under tests.
+loadEnvFiles([path.resolve(process.cwd(), '.env')]);
 
 /**
  * Create the catalog tables/columns/indexes only when one is missing (a fresh

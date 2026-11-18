@@ -1,7 +1,10 @@
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import dotenv from 'dotenv';
-dotenv.config();
+import path from 'path';
+import { loadEnvFiles } from './loadEnv.js';
+
+// Same file dotenv.config() reads by default; skipped under a test runner.
+loadEnvFiles([path.resolve(process.cwd(), '.env')]);
 
 let serviceAccount;
 try {

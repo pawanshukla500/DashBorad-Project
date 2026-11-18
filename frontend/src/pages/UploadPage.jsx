@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import DataHealthPanel from '../components/DataHealthPanel';
 import { fetchUploadStatus, fetchUploadHistory, downloadTemplate, uploadDataFile, uploadFkSettlement, pollFkProgress, saveUploadRemark, clearUploadData, fetchSkippedRows, pushSettlementReport, uploadAmazonSettlement, pollAmazonSettlementProgress, uploadMeeshoSettlement, fetchLinkageHealth, downloadMpInvoiceTemplate, uploadMpInvoices, downloadMyntraTemplate, uploadMyntraData, invalidateApiReadCache } from '../api/client';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -417,6 +418,8 @@ export default function UploadPage() {
         </div>
       )}
       
+      <DataHealthPanel />
+
       {/* ── Fee anomaly check code was removed here ── */}
       
       {/* Step 1 & 2 Container */}

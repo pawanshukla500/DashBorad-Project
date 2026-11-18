@@ -18,7 +18,11 @@ import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { getRateCard } from '../services/rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
-import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
+import {
+  backfillOrdersFromMyntraPayment,
+  resetOrdersWithoutMyntraPayment,
+  restoreMyntraStatusesWithoutReverse,
+} from '../services/myntraSettlementReportingRollups.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { pagination } from '../utils/requestParams.js';
 import { optionalNumber, optionalString } from '../utils/valueParsers.js';
@@ -26,6 +30,8 @@ import { MYNTRA_SELLER_IDS } from './myntraUpload.js';
 import { classifyMyntraNod } from '../services/myntraNodClassification.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { mirrorAjioInvoicesToSor, rebuildAjioSorLedger } from '../services/sorMirror.js';
+import { createHeaderIndex } from '../utils/headerIndex.js';
+import { adoptLegacyFingerprints, readLegacyTextRows } from '../utils/legacyTextParse.js';
 
 const router = express.Router();
 const upload = multer({
@@ -35,8 +41,12 @@ const upload = multer({
 const req2   = createRequire(import.meta.url);
 const XLSX   = req2('xlsx');
 // Invoice and ledger uploads: the first sheet as row objects, parsed on a
-// worker thread that takes over the upload buffer.
-const UPLOAD_SHEET_OPTIONS = { read: { cellDates: true }, sheets: 0, json: { defval: '' }, transfer: true };
+// worker thread that takes over the upload buffer. `raw: true` keeps CSV cells
+// as their exact text: otherwise SheetJS guessed types in CSV text, turning
+// '05/04/2026' into 4 May (US order) while '13/04/2026' stayed text (so one
+// column mixed both orders), and 18+ digit order/line IDs lost precision as
+// numbers. XLSX cells are unaffected; real date cells still arrive as Dates.
+const UPLOAD_SHEET_OPTIONS = { read: { cellDates: true, raw: true }, sheets: 0, json: { defval: '' }, transfer: true };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 function num(v) { return optionalNumber(v) ?? 0; }
@@ -77,14 +87,24 @@ function strictPositiveInteger(value) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-function invoiceAlias(row, ...keys) {
+// Invoice and ledger rows are read through ~150 header aliases. Scanning and
+// regex-normalizing every column for every alias of every row froze the event
+// loop for minutes on 100K-row payment files; the shared index
+// (utils/headerIndex.js) normalizes each header once per file. Matching is
+// unchanged: the first column whose normalized name equals the alias, skipped
+// when that cell is ''.
+const uploadHeaders = createHeaderIndex(text => text.toLowerCase().replace(/[\s_-]+/g, ''));
+
+function headerAlias(row, keys) {
   for (const key of keys) {
-    const found = Object.keys(row).find(column =>
-      column.toLowerCase().replace(/[\s_-]+/g, '') === key.toLowerCase().replace(/[\s_-]+/g, ''),
-    );
+    const found = uploadHeaders.column(row, key);
     if (found && row[found] !== '') return row[found];
   }
   return '';
+}
+
+function invoiceAlias(row, ...keys) {
+  return headerAlias(row, keys);
 }
 
 export function isRepeatedHeaderValue(val) {
@@ -500,13 +520,37 @@ const LEDGER_ENTRY_TYPES = new Map([
 ]);
 
 function ledgerAlias(row, ...keys) {
-  for (const key of keys) {
-    const found = Object.keys(row).find(column =>
-      column.toLowerCase().replace(/[\s_-]+/g, '') === key.toLowerCase().replace(/[\s_-]+/g, ''),
-    );
-    if (found && row[found] !== '') return row[found];
+  return headerAlias(row, keys);
+}
+
+// Myntra payment rows feed `unified_settlements` (and through it the
+// `order_settlement_totals` read model every dashboard joins) and the orders
+// settlement columns. Uploads rebuild both; edits, deletes and clears did not,
+// so removed or corrected payments stayed on the dashboards until the next
+// import. The row change is already committed, so a failed rebuild is logged
+// (the next import or POST /invoices/backfill-myntra repairs it) instead of
+// reporting the committed edit as failed; the result says so (`refreshed`).
+// `rows` are the payment rows before/after the change (order_line_id +
+// order_release_id identify the affected order lines; a payment can carry a
+// line id without a release id). `rows` null = the whole account (a clear).
+async function refreshMyntraSettlementModels(pool, sellerAccount, rows) {
+  const scope = rows == null ? null : {
+    lineIds: rows.map(row => stripIdApostrophe(row?.order_line_id)).filter(Boolean),
+    releaseIds: rows.map(row => stripIdApostrophe(row?.order_release_id)).filter(Boolean),
+  };
+  try {
+    // Orders left without any payment row lose the removed payment's values;
+    // orders that still have rows are recomputed from all of them; a status
+    // that only a removed reverse payment set is put back.
+    await resetOrdersWithoutMyntraPayment(pool, sellerAccount || null, scope);
+    if (scope) await backfillOrdersFromMyntraPayment(pool, sellerAccount || null, scope);
+    await restoreMyntraStatusesWithoutReverse(pool, sellerAccount || null, scope);
+    await refreshOrderSettlementTotals(pool);
+    return { refreshed: true };
+  } catch (error) {
+    console.warn('[mp-settlement] Myntra settlement read-model refresh failed:', error.message);
+    return { refreshed: false, error: error.message };
   }
-  return '';
 }
 
 function canonicalLedgerEntryType(value) {
@@ -947,32 +991,53 @@ router.put('/invoices/:id', async (req, res) => {
       throw inputError('Marketplace and seller account cannot be changed on an existing invoice. Create a new invoice instead.');
     }
     const pool = getPool();
-    const existing = await pool.query(`SELECT * FROM mp_invoices WHERE id = $1`, [id]);
-    if (!existing.rows[0]) return res.status(404).json({ error: 'Invoice not found' });
-    const current = existing.rows[0];
     const suppliedFields = Object.keys(b).filter(key => key !== 'marketplace' && key !== 'seller_account');
     if (!suppliedFields.length) return res.status(400).json({ error: 'Nothing to update' });
-
-    const parsed = parseInvoiceUploadRow({ ...current, ...b }, {
-      marketplace: current.marketplace,
-      sellerAccount: current.seller_account,
-      batch: current.upload_batch || `manual-${new Date().toISOString().replace(/[:.]/g, '-')}`,
-    });
-    if (parsed.error) throw inputError(parsed.error);
-    const record = [...parsed.values, parsed.fingerprint];
-    const editableColumns = INVOICE_STORAGE_COLUMNS
-      .filter(column => !['marketplace', 'seller_account'].includes(column));
-    const values = editableColumns.map(column => record[INVOICE_STORAGE_COLUMNS.indexOf(column)]);
-    const sets = editableColumns
-      .map((column, index) => `${column} = $${index + 1}`)
-      .concat('updated_at = NOW()');
-    values.push(id);
-    const result = await pool.query(
-      `UPDATE mp_invoices SET ${sets.join(', ')} WHERE id = $${values.length} RETURNING marketplace, seller_account, invoice_number`,
-      values,
-    );
-    const updated = result.rows[0];
+    // Read and lock the row in the same transaction as the update, so the
+    // refresh below uses the identity this edit actually replaced (two
+    // concurrent edits no longer refresh a stale "before" release).
+    const client = await pool.connect();
+    let current;
+    let updated;
+    try {
+      await client.query('BEGIN');
+      const existing = await client.query(`SELECT * FROM mp_invoices WHERE id = $1 FOR UPDATE`, [id]);
+      current = existing.rows[0];
+      if (!current) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Invoice not found' });
+      }
+      const parsed = parseInvoiceUploadRow({ ...current, ...b }, {
+        marketplace: current.marketplace,
+        sellerAccount: current.seller_account,
+        batch: current.upload_batch || `manual-${new Date().toISOString().replace(/[:.]/g, '-')}`,
+      });
+      if (parsed.error) throw inputError(parsed.error);
+      const record = [...parsed.values, parsed.fingerprint];
+      const editableColumns = INVOICE_STORAGE_COLUMNS
+        .filter(column => !['marketplace', 'seller_account'].includes(column));
+      const values = editableColumns.map(column => record[INVOICE_STORAGE_COLUMNS.indexOf(column)]);
+      const sets = editableColumns
+        .map((column, index) => `${column} = $${index + 1}`)
+        .concat('updated_at = NOW()');
+      values.push(id);
+      const result = await client.query(
+        `UPDATE mp_invoices SET ${sets.join(', ')} WHERE id = $${values.length}
+         RETURNING marketplace, seller_account, invoice_number, order_release_id, order_line_id`,
+        values,
+      );
+      updated = result.rows[0];
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
     clearSkuSettlementBenchmarkCache(updated.marketplace);
+    const myntraRefresh = updated.marketplace === 'myntra'
+      ? await refreshMyntraSettlementModels(pool, updated.seller_account, [current, updated])
+      : null;
     // An edit can move the row to another invoice number: refresh both.
     const sor = updated.marketplace === 'ajio'
       ? await syncAjioSorLedger(pool, [
@@ -980,7 +1045,7 @@ router.put('/invoices/:id', async (req, res) => {
         { seller_account: updated.seller_account, invoice_no: updated.invoice_number },
       ])
       : null;
-    res.json({ ok: true, ...(sor ? { sor } : {}) });
+    res.json({ ok: true, ...(sor ? { sor } : {}), ...(myntraRefresh && !myntraRefresh.refreshed ? { refreshPending: true } : {}) });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -991,15 +1056,18 @@ router.delete('/invoices/:id', async (req, res) => {
     if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid invoice ID' });
     const pool = getPool();
     const { rows } = await pool.query(
-      `DELETE FROM mp_invoices WHERE id = $1 RETURNING marketplace, seller_account, invoice_number`,
+      `DELETE FROM mp_invoices WHERE id = $1 RETURNING marketplace, seller_account, invoice_number, order_release_id, order_line_id`,
       [req.params.id],
     );
     if (!rows[0]) return res.status(404).json({ error: 'Invoice not found' });
     if (rows[0]?.marketplace) clearSkuSettlementBenchmarkCache(rows[0].marketplace);
+    const myntraRefresh = rows[0].marketplace === 'myntra'
+      ? await refreshMyntraSettlementModels(pool, rows[0].seller_account, [rows[0]])
+      : null;
     const sor = rows[0].marketplace === 'ajio'
       ? await syncAjioSorLedger(pool, [{ seller_account: rows[0].seller_account, invoice_no: rows[0].invoice_number }])
       : null;
-    res.json({ ok: true, ...(sor ? { sor } : {}) });
+    res.json({ ok: true, ...(sor ? { sor } : {}), ...(myntraRefresh && !myntraRefresh.refreshed ? { refreshPending: true } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1016,6 +1084,11 @@ router.delete('/invoices', async (req, res) => {
       account ? [mp, account] : [mp]
     );
     clearSkuSettlementBenchmarkCache(mp);
+    // No payment rows remain in the cleared scope: reset its orders' payment
+    // columns (whole account) and rebuild the totals read model. It also runs
+    // when nothing was deleted, so repeating a clear whose refresh failed
+    // repairs the orders; a failure is reported as refreshPending.
+    const myntraRefresh = mp === 'myntra' ? await refreshMyntraSettlementModels(pool, account, null) : null;
     let sor = null;
     if (mp === 'ajio') {
       sor = await rebuildAjioSorLedger(pool)
@@ -1025,7 +1098,7 @@ router.delete('/invoices', async (req, res) => {
           return { mirrored: 0, removed: 0, errors: 1, failed: true };
         });
     }
-    res.json({ ok: true, deleted: rowCount, ...(sor ? { sor } : {}) });
+    res.json({ ok: true, deleted: rowCount, ...(sor ? { sor } : {}), ...(myntraRefresh && !myntraRefresh.refreshed ? { refreshPending: true } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1035,9 +1108,13 @@ router.post('/invoices/backfill-myntra', async (req, res) => {
   try {
     const pool = getPool();
     const account = str(req.query.seller_account || req.body?.seller_account);
+    // Reset first: the backfill only updates orders that still have payments,
+    // so orders whose payments were removed are repaired here too.
+    const { ordersReset } = await resetOrdersWithoutMyntraPayment(pool, account || null, null);
     const { ordersUpdated } = await backfillOrdersFromMyntraPayment(pool, account);
+    const { ordersRestored } = await restoreMyntraStatusesWithoutReverse(pool, account || null, null);
     await refreshOrderSettlementTotals(pool);
-    res.json({ ok: true, ordersUpdated });
+    res.json({ ok: true, ordersUpdated, ordersReset, ordersRestored });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1240,6 +1317,8 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
   try {
     pool = getPool();
     sellerAccount = await resolveSellerAccount(pool, mp, req.query.seller_account || req.body.seller_account, { required: mp === 'myntra' });
+    // Read before the main parse, which takes over the buffer (see utils/legacyTextParse.js).
+    const legacyRows = await readLegacyTextRows(req.file.buffer, UPLOAD_SHEET_OPTIONS);
     const wb    = await parseSpreadsheet(req.file.buffer, UPLOAD_SHEET_OPTIONS);
     const raw   = wb.Sheets[wb.SheetNames[0]] ?? [];
     const batch = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1247,8 +1326,14 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
     if (mp === 'myntra') validateMyntraInvoiceSellerIds(raw, sellerAccount);
 
     const recordsByFingerprint = new Map();
+    const legacyPairs = [];
+    const alignedLegacy = legacyRows && legacyRows.length === raw.length ? legacyRows : null;
     for (let index = 0; index < raw.length; index++) {
       const parsed = parseInvoiceUploadRow(raw[index], { marketplace: mp, sellerAccount, batch });
+      if (!parsed.error && alignedLegacy) {
+        const legacy = parseInvoiceUploadRow(alignedLegacy[index], { marketplace: mp, sellerAccount, batch });
+        if (!legacy.error && legacy.fingerprint !== parsed.fingerprint) legacyPairs.push([legacy.fingerprint, parsed.fingerprint]);
+      }
       if (parsed.error) {
         skipped++;
         skippedRows.push({ rowNum: index + 2, reason: parsed.error, data: raw[index] });
@@ -1264,6 +1349,11 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
 
     const records = [...recordsByFingerprint.entries()].map(([fingerprint, values]) => [...values, fingerprint]);
     if (!records.length) throw inputError('No valid invoice rows were found. Review the skipped-row reasons and correct the file before retrying.');
+    // Rows this file wrote before exact-text parsing are re-keyed, not duplicated.
+    const legacyAdoption = await adoptLegacyFingerprints(pool, 'mp_invoices', legacyPairs);
+    if (legacyAdoption.adopted || legacyAdoption.duplicatesRemoved) {
+      console.log(`[mp-settlement] invoices: adopted ${legacyAdoption.adopted} legacy rows, removed ${legacyAdoption.duplicatesRemoved} duplicates`);
+    }
 
     await forEachDbBatch(records, INVOICE_STORAGE_COLUMNS.length, async batchRows => {
       const values = [];
@@ -1300,11 +1390,11 @@ router.post('/invoices/upload', upload.single('file'), async (req, res) => {
     // settlement read model must be rebuilt exactly like Flipkart/Amazon do
     // after their settlement imports.
     if (mp === 'myntra' && (inserted || updated)) {
-      const affectedOrderIds = raw
-        .filter(r => !isRepeatedInvoiceHeader(r))
-        .map(r => stripIdApostrophe(invoiceAlias(r, 'order_release_id', 'order_id', 'release_id')))
-        .filter(Boolean);
-      await backfillOrdersFromMyntraPayment(pool, sellerAccount, affectedOrderIds);
+      const uploadedRows = raw.filter(r => !isRepeatedInvoiceHeader(r));
+      await backfillOrdersFromMyntraPayment(pool, sellerAccount, {
+        releaseIds: uploadedRows.map(r => stripIdApostrophe(invoiceAlias(r, 'order_release_id', 'order_id', 'release_id'))),
+        lineIds: uploadedRows.map(r => stripIdApostrophe(invoiceAlias(r, 'order_line_id', 'line_id'))),
+      });
       await refreshOrderSettlementTotals(pool);
     }
     // Keep the Data Center history separate for Myntra EJ and VB even though
@@ -1426,14 +1516,21 @@ router.post('/ledger/upload', upload.single('file'), async (req, res) => {
   let skippedRows = [];
   try {
     pool = getPool();
+    const legacyRows = await readLegacyTextRows(req.file.buffer, UPLOAD_SHEET_OPTIONS);
     const wb    = await parseSpreadsheet(req.file.buffer, UPLOAD_SHEET_OPTIONS);
     const raw   = wb.Sheets[wb.SheetNames[0]] ?? [];
     const batch = new Date().toISOString().replace(/[:.]/g, '-');
     if (!raw.length) throw inputError('The workbook has headers but no data rows. No data was saved.');
 
     const recordsByFingerprint = new Map();
+    const legacyPairs = [];
+    const alignedLegacy = legacyRows && legacyRows.length === raw.length ? legacyRows : null;
     for (let index = 0; index < raw.length; index++) {
       const parsed = parseLedgerUploadRow(raw[index], { marketplace: mp, batch });
+      if (!parsed.error && alignedLegacy) {
+        const legacy = parseLedgerUploadRow(alignedLegacy[index], { marketplace: mp, batch });
+        if (!legacy.error && legacy.fingerprint !== parsed.fingerprint) legacyPairs.push([legacy.fingerprint, parsed.fingerprint]);
+      }
       if (parsed.error) {
         skipped++;
         skippedRows.push({ rowNum: index + 2, reason: parsed.error, data: raw[index] });
@@ -1448,6 +1545,11 @@ router.post('/ledger/upload', upload.single('file'), async (req, res) => {
     }
     const records = [...recordsByFingerprint.entries()].map(([fingerprint, values]) => [...values, fingerprint]);
     if (!records.length) throw inputError('No valid ledger rows were found. Review the skipped-row reasons and correct the file before retrying.');
+    // Rows this file wrote before exact-text parsing are re-keyed, not duplicated.
+    const legacyAdoption = await adoptLegacyFingerprints(pool, 'mp_ledger_entries', legacyPairs);
+    if (legacyAdoption.adopted || legacyAdoption.duplicatesRemoved) {
+      console.log(`[mp-settlement] ledger: adopted ${legacyAdoption.adopted} legacy rows, removed ${legacyAdoption.duplicatesRemoved} duplicates`);
+    }
 
     await forEachDbBatch(records, LEDGER_STORAGE_COLUMNS.length, async batchRows => {
       const values = [];

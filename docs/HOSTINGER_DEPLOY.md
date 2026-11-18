@@ -112,7 +112,28 @@ The tunnel maps local `127.0.0.1:5432` -> VPS `127.0.0.1:5433` securely over SSH
 ```dotenv
 DATABASE_URL=postgresql://pawanshukla:PASSWORD@localhost:5432/paymentapp
 PG_SSL=false
+# Optional: let the backend open the tunnel itself when it reconnects.
+# DB_TUNNEL_AUTOSTART=true
 ```
+
+The backend does not open the tunnel on its own unless `DB_TUNNEL_AUTOSTART=true`
+is set and the `DATABASE_URL` port equals `DB_TUNNEL_LOCAL_PORT` (default 5432);
+`START.bat` sets the variable for the backend it starts. Even then it never does so under a test runner (`VITEST` set or
+`NODE_ENV=test`), so `npm test` cannot forward a test's loopback
+`DATABASE_URL` to the production database. Without the variable, start the
+tunnel with `npm run tunnel` or `START.bat` first; the backend reconnects
+automatically once `localhost:5432` is reachable.
+
+The backend reads `.env` files only outside tests. `backend/db/index.js`,
+`backend/server.js` and the other loaders go through `backend/utils/loadEnv.js`,
+which loads nothing when `VITEST` is set or `NODE_ENV=test`. So `npm test`
+never sees the production `DATABASE_URL` in `backend/.env`, even with the
+tunnel up: like CI, which has no `.env`, each test sets the variables it needs.
+A test that needs a database must set its own `DATABASE_URL`, pointing at a
+disposable database, never at the tunnel. Database variables exported in your
+shell are ignored by convention, not by a global setup: every test that could
+reach the database mocks `db/index.js` or calls `stubNoDatabaseEnv()`
+(`backend/tests/helpers/databaseEnv.js`), and a new test must do the same.
 
 `/health` returns HTTP 200 only when the API can reach PostgreSQL. If the
 database is temporarily unavailable, the API stays running, returns a clear

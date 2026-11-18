@@ -5,6 +5,9 @@ import { amazonReportingRollupUnifiedSelect, ensureAmazonSettlementReportingRoll
 import { myntraInvoicesUnifiedSelect } from '../services/myntraSettlementReportingRollups.js';
 import { meeshoSettlementUnifiedSelect } from '../services/meeshoSettlementReportingRollups.js';
 import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { AMAZON_SALE_ORDER_SHIPMENTS_DDL } from '../services/amazonSaleOrderShipments.js';
+import { MYNTRA_SYNTHESIZED_RETURN_REASONS } from '../services/myntraSettlementReportingRollups.js';
+import { setFeatureReadiness } from '../services/featureReadiness.js';
 import { rebuildAjioSorLedger } from '../services/sorMirror.js';
 import { reencryptMarketplaceCredentials } from '../utils/credentialCrypto.js';
 import { runRateCardDimensionalMigration } from './rateCardDimensionalMigration.js';
@@ -48,6 +51,8 @@ const MYNTRA_BLANK_TRACKING_CANCELLED_SCHEMA_VERSION = '2026.09.myntra-blank-tra
 const MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION = '2026.09.myntra-ej-rate-cards-1';
 const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimization-1';
 const LOOKUP_INDEXES_SCHEMA_VERSION = '2026.09.lookup-indexes-1';
+const SEARCH_TRGM_SCHEMA_VERSION = '2026.11.search-trgm-1';
+const MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION = '2026.11.myntra-shipped-synthetic-returns-2';
 const MARKETPLACE_CREDENTIALS_SCHEMA_VERSION = '2026.10.marketplace-credentials-1';
 export const RATE_CARD_WORKER_SCHEMA_VERSION = '2026.10.ratecard-worker-jobs-1';
 // Dimensional rate-card migration version lives in ./rateCardDimensionalMigration.js.
@@ -828,15 +833,11 @@ const INDEXES = [
   // seller_account-only index helps filter-only requests.
   `CREATE INDEX IF NOT EXISTS IX_returns_market_account_requested ON returns(marketplace, seller_account, return_requested_date DESC)`,
   // ── Round 2 — bundle-side and tail query coverage ───────────────────────────
-  // vb_export_sku is used in the COGS_JOINS COALESCE and in the master-catalog
-  // join that backs /api/orders, /api/summary, /api/profit-analysis. Without an
-  // index the lookup degrades to a heap scan for every filtered row.
-  `CREATE INDEX IF NOT EXISTS IX_orders_vb_export_sku ON orders(vb_export_sku) WHERE vb_export_sku IS NOT NULL AND vb_export_sku <> ''`,
-  // order_returns is a UNION ALL view whose Amazon branch joins orders on
-  // (order_id, sku, marketplace) and whose non-Amazon branch is `returns`
-  // filtered by order_item_id. The marketplace-agnostic order_item_id lookup
-  // is on the critical path of nearly every report endpoint; cover it.
-  `CREATE INDEX IF NOT EXISTS IX_returns_order_item_id ON returns(order_item_id) WHERE order_item_id IS NOT NULL`,
+  // orders(vb_export_sku) (COGS_JOINS / master-catalog joins) is IX_orders_vb_export_sku
+  // above; a second, partial definition with the same name was never created.
+  // returns(order_item_id), on the critical path of order_returns and nearly
+  // every report, is IX_returns_item above (a second copy was dropped by
+  // 2026.11.redundant-indexes-1).
   // Faster sidebar filter for the Returns tab and the Returns tab's source
   // drill-down on (marketplace, return_status, return_requested_date).
   `CREATE INDEX IF NOT EXISTS IX_returns_market_status_requested ON returns(marketplace, return_status, return_requested_date DESC) WHERE return_status IS NOT NULL`,
@@ -846,7 +847,8 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_period ON sor_invoice(period_from, period_to)`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_order ON sor_invoice_line(order_id) WHERE order_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_sku   ON sor_invoice_line(vb_export_sku) WHERE vb_export_sku IS NOT NULL`,
-  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_invoice ON sor_invoice_line(invoice_id)`,
+  // sor_invoice_line(invoice_id) is served by IX_sor_invoice_line_invoice_cover
+  // (created in ensureSorLedgerSchema).
   // Phase 0.5 — the line_type covering index and the FK-column indexes are
   // created INSIDE ensureSorLedgerSchema after the columns are added, so
   // existing installs that pre-date the columns don't crash on this DDL.
@@ -1108,14 +1110,18 @@ export async function initDb() {
       await ensureMyntraPartnerWarehouseSchema(db);
       await ensureMyntraBlankTrackingRtoFix(db);
       await ensureMyntraBlankTrackingCancelledFix(db);
+      await ensureMyntraShippedSyntheticReturnsCleanup(pool);
       await ensureMyntraEjRateCardsSeed(db);
       await ensureSorSchema(pool);
       await ensureDbConnectionOptimization(db);
-      await ensureLookupIndexes(pool);
+      await ensureRedundantIndexCleanup(pool);
+      scheduleBackgroundIndexBuilds(pool);
       await ensureMarketplaceCredentialsSchema(db);
-      await ensureRateCardWorkerSchema(pool);
+      recordRateCardWorkerReadiness(await ensureRateCardWorkerSchema(pool));
       // A read-model migration changes the view definition as well as the
       // backing table, so it must run on already-current installations too.
+      // Per-shipment Amazon Sale Order ledger (CREATE TABLE IF NOT EXISTS).
+      await db.query(AMAZON_SALE_ORDER_SHIPMENTS_DDL);
       await ensureAmazonSettlementReportingRollups(pool, db);
       await ensureUnifiedSettlementsView(db);
       await ensureOrderSettlementTotals(pool, db);
@@ -1598,7 +1604,6 @@ export async function initDb() {
       await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
     }
     await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_composite ON returns(composite_key)`).catch(() => {});
-    await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_order_id  ON returns(order_id)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_order_sku ON returns(order_id, sku)`).catch(() => {});
 
     // sku_master: cross-link Amazon identifiers (fnsku + asin) so FBA returns
@@ -1719,9 +1724,7 @@ export async function initDb() {
     await db.query(`UPDATE amazon_settlement_lines SET brand_name = $1 WHERE brand_name IS DISTINCT FROM $1`, [AMAZON_BRAND]).catch(e => console.warn('[db] Amazon settlement brand backfill:', e.message));
     await db.query(`ALTER TABLE fk_spf_claims ADD COLUMN IF NOT EXISTS order_item_id TEXT`).catch(() => {});
     await db.query(`ALTER TABLE fk_spf_claims ADD COLUMN IF NOT EXISTS status TEXT`).catch(() => {});
-    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_settlement ON amazon_settlement_lines(settlement_id)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_item ON amazon_settlement_lines(order_item_code)`).catch(() => {});
-    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_id   ON amazon_settlement_lines(order_id)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_composite  ON amazon_settlement_lines(composite_key)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_posted     ON amazon_settlement_lines(posted_date)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_tax_desc   ON amazon_settlement_lines(amount_type, amount_description)`).catch(() => {});
@@ -1790,6 +1793,8 @@ export async function initDb() {
     // ── unified_settlements view (owned by app boot — not ad-hoc scripts) ─────
     await ensureUnifiedSettlementsView(db);
     await ensureOrderSettlementTotals(pool, db);
+    // Per-shipment Amazon Sale Order ledger (CREATE TABLE IF NOT EXISTS).
+    await db.query(AMAZON_SALE_ORDER_SHIPMENTS_DDL);
 
     // ── order_items_summary view (unified order lifecycle: order + return + settlement + COGS) ──
     await ensureOrderItemsSummaryView(db);
@@ -1807,12 +1812,14 @@ export async function initDb() {
     await ensureMyntraPartnerWarehouseSchema(db);
     await ensureMyntraBlankTrackingRtoFix(db);
     await ensureMyntraBlankTrackingCancelledFix(db);
+    await ensureMyntraShippedSyntheticReturnsCleanup(pool);
     await ensureMyntraEjRateCardsSeed(db);
     await ensureSorSchema(pool);
     await ensureDbConnectionOptimization(db);
-    await ensureLookupIndexes(pool);
+    await ensureRedundantIndexCleanup(pool);
+    scheduleBackgroundIndexBuilds(pool);
     await ensureMarketplaceCredentialsSchema(db);
-    await ensureRateCardWorkerSchema(pool);
+    recordRateCardWorkerReadiness(await ensureRateCardWorkerSchema(pool));
 
     db.throwIfInterrupted();
     await db.query(
@@ -2387,8 +2394,7 @@ async function ensureSorOutstandingView(pool) {
   const outstanding = `(${sale} - ${payment} - ${returned} - ${deduction})`;
   const expected = `(${sale} - ${returned} - ${deduction})`;
   try {
-    await pool.query(`
-      CREATE OR REPLACE VIEW sor_outstanding AS
+    const select = `
       SELECT
           i.id                                     AS invoice_id,
           i.portal,
@@ -2417,7 +2423,20 @@ async function ensureSorOutstandingView(pool) {
       LEFT JOIN sor_invoice_line s ON s.invoice_id = i.id
       GROUP BY i.id, i.portal, i.portal_account, i.invoice_no, i.invoice_date,
                i.period_from, i.period_to, i.invoice_type, i.net_payable, i.uploaded_at
-    `);
+    `;
+    // Replaced only when the definition changed. CREATE OR REPLACE VIEW takes
+    // an ACCESS EXCLUSIVE lock (briefly blocking the SOR pages) and ran on every
+    // boot and on each 60 s retry while SOR migrations were pending.
+    // The probe view is session-local: create, compare, drop and replace on
+    // ONE client, or the comparison can run on a pooled connection that cannot
+    // see the probe and replace an unchanged view anyway.
+    const ownsClient = typeof pool.connect === 'function' && typeof pool.release !== 'function';
+    const viewClient = ownsClient ? await pool.connect() : pool;
+    try {
+      await replaceViewIfChanged(viewClient, 'sor_outstanding', select, `CREATE OR REPLACE VIEW sor_outstanding AS ${select}`);
+    } finally {
+      if (ownsClient) viewClient.release();
+    }
     return true;
   } catch (error) {
     console.error('[db] sor_outstanding view could not be created:', error.message);
@@ -2874,7 +2893,7 @@ async function ensureMyntraRtoReturnDateFix(pool) {
  * Backfills warehouse_id and partner_warehouse_code from source_data JSONB if present,
  * maintaining full backwards compatibility for historical and new reports alike.
  */
-async function ensureMyntraPartnerWarehouseSchema(pool) {
+export async function ensureMyntraPartnerWarehouseSchema(pool) {
   const { rowCount } = await pool.query(
     `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
     [MYNTRA_PARTNER_WH_SCHEMA_VERSION],
@@ -2989,6 +3008,32 @@ async function ensureMyntraBlankTrackingRtoFix(pool) {
  * with return_type 'Courier Return', and have a matching entry in returns table with
  * return_status = 'Cancelled' and return_reason = 'Cancel Before Dispached'.
  */
+/**
+ * One-time repair matching the Myntra orders-upload rule added with it: a
+ * synthesized "Cancel Before Dispached" return (blank tracking number) is
+ * removed once the stored order line has a tracking number, i.e. it shipped
+ * after all. Before that rule such returns stayed counted as courier returns
+ * forever. Only rows the blank-tracking rule synthesized are touched
+ * (return_id RTO-<line>, with the current or the legacy backfill's reason);
+ * a real return keeps its own id.
+ */
+export async function ensureMyntraShippedSyntheticReturnsCleanup(pool) {
+  return runVersionedMigration(pool, MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION, async client => {
+    const { rowCount } = await client.query(`
+      DELETE FROM returns r
+      USING myntra_order_details d
+      WHERE r.marketplace = 'myntra'
+        AND r.return_id = 'RTO-' || r.order_item_id
+        AND r.return_reason = ANY($1::text[])
+        AND d.marketplace = 'myntra'
+        AND d.seller_account = r.seller_account
+        AND d.order_line_id = r.order_item_id
+        AND NULLIF(BTRIM(d.tracking_number), '') IS NOT NULL
+    `, [MYNTRA_SYNTHESIZED_RETURN_REASONS]);
+    if (rowCount) console.log(`[db] Removed ${rowCount} synthesized Myntra returns for lines that later shipped.`);
+  });
+}
+
 async function ensureMyntraBlankTrackingCancelledFix(pool) {
   const { rowCount } = await pool.query(
     `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
@@ -3154,6 +3199,163 @@ const LOOKUP_INDEXES = [
   ['ix_sku_master_listing_sku', 'sku_master (listing_sku)'],
 ];
 
+/**
+ * Indexes that another index on the same table already covers (same leading
+ * column(s)); each one only slowed every insert into a busy write table:
+ *  - amazon_settlement_lines(settlement_id)  ⊂ (settlement_id, posted_date DESC)
+ *  - amazon_settlement_lines(order_id)       ⊂ (order_id, sku)
+ *  - returns(order_item_id) partial copy     = IX_returns_item (order_item_id)
+ *  - returns(order_id)                       ⊂ (order_id, sku)
+ *  - sor_invoice_line(invoice_id)            ⊂ (invoice_id) INCLUDE (...) cover index
+ * Their CREATE statements were removed from startup. Each table is its own
+ * versioned migration (one transaction, 5 s lock_timeout), so a lock wait on
+ * one table never extends the exclusive lock already taken on another. An
+ * index is dropped only when its replacement exists and is valid (checked
+ * inside the migration); otherwise the migration stays pending and retries on
+ * the next start, keeping the old index as the access path meanwhile.
+ */
+const REDUNDANT_INDEX_CLEANUPS = [
+  {
+    version: '2026.11.redundant-indexes-amazon-1',
+    drops: [
+      ['ix_amzn_lines_settlement', 'ix_amzn_lines_settle_date'],
+      ['ix_amzn_lines_order_id', 'ix_amzn_lines_order_sku'],
+    ],
+  },
+  {
+    version: '2026.11.redundant-indexes-returns-1',
+    drops: [
+      ['ix_returns_order_item_id', 'ix_returns_item'],
+      ['ix_returns_order_id', 'ix_returns_order_sku'],
+    ],
+  },
+  {
+    version: '2026.11.redundant-indexes-sor-1',
+    drops: [['ix_sor_invoice_line_invoice', 'ix_sor_invoice_line_invoice_cover']],
+  },
+];
+
+export const REDUNDANT_INDEX_CLEANUP_VERSIONS = REDUNDANT_INDEX_CLEANUPS.map(cleanup => cleanup.version);
+
+export async function ensureRedundantIndexCleanup(pool) {
+  const results = [];
+  for (const { version, drops } of REDUNDANT_INDEX_CLEANUPS) {
+    results.push(await runVersionedMigration(pool, version, async client => {
+      for (const [index, replacement] of drops) {
+        const { rows } = await client.query(`
+          SELECT i.indisvalid AS valid
+          FROM pg_class c
+          JOIN pg_index i ON i.indexrelid = c.oid
+          WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
+        `, [replacement]);
+        if (!rows[0]?.valid) {
+          throw new Error(`${replacement} is missing or invalid; keeping ${index}`);
+        }
+        await client.query(`DROP INDEX IF EXISTS ${index}`);
+      }
+    }));
+  }
+  return results.every(Boolean);
+}
+
+/**
+ * Optional, performance-only index builds (lookup + search trigram indexes).
+ * CREATE INDEX CONCURRENTLY waits for every older transaction that touched the
+ * table, on a client without a statement timeout, so awaiting it inside
+ * initDb could hold every /api route at 503 behind one long upload. They run
+ * in the background after the required schema, with one owner per database
+ * (session advisory lock); a failed build stays pending (no version row, an
+ * INVALID index is dropped and rebuilt) and retries on the next start.
+ */
+const INDEX_BUILD_LOCK_KEY = 7_140_231_119;
+let backgroundIndexBuild = null;
+
+export function scheduleBackgroundIndexBuilds(pool) {
+  if (backgroundIndexBuild) return backgroundIndexBuild;
+  backgroundIndexBuild = (async () => {
+    let owner;
+    try {
+      owner = await pool.connect();
+      const { rows } = await owner.query('SELECT pg_try_advisory_lock($1) AS locked', [INDEX_BUILD_LOCK_KEY]);
+      if (!rows?.[0]?.locked) return;
+      try {
+        await ensureLookupIndexes(pool);
+        await ensureSearchTrigramIndexes(pool);
+      } finally {
+        await owner.query('SELECT pg_advisory_unlock($1)', [INDEX_BUILD_LOCK_KEY]).catch(() => {});
+      }
+    } catch (error) {
+      console.warn('[db] Non-critical: background index builds failed:', error.message);
+    } finally {
+      owner?.release?.();
+      backgroundIndexBuild = null;
+    }
+  })();
+  return backgroundIndexBuild;
+}
+
+/** Worker / rate-card job routes answer 503 while their schema is pending. */
+function recordRateCardWorkerReadiness(ready) {
+  setFeatureReadiness('rate-card-worker', ready !== false,
+    'Rate-card worker features are unavailable until a pending database migration applies; it is retried on the next start.');
+}
+
+/**
+ * Trigram indexes for the order search's substring fallback (GET
+ * /api/search-order), which otherwise scans every order. Needs the pg_trgm
+ * extension (trusted since PostgreSQL 13, so the database owner can create
+ * it); when it cannot be created the search keeps working as a scan and this
+ * is retried on the next start. GIN indexes buffer inserts in their pending
+ * list, so order uploads pay little for them. Built CONCURRENTLY on a
+ * dedicated client (no statement timeout) like the lookup indexes.
+ */
+const SEARCH_TRGM_INDEXES = [
+  ['ix_orders_order_id_trgm', 'orders USING gin (order_id gin_trgm_ops)'],
+  ['ix_orders_order_item_id_trgm', 'orders USING gin (order_item_id gin_trgm_ops)'],
+];
+
+export async function ensureSearchTrigramIndexes(pool) {
+  try {
+    const { rowCount } = await pool.query(
+      `SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1`,
+      [SEARCH_TRGM_SCHEMA_VERSION],
+    );
+    if (rowCount) return true;
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+    } catch (error) {
+      console.warn('[db] Non-critical: pg_trgm is unavailable; order search substring fallback stays a scan:', error.message);
+      return false;
+    }
+    for (const [name, definition] of SEARCH_TRGM_INDEXES) {
+      const { rows } = await pool.query(`
+        SELECT i.indisvalid AS valid
+        FROM pg_class c
+        JOIN pg_index i ON i.indexrelid = c.oid
+        WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
+      `, [name]);
+      if (rows[0]?.valid) continue;
+      const builder = await pool.connect();
+      try {
+        if (rows.length) await builder.query(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+        console.log(`[db] Building search index ${name}…`);
+        await builder.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${definition}`);
+      } finally {
+        builder.release();
+      }
+    }
+    await pool.query(
+      `INSERT INTO schema_version (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+      [SEARCH_TRGM_SCHEMA_VERSION],
+    );
+    console.log(`[db] Schema ${SEARCH_TRGM_SCHEMA_VERSION} applied.`);
+    return true;
+  } catch (error) {
+    console.warn('[db] Non-critical: search index build failed:', error.message);
+    return false;
+  }
+}
+
 async function ensureLookupIndexes(pool) {
   try {
     const { rowCount } = await pool.query(
@@ -3170,9 +3372,18 @@ async function ensureLookupIndexes(pool) {
         WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
       `, [name]);
       if (rows[0]?.valid) continue;
-      if (rows.length) await pool.query(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
-      console.log(`[db] Building lookup index ${name}…`);
-      await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${definition}`);
+      // Build on a dedicated autocommit client: pool.query carries the 45 s
+      // read statement_timeout, which cancels a large build part-way and
+      // leaves an INVALID index that is dropped and rebuilt (and cancelled
+      // again) on every boot. Transaction clients have no statement timeout.
+      const builder = await pool.connect();
+      try {
+        if (rows.length) await builder.query(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+        console.log(`[db] Building lookup index ${name}…`);
+        await builder.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${definition}`);
+      } finally {
+        builder.release();
+      }
     }
 
     await pool.query(
@@ -3391,8 +3602,13 @@ export async function ensureRateCardWorkerSchema(pool) {
     `);
   }, { lockTimeout: '5s' });
 
+  // A failed rate-card migration (a 5 s lock timeout against tables the
+  // desktop worker is writing, or duplicate periods on a restored database)
+  // used to throw here and keep EVERY /api route at 503, retrying every 5 s.
+  // runVersionedMigration already rolled it back and retries it on the next
+  // start (like the SOR migrations); only the rate-card worker features wait.
   if (mig1 === false) {
-    throw new Error(`Migration ${RATE_CARD_WORKER_SCHEMA_VERSION} failed to apply`);
+    console.error(`[db] ${RATE_CARD_WORKER_SCHEMA_VERSION} is pending; rate-card worker features stay unavailable until it applies on a later start.`);
   }
 
   const mig2 = await runVersionedMigration(pool, '2026.10.ratecard-worker-jobs-2', async (tx) => {
@@ -3465,7 +3681,7 @@ export async function ensureRateCardWorkerSchema(pool) {
   // migrations above; each versioned unit is independent and idempotent.
   const mig3 = await runRateCardDimensionalMigration(pool, runVersionedMigration);
   if (mig3 === false) {
-    throw new Error('Migration 2026.10.ratecard-worker-jobs-3 failed to apply');
+    console.error('[db] 2026.10.ratecard-worker-jobs-3 is pending; rate-card publishing stays unavailable until it applies on a later start.');
   }
 
   const mig4 = await runVersionedMigration(pool, '2026.11.ratecard-extractions-1', async (tx) => {
@@ -3493,14 +3709,14 @@ export async function ensureRateCardWorkerSchema(pool) {
     `);
   }, { lockTimeout: '5s' });
   if (mig4 === false) {
-    throw new Error('Migration 2026.11.ratecard-extractions-1 failed to apply');
+    console.error('[db] 2026.11.ratecard-extractions-1 is pending; rate-card extraction history stays unavailable until it applies on a later start.');
   }
 
   if (mig2 === false) {
-    throw new Error('Migration 2026.10.ratecard-worker-jobs-2 failed to apply');
+    console.error('[db] 2026.10.ratecard-worker-jobs-2 is pending; it will be retried on the next start.');
   }
 
-  return true;
+  return mig1 !== false && mig2 !== false && mig3 !== false && mig4 !== false;
 }
 
 /**

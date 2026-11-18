@@ -11,6 +11,7 @@ import { forEachDbBatch } from '../utils/dbBatch.js';
 import { optionalQueryText, pagination, positiveInt } from '../utils/requestParams.js';
 import { classifyMyntraNod } from '../services/myntraNodClassification.js';
 import { invalidateReportCache, reportCacheMiddleware } from '../services/reportCache.js';
+import { MASTER_CATEGORY_JOINS, MASTER_CATEGORY_SQL, masterCategoryScalarSql } from '../services/categorySql.js';
 
 const router = express.Router();
 
@@ -72,7 +73,8 @@ export function parseOrderFeeDetailQuery(query = {}) {
 // query string (no per-user data) and each one aggregates the full order
 // history, so they share the version-validated cache in services/reportCache.js.
 // Paginated row lists (/orders, /returns, /settlement/orders, /sku-orders) are
-// deliberately excluded: exports page through them 50K rows at a time.
+// deliberately excluded: exports page through them LIST_MAX_PAGE_SIZE
+// (10,000) rows at a time.
 const REPORT_CACHE_PATHS = new Set([
   '/summary',
   '/marketplace-summary',
@@ -112,21 +114,31 @@ export function invalidateDashboardReportCache() {
 router.use(reportCacheMiddleware(req => REPORT_CACHE_PATHS.has(req.path)));
 
 // ── Filter helpers ─────────────────────────────────────────────────────────────
+// Month filters compare the date column to a half-open range
+// (col >= first day AND col < first day of next month). The previous
+// TO_CHAR(col, 'YYYY-MM') = $n computed a string for every row and could not use
+// the (marketplace, order_date) / payment_date indexes.
 // Returns { where: 'AND col=$1 AND col=$2', values: [...] }
 // Array.push() returns the new length (1-based), which is exactly the $N we need.
+// The default category filter is the master category (services/categorySql.js)
+// as scalar lookups, so it matches the breakdowns (CANONICAL_CATEGORY_SQL)
+// even in queries without CATEGORY_JOINS. `columns` lets a query filter dates,
+// marketplace and account on other expressions (see GET /returns).
 function buildWhere(
   q,
   alias = 'o',
-  categoryExpr = `COALESCE(NULLIF(${alias}.vb_export_category, ''), NULLIF(${alias}.category, ''))`,
+  categoryExpr = masterCategoryScalarSql(alias),
+  columns = {},
 ) {
   const conds = [];
   const values = [];
   const isRetJoin = alias.includes('ret');
-  const mpCol = isRetJoin ? 'COALESCE(o.marketplace, ret.marketplace)' : `${alias}.marketplace`;
-  const saCol = isRetJoin ? 'COALESCE(o.seller_account, ret.seller_account)' : `${alias}.seller_account`;
+  const mpCol = columns.marketplace || (isRetJoin ? 'COALESCE(o.marketplace, ret.marketplace)' : `${alias}.marketplace`);
+  const saCol = columns.sellerAccount || (isRetJoin ? 'COALESCE(o.seller_account, ret.seller_account)' : `${alias}.seller_account`);
+  const dateCol = columns.date || `${alias}.order_date`;
 
-  if (q.startDate)   { conds.push(`${alias}.order_date >= $${values.push(q.startDate)}`); }
-  if (q.endDate)     { conds.push(`${alias}.order_date <= $${values.push(q.endDate)}`); }
+  if (q.startDate)   { conds.push(`${dateCol} >= $${values.push(q.startDate)}`); }
+  if (q.endDate)     { conds.push(`${dateCol} <= $${values.push(q.endDate)}`); }
   if (q.category)    { conds.push(`${categoryExpr} = $${values.push(q.category)}`); }
   if (q.region)      { conds.push(`${alias}.delivery_state = $${values.push(q.region)}`); }
   if (q.status)      { conds.push(`${alias}.orders_status = $${values.push(q.status)}`); }
@@ -158,6 +170,12 @@ function periodExpr(groupBy, col) {
 }
 
 // Prefer shared SETT_CTE (single money definition)
+// Largest page the list endpoints (orders, returns, settlement orders) serve.
+// 100,000-row pages held ~100K rows x ~40 columns in memory (copied again by
+// attachRcFees, then stringified); two at once could exhaust the 768 MB heap.
+// Exports page through fetchAllPages, so they still get every row.
+const LIST_MAX_PAGE_SIZE = 10_000;
+
 const SETT_CTE = SHARED_SETT_CTE;
 
 const COGS_UNIT_SQL = `COALESCE(sm_mp.cogs, sm_all.cogs, vsm.cogs, cc_mp.cogs, cc_all.cogs, 0)`;
@@ -170,13 +188,9 @@ const COGS_JOINS = `
         LEFT JOIN catalog_cogs cc_mp  ON cc_mp.catalog_id = o.fsn AND cc_mp.marketplace = o.marketplace
         LEFT JOIN catalog_cogs cc_all ON cc_all.catalog_id = o.fsn AND cc_all.marketplace = 'all'
 `;
-const CANONICAL_CATEGORY_SQL = `COALESCE(vsm.category, sm_all.category, sm_mp.category, NULLIF(o.vb_export_category, ''), NULLIF(o.category, ''), 'Uncategorized')`;
+const CANONICAL_CATEGORY_SQL = MASTER_CATEGORY_SQL;
 // The joins CANONICAL_CATEGORY_SQL reads (each matches at most one row).
-const CATEGORY_JOINS = `
-        LEFT JOIN sku_master sm_mp  ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = o.marketplace
-        LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
-        LEFT JOIN vb_sku_master vsm ON vsm.vb_export_sku = COALESCE(sm_mp.master_sku, sm_all.master_sku, o.vb_export_sku)
-`;
+const CATEGORY_JOINS = MASTER_CATEGORY_JOINS;
 const SETT_FEE_SQL = `
             COALESCE(s.commission,0)+COALESCE(s.fixed_fee,0)+COALESCE(s.collection_fee,0)+
             COALESCE(s.pick_pack_fee,0)+COALESCE(s.shipping_fee,0)+COALESCE(s.reverse_shipping,0)+
@@ -1226,12 +1240,13 @@ router.get('/profit-analysis', async (req, res) => {
           COUNT(o.order_item_id)                   AS "unmergedOrderCount",
           COALESCE(SUM(o.final_invoice_amount), 0) AS "unmergedRevenue"
         FROM orders o
-        LEFT JOIN sku_master sm ON sm.listing_sku = o.sku
         -- The shared WHERE uses CANONICAL_CATEGORY_SQL, which needs these
         -- aliases; without them a category filter failed the whole report.
         ${CATEGORY_JOINS}
         WHERE 1=1 ${where}${acctWhere}
-          AND (o.vb_export_sku IS NULL OR sm.listing_sku IS NULL)
+          -- NOT EXISTS, not a join on SKU alone: a SKU listed on two
+          -- marketplaces counted each of its orders and rupees twice.
+          AND (o.vb_export_sku IS NULL OR NOT EXISTS (SELECT 1 FROM sku_master sm WHERE sm.listing_sku = o.sku))
       `, values),
     ]);
 
@@ -1369,10 +1384,9 @@ router.get('/profit-analysis/unmerged-skus', async (req, res) => {
         MIN(o.order_date::text)                  AS first_seen,
         MAX(o.order_date::text)                  AS last_seen
       FROM orders o
-      LEFT JOIN sku_master sm ON sm.listing_sku = o.sku
       ${COGS_JOINS}
       WHERE 1=1 ${where}
-        AND (o.vb_export_sku IS NULL OR sm.listing_sku IS NULL)
+        AND (o.vb_export_sku IS NULL OR NOT EXISTS (SELECT 1 FROM sku_master sm WHERE sm.listing_sku = o.sku))
       GROUP BY o.sku, o.marketplace
       ORDER BY order_count DESC
       LIMIT 200;
@@ -1386,12 +1400,15 @@ router.get('/profit-analysis/unmerged-skus', async (req, res) => {
 export function buildSkuReturnSummaryQuery(skuView = 'listing', where = '') {
   const normalizedSkuView = (skuView || 'listing').toLowerCase();
   let selectSku, groupBySku;
+  // The marketplace mapping wins over the 'all' mapping. One OR-join matched
+  // both when both existed and doubled every order, unit and return.
+  const masterSku = `COALESCE(sm_mp.master_sku, sm_all.master_sku, o.sku, 'Unknown')`;
   if (normalizedSkuView === 'master') {
-    selectSku   = `COALESCE(sm.master_sku, o.sku, 'Unknown') AS sku, NULL::text AS listing_sku`;
-    groupBySku  = `COALESCE(sm.master_sku, o.sku, 'Unknown')`;
+    selectSku   = `${masterSku} AS sku, NULL::text AS listing_sku`;
+    groupBySku  = masterSku;
   } else if (normalizedSkuView === 'both') {
-    selectSku   = `COALESCE(sm.master_sku, o.sku, 'Unknown') AS master_sku, COALESCE(o.sku, 'Unknown') AS sku`;
-    groupBySku  = `COALESCE(sm.master_sku, o.sku, 'Unknown'), COALESCE(o.sku, 'Unknown')`;
+    selectSku   = `${masterSku} AS master_sku, COALESCE(o.sku, 'Unknown') AS sku`;
+    groupBySku  = `${masterSku}, COALESCE(o.sku, 'Unknown')`;
   } else {
     // listing (default)
     selectSku   = `COALESCE(o.sku, 'Unknown') AS sku, NULL::text AS listing_sku`;
@@ -1399,7 +1416,8 @@ export function buildSkuReturnSummaryQuery(skuView = 'listing', where = '') {
   }
 
   const skuJoin = normalizedSkuView !== 'listing'
-    ? `LEFT JOIN sku_master sm ON sm.listing_sku = o.sku AND (sm.marketplace = o.marketplace OR sm.marketplace = 'all')`
+    ? `LEFT JOIN sku_master sm_mp ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = o.marketplace
+      LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'`
     : '';
 
   const sql = `
@@ -1506,7 +1524,7 @@ router.get('/filters', async (req, res) => {
 router.get('/orders', async (req, res) => {
   try {
     const pool = getPool();
-    const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 100000 });
+    const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: LIST_MAX_PAGE_SIZE });
     const includeRc = req.query.includeRc !== 'false';  // default true
     const { where, values } = buildWhere(req.query);
 
@@ -1640,22 +1658,53 @@ router.get('/sku-orders', async (req, res) => {
   }
 });
 
-// ── GET /api/returns ──────────────────────────────────────────────────────────
-router.get('/returns', async (req, res) => {
-  try {
-    const pool = getPool();
-    const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 100000 });
-    const { where, values } = buildWhere(req.query);
+// The order a stored return belongs to, at most one per return. Amazon return
+// rows carry the LPN/RMA in order_item_id and link by (order_id, sku), exactly
+// like the order_returns view; every other marketplace links by order item id
+// (synthetic RET_* keys never match an order). The same marketplace is
+// preferred if an order item id exists on more than one marketplace.
+export const RETURN_ORDER_JOIN = `
+        LEFT JOIN LATERAL (
+          SELECT matched.*
+          FROM (
+            SELECT o1.* FROM orders o1
+            WHERE ret.marketplace IS DISTINCT FROM 'amazon'
+              AND ret.order_item_id NOT LIKE 'RET\\_%'
+              AND o1.order_item_id = ret.order_item_id
+            UNION ALL
+            SELECT o2.* FROM orders o2
+            WHERE ret.marketplace = 'amazon'
+              AND o2.marketplace = 'amazon'
+              AND o2.order_id = ret.order_id
+              AND o2.sku = ret.sku
+          ) matched
+          ORDER BY (matched.marketplace IS NOT DISTINCT FROM ret.marketplace) DESC, matched.order_date DESC NULLS LAST, matched.id
+          LIMIT 1
+        ) o ON TRUE`;
 
-    // LEFT JOIN from returns so ALL returns show (not just those matched to orders)
-    const [data, cnt] = await Promise.all([
-      pool.query(`
+// ── GET /api/returns ──────────────────────────────────────────────────────────
+/**
+ * SQL for the Returns list and its count. Every return is listed, matched to
+ * its order or not. Marketplace and account come from the return itself when no
+ * order matched, and the date range applies to the order date, or to the
+ * return date for unmatched returns. Filtering on o.* alone silently turned
+ * the LEFT JOIN into an inner join: with any filter set, Amazon returns (whose
+ * order_item_id is the LPN/RMA) and every unmatched return disappeared.
+ */
+export function buildReturnsListQueries(query, { pageSize, offset }) {
+  const { where, values } = buildWhere(query, 'o', undefined, {
+    date: 'COALESCE(o.order_date, ret.return_requested_date)',
+    marketplace: 'COALESCE(o.marketplace, ret.marketplace)',
+    sellerAccount: 'COALESCE(o.seller_account, ret.seller_account)',
+  });
+  const countValues = [...values];
+  const dataSql = `
         SELECT
           COALESCE(ret.order_item_id, o.order_item_id)        AS "orderItemId",
-          o.order_id                                           AS "orderId",
+          COALESCE(o.order_id, ret.order_id)                   AS "orderId",
           TO_CHAR(o.order_date, 'DD-Mon-YYYY')                AS "orderDate",
-          o.sku,
-          o.category,
+          COALESCE(o.sku, ret.sku)                             AS sku,
+          ${masterCategoryScalarSql('o')}                      AS category,
           o.delivery_state                                     AS "deliveryState",
           o.final_invoice_amount                               AS "finalInvoiceAmount",
           COALESCE(o.my_share, 0)                              AS "myShare",
@@ -1668,19 +1717,28 @@ router.get('/returns', async (req, res) => {
           ret.final_condition                                  AS "finalCondition",
           TO_CHAR(ret.return_requested_date, 'DD-Mon-YYYY')   AS "returnDate"
         FROM returns ret
-        LEFT JOIN orders o ON o.order_item_id = ret.order_item_id
-                           AND ret.order_item_id NOT LIKE 'RET_%'
+        ${RETURN_ORDER_JOIN}
         WHERE 1=1 ${where}
-        ORDER BY ret.return_requested_date DESC NULLS LAST, o.order_date DESC NULLS LAST, ret.order_item_id
+        ORDER BY ret.return_requested_date DESC NULLS LAST, o.order_date DESC NULLS LAST, ret.order_item_id, ret.id
         LIMIT $${values.push(pageSize)} OFFSET $${values.push(offset)}
-      `, values),
-      pool.query(`
+      `;
+  const countSql = `
         SELECT COUNT(*) AS total
         FROM returns ret
-        LEFT JOIN orders o ON o.order_item_id = ret.order_item_id
-                           AND ret.order_item_id NOT LIKE 'RET_%'
+        ${RETURN_ORDER_JOIN}
         WHERE 1=1 ${where}
-      `, values.slice(0, values.length - 2)),
+      `;
+  return { dataSql, dataValues: values, countSql, countValues };
+}
+
+router.get('/returns', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: LIST_MAX_PAGE_SIZE });
+    const { dataSql, dataValues, countSql, countValues } = buildReturnsListQueries(req.query, { pageSize, offset });
+    const [data, cnt] = await Promise.all([
+      pool.query(dataSql, dataValues),
+      pool.query(countSql, countValues),
     ]);
     res.json({ total: +cnt.rows[0].total, data: data.rows });
   } catch (err) {
@@ -1756,7 +1814,7 @@ router.get('/settlement/trend', async (req, res) => {
 router.get('/settlement/orders', async (req, res) => {
   try {
     const pool = getPool();
-    const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 100000 });
+    const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: LIST_MAX_PAGE_SIZE });
     const ss       = req.query.settlementStatus || '';
     const { where, values } = buildWhere(req.query);
     const ssWhere  = settStatusFilter(ss);
@@ -2092,23 +2150,25 @@ router.get('/settlement/month-pl', async (req, res) => {
 
     // ── 1. Main: per order_month (order placed in that month) ──
     const mainRes = await pool.query(`
+      -- Per-order fees from the compact read model (same rules as before:
+      -- every fee, reverse shipping and SPF on paid rows only) instead of
+      -- re-aggregating all of unified_settlements on every request.
       WITH order_fees AS (
         SELECT
-          fk.order_item_id,
-          SUM(fk.bank_settlement)                                                            AS net_bank,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.commission,0))       ELSE 0 END) AS commission,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.fixed_fee,0))        ELSE 0 END) AS fixed_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.collection_fee,0))   ELSE 0 END) AS collection_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.pick_pack_fee,0))    ELSE 0 END) AS pick_pack_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.shipping_fee,0))     ELSE 0 END) AS shipping_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.reverse_shipping,0)) ELSE 0 END) AS reverse_shipping,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.franchise_fee,0))    ELSE 0 END) AS franchise_fee,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.tcs,0))              ELSE 0 END) AS tcs,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.tds,0))              ELSE 0 END) AS tds,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.gst_on_mp_fees,0))   ELSE 0 END) AS gst_on_mp_fees,
-          SUM(CASE WHEN fk.bank_settlement>0 THEN ABS(COALESCE(fk.protection_fund,0))  ELSE 0 END) AS protection_fund
-        FROM unified_settlements fk
-        GROUP BY fk.order_item_id
+          order_item_id,
+          net_bank,
+          commission,
+          fixed_fee,
+          collection_fee,
+          pick_pack_fee,
+          shipping_fee,
+          settled_reverse_shipping AS reverse_shipping,
+          franchise_fee,
+          tcs,
+          tds,
+          gst_on_mp_fees,
+          settled_protection_fund  AS protection_fund
+        FROM ${ORDER_SETTLEMENT_TOTALS_TABLE}
       )
       SELECT
         TO_CHAR(o.order_date, 'YYYY-MM')          AS month,
@@ -2201,76 +2261,83 @@ router.get('/settlement/month-pl', async (req, res) => {
     `;
 
     // ── 4. Rate Card Calculated Expected Fees ──
+    // Each rate table is matched once (hash join + DISTINCT ON per settlement
+    // row), the same rule choice as the four correlated subqueries per row it
+    // replaces: that form ran over every positive settlement row in history,
+    // the pattern already measured at 11-14 s per marketplace and rewritten in
+    // reco-statement, and could hit the statement timeout.
     const rcSql = `
-      WITH rc_calc AS (
+      WITH base AS MATERIALIZED (
         SELECT
-          fk.order_item_id,
-          TO_CHAR(o.order_date, 'YYYY-MM')   AS month,
+          ROW_NUMBER() OVER ()                                           AS row_id,
+          TO_CHAR(o.order_date, 'YYYY-MM')                               AS month,
           CASE
             WHEN o.marketplace = 'myntra' THEN COALESCE(o.seller_account, 'myntra_vb')
             ELSE COALESCE(o.marketplace, 'Unknown')
-          END AS marketplace,
+          END                                                            AS marketplace,
+          o.order_date,
           COALESCE(NULLIF(fk.sale_amount, 0), o.final_invoice_amount, 0) AS inv_amt,
           GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)                   AS qty,
-          COALESCE((
-            SELECT rc.rate * COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)
-            FROM rc_commission rc
-            WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = o.brand_name)
-              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY (rc.brand_name IS NOT NULL AND rc.brand_name <> '') DESC, rc.start_date DESC NULLS LAST LIMIT 1
-          ), 0) AS vb_commission,
-          (
-            SELECT rc.rate * GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-            FROM rc_fixed_fee rc
-            WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-          ) AS vb_fixed_fee,
-          (
-            SELECT CASE WHEN rc.prepaid_type = 'flat' THEN rc.prepaid * GREATEST(COALESCE(fk.quantity, o.qty, 1), 1) ELSE rc.prepaid * COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) END
-            FROM rc_collection_fee rc
-            WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-          ) AS vb_collection_fee,
-          (
-            SELECT rc.rate * GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-            FROM rc_pick_pack rc
-            WHERE LOWER(rc.category) = REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')
-              AND rc.marketplace = COALESCE(o.marketplace, 'flipkart')
-              AND rc.seller_account = COALESCE(o.seller_account, 'default')
-              AND rc.price_min <= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              AND rc.price_max >= COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0) / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)
-              AND (rc.start_date IS NULL OR rc.start_date <= o.order_date)
-              AND (rc.end_date   IS NULL OR rc.end_date   >= o.order_date)
-            ORDER BY rc.start_date DESC NULLS LAST LIMIT 1
-          ) AS vb_pick_pack_fee
+          COALESCE(NULLIF(fk.sale_amount, 0), o.final_invoice_amount, 0)
+            / GREATEST(COALESCE(fk.quantity, o.qty, 1), 1)               AS unit_price,
+          REGEXP_REPLACE(LOWER(o.category), '^shopsy_', '')              AS norm_cat,
+          COALESCE(o.marketplace, 'flipkart')                            AS mp,
+          COALESCE(o.seller_account, 'default')                          AS sa,
+          o.brand_name
         FROM unified_settlements fk
         INNER JOIN orders o ON o.order_item_id = fk.order_item_id
         WHERE o.order_date IS NOT NULL AND fk.bank_settlement > 0 ${mpWhereO}
+      ),
+      commission AS (
+        SELECT DISTINCT ON (b.row_id) b.row_id, rc.rate * b.inv_amt AS fee
+        FROM base b
+        JOIN rc_commission rc ON LOWER(rc.category) = b.norm_cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+        WHERE (rc.brand_name IS NULL OR rc.brand_name = '' OR rc.brand_name = b.brand_name)
+          AND rc.price_min <= b.unit_price AND rc.price_max >= b.unit_price
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.row_id, (rc.brand_name IS NOT NULL AND rc.brand_name <> '') DESC, rc.start_date DESC NULLS LAST, rc.id DESC
+      ),
+      fixed_fee AS (
+        SELECT DISTINCT ON (b.row_id) b.row_id, rc.rate * b.qty AS fee
+        FROM base b
+        JOIN rc_fixed_fee rc ON LOWER(rc.category) = b.norm_cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+        WHERE rc.price_min <= b.unit_price AND rc.price_max >= b.unit_price
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.row_id, rc.start_date DESC NULLS LAST, rc.id DESC
+      ),
+      collection_fee AS (
+        SELECT DISTINCT ON (b.row_id) b.row_id,
+               CASE WHEN rc.prepaid_type = 'flat' THEN rc.prepaid * b.qty ELSE rc.prepaid * b.inv_amt END AS fee
+        FROM base b
+        JOIN rc_collection_fee rc ON LOWER(rc.category) = b.norm_cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+        WHERE rc.price_min <= b.unit_price AND rc.price_max >= b.unit_price
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.row_id, rc.start_date DESC NULLS LAST, rc.id DESC
+      ),
+      pick_pack AS (
+        SELECT DISTINCT ON (b.row_id) b.row_id, rc.rate * b.qty AS fee
+        FROM base b
+        JOIN rc_pick_pack rc ON LOWER(rc.category) = b.norm_cat AND rc.marketplace = b.mp AND rc.seller_account = b.sa
+        WHERE rc.price_min <= b.unit_price AND rc.price_max >= b.unit_price
+          AND (rc.start_date IS NULL OR rc.start_date <= b.order_date)
+          AND (rc.end_date   IS NULL OR rc.end_date   >= b.order_date)
+        ORDER BY b.row_id, rc.start_date DESC NULLS LAST, rc.id DESC
       )
-      SELECT month, marketplace,
-        SUM(vb_commission)        AS vb_commission,
-        SUM(vb_fixed_fee)         AS vb_fixed_fee,
-        SUM(vb_collection_fee)    AS vb_collection_fee,
-        SUM(vb_pick_pack_fee)     AS vb_pick_pack_fee
-      FROM rc_calc GROUP BY month, marketplace
+      SELECT b.month, b.marketplace,
+        SUM(COALESCE(c.fee, 0)) AS vb_commission,
+        -- No COALESCE: a month with no matching rule stays NULL ("no RC entry").
+        SUM(f.fee)              AS vb_fixed_fee,
+        SUM(cf.fee)             AS vb_collection_fee,
+        SUM(p.fee)              AS vb_pick_pack_fee
+      FROM base b
+      LEFT JOIN commission     c  ON c.row_id  = b.row_id
+      LEFT JOIN fixed_fee      f  ON f.row_id  = b.row_id
+      LEFT JOIN collection_fee cf ON cf.row_id = b.row_id
+      LEFT JOIN pick_pack      p  ON p.row_id  = b.row_id
+      GROUP BY b.month, b.marketplace
     `;
 
     const isMyntraFilter = mpFilter && mpFilter.startsWith('myntra');
@@ -2288,14 +2355,23 @@ router.get('/settlement/month-pl', async (req, res) => {
         ${mpFilter === 'myntra_vb' ? "AND COALESCE(seller_account, 'myntra_vb') = 'myntra_vb'" : mpFilter === 'myntra_ej' ? "AND seller_account = 'myntra_ej'" : ''}
     `;
 
+    // A failed section used to be swallowed as an empty result, so a timeout
+    // looked like "no rate card" or "no storage charges". The page still loads,
+    // but each failure is logged and listed in `warnings`.
+    const warnings = [];
+    const section = (label, promise) => promise.catch(error => {
+      console.warn(`[month-pl] ${label} failed:`, error.message);
+      warnings.push(`${label} unavailable: ${error.message}`);
+      return { rows: [] };
+    });
     const [storRes, adsRes, gadsRes, spfClaimsRes, spfLossRes, rcRes, myntraNodRes] = await Promise.all([
-      pool.query(noOrderSql('fk_storage_recall'), mpVals).catch(() => ({ rows: [] })),
-      pool.query(noOrderSql('fk_ads'),            mpVals).catch(() => ({ rows: [] })),
-      pool.query(noOrderSql('fk_google_ads'),     mpVals).catch(() => ({ rows: [] })),
-      pool.query(spfClaimsSql,                    mpVals).catch(() => ({ rows: [] })),
-      pool.query(spfLossSql,                      mpVals).catch(() => ({ rows: [] })),
-      pool.query(rcSql,                           mpVals).catch(() => ({ rows: [] })),
-      (!mpFilter || isMyntraFilter) ? pool.query(myntraNodSql).catch(() => ({ rows: [] })) : Promise.resolve({ rows: [] }),
+      section('Storage & recall charges', pool.query(noOrderSql('fk_storage_recall'), mpVals)),
+      section('Ads charges',              pool.query(noOrderSql('fk_ads'),            mpVals)),
+      section('Google Ads charges',       pool.query(noOrderSql('fk_google_ads'),     mpVals)),
+      section('SPF claims',               pool.query(spfClaimsSql,                    mpVals)),
+      section('SPF recoveries',           pool.query(spfLossSql,                      mpVals)),
+      section('Rate-card expected fees',  pool.query(rcSql,                           mpVals)),
+      (!mpFilter || isMyntraFilter) ? section('Myntra non-order deductions', pool.query(myntraNodSql)) : Promise.resolve({ rows: [] }),
     ]);
 
     // Build lookup helper: key = "month|marketplace" → numeric total
@@ -2432,7 +2508,9 @@ router.get('/settlement/month-pl', async (req, res) => {
 
     const months = [...new Set(data.map(d => d.month))].sort();
     const marketplaces = [...new Set(data.map(d => d.marketplace))].sort();
-    res.json({ months, marketplaces, data });
+    // A partial report (a failed section) must not be served from the cache.
+    if (warnings.length) res.locals.reportCacheSkip = true;
+    res.json({ months, marketplaces, data, warnings });
   } catch (err) {
     console.error('[settlement/month-pl]', err);
     res.status(err.status || 500).json({ error: err.message });
@@ -2470,7 +2548,7 @@ router.get('/settlement/non-order-detail', async (req, res) => {
                  ABS(COALESCE(marketplace_fees,0))    AS marketplace_fees,
                  ABS(COALESCE(settlement_value,0))    AS amount
           FROM fk_storage_recall
-          WHERE TO_CHAR(payment_date,'YYYY-MM') = $1 ${mpCond}
+          WHERE payment_date >= TO_DATE($1, 'YYYY-MM') AND payment_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date ${mpCond}
           ORDER BY ABS(settlement_value) DESC LIMIT 500`;
         break;
       case 'ads':
@@ -2481,7 +2559,7 @@ router.get('/settlement/non-order-detail', async (req, res) => {
                  ABS(COALESCE(gst_on_ads,0))           AS gst_on_ads,
                  ABS(COALESCE(settlement_value,0))      AS amount
           FROM fk_ads
-          WHERE TO_CHAR(payment_date,'YYYY-MM') = $1 ${mpCond}
+          WHERE payment_date >= TO_DATE($1, 'YYYY-MM') AND payment_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date ${mpCond}
           ORDER BY ABS(settlement_value) DESC LIMIT 500`;
         break;
       case 'google_ads':
@@ -2494,7 +2572,7 @@ router.get('/settlement/non-order-detail', async (req, res) => {
                  ABS(COALESCE(gst_on_service,0))        AS gst_on_service,
                  ABS(COALESCE(settlement_value,0))      AS amount
           FROM fk_google_ads
-          WHERE TO_CHAR(payment_date,'YYYY-MM') = $1 ${mpCond}
+          WHERE payment_date >= TO_DATE($1, 'YYYY-MM') AND payment_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date ${mpCond}
           ORDER BY ABS(settlement_value) DESC LIMIT 500`;
         break;
       // SPF Claims Received: positive settlement_value — FK credits you (wrong product, approved warehouse claims)
@@ -2505,7 +2583,7 @@ router.get('/settlement/non-order-detail', async (req, res) => {
                  COALESCE(selling_price,0)            AS selling_price,
                  COALESCE(settlement_value,0)         AS amount
           FROM fk_spf_claims
-          WHERE TO_CHAR(payment_date,'YYYY-MM') = $1 ${mpCond}
+          WHERE payment_date >= TO_DATE($1, 'YYYY-MM') AND payment_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date ${mpCond}
             AND settlement_value > 0
           ORDER BY settlement_value DESC LIMIT 500`;
         break;
@@ -2517,7 +2595,7 @@ router.get('/settlement/non-order-detail', async (req, res) => {
                  COALESCE(selling_price,0)            AS selling_price,
                  ABS(COALESCE(settlement_value,0))    AS amount
           FROM fk_spf_claims
-          WHERE TO_CHAR(payment_date,'YYYY-MM') = $1 ${mpCond}
+          WHERE payment_date >= TO_DATE($1, 'YYYY-MM') AND payment_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date ${mpCond}
             AND settlement_value < 0
           ORDER BY ABS(settlement_value) DESC LIMIT 500`;
         break;
@@ -2529,7 +2607,7 @@ router.get('/settlement/non-order-detail', async (req, res) => {
                  COALESCE(selling_price,0)           AS selling_price,
                  COALESCE(settlement_value,0)        AS amount
           FROM fk_spf_claims
-          WHERE TO_CHAR(payment_date,'YYYY-MM') = $1 ${mpCond}
+          WHERE payment_date >= TO_DATE($1, 'YYYY-MM') AND payment_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date ${mpCond}
           ORDER BY settlement_value DESC LIMIT 500`;
         break;
       default:
@@ -2676,7 +2754,7 @@ router.get('/settlement/order-fee-compare', async (req, res) => {
         ${RC_PACK}  AS rc_pack
       FROM orders o
       INNER JOIN sett fs ON fs.order_item_id=o.order_item_id AND fs.net_bank>0
-      WHERE TO_CHAR(o.order_date,'YYYY-MM')=$1 ${mpCond}
+      WHERE o.order_date >= TO_DATE($1, 'YYYY-MM') AND o.order_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date ${mpCond}
     ),
     enriched AS (
       SELECT *,
@@ -3173,12 +3251,19 @@ router.get('/settlement/reco-statement', async (req, res) => {
 });
 
 // ── POST /api/settlement/push-report ─────────────────────────────────────────
-router.post('/settlement/push-report', async (req, res) => {
-  try {
-    const pool = getPool();
-    await pool.query(`DELETE FROM reconciliation_reports`);
-    const { rows } = await pool.query(`
+// Rebuilds reconciliation_reports in ONE transaction with a set-based
+// INSERT ... SELECT. It used to DELETE in autocommit, load every order into
+// Node, then insert in batches: ~300K rows sat in the heap, and a timeout or
+// crash part-way left the report table empty or half-filled.
+const RECONCILIATION_REPORT_COLUMNS = [
+  'order_date', 'order_item_id', 'order_id', 'category', 'fulfilment_type',
+  'delivery_state', 'invoice_amount', 'bank_received', 'refund_debited',
+  'net_settlement', 'return_reason', 'return_type', 'settlement_status',
+];
+
+export const PUSH_REPORT_SQL = `
       ${SETT_CTE}
+      INSERT INTO reconciliation_reports (${RECONCILIATION_REPORT_COLUMNS.join(', ')})
       SELECT
         TO_CHAR(o.order_date, 'YYYY-MM-DD')    AS order_date,
         o.order_item_id,
@@ -3196,27 +3281,23 @@ router.post('/settlement/push-report', async (req, res) => {
       FROM orders o
       LEFT JOIN sett s      ON s.order_item_id = o.order_item_id
       LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
-    `);
+    `;
 
-    if (rows.length) {
-      const cols  = ['order_date','order_item_id','order_id','category','fulfilment_type',
-                     'delivery_state','invoice_amount','bank_received','refund_debited',
-                     'net_settlement','return_reason','return_type','settlement_status'];
-      await forEachDbBatch(rows, cols.length, async batch => {
-        const values = [];
-        const groups = batch.map(r => {
-          const start = values.length;
-          const vals  = cols.map(c => r[c]);
-          values.push(...vals);
-          return `(${vals.map((_, ci) => `$${start + ci + 1}`).join(', ')})`;
-        });
-        await pool.query(`INSERT INTO reconciliation_reports (${cols.join(', ')}) VALUES ${groups.join(', ')}`, values);
-      });
-    }
-    res.json({ ok: true, rows: rows.length });
+router.post('/settlement/push-report', async (req, res) => {
+  let client;
+  try {
+    client = await getPool().connect();
+    await client.query('BEGIN');
+    await client.query('DELETE FROM reconciliation_reports');
+    const { rowCount } = await client.query(PUSH_REPORT_SQL);
+    await client.query('COMMIT');
+    res.json({ ok: true, rows: rowCount || 0 });
   } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
     console.error(err);
     res.status(500).json({ error: err.message });
+  } finally {
+    client?.release();
   }
 });
 
@@ -3229,12 +3310,14 @@ router.get('/settlement/sale-statement', async (req, res) => {
     let mpCond = '';
     let settlementMpCond = '';
     const mpParams = [];
+    // unified_settlements carries seller_account: the Myntra VB and EJ cash
+    // flows used to both include every Myntra payment (seller 10708 + 45833).
     if (marketplace === 'myntra_vb') {
       mpCond = "AND o.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
-      settlementMpCond = "AND marketplace = 'myntra'";
+      settlementMpCond = "AND marketplace = 'myntra' AND COALESCE(seller_account, 'myntra_vb') = 'myntra_vb'";
     } else if (marketplace === 'myntra_ej') {
       mpCond = "AND o.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
-      settlementMpCond = "AND marketplace = 'myntra'";
+      settlementMpCond = "AND marketplace = 'myntra' AND seller_account = 'myntra_ej'";
     } else if (marketplace === 'myntra') {
       mpCond = "AND o.marketplace = 'myntra'";
       settlementMpCond = "AND marketplace = 'myntra'";
@@ -3515,11 +3598,17 @@ router.get('/settlement/sale-statement', async (req, res) => {
         DATE_TRUNC('month', payment_date)                      AS month_sort,
         COUNT(DISTINCT order_item_id)                          AS settled_count,
         SUM(bank_settlement)                                   AS cash_in,
-        SUM(ABS(COALESCE(commission,0)) + ABS(COALESCE(fixed_fee,0)) +
-            ABS(COALESCE(collection_fee,0)) + ABS(COALESCE(pick_pack_fee,0)) +
-            ABS(COALESCE(shipping_fee,0)) + ABS(COALESCE(reverse_shipping,0)) +
-            ABS(COALESCE(franchise_fee,0)) + ABS(COALESCE(tcs,0)) +
-            ABS(COALESCE(tds,0)) + ABS(COALESCE(gst_on_mp_fees,0))) AS cash_out,
+        -- Same fee rule as order_settlement_totals (every dashboard tab): fees
+        -- of paid rows, plus all reverse shipping. Summing ABS() over every row
+        -- counted a fee and its reversal twice (commission -100 and its +100
+        -- reversal showed as 200 here but 100 on the Dashboard).
+        SUM(CASE WHEN bank_settlement > 0 THEN
+              ABS(COALESCE(commission,0)) + ABS(COALESCE(fixed_fee,0)) +
+              ABS(COALESCE(collection_fee,0)) + ABS(COALESCE(pick_pack_fee,0)) +
+              ABS(COALESCE(shipping_fee,0)) + ABS(COALESCE(franchise_fee,0)) +
+              ABS(COALESCE(tcs,0)) + ABS(COALESCE(tds,0)) + ABS(COALESCE(gst_on_mp_fees,0))
+            ELSE 0 END
+            + ABS(COALESCE(reverse_shipping,0)))                AS cash_out,
         SUM(ABS(COALESCE(protection_fund,0)))                  AS spf,
         0                                                      AS storage,
         0                                                      AS ads
@@ -3552,16 +3641,17 @@ router.get('/settlement/sale-statement', async (req, res) => {
 });
 
 // ── GET /api/search-order?q=<order_id or order_item_id> ──────────────────────
-router.get('/search-order', async (req, res) => {
-  try {
-    const pool = getPool();
-    const q = optionalQueryText(req.query.q, 'Search query', { maxLength: 100 });
-    if (!q || q.length < 3) return res.json({ orders: [], settlements: [], returns: [] });
-
-    const search = `%${q}%`;
-
-    const [ordersRes, settlRes, returnsRes] = await Promise.all([
-      pool.query(`
+// Exact IDs first: users paste a full order / order item id, and equality
+// uses the order_item_id / order_id indexes on every table and pushes into each
+// unified_settlements branch. Only when nothing matches exactly does a
+// substring search run, and only on orders (trigram-indexed by
+// ensureSearchTrigramIndexes when pg_trgm is available); the matched orders'
+// settlements and returns are then fetched by exact id. The previous ILIKE
+// '%q%' scanned all orders, returns and the whole unified_settlements view on
+// every keystroke. LIKE wildcards typed by the user are matched literally.
+export function searchOrderQueries(condition) {
+  return {
+    orders: `
         SELECT
           o.order_item_id, o.order_id, o.sku, o.category,
           o.marketplace, o.orders_status, o.order_date::text AS order_date,
@@ -3569,11 +3659,11 @@ router.get('/search-order', async (req, res) => {
           o.delivery_state, o.fulfilment_type,
           o.commission, o.fixed_fee, o.shipping_fee
         FROM orders o
-        WHERE o.order_item_id ILIKE $1 OR o.order_id ILIKE $1
+        WHERE o.order_item_id ${condition} OR o.order_id ${condition}
         ORDER BY o.order_date DESC, o.order_item_id
         LIMIT 20
-      `, [search]),
-      pool.query(`
+      `,
+    settlements: `
         SELECT
           s.order_item_id, s.order_id, s.marketplace,
           TO_CHAR(s.payment_date,'YYYY-MM-DD') AS payment_date,
@@ -3582,28 +3672,61 @@ router.get('/search-order', async (req, res) => {
           s.fixed_fee, s.collection_fee, s.pick_pack_fee,
           s.shipping_fee
         FROM unified_settlements s
-        WHERE s.order_item_id ILIKE $1 OR s.order_id ILIKE $1
+        WHERE s.order_item_id ${condition} OR s.order_id ${condition}
         ORDER BY s.payment_date DESC
         LIMIT 30
-      `, [search]),
-      pool.query(`
+      `,
+    returns: `
         SELECT
           r.order_item_id, r.order_id,
           r.return_type, r.return_reason,
           r.return_date::text AS return_date,
           r.quantity
         FROM returns r
-        WHERE r.order_item_id ILIKE $1 OR r.order_id ILIKE $1
+        WHERE r.order_item_id ${condition} OR r.order_id ${condition}
         ORDER BY r.return_date DESC
         LIMIT 10
-      `, [search]),
-    ]);
+      `,
+  };
+}
 
-    res.json({
-      orders: ordersRes.rows,
-      settlements: settlRes.rows,
-      returns: returnsRes.rows,
-    });
+export function likeContainsPattern(text) {
+  return `%${String(text).replace(/[\\%_]/g, match => `\\${match}`)}%`;
+}
+
+router.get('/search-order', async (req, res) => {
+  try {
+    const pool = getPool();
+    const q = optionalQueryText(req.query.q, 'Search query', { maxLength: 100 });
+    if (!q || q.length < 3) return res.json({ orders: [], settlements: [], returns: [] });
+
+    const run = async (condition, param) => {
+      const sql = searchOrderQueries(condition);
+      const [orders, settlements, returns] = await Promise.all([
+        pool.query(sql.orders, [param]),
+        pool.query(sql.settlements, [param]),
+        pool.query(sql.returns, [param]),
+      ]);
+      return { orders: orders.rows, settlements: settlements.rows, returns: returns.rows };
+    };
+
+    let found = await run('= $1', q);
+    if (!found.orders.length && !found.settlements.length && !found.returns.length) {
+      const sql = searchOrderQueries('ILIKE $1');
+      const { rows: orders } = await pool.query(sql.orders, [likeContainsPattern(q)]);
+      const ids = [...new Set(orders.flatMap(order => [order.order_item_id, order.order_id]).filter(Boolean))];
+      if (ids.length) {
+        const byIds = searchOrderQueries('= ANY($1::text[])');
+        const [settlements, returns] = await Promise.all([
+          pool.query(byIds.settlements, [ids]),
+          pool.query(byIds.returns, [ids]),
+        ]);
+        found = { orders, settlements: settlements.rows, returns: returns.rows };
+      } else {
+        found = { orders, settlements: [], returns: [] };
+      }
+    }
+    res.json(found);
   } catch (err) {
     console.error(err);
     res.status(err.status || 500).json({ error: err.message });
@@ -3682,7 +3805,7 @@ router.get('/brand-top-skus', async (req, res) => {
         SELECT
           COALESCE(o.brand_name, 'Unknown')                                   AS brand,
           COALESCE(o.sku, 'Unknown')                                          AS sku,
-          COALESCE(MAX(sm.product_name), MAX(ret.product_title), COALESCE(o.sku, 'Unknown')) AS title,
+          COALESCE(MAX(COALESCE(sm_mp.product_name, sm_all.product_name)), MAX(ret.product_title), COALESCE(o.sku, 'Unknown')) AS title,
           COUNT(*)                                                             AS orders,
           COALESCE(SUM(o.final_invoice_amount), 0)                            AS revenue,
           COALESCE(SUM(COALESCE(s.net_bank,0)), 0)                            AS "myShare",
@@ -3690,9 +3813,12 @@ router.get('/brand-top-skus', async (req, res) => {
         FROM orders o
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
         LEFT JOIN sett s ON s.order_item_id = o.order_item_id
-        LEFT JOIN sku_master sm
-          ON sm.listing_sku = o.sku
-         AND (sm.marketplace = COALESCE(o.marketplace, 'flipkart') OR sm.marketplace = 'all')
+        -- One row each from the marketplace and 'all' mappings: an OR-join
+        -- matched both and doubled orders, revenue and returns.
+        LEFT JOIN sku_master sm_mp
+          ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = COALESCE(o.marketplace, 'flipkart')
+        LEFT JOIN sku_master sm_all
+          ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
         WHERE 1=1 ${where}
         GROUP BY COALESCE(o.brand_name, 'Unknown'), COALESCE(o.sku, 'Unknown')
       ),
@@ -3750,7 +3876,7 @@ router.get('/settlement/fee-leaks', async (req, res) => {
     if (month) {
       params.push(month);
       // for Amazon we will use fs.payment_date just like unified_settlements
-      monthCond = `AND TO_CHAR(fs.payment_date, 'YYYY-MM') = $2`;
+      monthCond = `AND fs.payment_date >= TO_DATE($2, 'YYYY-MM') AND fs.payment_date < (TO_DATE($2, 'YYYY-MM') + INTERVAL '1 month')::date`;
     }
 
     const RC_COMM = `COALESCE((
@@ -3818,8 +3944,14 @@ router.get('/settlement/fee-leaks', async (req, res) => {
 
     if (marketplace === 'amazon') {
       settCTE = `
+      -- One row per settlement line (no GROUP BY on amount: that merged
+      -- identical fee lines, e.g. the same commission on two shipments, and
+      -- undercounted fees). Each fee is netted per order (charges negative,
+      -- reversals positive) and then made positive, the same ABS(SUM()) rule
+      -- the Amazon reporting rollups use; summing ABS() per line counted a
+      -- charge and its reversal twice and flagged refunded orders as leaks.
       amazon_classified AS (
-        SELECT order_id, sku, MIN(posted_date) AS payment_date, amount,
+        SELECT order_id, sku, posted_date, amount,
           CASE
             WHEN amount_description ILIKE 'Commission%' OR amount_description ILIKE 'Refund commission%' THEN 'order_commission'
             WHEN amount_description ILIKE 'Fixed closing fee%' THEN 'order_closing_fee'
@@ -3832,17 +3964,15 @@ router.get('/settlement/fee-leaks', async (req, res) => {
           END AS category
         FROM amazon_settlement_lines
         WHERE order_id IS NOT NULL
-        GROUP BY order_id, sku, amount, amount_description, amount_type
       ),
       sett AS (
         SELECT order_id, sku,
-          MIN(payment_date) AS payment_date,
-          SUM(CASE WHEN category = 'order_commission' THEN ABS(amount) ELSE 0 END) AS mp_comm,
-          SUM(CASE WHEN category IN ('order_closing_fee', 'order_tech_fee') THEN ABS(amount) ELSE 0 END) AS mp_fixed,
+          MIN(posted_date) AS payment_date,
+          ABS(SUM(CASE WHEN category = 'order_commission' THEN amount ELSE 0 END)) AS mp_comm,
+          ABS(SUM(CASE WHEN category IN ('order_closing_fee', 'order_tech_fee') THEN amount ELSE 0 END)) AS mp_fixed,
           0 AS mp_coll,
-          SUM(CASE WHEN category = 'order_fba_fee' THEN ABS(amount) ELSE 0 END) AS mp_pack,
-          SUM(CASE WHEN category = 'other' THEN ABS(amount) ELSE 0 END) AS mp_other_fee
-        FROM amazon_classified 
+          ABS(SUM(CASE WHEN category = 'order_fba_fee' THEN amount ELSE 0 END)) AS mp_pack
+        FROM amazon_classified
         GROUP BY order_id, sku
       )
       `;
@@ -4028,7 +4158,7 @@ router.get('/settlement/order-fee-detail', async (req, res) => {
           COALESCE(SUM(COALESCE(NULLIF(fk.sale_amount,0), o.final_invoice_amount, 0)), 0) AS total_sale
         FROM unified_settlements fk
         INNER JOIN orders o ON o.order_item_id = fk.order_item_id
-        WHERE TO_CHAR(o.order_date, 'YYYY-MM') = $1
+        WHERE o.order_date >= TO_DATE($1, 'YYYY-MM') AND o.order_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date
           AND fk.bank_settlement > 0
           AND ABS(COALESCE(${feeCol}, 0)) > 0.005
           ${mpCond}
@@ -4049,7 +4179,7 @@ router.get('/settlement/order-fee-detail', async (req, res) => {
           ROUND((${rcSubquery})::numeric, 2)                               AS rc_expected
         FROM unified_settlements fk
         INNER JOIN orders o ON o.order_item_id = fk.order_item_id
-        WHERE TO_CHAR(o.order_date, 'YYYY-MM') = $1
+        WHERE o.order_date >= TO_DATE($1, 'YYYY-MM') AND o.order_date < (TO_DATE($1, 'YYYY-MM') + INTERVAL '1 month')::date
           AND fk.bank_settlement > 0
           AND ABS(COALESCE(${feeCol}, 0)) > 0.005
           ${mpCond}
