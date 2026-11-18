@@ -164,19 +164,30 @@ function databaseHost(connectionString) {
   return process.env.PG_HOST || process.env.PGHOST || '';
 }
 
+function databasePort(connectionString) {
+  if (connectionString) {
+    try { return new URL(connectionString).port || '5432'; } catch { return ''; }
+  }
+  return process.env.PG_PORT || process.env.PGPORT || '5432';
+}
+
 function isLoopbackHost(host) {
   const normalized = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
   return normalized === 'localhost' || normalized === '::1' || normalized === '127.0.0.1';
 }
 
-// scripts/db-tunnel.js forwards localhost:5432 to the production database over
-// SSH. Recovery may start it only when a developer opts in, and never under a
-// test runner: a test's loopback DATABASE_URL must fail locally instead of
-// being forwarded to production (DB_TUNNEL_AUTOSTART from backend/.env does
-// not override this).
-export function shouldAutoStartTunnel(host, env = process.env) {
+// scripts/db-tunnel.js forwards localhost:DB_TUNNEL_LOCAL_PORT (default 5432)
+// to the production database over SSH. Recovery may start it only when a
+// developer opts in, only for a loopback connection on that same port (a local
+// database on another port is not the tunnel, and opening one would not
+// restore it), and never under a test runner: a test's loopback DATABASE_URL
+// must fail locally instead of being forwarded to production
+// (DB_TUNNEL_AUTOSTART from backend/.env does not override this).
+export function shouldAutoStartTunnel(host, env = process.env, port = '5432') {
   if (isTestEnvironment(env)) return false;
-  return optionalBoolean(env.DB_TUNNEL_AUTOSTART) === true && isLoopbackHost(host);
+  if (optionalBoolean(env.DB_TUNNEL_AUTOSTART) !== true || !isLoopbackHost(host)) return false;
+  const tunnelPort = Number.parseInt(env.DB_TUNNEL_LOCAL_PORT || '5432', 10);
+  return Number.parseInt(String(port || '5432'), 10) === tunnelPort;
 }
 
 function activeDatabaseUrl() {
@@ -420,7 +431,7 @@ export async function recoverDatabaseConnection() {
     }
 
     const { connectionString } = activeDatabaseUrl();
-    if (shouldAutoStartTunnel(databaseHost(connectionString))) {
+    if (shouldAutoStartTunnel(databaseHost(connectionString), process.env, databasePort(connectionString))) {
       try {
         const { ensureTunnel } = await import('../../scripts/db-tunnel.js');
         await ensureTunnel().catch(() => {});
