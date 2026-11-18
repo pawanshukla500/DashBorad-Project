@@ -136,18 +136,26 @@ function ensureGraph(hasGraphify) {
   const before = graphStats();
   const rebuild = MODE === 'full' && (!before || args.has('--force-graph'));
   let result = null;
+  let step = 'update';
+  let parseOutput = '';
   if (rebuild) {
+    step = 'extract';
     result = run('graphify', ['extract', '.', '--code-only'], { env: GRAPH_ENV, timeout: 1_800_000 });
-    if (result.ok) run('graphify', ['cluster-only', '.', '--no-label'], { env: GRAPH_ENV, timeout: 900_000 });
+    parseOutput = result.out;
+    if (result.ok) {
+      step = 'cluster-only';
+      result = run('graphify', ['cluster-only', '.', '--no-label'], { env: GRAPH_ENV, timeout: 900_000 });
+    }
   } else if (before && MODE !== 'check') {
     // Incremental, AST-only: re-parses changed files only.
     // Session budget: 30 s version check + 120 s update + PATH probes stays under the hook's 200 s timeout.
     result = run('graphify', ['update', '.'], { env: GRAPH_ENV, timeout: MODE === 'session' ? 120_000 : 900_000 });
+    parseOutput = result.out;
   }
   const after = graphStats();
   if (!after || (result && !result.ok)) {
     const why = result && !result.ok
-      ? `graphify ${rebuild ? 'extract' : 'update'} failed, so the graph may be stale: ${result.out.split('\n').slice(-2).join(' | ')}`
+      ? `graphify ${step} failed, so the graph may be stale or incomplete: ${result.out.split('\n').slice(-2).join(' | ')}`
       : 'graphify-out/graph.json missing. Run: npm run agent:bootstrap';
     note(false, 'knowledge graph', why);
     problems.push(after ? 'knowledge graph update failed' : 'knowledge graph missing');
@@ -156,7 +164,7 @@ function ensureGraph(hasGraphify) {
   note(true, 'knowledge graph', `${after.nodes} nodes, ${after.links} edges${rebuild ? ' (built)' : MODE === 'check' ? '' : ' (updated)'}`);
   // A CLI that meets the version floor can still lack the [sql] extra.
   // shortcut: only detected when such files are (re)parsed; probe the CLI's Python env if that proves too late.
-  const skipped = result && MISSING_EXTRA_WARNING.exec(result.out);
+  const skipped = MISSING_EXTRA_WARNING.exec(parseOutput);
   if (skipped) {
     note(false, 'graphify extras', `${skipped[0].trim()} Then run: npm run agent:bootstrap -- --force-graph`);
     problems.push('graphify parser extra missing');
