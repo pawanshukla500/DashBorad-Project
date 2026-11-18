@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
@@ -9,6 +9,10 @@ import { parseReturnsReceivedRow } from '../routes/upload.js';
 
 const require = createRequire(import.meta.url);
 const XLSX = require('xlsx');
+
+// Every parse runs on a worker thread; under the full suite's load one test
+// can exceed vitest's 5 s default even though the file takes ~12 s in total.
+vi.setConfig({ testTimeout: 30_000 });
 
 // Pins the dates and numbers the upload handlers get from a workbook, so a
 // SheetJS upgrade that changes date, number or header handling fails here
