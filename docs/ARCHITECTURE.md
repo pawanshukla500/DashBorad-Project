@@ -167,9 +167,9 @@ follow the [ponytail](https://github.com/DietrichGebert/ponytail) ruleset for th
 smallest complete change. `scripts/agent-bootstrap.mjs` installs and checks both
 (`npm run agent:bootstrap` / `agent:check` / `graph:update`); the binding rules
 are AGENTS.md section 0 (mirrored in GEMINI.md) and the full guide is
-[AGENT_TOOLING.md](AGENT_TOOLING.md). The graph's god nodes mirror the backend
-boundaries above: `getPool()` (database access), `optionalNumber()` /
-`optionalString()` (shared upload parsing) and `useFetch()` (frontend data
+[AGENT_TOOLING.md](AGENT_TOOLING.md). The graph's god nodes mirror the boundaries
+above: on the backend `getPool()` (database access) and `optionalNumber()` /
+`optionalString()` (shared upload parsing), on the frontend `useFetch()` (data
 loading) are the most connected symbols.
 
 ## Verification
