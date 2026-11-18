@@ -28,6 +28,9 @@ function checkPortOpen(port, host = '127.0.0.1') {
 let activeProcess = null;
 
 export async function ensureTunnel() {
+  // A test run must never open an SSH session to the production database.
+  if (process.env.VITEST || process.env.NODE_ENV === 'test') return false;
+
   const isOpen = await checkPortOpen(LOCAL_PORT);
   if (isOpen) {
     return true;

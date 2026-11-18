@@ -152,6 +152,20 @@ function isLoopbackHost(host) {
   return normalized === 'localhost' || normalized === '::1' || normalized === '127.0.0.1';
 }
 
+function isTestEnvironment(env) {
+  return Boolean(env.VITEST) || env.NODE_ENV === 'test';
+}
+
+// scripts/db-tunnel.js forwards localhost:5432 to the production database over
+// SSH. Recovery may start it only when a developer opts in, and never under a
+// test runner: a test's loopback DATABASE_URL must fail locally instead of
+// being forwarded to production (DB_TUNNEL_AUTOSTART from backend/.env does
+// not override this).
+export function shouldAutoStartTunnel(host, env = process.env) {
+  if (isTestEnvironment(env)) return false;
+  return optionalBoolean(env.DB_TUNNEL_AUTOSTART) === true && isLoopbackHost(host);
+}
+
 function activeDatabaseUrl() {
   const databaseUrl = cleanDatabaseUrl(process.env.DATABASE_URL);
   return { connectionString: databaseUrl, source: databaseUrl ? 'DATABASE_URL' : '' };
@@ -393,8 +407,7 @@ export async function recoverDatabaseConnection() {
     }
 
     const { connectionString } = activeDatabaseUrl();
-    const host = databaseHost(connectionString);
-    if (isLoopbackHost(host)) {
+    if (shouldAutoStartTunnel(databaseHost(connectionString))) {
       try {
         const { ensureTunnel } = await import('../../scripts/db-tunnel.js');
         await ensureTunnel().catch(() => {});
