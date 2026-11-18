@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import crypto from 'crypto';
-import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -20,6 +19,7 @@ import {
 import { syncFirebaseRoleClaims } from './services/firebaseRoleClaims.js';
 import { publicApiError } from './utils/apiError.js';
 import { activeBackgroundJobs, waitForBackgroundJobs } from './utils/backgroundJobs.js';
+import { loadEnvFiles } from './utils/loadEnv.js';
 
 // ── Crash safety net ───────────────────────────────────────────────────────
 // If an unhandled rejection or exception escapes all try/catch blocks the
@@ -37,18 +37,15 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-// Ensure .env is loaded reliably whether started from root, backend, or sub-processes
+// Ensure .env is loaded reliably whether started from root, backend, or sub-processes.
+// Skipped under a test runner (see utils/loadEnv.js).
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
-for (const envPath of [
+loadEnvFiles([
   path.resolve(serverDir, '.env'),
   path.resolve(serverDir, '../.env'),
   path.resolve(process.cwd(), '.env'),
   path.resolve(process.cwd(), 'backend/.env')
-]) {
-  if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath, override: false });
-  }
-}
+]);
 
 export const app = express();
 app.disable('x-powered-by');

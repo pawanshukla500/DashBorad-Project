@@ -17,7 +17,8 @@ and Cocoblu Retails — see [`docs/SOR_LEVEL_PAYMENT_RECO.md`](docs/SOR_LEVEL_PA
 1. Ensure the Hostinger PostgreSQL database is reachable through `DATABASE_URL` or `PG_*`.
 2. Copy `backend/.env.example` → `backend/.env` (or use existing `.env`) with `DATABASE_URL` / `PG_*`.
    For the local SSH tunnel (`npm run tunnel`; `START.bat` starts it for you), the backend opens the
-   tunnel itself only when `DB_TUNNEL_AUTOSTART=true`, and never under tests — see
+   tunnel itself only when `DB_TUNNEL_AUTOSTART=true`, and never under tests. Tests never load any
+   `.env` either, so `npm test` cannot see the production `DATABASE_URL` — see
    [`docs/HOSTINGER_DEPLOY.md`](docs/HOSTINGER_DEPLOY.md#local-windows-development-encrypted-ssh-tunnel).
 3. From repo root:
 
