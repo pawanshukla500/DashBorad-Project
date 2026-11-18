@@ -174,4 +174,4 @@ loading) are the most connected symbols.
 
 ## Verification
 
-From `backend/`, run `npm test` (on `master` as of 2026-11-18: 104 test files / 839 tests, of which 1 file / 8 tests are skipped). From root, run `node desktop/tests/test_desktop_auth.js` (6 tests). From `frontend/`, run `npm run build`. Add a regression test whenever a report definition, permission, or upload parser is changed.
+From `backend/`, run `npm test` (on `master` as of 2026-11-18: 104 test files / 840 tests, of which 1 file / 8 tests are skipped). From root, run `node desktop/tests/test_desktop_auth.js` (6 tests). From `frontend/`, run `npm run build`. Add a regression test whenever a report definition, permission, or upload parser is changed.

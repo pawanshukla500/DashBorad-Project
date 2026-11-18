@@ -75,7 +75,7 @@ graphify), and optionally `uv` or `pipx` for an isolated graphify install.
 | Claude Code (CLI, desktop, web) | `.claude/skills/graphify`, AGENTS.md rules, `PreToolUse` guards in `.claude/settings.json` | Plugin declared in `.claude/settings.json`: accept the prompt, or `/plugin marketplace add DietrichGebert/ponytail` then `/plugin install ponytail@ponytail`; AGENTS.md 0.3 always applies |
 | Codex | AGENTS.md rules, `.agents/skills/graphify` | `codex plugin marketplace add DietrichGebert/ponytail` + `codex plugin add ponytail@ponytail` (bootstrap does it when `codex` is on PATH); `.agents/skills/ponytail*` |
 | Gemini CLI | GEMINI.md rules, `.gemini/settings.json` guard | `gemini extensions install https://github.com/DietrichGebert/ponytail` (bootstrap does it when `gemini` is on PATH) |
-| Google Antigravity | GEMINI.md rules; user skill in `~/.gemini/config/skills/graphify` (`graphify install --platform antigravity`) | `agy plugin install https://github.com/DietrichGebert/ponytail`; GEMINI.md 0.3 |
+| Google Antigravity | GEMINI.md rules; user skill in `~/.gemini/config/skills/graphify` (`graphify install --platform antigravity`) | `agy plugin install https://github.com/DietrichGebert/ponytail` (bootstrap does it when `agy` is on PATH); GEMINI.md 0.3 |
 | Cursor | `.cursor/rules/graphify.mdc` | `.cursor/rules/ponytail.mdc` |
 | VS Code Copilot Chat | `.github/copilot-instructions.md`, `~/.copilot/skills/graphify` | `.github/copilot-instructions.md` points to AGENTS.md 0.3 |
 | GitHub Copilot CLI | `graphify copilot install` (user-level) | `copilot plugin marketplace add DietrichGebert/ponytail` + `copilot plugin install ponytail@ponytail` (bootstrap does it when `copilot` is on PATH) |
@@ -95,7 +95,7 @@ the full ruleset rather than a pointer.
 
 | Command | Mode | What it does | Exit code |
 |---|---|---|---|
-| `npm run agent:bootstrap` | full | Installs or upgrades graphify (`uv tool install` → `pipx install` → `python -m pip install`), builds the graph on first run or refreshes it, installs graphify git hooks, restores missing project skills, installs ponytail into agent CLIs found on PATH, prints a report | 1 if anything is still missing |
+| `npm run agent:bootstrap` | full | Installs or upgrades graphify (`uv tool install` → `pipx install` → `python -m pip install`), builds the graph on first run or refreshes it, installs graphify git hooks, restores missing project skills, installs ponytail into agent CLIs found on PATH, prints a report. A failed graph update, a failed plugin install, or files graphify skipped for a missing parser extra (such as `[sql]`) count as missing | 1 if anything is still missing |
 | `npm run agent:check` | check | Reports only; changes nothing | 1 if anything is missing |
 | `npm run graph:update` | session | Refreshes the graph incrementally and prints the rules reminder; never installs | always 0 |
 

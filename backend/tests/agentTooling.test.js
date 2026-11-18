@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { compareVersions, MIN_GRAPHIFY_VERSION, PONYTAIL_REPO } from '../../scripts/agent-bootstrap.mjs';
+import { compareVersions, MIN_GRAPHIFY_VERSION, MISSING_EXTRA_WARNING, PONYTAIL_REPO } from '../../scripts/agent-bootstrap.mjs';
 
 // The audited upstream commit: pinned in .claude/settings.json and named in AGENTS.md 0.3.
 const PONYTAIL_COMMIT = '96608e078b2d5ea607c5c3b8b5a54d1c1fba6846';
@@ -16,6 +16,16 @@ describe('agent tooling bootstrap (graphify + ponytail)', () => {
     expect(compareVersions('0.9.99', '0.9.112')).toBe(-1);
     expect(compareVersions('1.0', '0.9.200')).toBe(1);
     expect(compareVersions(MIN_GRAPHIFY_VERSION, '0.9.112')).toBeGreaterThanOrEqual(0);
+  });
+
+  it('spots graphify\'s missing-parser-extra warning and nothing else', () => {
+    const output = [
+      '[graphify] extract',
+      '  warning: 3 .sql file(s) contributed nothing to the graph because a dependency is missing: tree-sitter-sql not installed. Install it with: pip install "graphifyy[sql]" (#1745)',
+      'done',
+    ].join('\n');
+    expect(MISSING_EXTRA_WARNING.exec(output)[0]).toContain('graphifyy[sql]');
+    expect(MISSING_EXTRA_WARNING.test('  warning: 27 code file(s) yielded no symbols (0.13 MB)')).toBe(false);
   });
 
   it('declares the ponytail plugin and the session bootstrap for Claude Code', () => {

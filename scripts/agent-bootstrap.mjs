@@ -38,6 +38,8 @@ const IN_CI = Boolean(process.env.CI);
 export const MIN_GRAPHIFY_VERSION = '0.9.112';
 export const GRAPHIFY_PACKAGE = 'graphifyy[sql]';
 export const PONYTAIL_REPO = 'DietrichGebert/ponytail';
+// graphify prints this (and still exits 0) when a file type's parser extra, such as [sql], is not installed.
+export const MISSING_EXTRA_WARNING = /^\s*warning: .*contributed nothing to the graph because a dependency is missing.*$/m;
 const GRAPH_ENV = { ...process.env, GRAPHIFY_BACKEND: 'none', PYTHONIOENCODING: 'utf-8' };
 
 const report = [];
@@ -133,22 +135,32 @@ function ensureGraph(hasGraphify) {
   }
   const before = graphStats();
   const rebuild = MODE === 'full' && (!before || args.has('--force-graph'));
+  let result = null;
   if (rebuild) {
-    const extract = run('graphify', ['extract', '.', '--code-only'], { env: GRAPH_ENV, timeout: 1_800_000 });
-    if (extract.ok) run('graphify', ['cluster-only', '.', '--no-label'], { env: GRAPH_ENV, timeout: 900_000 });
-    else report.push(`     graphify extract failed: ${extract.out.split('\n').slice(-3).join(' | ')}`);
+    result = run('graphify', ['extract', '.', '--code-only'], { env: GRAPH_ENV, timeout: 1_800_000 });
+    if (result.ok) run('graphify', ['cluster-only', '.', '--no-label'], { env: GRAPH_ENV, timeout: 900_000 });
   } else if (before && MODE !== 'check') {
     // Incremental, AST-only: re-parses changed files only.
     // Session budget: 30 s version check + 120 s update + PATH probes stays under the hook's 200 s timeout.
-    run('graphify', ['update', '.'], { env: GRAPH_ENV, timeout: MODE === 'session' ? 120_000 : 900_000 });
+    result = run('graphify', ['update', '.'], { env: GRAPH_ENV, timeout: MODE === 'session' ? 120_000 : 900_000 });
   }
   const after = graphStats();
-  if (!after) {
-    note(false, 'knowledge graph', 'graphify-out/graph.json missing. Run: npm run agent:bootstrap');
-    problems.push('knowledge graph missing');
+  if (!after || (result && !result.ok)) {
+    const why = result && !result.ok
+      ? `graphify ${rebuild ? 'extract' : 'update'} failed, so the graph may be stale: ${result.out.split('\n').slice(-2).join(' | ')}`
+      : 'graphify-out/graph.json missing. Run: npm run agent:bootstrap';
+    note(false, 'knowledge graph', why);
+    problems.push(after ? 'knowledge graph update failed' : 'knowledge graph missing');
     return;
   }
   note(true, 'knowledge graph', `${after.nodes} nodes, ${after.links} edges${rebuild ? ' (built)' : MODE === 'check' ? '' : ' (updated)'}`);
+  // A CLI that meets the version floor can still lack the [sql] extra.
+  // shortcut: only detected when such files are (re)parsed; probe the CLI's Python env if that proves too late.
+  const skipped = result && MISSING_EXTRA_WARNING.exec(result.out);
+  if (skipped) {
+    note(false, 'graphify extras', `${skipped[0].trim()} Then run: npm run agent:bootstrap -- --force-graph`);
+    problems.push('graphify parser extra missing');
+  }
 }
 
 function ensureGitHooks(hasGraphify) {
@@ -224,6 +236,12 @@ function otherAgentPonytail() {
       steps: [['gemini', ['extensions', 'install', `https://github.com/${PONYTAIL_REPO}`]]],
     },
     {
+      cli: 'agy',
+      label: 'ponytail (Antigravity CLI)',
+      installed: () => false,
+      steps: [['agy', ['plugin', 'install', `https://github.com/${PONYTAIL_REPO}`]]],
+    },
+    {
       cli: 'codex',
       label: 'ponytail (Codex)',
       installed: () => false,
@@ -249,6 +267,7 @@ function otherAgentPonytail() {
     // Re-running an install that already exists is harmless; failures are reported, not fatal.
     const results = agent.steps.map(([command, commandArgs]) => run(command, commandArgs, { timeout: 300_000 }));
     const ok = results.every(result => result.ok || /already/i.test(result.out));
+    if (!ok) problems.push(`${agent.label} install failed`);
     note(ok, agent.label, ok ? 'installed' : results.map(result => result.out.split('\n').pop()).join(' | '));
   }
   note(true, 'ponytail (every other agent)', 'AGENTS.md section 0 ruleset + .agents/skills/ponytail* + .agents/rules/ponytail.md');

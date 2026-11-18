@@ -149,7 +149,7 @@ see [docs/SAAS_OPERATING_BASELINE.md](docs/SAAS_OPERATING_BASELINE.md).
 ## Verification & Testing
 
 - **Backend Test Suite:** From `backend/`, run `npm test` (or `node ./node_modules/vitest/vitest.mjs run`).
-  - Must pass 100% green (on `master` as of 2026-11-18: 104 test files / 839 tests, of which 1 file / 8 tests are skipped).
+  - Must pass 100% green (on `master` as of 2026-11-18: 104 test files / 840 tests, of which 1 file / 8 tests are skipped).
 - **Desktop Auth Suite:** From root, run `node desktop/tests/test_desktop_auth.js` (6 tests passing).
 - **Frontend Production Build:** From `frontend/`, run `npm run build` (Rollup vendor chunks, ~5.0s build).
 
