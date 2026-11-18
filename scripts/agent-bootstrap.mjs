@@ -175,18 +175,23 @@ function ensureGraph(hasGraphify) {
 function ensureGitHooks(hasGraphify) {
   if (!hasGraphify || MODE === 'session') return;
   const status = run('graphify', ['hook', 'status'], { timeout: 30_000 });
-  // "installed (out of date ...)" counts as not installed, so the bootstrap refreshes those hooks.
-  const installed = status.ok && /post-commit:\s*installed(?!\s*\(out of date)/i.test(status.out);
+  // All four hooks must be current; "installed (out of date ...)" counts as not installed, so it is refreshed.
+  const installed = status.ok && ['post-commit', 'post-checkout', 'post-merge', 'post-rewrite']
+    .every(hook => new RegExp(`${hook}:\\s*installed(?!\\s*\\(out of date)`, 'i').test(status.out));
   if (!installed && MODE === 'full' && !args.has('--no-hooks') && !IN_CI) {
     // hook install also registers a merge driver for graph.json; graphify-out/ is git-ignored here,
     // so undo it to leave the tracked .gitattributes and the git config unchanged.
     const attributesPath = join(ROOT, '.gitattributes');
     const attributesBefore = existsSync(attributesPath) ? readFileSync(attributesPath) : null;
+    const mergeKeys = ['merge.graphify.name', 'merge.graphify.driver'];
+    const configBefore = mergeKeys.map(key => run('git', ['config', '--local', '--get', key]));
     const result = run('graphify', ['hook', 'install'], { timeout: 60_000 });
     if (attributesBefore) writeFileSync(attributesPath, attributesBefore);
     else if (existsSync(attributesPath)) unlinkSync(attributesPath);
-    run('git', ['config', '--unset', 'merge.graphify.name']);
-    run('git', ['config', '--unset', 'merge.graphify.driver']);
+    // Put back whatever the repo had before, rather than deleting a value someone set on purpose.
+    mergeKeys.forEach((key, i) => (configBefore[i].ok
+      ? run('git', ['config', '--local', key, configBefore[i].out])
+      : run('git', ['config', '--local', '--unset', key])));
     note(result.ok, 'graphify git hooks', result.ok ? 'installed (graph rebuilds in the background after commit / checkout / merge / rebase)' : result.out.split('\n').pop());
     return;
   }
