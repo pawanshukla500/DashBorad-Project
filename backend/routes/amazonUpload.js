@@ -75,6 +75,12 @@ import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { normalizeDeliveryState } from '../utils/geoNormalization.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import {
+  addSaleOrderShipment,
+  applyShipmentTotalsToOrders,
+  ensureAmazonSaleOrderShipments,
+  storeSaleOrderShipments,
+} from '../services/amazonSaleOrderShipments.js';
 import { pagination } from '../utils/requestParams.js';
 import { optionalNumber as num, optionalString as str } from '../utils/valueParsers.js';
 import { requireAdmin } from '../utils/authMiddleware.js';
@@ -1043,6 +1049,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
 
     const idx = buildHeaderIndex(headers);
     const byNaturalKey = new Map();
+    const byShipment = new Map();
     const affectedOrderIds = new Set();
     const newFCs = new Set();
 
@@ -1129,6 +1136,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         order_type: orderType,
       };
 
+      addSaleOrderShipment(byShipment, record, fcCode);
       const key = `${orderId}|${sku}`;
       if (byNaturalKey.has(key)) {
         const existing = byNaturalKey.get(key);
@@ -1163,25 +1171,42 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
         : `${field} = COALESCE(EXCLUDED.${field}, orders.${field})`)
       .join(',\n            ');
 
-    await forEachDbBatch(rows, fields.length, async batch => {
-      const values = [];
-      const groups = batch.map(record => {
-        const start = values.length;
-        for (const field of fields) values.push(record[field] ?? null);
-        return `(${fields.map((_, column) => `$${start + column + 1}`).join(',')})`;
+    // One transaction: the order rows, this file's shipments, and the order
+    // totals recomputed from every stored shipment (services/amazonSaleOrderShipments.js).
+    await ensureAmazonSaleOrderShipments(pool);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await forEachDbBatch(rows, fields.length, async batch => {
+        const values = [];
+        const groups = batch.map(record => {
+          const start = values.length;
+          for (const field of fields) values.push(record[field] ?? null);
+          return `(${fields.map((_, column) => `$${start + column + 1}`).join(',')})`;
+        });
+        const result = await client.query(`
+          INSERT INTO orders (${fields.join(',')}) VALUES ${groups.join(',')}
+          ON CONFLICT (order_id, sku) WHERE marketplace = 'amazon' DO UPDATE SET
+              ${updateSet},
+              uploaded_at = NOW()
+          RETURNING (xmax = 0) AS inserted
+        `, values);
+        for (const resultRow of result.rows) {
+          if (resultRow.inserted) inserted++;
+          else updated++;
+        }
       });
-      const result = await pool.query(`
-        INSERT INTO orders (${fields.join(',')}) VALUES ${groups.join(',')}
-        ON CONFLICT (order_id, sku) WHERE marketplace = 'amazon' DO UPDATE SET
-            ${updateSet},
-            uploaded_at = NOW()
-        RETURNING (xmax = 0) AS inserted
-      `, values);
-      for (const resultRow of result.rows) {
-        if (resultRow.inserted) inserted++;
-        else updated++;
-      }
-    });
+      await storeSaleOrderShipments(client, [...byShipment.values()]);
+      await applyShipmentTotalsToOrders(client, rows.map(row => [row.order_id, row.sku]));
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      inserted = 0;
+      updated = 0;
+      throw error;
+    } finally {
+      client.release();
+    }
 
     let backfilled = null;
     try {
@@ -1804,7 +1829,7 @@ export async function processAmazonSettlementWorkbook({ buffer, filename, jobId 
           // the reconciliation and reporting rollups are each built once from
           // the final SKUs (previously the reporting rollup was rebuilt a
           // second time and the reconciliation rollup kept blank SKUs).
-          beforeRollups: client => resolveOrphanSkus(client, sid),
+          beforeRollups: client => resolveOrphanSkus(client, sid, { relatedOrders: true }),
           appendOnly: settlementsWrittenThisUpload.has(sid),
         });
         settlementsWrittenThisUpload.add(sid);
@@ -1985,8 +2010,21 @@ router.post('/amazon-settlement', upload.single('file'), async (req, res) => {
 // Optionally scoped to a single settlement_id; pass null to run globally.
 // Idempotent — re-running has no effect on already-resolved rows.
 // ═════════════════════════════════════════════════════════════════════════════
-async function resolveOrphanSkus(pool, settlementId = null) {
-  const scope = settlementId ? `AND l.settlement_id = $1` : '';
+// `relatedOrders` (used by uploads) widens a settlement-scoped run to every
+// orphan refund of the orders in that settlement, in any settlement. A refund
+// row only gets its SKU from the original charge; when settlements are
+// uploaded out of order (newer first), the refunds already stored in the newer
+// settlement were never resolved once the older one arrived, so RTO orders
+// kept showing the full FBA fee as a loss. Callers rebuild the rollups of
+// every settlement in `settlementIds`.
+async function resolveOrphanSkus(pool, settlementId = null, { relatedOrders = false } = {}) {
+  const scope = !settlementId
+    ? ''
+    : relatedOrders
+      ? `AND (l.settlement_id = $1 OR l.order_id IN (
+           SELECT DISTINCT related.order_id FROM amazon_settlement_lines related
+           WHERE related.settlement_id = $1 AND related.order_id IS NOT NULL))`
+      : `AND l.settlement_id = $1`;
   const args  = settlementId ? [settlementId] : [];
 
   // Snapshot how many orphans we started with (for reporting)

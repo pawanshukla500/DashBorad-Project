@@ -5,6 +5,7 @@ import { amazonReportingRollupUnifiedSelect, ensureAmazonSettlementReportingRoll
 import { myntraInvoicesUnifiedSelect } from '../services/myntraSettlementReportingRollups.js';
 import { meeshoSettlementUnifiedSelect } from '../services/meeshoSettlementReportingRollups.js';
 import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.js';
+import { AMAZON_SALE_ORDER_SHIPMENTS_DDL } from '../services/amazonSaleOrderShipments.js';
 import { rebuildAjioSorLedger } from '../services/sorMirror.js';
 import { reencryptMarketplaceCredentials } from '../utils/credentialCrypto.js';
 import { runRateCardDimensionalMigration } from './rateCardDimensionalMigration.js';
@@ -1116,6 +1117,8 @@ export async function initDb() {
       await ensureRateCardWorkerSchema(pool);
       // A read-model migration changes the view definition as well as the
       // backing table, so it must run on already-current installations too.
+      // Per-shipment Amazon Sale Order ledger (CREATE TABLE IF NOT EXISTS).
+      await db.query(AMAZON_SALE_ORDER_SHIPMENTS_DDL);
       await ensureAmazonSettlementReportingRollups(pool, db);
       await ensureUnifiedSettlementsView(db);
       await ensureOrderSettlementTotals(pool, db);
@@ -1790,6 +1793,8 @@ export async function initDb() {
     // ── unified_settlements view (owned by app boot — not ad-hoc scripts) ─────
     await ensureUnifiedSettlementsView(db);
     await ensureOrderSettlementTotals(pool, db);
+    // Per-shipment Amazon Sale Order ledger (CREATE TABLE IF NOT EXISTS).
+    await db.query(AMAZON_SALE_ORDER_SHIPMENTS_DDL);
 
     // ── order_items_summary view (unified order lifecycle: order + return + settlement + COGS) ──
     await ensureOrderItemsSummaryView(db);

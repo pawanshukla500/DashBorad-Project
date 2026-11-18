@@ -1,6 +1,7 @@
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { optionalNumber } from '../utils/valueParsers.js';
+import { forEachIsolated } from '../utils/isolatedBatches.js';
 
 /**
  * SOR Level Payment Reco — direct uploads for every portal.
@@ -391,8 +392,10 @@ export async function ownedComponents(client, headerIds, sourceCondition, params
 }
 
 /**
- * Write a parsed upload to the ledger. One dedicated client; one transaction
- * per invoice so a bad invoice cannot block the rest of the file.
+ * Write a parsed upload to the ledger on one dedicated client. Each invoice is
+ * isolated in a savepoint so a bad invoice cannot block the rest of the file,
+ * and invoices commit in groups (utils/isolatedBatches.js) instead of one
+ * transaction per invoice.
  */
 export async function applySorUpload(pool, { portal, account, stream, records, uploadedBy = null }) {
   const source = `sor_upload:${stream}`;
@@ -410,21 +413,23 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
         if (!byInvoice.has(record.invoice_no)) byInvoice.set(record.invoice_no, []);
         byInvoice.get(record.invoice_no).push(record);
       }
-      for (const [invoiceNo, rows] of byInvoice) {
-        try {
-          await client.query('BEGIN');
-          const outcome = await writeInvoice(client, { portal, account, invoiceNo, rows, source, uploadedBy });
-          await client.query('COMMIT');
-          result.invoices++;
-          // A re-uploaded invoice replaces its lines: count them as updated.
-          if (outcome.created) result.inserted += outcome.lines;
-          else result.updated += outcome.lines;
-        } catch (err) {
-          await client.query('ROLLBACK').catch(() => {});
-          result.errors.push(`Invoice ${invoiceNo}: ${err.message}`);
-          for (const row of rows) result.skipped.push({ rowNum: row.rowNum, reason: 'Could not be saved; retry the upload' });
-        }
-      }
+      await forEachIsolated(
+        client,
+        [...byInvoice],
+        ([invoiceNo, rows]) => writeInvoice(client, { portal, account, invoiceNo, rows, source, uploadedBy }),
+        {
+          onSuccess: (_, outcome) => {
+            result.invoices++;
+            // A re-uploaded invoice replaces its lines: count them as updated.
+            if (outcome.created) result.inserted += outcome.lines;
+            else result.updated += outcome.lines;
+          },
+          onError: ([invoiceNo, rows], err) => {
+            result.errors.push(`Invoice ${invoiceNo}: ${err.message}`);
+            for (const row of rows) result.skipped.push({ rowNum: row.rowNum, reason: 'Could not be saved; retry the upload' });
+          },
+        },
+      );
       return result;
     }
 
@@ -452,11 +457,13 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
       if (!byInvoice.has(headerId)) byInvoice.set(headerId, []);
       byInvoice.get(headerId).push(line);
     }
-    for (const [headerId, invoiceLines] of byInvoice) {
-      try {
-        await client.query('BEGIN');
+    await forEachIsolated(
+      client,
+      [...byInvoice],
+      async ([headerId, invoiceLines]) => {
         const removals = invoiceLines.filter(line => line.remove);
         const outcome = await upsertLines(client, headerId, invoiceLines.filter(line => !line.remove), source);
+        let removed = 0;
         for (const line of removals) {
           // Only an upload's own line is removed, never one the AJIO file owns.
           const { rowCount } = await client.query(
@@ -464,20 +471,25 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
              WHERE invoice_id = $1 AND line_type = $2 AND source_key = $3 AND source LIKE 'sor_upload:%'`,
             [headerId, line.line_type, line.source_key],
           );
-          result.removed += rowCount;
+          removed += rowCount;
         }
         await client.query(`UPDATE sor_invoice SET uploaded_at = NOW() WHERE id = $1`, [headerId]);
-        await client.query('COMMIT');
-        result.invoices++;
-        result.inserted += outcome.inserted;
-        result.updated += outcome.updated;
-        for (const line of outcome.blocked) skipLine(line, 'Already recorded from the AJIO invoice file — not posted twice');
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
-        result.errors.push(`Invoice ${invoiceLines[0].invoice_no}: ${err.message}`);
-        for (const line of invoiceLines) skipLine(line, 'Could not be saved; retry the upload');
-      }
-    }
+        return { ...outcome, removed };
+      },
+      {
+        onSuccess: (_, outcome) => {
+          result.invoices++;
+          result.inserted += outcome.inserted;
+          result.updated += outcome.updated;
+          result.removed += outcome.removed;
+          for (const line of outcome.blocked) skipLine(line, 'Already recorded from the AJIO invoice file — not posted twice');
+        },
+        onError: ([, invoiceLines], err) => {
+          result.errors.push(`Invoice ${invoiceLines[0].invoice_no}: ${err.message}`);
+          for (const line of invoiceLines) skipLine(line, 'Could not be saved; retry the upload');
+        },
+      },
+    );
     return result;
   } finally {
     client.release();

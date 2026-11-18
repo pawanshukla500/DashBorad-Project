@@ -85,31 +85,57 @@ async function batchSimpleInsert(pool, table, colDefs, rows) {
   const colNames = colDefs.map(([n]) => n).join(', ');
   let inserted   = 0;
 
+  // One attempt per statement. Re-running a single INSERT after a connection
+  // error could duplicate rows that had already committed, and inside a
+  // transaction it can never succeed; replaceNeftRows retries the whole
+  // (idempotent) replacement instead.
   await forEachDbBatch(rows, colDefs.length, async batch => {
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      try {
-        const values = [];
-        const valueGroups = batch.map((row) => {
-          const startIdx = values.length;
-          values.push(...row);
-          return `(${row.map((_, ci) => `$${startIdx + ci + 1}`).join(', ')})`;
-        });
-        await pool.query(`INSERT INTO ${table} (${colNames}) VALUES ${valueGroups.join(', ')}`, values);
-        inserted += batch.length;
-        break;
-      } catch (err) {
-        const msg = err.message || '';
-        const transient = /econnreset|connection|timeout/i.test(msg);
-        if (!transient || attempt === 5) throw err;
-        await sleep(3000 * attempt);
-      }
-    }
+    const values = [];
+    const valueGroups = batch.map((row) => {
+      const startIdx = values.length;
+      values.push(...row);
+      return `(${row.map((_, ci) => `$${startIdx + ci + 1}`).join(', ')})`;
+    });
+    await pool.query(`INSERT INTO ${table} (${colNames}) VALUES ${valueGroups.join(', ')}`, values);
+    inserted += batch.length;
   });
   return inserted;
 }
 
 // autoWiden is a no-op in PostgreSQL — all string columns are TEXT (no length limit)
 async function autoWiden() { return false; }
+
+const TRANSIENT_DB_ERROR = /econnreset|connection|timeout|terminat/i;
+
+/**
+ * Replace a sheet's rows for the uploaded NEFT ids in ONE transaction. The
+ * SPF, Storage & Recall, Ads and Google Ads sheets used to DELETE and then
+ * INSERT as separate auto-committed statements: an insert failure left the
+ * NEFT's old rows deleted and nothing in their place. Deleting by NEFT id makes
+ * the replacement idempotent, so a transient connection failure retries the
+ * whole transaction (never a single statement, which could double rows).
+ */
+async function replaceNeftRows(pool, table, colDefs, records, neftIds) {
+  for (let attempt = 1; ; attempt++) {
+    const client = await pool.connect();
+    let releaseError;
+    try {
+      await client.query('BEGIN');
+      await deleteByNeftIds(client, table, neftIds);
+      const inserted = await batchSimpleInsert(client, table, colDefs, records);
+      await client.query('COMMIT');
+      return inserted;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      const transient = TRANSIENT_DB_ERROR.test(error?.message || '');
+      if (transient) releaseError = error;
+      if (!transient || attempt >= 3) throw error;
+    } finally {
+      client.release(releaseError);
+    }
+    await sleep(3000 * attempt);
+  }
+}
 
 // Delete existing rows by NEFT IDs (before re-inserting) to support re-uploads
 async function deleteByNeftIds(pool, tableName, neftIds) {
@@ -349,8 +375,7 @@ async function insertSpfClaims(pool, sheetRows, marketplace) {
   }
   const neftIds = [...new Set(records.map(record => record[0]).filter(Boolean))];
   if (!records.length) throw new Error('No valid SPF claim rows were found; existing claim data was left unchanged.');
-  await deleteByNeftIds(pool, 'fk_spf_claims', neftIds);
-  const inserted = await batchSimpleInsert(pool, 'fk_spf_claims', SPF_COLS, records);
+  const inserted = await replaceNeftRows(pool, 'fk_spf_claims', SPF_COLS, records, neftIds);
   return { inserted, skipped, dateFormats: summarizeDateFormats(dateFormats) };
 }
 
@@ -389,8 +414,7 @@ async function insertStorageRecall(pool, sheetRows, marketplace) {
   }
   const neftIds = [...new Set(records.map(record => record[0]).filter(Boolean))];
   if (!records.length) throw new Error('No valid Storage & Recall rows were found; existing data was left unchanged.');
-  await deleteByNeftIds(pool, 'fk_storage_recall', neftIds);
-  const inserted = await batchSimpleInsert(pool, 'fk_storage_recall', SR_COLS, records);
+  const inserted = await replaceNeftRows(pool, 'fk_storage_recall', SR_COLS, records, neftIds);
   return { inserted, skipped, dateFormats: summarizeDateFormats(dateFormats) };
 }
 
@@ -421,8 +445,7 @@ async function insertAds(pool, sheetRows, marketplace) {
   }
   const neftIds = [...new Set(records.map(record => record[0]).filter(Boolean))];
   if (!records.length) throw new Error('No valid Ads rows were found; existing data was left unchanged.');
-  await deleteByNeftIds(pool, 'fk_ads', neftIds);
-  const inserted = await batchSimpleInsert(pool, 'fk_ads', ADS_COLS, records);
+  const inserted = await replaceNeftRows(pool, 'fk_ads', ADS_COLS, records, neftIds);
   return { inserted, skipped, dateFormats: summarizeDateFormats(dateFormats) };
 }
 
@@ -453,8 +476,7 @@ async function insertGoogleAds(pool, sheetRows, marketplace) {
   }
   const neftIds = [...new Set(records.map(record => record[0]).filter(Boolean))];
   if (!records.length) throw new Error('No valid Google Ads rows were found; existing data was left unchanged.');
-  await deleteByNeftIds(pool, 'fk_google_ads', neftIds);
-  const inserted = await batchSimpleInsert(pool, 'fk_google_ads', GA_COLS, records);
+  const inserted = await replaceNeftRows(pool, 'fk_google_ads', GA_COLS, records, neftIds);
   return { inserted, skipped, dateFormats: summarizeDateFormats(dateFormats) };
 }
 
