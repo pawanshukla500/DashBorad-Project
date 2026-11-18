@@ -177,7 +177,14 @@ export function normalizeSqlDate(value, hint = null) {
   if (format === 'EXCEL') return excelSerialToDate(s);
   if (format === 'ISO') {
     const m = stripTime(s).match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-    return m ? dateFromParts(m[1], m[2], m[3]) : null;
+    if (m) return dateFromParts(m[1], m[2], m[3]);
+    // An ISO column can still hold text dates: Excel date cells are read as
+    // ISO text (dateNF) while typed text cells keep their own form, e.g.
+    // "4/26/26". Read them with the column's text day/month order when its
+    // values established one (hint.fallback), otherwise by per-value
+    // inference (an ambiguous d/m/y defaults to day-first, as elsewhere).
+    if (hint.fallback === 'MDY' || hint.fallback === 'DMY') return parseNumericDate(s, hint.fallback);
+    return normalizeSqlDate(s);
   }
   if (format === 'YMD' || format === 'MDY' || format === 'DMY') {
     return parseNumericDate(s, format);
@@ -193,21 +200,62 @@ export function normalizeSqlDate(value, hint = null) {
   return null;
 }
 
+// How many non-blank values per date column are examined to settle its format.
+const DATE_FORMAT_SAMPLE_LIMIT = 2_000;
+
 export async function buildDateFormatMap({ rows, dateFields, valueFor }) {
   const map = {};
   for (const field of dateFields) {
     const key = typeof field === 'string' ? field : field.key;
     const label = typeof field === 'string' ? field : (field.label || field.key);
-    const sample = rows.map(row => valueFor(row, key)).find(v => !isBlank(v));
+    const samples = [];
+    for (const row of rows) {
+      const value = valueFor(row, key);
+      if (isBlank(value)) continue;
+      samples.push(value);
+      if (samples.length >= DATE_FORMAT_SAMPLE_LIMIT) break;
+    }
+    const sample = samples[0];
     if (!sample) {
       map[key] = { format: null, source: 'empty', sample: null };
       continue;
     }
 
+    // A value only settles a column's format when it is a real date in that
+    // format: "02/30/2026" looks month-first (30 > 12) but is no date, and
+    // must not lock the column (which would swap 05/04 and reject 13/04).
+    const decisive = (value, inferred) => Boolean(inferred && !inferred.ambiguous && normalizeSqlDate(value, inferred));
+    const textOrder = start => {
+      for (let index = start; index < samples.length; index++) {
+        const inferred = inferLocalFormat(samples[index]);
+        if (inferred && (inferred.format === 'DMY' || inferred.format === 'MDY') && decisive(samples[index], inferred)) {
+          return { ...inferred, sample: samples[index] };
+        }
+      }
+      return null;
+    };
+
     const local = inferLocalFormat(sample);
-    if (local && !local.ambiguous) {
-      map[key] = { ...local, sample, label };
+    if (decisive(sample, local)) {
+      // An ISO column (Excel date cells read through dateNF) remembers the
+      // day/month order its text values show, for text dates in the same column.
+      const fallback = local.format === 'ISO' ? textOrder(1)?.format : undefined;
+      map[key] = { ...local, sample, label, ...(fallback ? { fallback } : {}) };
       continue;
+    }
+
+    // The first value alone used to decide the column. When it was ambiguous
+    // ("05/04/2026") the day-first default was applied to every row, so a
+    // month-first column stored days 1-12 swapped and every later day above 12
+    // as NULL (rows skipped). A later value whose day or month part is above 12
+    // settles the day/month order for the whole column. Only DMY/MDY evidence
+    // counts: one stray ISO value must not re-type a d/m/y column.
+    if (local) {
+      const settled = textOrder(1);
+      if (settled) {
+        map[key] = { ...settled, label };
+        continue;
+      }
     }
 
     try {

@@ -248,15 +248,15 @@ describe('ensureOrderSettlementTotals schema guard', () => {
     const pool = recordingConnection(text => {
       if (text.startsWith('SELECT column_name')) return columns(text);
       if (text.startsWith('SELECT COUNT(*) AS count')) return { rows: [{ count: 10, settled_rows: 10 }] };
-      if (text.startsWith('WITH sl AS')) return { rows: [{ healed_count: 0 }] };
+      if (text.startsWith('WITH missing AS')) return { rows: [{ healed_count: 0 }] };
       return undefined;
     });
     pool.connect = vi.fn(async () => ({ query: refreshClient.query, release: vi.fn() }));
     return { ddl, pool, refreshClient };
   }
 
-  it('runs no ALTER on the hot table when both metric columns exist', async () => {
-    const { ddl, pool } = settlementTotalsStubs(['settled_row_count', 'negative_bank_amount']);
+  it('runs no ALTER on the hot table when every metric column exists', async () => {
+    const { ddl, pool } = settlementTotalsStubs(['settled_row_count', 'negative_bank_amount', 'settled_reverse_shipping', 'settled_protection_fund']);
 
     await ensureOrderSettlementTotals(pool, ddl);
 
@@ -266,7 +266,7 @@ describe('ensureOrderSettlementTotals schema guard', () => {
   });
 
   it('adds only the missing column, on the DDL session, then rebuilds through the pool', async () => {
-    const { ddl, pool, refreshClient } = settlementTotalsStubs(['settled_row_count']);
+    const { ddl, pool, refreshClient } = settlementTotalsStubs(['settled_row_count', 'settled_reverse_shipping', 'settled_protection_fund']);
 
     await ensureOrderSettlementTotals(pool, ddl);
 
@@ -280,7 +280,7 @@ describe('ensureOrderSettlementTotals schema guard', () => {
   });
 
   it('keeps the single-queryable signature working', async () => {
-    const { pool } = settlementTotalsStubs(['settled_row_count', 'negative_bank_amount']);
+    const { pool } = settlementTotalsStubs(['settled_row_count', 'negative_bank_amount', 'settled_reverse_shipping', 'settled_protection_fund']);
 
     await ensureOrderSettlementTotals(pool);
 
@@ -318,9 +318,9 @@ describe('initDb session, advisory lock and timeouts', () => {
         return versionChecks === 1 && !current ? { rows: [], rowCount: 0 } : { rows: [{}], rowCount: 1 };
       }
       if (text.startsWith('SELECT COUNT(*) AS count')) return { rows: [{ count: 1, settled_rows: 1 }] };
-      if (text.startsWith('WITH sl AS')) return { rows: [{ healed_count: 0 }] };
+      if (text.startsWith('WITH missing AS')) return { rows: [{ healed_count: 0 }] };
       if (text.startsWith('SELECT column_name FROM information_schema.columns')) {
-        return { rows: [{ column_name: 'settled_row_count' }, { column_name: 'negative_bank_amount' }] };
+        return { rows: ['settled_row_count', 'negative_bank_amount', 'settled_reverse_shipping', 'settled_protection_fund'].map(column_name => ({ column_name })) };
       }
       if (text.startsWith('SELECT pg_get_viewdef')) return { rows: [{ unchanged: viewUnchanged }] };
       return catalogResponder(catalog)(text);
@@ -334,21 +334,31 @@ describe('initDb session, advisory lock and timeouts', () => {
       return shared(text);
     });
     client.release = vi.fn();
+    // Later checkouts are other sessions (the single-client SOR view
+    // comparison, the background index-build owner), recorded separately so
+    // the schema session's own statements and release stay checkable.
+    const aux = recordingConnection(shared);
+    aux.release = vi.fn();
     const pool = recordingConnection(shared);
-    pool.connect = vi.fn(async () => ({ query: client.query, release: client.release }));
+    let checkouts = 0;
+    pool.connect = vi.fn(async () => (checkouts++ === 0
+      ? { query: client.query, release: client.release }
+      : { query: aux.query, release: aux.release }));
     stubs.pool = pool;
-    return { client, pool };
+    return { client, pool, aux };
   }
 
   const SET_TIMEOUTS = `SET lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'; SET statement_timeout = '${SCHEMA_DDL_STATEMENT_TIMEOUT}'`;
 
   it('holds the advisory lock on one dedicated client for the whole run, then cleans the session up', async () => {
-    const { client, pool } = stubDatabase();
+    const { client, pool, aux } = stubDatabase();
 
     await initDb();
 
     const texts = client.texts();
-    expect(pool.connect).toHaveBeenCalledTimes(1);
+    // The first checkout is the schema session; the rest never take its lock.
+    expect(pool.connect).toHaveBeenCalled();
+    expect(aux.texts().some(text => text.includes('pg_try_advisory_lock') && text.includes(String(SCHEMA_INIT_LOCK_KEY)))).toBe(false);
     expect(texts[0]).toBe('SELECT pg_try_advisory_lock($1) AS locked');
     expect(client.statements[0].params).toEqual([SCHEMA_INIT_LOCK_KEY]);
     expect(texts[1]).toBe(SET_TIMEOUTS);

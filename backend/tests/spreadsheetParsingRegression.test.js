@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
@@ -10,11 +10,16 @@ import { parseReturnsReceivedRow } from '../routes/upload.js';
 const require = createRequire(import.meta.url);
 const XLSX = require('xlsx');
 
+// Every parse runs on a worker thread; under the full suite's load one test
+// can exceed vitest's 5 s default even though the file takes ~12 s in total.
+vi.setConfig({ testTimeout: 30_000 });
+
 // Pins the dates and numbers the upload handlers get from a workbook, so a
 // SheetJS upgrade that changes date, number or header handling fails here
 // instead of in a finance report. Read options are the handlers' own.
-const GENERIC_UPLOAD = { read: { cellDates: true }, sheets: 0, json: { header: 1, defval: '', raw: false } }; // upload.js, myntraUpload.js
-const LEDGER_UPLOAD = { read: { cellDates: true }, sheets: 0, json: { defval: '' } }; // mpSettlement.js
+const GENERIC_UPLOAD = { read: { cellDates: true, dateNF: "yyyy-mm-dd" }, sheets: 0, json: { header: 1, defval: '', raw: false } }; // upload.js
+const MYNTRA_UPLOAD = { read: { cellDates: true }, sheets: 0, json: { header: 1, defval: '', raw: false } }; // myntraUpload.js parseSheet
+const LEDGER_UPLOAD = { read: { cellDates: true, raw: true }, sheets: 0, json: { defval: '' } }; // mpSettlement.js
 const RETURNS_RECEIVED = { read: { raw: true }, sheets: 0, json: { header: 1, defval: '' } }; // upload.js returns-received
 const AMAZON_SETTLEMENT = { read: { cellDates: false, cellNF: false, cellStyles: false }, values: true };
 
@@ -178,7 +183,9 @@ describe('upload parsing: CSV and HTML-table ".xls" files', () => {
     const rows = book.Sheets.Sheet1;
 
     expect(rows.map(row => row.Date)).toStrictEqual(['05-04-2026', '01-12-2026 10:30:00', '26-04-26']);
-    expect(rows.map(row => row.Amount)).toStrictEqual([1250.5, -45.5, 899]);
+    // raw: true hands text-format cells on verbatim; the ledger parser reads
+    // the amounts (below) exactly as it reads the same text from a CSV.
+    expect(rows.map(row => row.Amount)).toStrictEqual(['1,250.50', '-45.50', '899']);
     const entries = rows.map(row => parseLedgerUploadRow(row, { marketplace: 'zepto', batch: 'b' }).values);
     expect(entries.map(values => values.slice(1, 8))).toStrictEqual([
       ['2026-04-05', 'NEFT-1', '', '', 'Payment', 0, 1250.5],
@@ -205,5 +212,23 @@ describe('upload parsing: CSV and HTML-table ".xls" files', () => {
     expect(parseReturnsReceivedRow({
       order_item_id: row[0], return_received_yes_no: row[1], condition_good_bad: row[2], received_date: row[3],
     })).toMatchObject({ orderItemId: '123456789012345678', received: true, isBad: false, receivedDate: '2026-04-05' });
+  });
+});
+
+describe("upload parsing: Excel's built-in short-date format (code 14)", () => {
+  // dateNF only replaces format 14 (shown as "m/d/yy"); custom formats above
+  // keep their own text. 46117 = 2026-04-05.
+  const file = () => workbookFile([['Order Date'], [{ t: 'n', v: 46117, z: XLSX.SSF.get_table()[14] }]]);
+
+  it('reads it as ISO text in the generic upload (dateNF)', async () => {
+    const book = await parseSpreadsheet(file(), GENERIC_UPLOAD);
+    expect(book.Sheets.Orders.slice(1)).toStrictEqual([['2026-04-05']]);
+    expect(normalizeSqlDate(book.Sheets.Orders[1][0])).toBe('2026-04-05');
+  });
+
+  it('reads it as US text in the Myntra upload, which its month-first date parser handles', async () => {
+    const book = await parseSpreadsheet(file(), MYNTRA_UPLOAD);
+    expect(book.Sheets.Orders.slice(1)).toStrictEqual([['4/5/26']]);
+    expect(normalizeSqlDate(book.Sheets.Orders[1][0], { format: 'MDY' })).toBe('2026-04-05');
   });
 });

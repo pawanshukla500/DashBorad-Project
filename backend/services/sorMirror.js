@@ -1,4 +1,5 @@
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import { forEachIsolated } from '../utils/isolatedBatches.js';
 import { lineComponent, ownedComponents } from './sorUpload.js';
 
 /**
@@ -142,22 +143,36 @@ async function syncAjioInvoiceKeys(pool, keys, { uploadedBy = null } = {}) {
 
   const client = await pool.connect();
   try {
-    for (const key of keys) {
-      const invoice = invoices.get(invoiceKey(key.seller_account, key.invoice_no));
-      try {
-        await client.query('BEGIN');
+    // Each invoice in its own savepoint, committed in groups
+    // (utils/isolatedBatches.js): a full rebuild no longer commits once per
+    // invoice, and one failing invoice still cannot block the others.
+    // Same lock order as SOR uploads (invoice number), so the mirror and an
+    // upload writing the same invoices cannot deadlock.
+    const orderedKeys = [...keys].sort((left, right) => (
+      left.invoice_no < right.invoice_no ? -1 : left.invoice_no > right.invoice_no ? 1
+        : String(left.seller_account) < String(right.seller_account) ? -1
+          : String(left.seller_account) > String(right.seller_account) ? 1 : 0));
+    await forEachIsolated(
+      client,
+      orderedKeys,
+      async key => {
+        const invoice = invoices.get(invoiceKey(key.seller_account, key.invoice_no));
         if (invoice) {
           await writeInvoice(client, invoice, uploadedBy);
-          result.mirrored++;
-        } else if (await removeInvoice(client, key)) {
-          result.removed++;
+          return 'mirrored';
         }
-        await client.query('COMMIT');
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
-        result.errors.push(`SOR sync failed for AJIO invoice ${key.invoice_no}: ${err.message}`);
-      }
-    }
+        return (await removeInvoice(client, key)) ? 'removed' : null;
+      },
+      {
+        onSuccess: (_, outcome) => {
+          if (outcome === 'mirrored') result.mirrored++;
+          else if (outcome === 'removed') result.removed++;
+        },
+        onError: (key, err) => {
+          result.errors.push(`SOR sync failed for AJIO invoice ${key.invoice_no}: ${err.message}`);
+        },
+      },
+    );
   } finally {
     client.release();
   }
