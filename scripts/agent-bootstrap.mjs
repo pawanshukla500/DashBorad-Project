@@ -113,7 +113,8 @@ function ensureGraphify() {
   const upToDate = compareVersions(version, MIN_GRAPHIFY_VERSION) >= 0;
   note(upToDate, 'graphify CLI', upToDate ? version : `${version} is older than ${MIN_GRAPHIFY_VERSION}; run: npm run agent:bootstrap`);
   if (!upToDate) problems.push('graphify CLI outdated');
-  return version;
+  // Never drive the graph, hooks or skills with a CLI below the floor (for example after a failed upgrade).
+  return upToDate ? version : null;
 }
 
 function graphStats() {
@@ -129,8 +130,8 @@ function graphStats() {
 
 function ensureGraph(hasGraphify) {
   if (!hasGraphify) {
-    note(false, 'knowledge graph', 'needs the graphify CLI first');
-    problems.push('knowledge graph missing');
+    note(false, 'knowledge graph', `not refreshed: needs graphify ${MIN_GRAPHIFY_VERSION} or later first`);
+    problems.push('knowledge graph not refreshed');
     return;
   }
   const before = graphStats();
@@ -198,6 +199,7 @@ function ensureProjectFiles(hasGraphify) {
     ['.agents/skills/graphify/SKILL.md', 'graphify skill (Agent Skills)'],
     ['.agents/skills/ponytail/SKILL.md', 'ponytail skills (Agent Skills)'],
     ['.cursor/rules/ponytail.mdc', 'ponytail rule (Cursor)'],
+    ['.agents/rules/ponytail.md', 'ponytail rule (Agent rules)'],
     ['.cursor/rules/graphify.mdc', 'graphify rule (Cursor)'],
   ];
   const missingGraphifySkill = !existsSync(join(ROOT, required[0][0])) || !existsSync(join(ROOT, required[1][0]));
