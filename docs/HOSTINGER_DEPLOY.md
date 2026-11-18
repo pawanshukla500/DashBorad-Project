@@ -112,7 +112,16 @@ The tunnel maps local `127.0.0.1:5432` -> VPS `127.0.0.1:5433` securely over SSH
 ```dotenv
 DATABASE_URL=postgresql://pawanshukla:PASSWORD@localhost:5432/paymentapp
 PG_SSL=false
+# Optional: let the backend open the tunnel itself when it reconnects.
+# DB_TUNNEL_AUTOSTART=true
 ```
+
+The backend does not open the tunnel on its own unless `DB_TUNNEL_AUTOSTART=true`
+is set. Even then it never does so under a test runner (`VITEST` set or
+`NODE_ENV=test`), so `npm test` cannot forward a test's loopback
+`DATABASE_URL` to the production database. Without the variable, start the
+tunnel with `npm run tunnel` or `START.bat` first; the backend reconnects
+automatically once `localhost:5432` is reachable.
 
 `/health` returns HTTP 200 only when the API can reach PostgreSQL. If the
 database is temporarily unavailable, the API stays running, returns a clear

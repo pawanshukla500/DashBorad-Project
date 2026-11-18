@@ -2,14 +2,17 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { app, setDatabaseSchemaReadyForTesting, publicDatabaseStatus, healthCheckHandler } from '../server.js';
 import { getDatabaseStatus, isDbConfigured, resolvePgConfig } from '../db/index.js';
 
+// Always this dummy URL, even when backend/.env supplies a real one: `.invalid`
+// (RFC 6761) never resolves, so the result does not depend on whatever listens
+// on 127.0.0.1:5432 (e.g. the SSH tunnel to production).
+const DUMMY_DATABASE_URL = 'postgresql://test_ci_user:test_ci_dummy_pass@recon-ci.invalid:5432/recon_ci';
+
 describe('API Security and Database Resilience Suite', () => {
   const originalDbUrl = process.env.DATABASE_URL;
 
   beforeAll(() => {
     setDatabaseSchemaReadyForTesting(true);
-    if (!process.env.DATABASE_URL && !process.env.POSTGRES_DATABASE_URL) {
-      process.env.DATABASE_URL = 'postgresql://test_ci_user:test_ci_dummy_pass@127.0.0.1:5432/recon_ci';
-    }
+    process.env.DATABASE_URL = DUMMY_DATABASE_URL;
   });
 
   afterAll(() => {
@@ -85,9 +88,11 @@ describe('API Security and Database Resilience Suite', () => {
 
       try {
         const res = await fetch(`${baseUrl}/health`);
-        expect([200, 503]).toContain(res.status);
+        // The dummy host can never connect, so this is always the degraded path.
+        expect(res.status).toBe(503);
         const data = await res.json();
-        expect(data).toHaveProperty('status');
+        expect(data).toHaveProperty('status', 'degraded');
+        expect(data).toHaveProperty('dbConnected', false);
         expect(data).toHaveProperty('dataSource', 'sql');
         
         // Ensure no internal DB URL with credentials leaks to external callers
