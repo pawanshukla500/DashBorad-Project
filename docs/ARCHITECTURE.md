@@ -158,6 +158,20 @@ The **Outstanding Payments** workspace (`/outstanding-payments`) provides an aud
    - **Pending Invoices**: Invoice-level reconciliation matching billed invoices against actual payments.
    - Interactive `OrderDetailDrawer` for item-level fee and journey audit.
 
+## Agent Tooling (graphify + ponytail)
+
+Coding agents navigate the code through a local, code-only knowledge graph
+built by [graphify](https://github.com/Graphify-Labs/graphify) in
+`graphify-out/` (git-ignored, rebuilt per clone, `GRAPHIFY_BACKEND=none`), and
+follow the [ponytail](https://github.com/DietrichGebert/ponytail) ruleset for the
+smallest complete change. `scripts/agent-bootstrap.mjs` installs and checks both
+(`npm run agent:bootstrap` / `agent:check` / `graph:update`); the binding rules
+are AGENTS.md section 0 (mirrored in GEMINI.md) and the full guide is
+[AGENT_TOOLING.md](AGENT_TOOLING.md). The graph's god nodes mirror the boundaries
+above: on the backend `getPool()` (database access) and `optionalNumber()` /
+`optionalString()` (shared upload parsing), on the frontend `useFetch()` (data
+loading) are the most connected symbols.
+
 ## Verification
 
-From `backend/`, run `npm test` (84 files, 515 tests). From root, run `node desktop/tests/test_desktop_auth.js` (6 tests). From `frontend/`, run `npm run build`. Add a regression test whenever a report definition, permission, or upload parser is changed.
+From `backend/`, run `npm test` (on `master` as of 2026-11-18: 104 test files / 840 tests, of which 1 file / 8 tests are skipped). From root, run `node desktop/tests/test_desktop_auth.js` (6 tests). From `frontend/`, run `npm run build`. Add a regression test whenever a report definition, permission, or upload parser is changed.
