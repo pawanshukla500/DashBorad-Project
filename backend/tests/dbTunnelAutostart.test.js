@@ -38,6 +38,8 @@ async function loadDbModule() {
   vi.doMock('../../scripts/db-tunnel.js', () => ({ ensureTunnel: ensureTunnelMock }));
   vi.stubEnv('DATABASE_URL', 'postgresql://dev:dev@127.0.0.1:5432/paymentapp');
   vi.stubEnv('DB_TUNNEL_AUTOSTART', 'true');
+  // Pin the tunnel port so a value exported in the developer's shell cannot change the outcome.
+  vi.stubEnv('DB_TUNNEL_LOCAL_PORT', '5432');
   vi.stubEnv('PG_SSL', 'false');
   return import('../db/index.js');
 }
@@ -63,6 +65,18 @@ describe('shouldAutoStartTunnel', () => {
     expect(shouldAutoStartTunnel('postgres', dev)).toBe(false);
     expect(shouldAutoStartTunnel('127.0.0.1', { NODE_ENV: 'development' })).toBe(false);
     expect(shouldAutoStartTunnel('127.0.0.1', { ...dev, DB_TUNNEL_AUTOSTART: 'false' })).toBe(false);
+  });
+
+  it('starts the tunnel only for a connection on the tunnel\'s local port', async () => {
+    const { shouldAutoStartTunnel } = await import('../db/index.js');
+    const dev = { NODE_ENV: 'development', DB_TUNNEL_AUTOSTART: 'true' };
+
+    expect(shouldAutoStartTunnel('127.0.0.1', dev, '5432')).toBe(true);
+    expect(shouldAutoStartTunnel('127.0.0.1', dev, '')).toBe(true);
+    // A local database on another port is not the tunnel.
+    expect(shouldAutoStartTunnel('127.0.0.1', dev, '5433')).toBe(false);
+    expect(shouldAutoStartTunnel('127.0.0.1', { ...dev, DB_TUNNEL_LOCAL_PORT: '6543' }, '6543')).toBe(true);
+    expect(shouldAutoStartTunnel('127.0.0.1', { ...dev, DB_TUNNEL_LOCAL_PORT: '6543' }, '5432')).toBe(false);
   });
 
   it('never starts the tunnel under a test runner, even when opted in', async () => {
@@ -93,6 +107,19 @@ describe('database recovery and the SSH tunnel', () => {
     await db.recoverDatabaseConnection();
 
     expect(ensureTunnelMock).toHaveBeenCalledTimes(1);
+    await db.getPool().end();
+  });
+
+  it('does not call ensureTunnel for a loopback database on another port', async () => {
+    const db = await loadDbModule();
+    vi.stubEnv('DATABASE_URL', 'postgresql://dev:dev@127.0.0.1:5433/paymentapp');
+    vi.stubEnv('VITEST', '');
+    vi.stubEnv('NODE_ENV', 'development');
+    db.getPool();
+
+    await db.recoverDatabaseConnection();
+
+    expect(ensureTunnelMock).not.toHaveBeenCalled();
     await db.getPool().end();
   });
 });

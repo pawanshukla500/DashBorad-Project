@@ -49,6 +49,8 @@ echo.
 :: ── Start Backend ──────────────────────────────────────────────────────────
 echo  [3/4] Starting Backend (Express — port 3001, all interfaces)...
   pushd "%~dp0backend"
+  rem Let the backend reopen the SSH tunnel itself when DATABASE_URL points at it (localhost:5432).
+  set "DB_TUNNEL_AUTOSTART=true"
   start "ReconCentral Backend" /B npm.cmd run dev
   popd
   echo     Backend started in background.

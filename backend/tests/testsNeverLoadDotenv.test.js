@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isTestEnvironment, loadEnvFiles } from '../utils/loadEnv.js';
 
@@ -107,5 +108,44 @@ describe('backend modules under Vitest', () => {
 
     expect(config).toHaveBeenCalledWith(expect.objectContaining({ path: envFile, override: false }));
     expect(process.env[CANARY]).toBeUndefined();
+  });
+});
+
+describe('maintenance scripts', () => {
+  // Standalone CLI scripts (backend/scripts/*, the repo-root scripts/) may load
+  // .env with dotenv directly: they are run by hand, never under a test runner.
+  // Any script that app code or a test imports joins the test graph, so it
+  // must load .env through utils/loadEnv.js (or not at all).
+  it('no script imported by app code or a test loads .env itself', () => {
+    const backendDir = fileURLToPath(new URL('../', import.meta.url));
+    const sourceFiles = [path.join(backendDir, 'server.js')];
+    for (const dir of ['routes', 'services', 'utils', 'db', 'tests']) {
+      for (const entry of fs.readdirSync(path.join(backendDir, dir), { recursive: true })) {
+        if (String(entry).endsWith('.js')) sourceFiles.push(path.join(backendDir, dir, String(entry)));
+      }
+    }
+
+    const importedScripts = new Set();
+    const queue = [...sourceFiles];
+    while (queue.length) {
+      const file = queue.shift();
+      const source = fs.readFileSync(file, 'utf8');
+      for (const [, specifier] of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)['"]((?:\.\.?\/)+(?:[\w-]+\/)*scripts\/[^'"]+\.js)['"]/g)) {
+        const script = path.resolve(path.dirname(file), specifier);
+        if (!importedScripts.has(script) && fs.existsSync(script)) {
+          importedScripts.add(script);
+          queue.push(script);
+        }
+      }
+    }
+
+    // Sanity: the scan finds the scripts we know are imported.
+    const names = [...importedScripts].map(file => path.basename(file));
+    expect(names).toEqual(expect.arrayContaining(['sync-vb-export-catalog.js', 'db-tunnel.js']));
+    const loadsEnvItself = [...importedScripts]
+      .filter(file => /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\(\s*|^\s*import\s*)['"]dotenv(?:\/config)?['"]/m
+        .test(fs.readFileSync(file, 'utf8')))
+      .map(file => path.relative(backendDir, file).split(path.sep).join('/'));
+    expect(loadsEnvItself).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   NORMALIZED_ORDER_COLUMNS,
   NORMALIZED_RETURN_COLUMNS,
@@ -23,10 +23,13 @@ import {
   validateSellerIds,
   isRepeatedMyntraHeader,
 } from '../routes/myntraUpload.js';
-import { getPool, isDbConfigured } from '../db/index.js';
-import { initDb } from '../db/initDb.js';
+import { ensureMyntraPartnerWarehouseSchema } from '../db/initDb.js';
 
 describe('Myntra layout mapping', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const order = {
     'po_type': 'PPMP',
     'order release id': '100019530457',
@@ -245,35 +248,54 @@ describe('Myntra layout mapping', () => {
     expect(newDetail[RETURN_DETAIL_COLUMNS.indexOf('partner_warehouse_code')]).toBe('14417');
   });
 
-  it('applies ensureMyntraPartnerWarehouseSchema and populates columns in the database', async () => {
-    if (!(await isDbConfigured())) return;
+  // ensureMyntraPartnerWarehouseSchema against a recording pool. (This used to
+  // run initDb() and query whatever database the environment named, which
+  // with backend/.env and the SSH tunnel up was production.)
+  function recordingPool({ applied }) {
+    const calls = [];
+    return {
+      calls,
+      query: vi.fn(async (sql, params) => {
+        calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+        return /^\s*SELECT 1 FROM schema_version/.test(sql) ? { rowCount: applied ? 1 : 0, rows: [] } : { rowCount: 0, rows: [] };
+      }),
+    };
+  }
 
-    await initDb();
-    const pool = getPool();
+  it('skips the partner warehouse migration once its schema version is recorded', async () => {
+    const pool = recordingPool({ applied: true });
+    await ensureMyntraPartnerWarehouseSchema(pool);
 
-    const cols = await pool.query(
-      `SELECT column_name, data_type 
-       FROM information_schema.columns 
-       WHERE table_name = 'myntra_return_details' 
-         AND column_name IN ('warehouse_id', 'partner_warehouse_code')
-       ORDER BY column_name`
-    );
-    expect(cols.rows).toHaveLength(2);
-    expect(cols.rows.map(r => r.column_name)).toEqual(['partner_warehouse_code', 'warehouse_id']);
+    expect(pool.calls).toEqual([{
+      sql: 'SELECT 1 FROM schema_version WHERE version = $1 LIMIT 1',
+      params: ['2026.09.myntra-partner-warehouse-1'],
+    }]);
+  });
 
-    const versions = await pool.query(
-      `SELECT version FROM schema_version WHERE version = '2026.09.myntra-partner-warehouse-1'`
-    );
-    expect(versions.rows).toHaveLength(1);
+  it('adds, backfills and indexes the partner warehouse columns, then records the version', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const pool = recordingPool({ applied: false });
+    await ensureMyntraPartnerWarehouseSchema(pool);
 
-    const stats = await pool.query(
-      `SELECT count(id)::int as total,
-              count(warehouse_id)::int as with_wh,
-              count(partner_warehouse_code)::int as with_pwh
-       FROM myntra_return_details`
-    );
-    expect(stats.rows[0].total).toBeGreaterThanOrEqual(0);
-  }, 20000);
+    const sql = pool.calls.map(call => call.sql);
+    const index = pattern => sql.findIndex(statement => pattern.test(statement));
+    const addWarehouse = index(/ALTER TABLE myntra_return_details ADD COLUMN IF NOT EXISTS warehouse_id TEXT/);
+    const addPartner = index(/ALTER TABLE myntra_return_details ADD COLUMN IF NOT EXISTS partner_warehouse_code TEXT/);
+    const backfillWarehouse = index(/UPDATE myntra_return_details SET warehouse_id = COALESCE\(.*'warehouse_id'.*'seller_warehouse_id'/);
+    const backfillPartner = index(/UPDATE myntra_return_details SET partner_warehouse_code = .*WHERE partner_warehouse_code IS NULL/);
+    const indexes = [
+      index(/CREATE INDEX IF NOT EXISTS ix_myntra_return_detail_wh ON myntra_return_details \(warehouse_id\)/),
+      index(/CREATE INDEX IF NOT EXISTS ix_myntra_return_detail_partner_wh ON myntra_return_details \(partner_warehouse_code\)/),
+    ];
+    const record = index(/INSERT INTO schema_version \(version\) VALUES \(\$1\) ON CONFLICT \(version\) DO NOTHING/);
+
+    for (const position of [addWarehouse, addPartner, backfillWarehouse, backfillPartner, ...indexes, record]) {
+      expect(position).toBeGreaterThan(0);
+    }
+    expect(Math.max(addWarehouse, addPartner)).toBeLessThan(Math.min(backfillWarehouse, backfillPartner));
+    expect(record).toBe(sql.length - 1);
+    expect(pool.calls[record].params).toEqual(['2026.09.myntra-partner-warehouse-1']);
+  });
 
   it('parses and validates the user Myntra_VB_Return_Template.xlsx file with zero errors', () => {
     const templatePath = 'C:/Users/Pawan Shukla/Desktop/Myntra_VB_Return_Template.xlsx';
