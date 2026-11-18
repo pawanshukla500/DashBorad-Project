@@ -43,7 +43,8 @@ New mutation endpoints must be placed below an appropriate access guard.
 1. **Multi-Path Cascade `.env` Resolution**:
    - Both `backend/db/index.js` and `backend/server.js` load configuration from a priority cascade: `../.env`, `../../.env`, `process.cwd()/.env`, and `process.cwd()/backend/.env`.
    - Prevents database disconnects when commands, workers, or scrapers are launched from different directory roots.
-   - Every loader goes through `loadEnvFiles()` in `backend/utils/loadEnv.js`, which loads nothing under a test runner (`VITEST` set or `NODE_ENV=test`). Tests see only the variables they set, as in CI, never the developer's production `DATABASE_URL` (guarded by `backend/tests/testsNeverLoadDotenv.test.js`).
+   - Every loader in the server and test import graph (`db/index.js`, `server.js`, `utils/firebaseAdmin.js`, `scripts/sync-vb-export-catalog.js`) goes through `loadEnvFiles()` in `backend/utils/loadEnv.js`, which loads nothing under a test runner (`VITEST` set or `NODE_ENV=test`). Tests see only the variables they set, as in CI, never the developer's production `DATABASE_URL` (guarded by `backend/tests/testsNeverLoadDotenv.test.js`).
+   - Standalone maintenance scripts in `backend/scripts/` still call `dotenv.config()` directly; they are run by hand only. The same test fails if app code or a test imports a script that loads `.env` itself.
    - Nor does a test inherit a database from the shell: tests either mock `db/index.js` or call `stubNoDatabaseEnv()` from `backend/tests/helpers/databaseEnv.js`, which unsets every connection variable the backend reads (`backend/tests/databaseEnvIsolation.test.js` fails if the code starts reading one it does not cover).
 
 2. **Connection Pooling & Session Limits**:
