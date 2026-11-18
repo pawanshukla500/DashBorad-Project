@@ -658,27 +658,39 @@ router.get('/non-order', async (req, res) => {
       myntraAccFilter = `AND seller_account = $${myntraParams.length}`;
     }
 
+    // The Meesho and Myntra panels ask for their own marketplace and read only
+    // its list, but every call ran all seven queries, including full scans of
+    // amazon_settlement_lines. With a marketplace given, only its list is
+    // queried (the others come back empty); without one, all are returned.
+    const requestedMp = String(req.query.marketplace || '').trim().toLowerCase();
+    const onlyLists = requestedMp === 'meesho'
+      ? ['meeshoClaims']
+      : (requestedMp === 'myntra' || requestedMp.startsWith('myntra_')) ? ['myntraNod'] : null;
+    const nonOrderQuery = (name, sql, params) => (!onlyLists || onlyLists.includes(name)
+      ? pool.query(sql, params)
+      : Promise.resolve({ rows: [] }));
+
     const [spf, storage, ads, gads, amazon, myntraNod, meeshoClaims] = await Promise.all([
-      pool.query(`
+      nonOrderQuery('spf', `
         SELECT neft_id, payment_date, claim_id, settlement_value, protection_reason, seller_sku, fsn FROM fk_spf_claims 
         UNION ALL 
         SELECT settlement_id AS neft_id, posted_date AS payment_date, order_id AS claim_id, amount AS settlement_value, amount_description AS protection_reason, sku AS seller_sku, order_item_code AS fsn FROM amazon_settlement_lines WHERE (amount_type = 'FBA Inventory Reimbursement' OR amount_description IN ('SAFE-T Reimbursement', 'Reimbursement for Lost packages')) AND (order_id !~ '^\\d{3}-\\d{7}-\\d{7}$' OR order_id IS NULL) 
         ORDER BY payment_date DESC
       `),
-      pool.query(`
+      nonOrderQuery('storage', `
         SELECT neft_id, payment_date, service_name, settlement_value, fsn, storage_fee, removal_fee, warehouse_state FROM fk_storage_recall 
         UNION ALL 
         SELECT settlement_id AS neft_id, posted_date AS payment_date, amount_type AS service_name, amount AS settlement_value, order_item_code AS fsn, CASE WHEN amount_type ILIKE '%Storage%' THEN amount ELSE 0 END AS storage_fee, CASE WHEN amount_type ILIKE '%Removal%' THEN amount ELSE 0 END AS removal_fee, NULL AS warehouse_state FROM amazon_settlement_lines WHERE (amount_type ILIKE '%Removal%' OR amount_type ILIKE '%Storage%') AND (order_id !~ '^\\d{3}-\\d{7}-\\d{7}$' OR order_id IS NULL) 
         ORDER BY payment_date DESC
       `),
-      pool.query(`
+      nonOrderQuery('ads', `
         SELECT neft_id, payment_date, transaction_type, settlement_value, campaign_id, gst_on_ads FROM fk_ads 
         UNION ALL 
         SELECT settlement_id AS neft_id, posted_date AS payment_date, amount_description AS transaction_type, amount AS settlement_value, order_id AS campaign_id, 0 AS gst_on_ads FROM amazon_settlement_lines WHERE amount_type = 'Cost of Advertising' 
         ORDER BY payment_date DESC
       `),
-      pool.query(`SELECT neft_id, payment_date, service_name, settlement_value, total_amount, gst_on_service FROM fk_google_ads ORDER BY payment_date DESC`),
-      pool.query(`
+      nonOrderQuery('googleAds', `SELECT neft_id, payment_date, service_name, settlement_value, total_amount, gst_on_service FROM fk_google_ads ORDER BY payment_date DESC`),
+      nonOrderQuery('amazonNonOrder', `
         SELECT settlement_id AS neft_id, posted_date AS payment_date, transaction_type, amount_type, amount_description AS service_name, amount AS settlement_value, order_id AS reference_id FROM amazon_settlement_lines 
         WHERE (order_id !~ '^\\d{3}-\\d{7}-\\d{7}$' OR order_id IS NULL) 
           AND NOT (amount_type = 'FBA Inventory Reimbursement' OR amount_description IN ('SAFE-T Reimbursement', 'Reimbursement for Lost packages')) 
@@ -686,7 +698,7 @@ router.get('/non-order', async (req, res) => {
           AND NOT (amount_type = 'Cost of Advertising') 
         ORDER BY posted_date DESC
       `),
-      pool.query(`
+      nonOrderQuery('myntraNod', `
         SELECT
           payment_reference AS neft_id,
           payment_date,
@@ -702,7 +714,7 @@ router.get('/non-order', async (req, res) => {
         ORDER BY payment_date DESC
       `, myntraParams),
 
-      pool.query(`
+      nonOrderQuery('meeshoClaims', `
         SELECT
           settlement_id AS neft_id,
           payment_date,

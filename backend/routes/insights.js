@@ -494,12 +494,14 @@ router.get('/cash-flow', async (req, res) => {
     const mpVals = [];
     if (rawMp && rawMp !== 'all') {
       const mp = String(rawMp).trim().toLowerCase();
+      // unified_settlements carries seller_account; without it both Myntra
+      // accounts' cash flows included every Myntra payment.
       if (mp === 'myntra_vb') {
-        mpWhere = "AND marketplace = 'myntra'";
+        mpWhere = "AND marketplace = 'myntra' AND COALESCE(seller_account, 'myntra_vb') = 'myntra_vb'";
         mpWhereS = "AND s.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
         omWhere = "AND o.marketplace = 'myntra' AND COALESCE(o.seller_account, 'myntra_vb') = 'myntra_vb'";
       } else if (mp === 'myntra_ej') {
-        mpWhere = "AND marketplace = 'myntra'";
+        mpWhere = "AND marketplace = 'myntra' AND seller_account = 'myntra_ej'";
         mpWhereS = "AND s.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
         omWhere = "AND o.marketplace = 'myntra' AND o.seller_account = 'myntra_ej'";
       } else {

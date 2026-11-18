@@ -577,7 +577,8 @@ export const downloadMpLedgerTemplate = (mp)         => api.get(`/mp-settlement/
 // request silently truncated workspaces with more historical rows than that.
 // Keep export responses out of the short-lived report cache: retaining several
 // 50k-row payloads can otherwise make a normal browser session memory-heavy.
-const EXPORT_PAGE_SIZE = 50_000;
+// Matches the API list cap (LIST_MAX_PAGE_SIZE in backend/routes/data.js).
+const EXPORT_PAGE_SIZE = 10_000;
 const EXCEL_MAX_DATA_ROWS = 1_048_575;
 
 async function fetchAllPages(url, params) {
