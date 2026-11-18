@@ -590,7 +590,8 @@ async function batchUpsert(pool, table, keyCol, fields, rows, marketplace, confl
             vb_export_category = sm.category
         FROM sku_master sm
         WHERE o.sku = sm.listing_sku
-          AND (o.vb_export_sku IS NULL OR o.vb_export_category IS NULL);
+          AND (o.vb_export_sku IS NULL OR o.vb_export_category IS NULL)
+          AND (o.vb_export_sku IS DISTINCT FROM sm.master_sku OR o.vb_export_category IS DISTINCT FROM sm.category);
       `);
     } catch (e) {
       console.warn('[batchUpsert orders] vb_export_sku backfill skipped:', e.message);

@@ -49,6 +49,7 @@ const MYNTRA_BLANK_TRACKING_CANCELLED_SCHEMA_VERSION = '2026.09.myntra-blank-tra
 const MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION = '2026.09.myntra-ej-rate-cards-1';
 const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimization-1';
 const LOOKUP_INDEXES_SCHEMA_VERSION = '2026.09.lookup-indexes-1';
+const REDUNDANT_INDEX_CLEANUP_SCHEMA_VERSION = '2026.11.redundant-indexes-1';
 const MARKETPLACE_CREDENTIALS_SCHEMA_VERSION = '2026.10.marketplace-credentials-1';
 export const RATE_CARD_WORKER_SCHEMA_VERSION = '2026.10.ratecard-worker-jobs-1';
 // Dimensional rate-card migration version lives in ./rateCardDimensionalMigration.js.
@@ -829,15 +830,11 @@ const INDEXES = [
   // seller_account-only index helps filter-only requests.
   `CREATE INDEX IF NOT EXISTS IX_returns_market_account_requested ON returns(marketplace, seller_account, return_requested_date DESC)`,
   // ── Round 2 — bundle-side and tail query coverage ───────────────────────────
-  // vb_export_sku is used in the COGS_JOINS COALESCE and in the master-catalog
-  // join that backs /api/orders, /api/summary, /api/profit-analysis. Without an
-  // index the lookup degrades to a heap scan for every filtered row.
-  `CREATE INDEX IF NOT EXISTS IX_orders_vb_export_sku ON orders(vb_export_sku) WHERE vb_export_sku IS NOT NULL AND vb_export_sku <> ''`,
-  // order_returns is a UNION ALL view whose Amazon branch joins orders on
-  // (order_id, sku, marketplace) and whose non-Amazon branch is `returns`
-  // filtered by order_item_id. The marketplace-agnostic order_item_id lookup
-  // is on the critical path of nearly every report endpoint; cover it.
-  `CREATE INDEX IF NOT EXISTS IX_returns_order_item_id ON returns(order_item_id) WHERE order_item_id IS NOT NULL`,
+  // orders(vb_export_sku) (COGS_JOINS / master-catalog joins) is IX_orders_vb_export_sku
+  // above; a second, partial definition with the same name was never created.
+  // returns(order_item_id), on the critical path of order_returns and nearly
+  // every report, is IX_returns_item above (a second copy was dropped by
+  // 2026.11.redundant-indexes-1).
   // Faster sidebar filter for the Returns tab and the Returns tab's source
   // drill-down on (marketplace, return_status, return_requested_date).
   `CREATE INDEX IF NOT EXISTS IX_returns_market_status_requested ON returns(marketplace, return_status, return_requested_date DESC) WHERE return_status IS NOT NULL`,
@@ -847,7 +844,8 @@ const INDEXES = [
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_period ON sor_invoice(period_from, period_to)`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_order ON sor_invoice_line(order_id) WHERE order_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_sku   ON sor_invoice_line(vb_export_sku) WHERE vb_export_sku IS NOT NULL`,
-  `CREATE INDEX IF NOT EXISTS IX_sor_invoice_line_invoice ON sor_invoice_line(invoice_id)`,
+  // sor_invoice_line(invoice_id) is served by IX_sor_invoice_line_invoice_cover
+  // (created in ensureSorLedgerSchema).
   // Phase 0.5 — the line_type covering index and the FK-column indexes are
   // created INSIDE ensureSorLedgerSchema after the columns are added, so
   // existing installs that pre-date the columns don't crash on this DDL.
@@ -1113,6 +1111,7 @@ export async function initDb() {
       await ensureSorSchema(pool);
       await ensureDbConnectionOptimization(db);
       await ensureLookupIndexes(pool);
+      await ensureRedundantIndexCleanup(pool);
       await ensureMarketplaceCredentialsSchema(db);
       await ensureRateCardWorkerSchema(pool);
       // A read-model migration changes the view definition as well as the
@@ -1601,7 +1600,6 @@ export async function initDb() {
       await db.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
     }
     await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_composite ON returns(composite_key)`).catch(() => {});
-    await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_order_id  ON returns(order_id)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_returns_order_sku ON returns(order_id, sku)`).catch(() => {});
 
     // sku_master: cross-link Amazon identifiers (fnsku + asin) so FBA returns
@@ -1722,9 +1720,7 @@ export async function initDb() {
     await db.query(`UPDATE amazon_settlement_lines SET brand_name = $1 WHERE brand_name IS DISTINCT FROM $1`, [AMAZON_BRAND]).catch(e => console.warn('[db] Amazon settlement brand backfill:', e.message));
     await db.query(`ALTER TABLE fk_spf_claims ADD COLUMN IF NOT EXISTS order_item_id TEXT`).catch(() => {});
     await db.query(`ALTER TABLE fk_spf_claims ADD COLUMN IF NOT EXISTS status TEXT`).catch(() => {});
-    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_settlement ON amazon_settlement_lines(settlement_id)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_item ON amazon_settlement_lines(order_item_code)`).catch(() => {});
-    await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_order_id   ON amazon_settlement_lines(order_id)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_composite  ON amazon_settlement_lines(composite_key)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_posted     ON amazon_settlement_lines(posted_date)`).catch(() => {});
     await db.query(`CREATE INDEX IF NOT EXISTS IX_amzn_lines_tax_desc   ON amazon_settlement_lines(amount_type, amount_description)`).catch(() => {});
@@ -1816,6 +1812,7 @@ export async function initDb() {
     await ensureSorSchema(pool);
     await ensureDbConnectionOptimization(db);
     await ensureLookupIndexes(pool);
+    await ensureRedundantIndexCleanup(pool);
     await ensureMarketplaceCredentialsSchema(db);
     await ensureRateCardWorkerSchema(pool);
 
@@ -2392,8 +2389,7 @@ async function ensureSorOutstandingView(pool) {
   const outstanding = `(${sale} - ${payment} - ${returned} - ${deduction})`;
   const expected = `(${sale} - ${returned} - ${deduction})`;
   try {
-    await pool.query(`
-      CREATE OR REPLACE VIEW sor_outstanding AS
+    const select = `
       SELECT
           i.id                                     AS invoice_id,
           i.portal,
@@ -2422,7 +2418,11 @@ async function ensureSorOutstandingView(pool) {
       LEFT JOIN sor_invoice_line s ON s.invoice_id = i.id
       GROUP BY i.id, i.portal, i.portal_account, i.invoice_no, i.invoice_date,
                i.period_from, i.period_to, i.invoice_type, i.net_payable, i.uploaded_at
-    `);
+    `;
+    // Replaced only when the definition changed. CREATE OR REPLACE VIEW takes
+    // an ACCESS EXCLUSIVE lock (briefly blocking the SOR pages) and ran on every
+    // boot and on each 60 s retry while SOR migrations were pending.
+    await replaceViewIfChanged(pool, 'sor_outstanding', select, `CREATE OR REPLACE VIEW sor_outstanding AS ${select}`);
     return true;
   } catch (error) {
     console.error('[db] sor_outstanding view could not be created:', error.message);
@@ -3159,6 +3159,34 @@ const LOOKUP_INDEXES = [
   ['ix_sku_master_listing_sku', 'sku_master (listing_sku)'],
 ];
 
+/**
+ * Indexes that another index on the same table already covers (same leading
+ * column(s)); each one only slowed every insert into a busy write table:
+ *  - amazon_settlement_lines(settlement_id)  ⊂ (settlement_id, posted_date DESC)
+ *  - amazon_settlement_lines(order_id)       ⊂ (order_id, sku)
+ *  - returns(order_item_id) partial copy     = IX_returns_item (order_item_id)
+ *  - returns(order_id)                       ⊂ (order_id, sku)
+ *  - sor_invoice_line(invoice_id)            ⊂ (invoice_id) INCLUDE (...) cover index
+ * Their CREATE statements were removed from startup. A plain DROP INDEX holds
+ * the table lock only for the catalog change; with the migration's 5 s
+ * lock_timeout a busy table makes it roll back and retry on the next start.
+ */
+const REDUNDANT_INDEXES = [
+  'ix_amzn_lines_settlement',
+  'ix_amzn_lines_order_id',
+  'ix_returns_order_item_id',
+  'ix_returns_order_id',
+  'ix_sor_invoice_line_invoice',
+];
+
+export async function ensureRedundantIndexCleanup(pool) {
+  return runVersionedMigration(pool, REDUNDANT_INDEX_CLEANUP_SCHEMA_VERSION, async client => {
+    for (const index of REDUNDANT_INDEXES) {
+      await client.query(`DROP INDEX IF EXISTS ${index}`);
+    }
+  });
+}
+
 async function ensureLookupIndexes(pool) {
   try {
     const { rowCount } = await pool.query(
@@ -3175,9 +3203,18 @@ async function ensureLookupIndexes(pool) {
         WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
       `, [name]);
       if (rows[0]?.valid) continue;
-      if (rows.length) await pool.query(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
-      console.log(`[db] Building lookup index ${name}…`);
-      await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${definition}`);
+      // Build on a dedicated autocommit client: pool.query carries the 45 s
+      // read statement_timeout, which cancels a large build part-way and
+      // leaves an INVALID index that is dropped and rebuilt (and cancelled
+      // again) on every boot. Transaction clients have no statement timeout.
+      const builder = await pool.connect();
+      try {
+        if (rows.length) await builder.query(`DROP INDEX CONCURRENTLY IF EXISTS ${name}`);
+        console.log(`[db] Building lookup index ${name}…`);
+        await builder.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name} ON ${definition}`);
+      } finally {
+        builder.release();
+      }
     }
 
     await pool.query(
@@ -3396,8 +3433,13 @@ export async function ensureRateCardWorkerSchema(pool) {
     `);
   }, { lockTimeout: '5s' });
 
+  // A failed rate-card migration (a 5 s lock timeout against tables the
+  // desktop worker is writing, or duplicate periods on a restored database)
+  // used to throw here and keep EVERY /api route at 503, retrying every 5 s.
+  // runVersionedMigration already rolled it back and retries it on the next
+  // start (like the SOR migrations); only the rate-card worker features wait.
   if (mig1 === false) {
-    throw new Error(`Migration ${RATE_CARD_WORKER_SCHEMA_VERSION} failed to apply`);
+    console.error(`[db] ${RATE_CARD_WORKER_SCHEMA_VERSION} is pending; rate-card worker features stay unavailable until it applies on a later start.`);
   }
 
   const mig2 = await runVersionedMigration(pool, '2026.10.ratecard-worker-jobs-2', async (tx) => {
@@ -3470,7 +3512,7 @@ export async function ensureRateCardWorkerSchema(pool) {
   // migrations above; each versioned unit is independent and idempotent.
   const mig3 = await runRateCardDimensionalMigration(pool, runVersionedMigration);
   if (mig3 === false) {
-    throw new Error('Migration 2026.10.ratecard-worker-jobs-3 failed to apply');
+    console.error('[db] 2026.10.ratecard-worker-jobs-3 is pending; rate-card publishing stays unavailable until it applies on a later start.');
   }
 
   const mig4 = await runVersionedMigration(pool, '2026.11.ratecard-extractions-1', async (tx) => {
@@ -3498,14 +3540,14 @@ export async function ensureRateCardWorkerSchema(pool) {
     `);
   }, { lockTimeout: '5s' });
   if (mig4 === false) {
-    throw new Error('Migration 2026.11.ratecard-extractions-1 failed to apply');
+    console.error('[db] 2026.11.ratecard-extractions-1 is pending; rate-card extraction history stays unavailable until it applies on a later start.');
   }
 
   if (mig2 === false) {
-    throw new Error('Migration 2026.10.ratecard-worker-jobs-2 failed to apply');
+    console.error('[db] 2026.10.ratecard-worker-jobs-2 is pending; it will be retried on the next start.');
   }
 
-  return true;
+  return mig1 !== false && mig2 !== false && mig3 !== false && mig4 !== false;
 }
 
 /**

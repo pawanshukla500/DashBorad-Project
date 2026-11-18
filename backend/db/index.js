@@ -542,7 +542,14 @@ function describeConnection(connectionString) {
   }
 }
 
+// pg-pool hands the same Client back on every checkout and never resets its
+// query method, so wrapping it each time nested one more wrapper per checkout
+// for the client's whole lifetime. Wrap once.
+const INSTRUMENTED = Symbol('reconcentral.instrumentedClient');
+
 function instrumentClient(client) {
+  if (client[INSTRUMENTED]) return client;
+  client[INSTRUMENTED] = true;
   const query = client.query.bind(client);
   // Transactional callers use client.query directly. Mark a broken client as
   // offline as well, so the background recovery path is not limited to pool
@@ -604,13 +611,12 @@ export function getPool() {
         } catch (error) {
           lastError = error;
           if (!isRetryableConnectionError(error)) throw error;
-          // A saturated local pool does not mean PostgreSQL is down. Retrying
-          // reads may still help after another dashboard request completes,
-          // but do not flip the whole service into its offline state.
-          if (isPoolAcquireTimeout(error)) {
-            if (!retryableRead || attempt === READ_RETRY_DELAYS_MS.length - 1) break;
-            continue;
-          }
+          // A saturated local pool does not mean PostgreSQL is down, so the
+          // service is not marked offline. The request already waited the full
+          // connection timeout in the pool queue; re-queuing it (up to four
+          // times) held a dashboard request ~2 minutes while long uploads held
+          // the clients, and every retry deepened the queue. Fail fast (503).
+          if (isPoolAcquireTimeout(error)) break;
 
           if (!isPoolAcquireTimeout(error)) poolRecreateRequested = true;
 
