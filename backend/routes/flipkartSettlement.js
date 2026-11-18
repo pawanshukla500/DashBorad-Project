@@ -587,7 +587,10 @@ router.post('/', upload.single('file'), async (req, res) => {
       const pool = getPool();
       job.sheet = 'Reading workbook…';
       const wb = await parseSpreadsheet(buffer, {
-        read: { raw: false },
+        // dateNF: default-format Excel date cells display as US "4/5/26" text,
+        // which the day-first column inference swapped or rejected. ISO text
+        // is unambiguous; custom-formatted dates are unaffected.
+        read: { raw: false, dateNF: 'yyyy-mm-dd' },
         sheets: settlementSheets(sheetKey),
         json: SHEET_ROWS,
         transfer: true,

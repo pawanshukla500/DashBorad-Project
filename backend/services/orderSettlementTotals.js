@@ -91,30 +91,59 @@ export async function ensureOrderSettlementTotals(pool, ddl = pool) {
     FROM ${ORDER_SETTLEMENT_TOTALS_TABLE}
   `);
 
-  // Ensure any Amazon orders missing an order_item_id are healed from settlements or natural keys
-  const healRes = await pool.query(`
-    WITH sl AS (
-      SELECT DISTINCT ON (order_id, sku) order_id, sku, order_item_code
-      FROM amazon_settlement_lines
-      WHERE order_item_code IS NOT NULL AND order_item_code != ''
-      ORDER BY order_id, sku, posted_date DESC
-    ),
-    healed_from_settlement AS (
-      UPDATE orders o
-      SET order_item_id = sl.order_item_code
-      FROM sl
-      WHERE o.order_id = sl.order_id
-        AND o.sku = sl.sku
-        AND o.marketplace = 'amazon'
-        AND (o.order_item_id IS NULL OR o.order_item_id = '')
-      RETURNING o.id
-    )
-    SELECT COUNT(*) AS healed_count FROM healed_from_settlement;
-  `);
-  const healedCount = Number(healRes.rows[0]?.healed_count || 0);
+  const healedCount = await healAmazonOrderItemIds(pool);
 
   if (needsMetricBackfill || Number(rows[0]?.count || 0) === 0 || Number(rows[0]?.settled_rows || 0) === 0 || healedCount > 0) {
     await refreshOrderSettlementTotals(pool);
+  }
+}
+
+/**
+ * Give Amazon orders that are missing an order_item_id the settlement's
+ * order_item_code (latest posting per order/SKU). Runs on every startup.
+ *
+ * It starts from the (few) orders that still lack an id and probes
+ * amazon_settlement_lines through its (order_id, sku) index. The previous form
+ * sorted the ENTIRE settlement ledger with DISTINCT ON on every boot, under the
+ * 45 s statement timeout and without a catch: once the ledger grew large
+ * enough, startup failed, /api stayed 503 and every retry repeated the scan.
+ * A failure is now logged and leaves readiness alone; the heal is retried on
+ * the next start.
+ */
+export async function healAmazonOrderItemIds(pool) {
+  try {
+    const { rows } = await pool.query(`
+      WITH missing AS (
+        SELECT id, order_id, sku
+        FROM orders
+        WHERE marketplace = 'amazon'
+          AND (order_item_id IS NULL OR order_item_id = '')
+          AND order_id IS NOT NULL
+          AND sku IS NOT NULL
+      ),
+      sl AS (
+        SELECT DISTINCT ON (l.order_id, l.sku) l.order_id, l.sku, l.order_item_code
+        FROM amazon_settlement_lines l
+        JOIN (SELECT DISTINCT order_id, sku FROM missing) m
+          ON m.order_id = l.order_id AND m.sku = l.sku
+        WHERE l.order_item_code IS NOT NULL AND l.order_item_code <> ''
+        ORDER BY l.order_id, l.sku, l.posted_date DESC
+      ),
+      healed_from_settlement AS (
+        UPDATE orders o
+        SET order_item_id = sl.order_item_code
+        FROM missing m
+        JOIN sl ON sl.order_id = m.order_id AND sl.sku = m.sku
+        WHERE o.id = m.id
+          AND (o.order_item_id IS NULL OR o.order_item_id = '')
+        RETURNING o.id
+      )
+      SELECT COUNT(*) AS healed_count FROM healed_from_settlement
+    `);
+    return Number(rows[0]?.healed_count || 0);
+  } catch (error) {
+    console.warn('[db] Non-critical: Amazon order_item_id heal skipped:', error.message);
+    return 0;
   }
 }
 
@@ -125,6 +154,11 @@ export async function ensureOrderSettlementTotals(pool, ddl = pool) {
 export const ORDER_SETTLEMENT_TOTALS_LOCK_KEY = 7_140_231_117;
 
 const METRIC_COLUMNS = COLUMNS.filter(column => column !== 'order_item_id');
+// Stored types of the metric columns (see the CREATE TABLE above).
+const METRIC_COLUMN_TYPES = Object.fromEntries(METRIC_COLUMNS.map(column => [
+  column,
+  column === 'payment_date' ? 'DATE' : column.endsWith('_count') ? 'BIGINT' : 'NUMERIC(14,2)',
+]));
 const NEXT_TABLE = 'order_settlement_totals_next';
 
 /** Rebuild atomically in the caller's transaction after settlement-source writes. */
@@ -156,15 +190,22 @@ export async function refreshOrderSettlementTotals(queryable) {
         SELECT 1 FROM ${NEXT_TABLE} fresh WHERE fresh.order_item_id = existing.order_item_id
       )
     `);
-    // EXCLUDED carries the target column types (NUMERIC(14,2)), so the change
-    // test compares the same rounded values the table stores.
+    // The change test runs in the SELECT, against the stored row, so unchanged
+    // rows never reach ON CONFLICT. A `DO UPDATE ... WHERE <unchanged>` still
+    // locks every conflicting row (PostgreSQL stamps each tuple and WAL-logs
+    // the lock), which rewrote pages for all ~330K orders on every upload.
+    // Fresh values are cast to the stored column types (NUMERIC(14,2), ...) so
+    // the comparison uses the same rounding the table applies on write.
     const written = await client.query(`
       INSERT INTO ${ORDER_SETTLEMENT_TOTALS_TABLE} (${COLUMNS.join(', ')})
-      SELECT ${COLUMNS.join(', ')} FROM ${NEXT_TABLE}
+      SELECT ${COLUMNS.map(column => `fresh.${column}`).join(', ')}
+      FROM ${NEXT_TABLE} fresh
+      LEFT JOIN ${ORDER_SETTLEMENT_TOTALS_TABLE} existing ON existing.order_item_id = fresh.order_item_id
+      WHERE existing.order_item_id IS NULL
+         OR (${METRIC_COLUMNS.map(column => `existing.${column}`).join(', ')})
+            IS DISTINCT FROM (${METRIC_COLUMNS.map(column => `fresh.${column}::${METRIC_COLUMN_TYPES[column]}`).join(', ')})
       ON CONFLICT (order_item_id) DO UPDATE SET
         ${METRIC_COLUMNS.map(column => `${column} = EXCLUDED.${column}`).join(',\n        ')}
-      WHERE (${METRIC_COLUMNS.map(column => `${ORDER_SETTLEMENT_TOTALS_TABLE}.${column}`).join(', ')})
-        IS DISTINCT FROM (${METRIC_COLUMNS.map(column => `EXCLUDED.${column}`).join(', ')})
     `);
     if (ownsTransaction) await client.query('COMMIT');
     return {

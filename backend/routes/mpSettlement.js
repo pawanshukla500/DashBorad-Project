@@ -26,6 +26,7 @@ import { MYNTRA_SELLER_IDS } from './myntraUpload.js';
 import { classifyMyntraNod } from '../services/myntraNodClassification.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { mirrorAjioInvoicesToSor, rebuildAjioSorLedger } from '../services/sorMirror.js';
+import { createHeaderIndex } from '../utils/headerIndex.js';
 
 const router = express.Router();
 const upload = multer({
@@ -35,8 +36,12 @@ const upload = multer({
 const req2   = createRequire(import.meta.url);
 const XLSX   = req2('xlsx');
 // Invoice and ledger uploads: the first sheet as row objects, parsed on a
-// worker thread that takes over the upload buffer.
-const UPLOAD_SHEET_OPTIONS = { read: { cellDates: true }, sheets: 0, json: { defval: '' }, transfer: true };
+// worker thread that takes over the upload buffer. `raw: true` keeps CSV cells
+// as their exact text: otherwise SheetJS guessed types in CSV text, turning
+// '05/04/2026' into 4 May (US order) while '13/04/2026' stayed text (so one
+// column mixed both orders), and 18+ digit order/line IDs lost precision as
+// numbers. XLSX cells are unaffected; real date cells still arrive as Dates.
+const UPLOAD_SHEET_OPTIONS = { read: { cellDates: true, raw: true }, sheets: 0, json: { defval: '' }, transfer: true };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 function num(v) { return optionalNumber(v) ?? 0; }
@@ -77,14 +82,24 @@ function strictPositiveInteger(value) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-function invoiceAlias(row, ...keys) {
+// Invoice and ledger rows are read through ~150 header aliases. Scanning and
+// regex-normalizing every column for every alias of every row froze the event
+// loop for minutes on 100K-row payment files; the shared index
+// (utils/headerIndex.js) normalizes each header once per file. Matching is
+// unchanged: the first column whose normalized name equals the alias, skipped
+// when that cell is ''.
+const uploadHeaders = createHeaderIndex(text => text.toLowerCase().replace(/[\s_-]+/g, ''));
+
+function headerAlias(row, keys) {
   for (const key of keys) {
-    const found = Object.keys(row).find(column =>
-      column.toLowerCase().replace(/[\s_-]+/g, '') === key.toLowerCase().replace(/[\s_-]+/g, ''),
-    );
+    const found = uploadHeaders.column(row, key);
     if (found && row[found] !== '') return row[found];
   }
   return '';
+}
+
+function invoiceAlias(row, ...keys) {
+  return headerAlias(row, keys);
 }
 
 export function isRepeatedHeaderValue(val) {
@@ -500,13 +515,24 @@ const LEDGER_ENTRY_TYPES = new Map([
 ]);
 
 function ledgerAlias(row, ...keys) {
-  for (const key of keys) {
-    const found = Object.keys(row).find(column =>
-      column.toLowerCase().replace(/[\s_-]+/g, '') === key.toLowerCase().replace(/[\s_-]+/g, ''),
-    );
-    if (found && row[found] !== '') return row[found];
+  return headerAlias(row, keys);
+}
+
+// Myntra payment rows feed `unified_settlements` (and through it the
+// `order_settlement_totals` read model every dashboard joins) and the orders
+// settlement columns. Uploads rebuild both; edits, deletes and clears did not,
+// so removed or corrected payments stayed on the dashboards until the next
+// import. The row change is already committed, so a failed rebuild is logged
+// (the next import or POST /invoices/backfill-myntra repairs it) instead of
+// reporting the committed edit as failed.
+async function refreshMyntraSettlementModels(pool, sellerAccount, orderReleaseIds) {
+  try {
+    const ids = [...new Set((orderReleaseIds || []).map(stripIdApostrophe).filter(Boolean))];
+    if (ids.length) await backfillOrdersFromMyntraPayment(pool, sellerAccount || null, ids);
+    await refreshOrderSettlementTotals(pool);
+  } catch (error) {
+    console.warn('[mp-settlement] Myntra settlement read-model refresh failed:', error.message);
   }
-  return '';
 }
 
 function canonicalLedgerEntryType(value) {
@@ -968,11 +994,14 @@ router.put('/invoices/:id', async (req, res) => {
       .concat('updated_at = NOW()');
     values.push(id);
     const result = await pool.query(
-      `UPDATE mp_invoices SET ${sets.join(', ')} WHERE id = $${values.length} RETURNING marketplace, seller_account, invoice_number`,
+      `UPDATE mp_invoices SET ${sets.join(', ')} WHERE id = $${values.length} RETURNING marketplace, seller_account, invoice_number, order_release_id`,
       values,
     );
     const updated = result.rows[0];
     clearSkuSettlementBenchmarkCache(updated.marketplace);
+    if (updated.marketplace === 'myntra') {
+      await refreshMyntraSettlementModels(pool, updated.seller_account, [current.order_release_id, updated.order_release_id]);
+    }
     // An edit can move the row to another invoice number: refresh both.
     const sor = updated.marketplace === 'ajio'
       ? await syncAjioSorLedger(pool, [
@@ -991,11 +1020,14 @@ router.delete('/invoices/:id', async (req, res) => {
     if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'Invalid invoice ID' });
     const pool = getPool();
     const { rows } = await pool.query(
-      `DELETE FROM mp_invoices WHERE id = $1 RETURNING marketplace, seller_account, invoice_number`,
+      `DELETE FROM mp_invoices WHERE id = $1 RETURNING marketplace, seller_account, invoice_number, order_release_id`,
       [req.params.id],
     );
     if (!rows[0]) return res.status(404).json({ error: 'Invoice not found' });
     if (rows[0]?.marketplace) clearSkuSettlementBenchmarkCache(rows[0].marketplace);
+    if (rows[0].marketplace === 'myntra') {
+      await refreshMyntraSettlementModels(pool, rows[0].seller_account, [rows[0].order_release_id]);
+    }
     const sor = rows[0].marketplace === 'ajio'
       ? await syncAjioSorLedger(pool, [{ seller_account: rows[0].seller_account, invoice_no: rows[0].invoice_number }])
       : null;
@@ -1016,6 +1048,8 @@ router.delete('/invoices', async (req, res) => {
       account ? [mp, account] : [mp]
     );
     clearSkuSettlementBenchmarkCache(mp);
+    // No payment rows remain to backfill from; only the totals read model.
+    if (mp === 'myntra' && rowCount) await refreshMyntraSettlementModels(pool, account, []);
     let sor = null;
     if (mp === 'ajio') {
       sor = await rebuildAjioSorLedger(pool)

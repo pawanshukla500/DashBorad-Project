@@ -36,6 +36,23 @@ function protectMutations(app, path) {
   app.use(path, mutationAccessGuard);
 }
 
+// Control-plane writes that only touch worker bookkeeping (`workers`,
+// `worker_jobs`) and never change a report result. The desktop worker
+// heartbeats and polls for jobs every 2 s, so treating these as data writes
+// wiped the whole report cache continuously and every tab load re-ran its
+// 0.5-6 s aggregate SQL. Publishing results (`/worker-jobs/:id/publish`)
+// writes rate cards and still invalidates.
+const NON_REPORT_MUTATION_PATHS = [
+  /^\/workers(?:\/|$)/,
+  /^\/worker-jobs\/?$/,
+  /^\/worker-jobs\/[^/]+\/(?:progress|fail|results|discard-results|cancel)\/?$/,
+];
+
+export function mutationChangesReportData(method, path) {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return false;
+  return !NON_REPORT_MUTATION_PATHS.some(pattern => pattern.test(path || ''));
+}
+
 export function mountApiRoutes(app) {
   app.use('/api', auditMutationMiddleware);
   app.use('/api/auth', express.json({ limit: '1mb' }));
@@ -59,7 +76,7 @@ export function mountApiRoutes(app) {
   // write) invalidate again when they finish, and services/reportCache.js
   // also checks PostgreSQL's write counters on every hit.
   app.use('/api', (req, res, next) => {
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (mutationChangesReportData(req.method, req.path)) {
       res.on('finish', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) invalidateReportCache();
       });

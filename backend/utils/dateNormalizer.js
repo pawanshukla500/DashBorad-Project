@@ -193,12 +193,22 @@ export function normalizeSqlDate(value, hint = null) {
   return null;
 }
 
+// How many non-blank values per date column are examined to settle its format.
+const DATE_FORMAT_SAMPLE_LIMIT = 2_000;
+
 export async function buildDateFormatMap({ rows, dateFields, valueFor }) {
   const map = {};
   for (const field of dateFields) {
     const key = typeof field === 'string' ? field : field.key;
     const label = typeof field === 'string' ? field : (field.label || field.key);
-    const sample = rows.map(row => valueFor(row, key)).find(v => !isBlank(v));
+    const samples = [];
+    for (const row of rows) {
+      const value = valueFor(row, key);
+      if (isBlank(value)) continue;
+      samples.push(value);
+      if (samples.length >= DATE_FORMAT_SAMPLE_LIMIT) break;
+    }
+    const sample = samples[0];
     if (!sample) {
       map[key] = { format: null, source: 'empty', sample: null };
       continue;
@@ -208,6 +218,27 @@ export async function buildDateFormatMap({ rows, dateFields, valueFor }) {
     if (local && !local.ambiguous) {
       map[key] = { ...local, sample, label };
       continue;
+    }
+
+    // The first value alone used to decide the column. When it was ambiguous
+    // ("05/04/2026") the day-first default was applied to every row, so a
+    // month-first column stored days 1-12 swapped and every later day above 12
+    // as NULL (rows skipped). A later value whose day or month part is above 12
+    // settles the day/month order for the whole column. Only DMY/MDY evidence
+    // counts: one stray ISO value must not re-type a d/m/y column.
+    if (local?.ambiguous) {
+      let settled = null;
+      for (let index = 1; index < samples.length; index++) {
+        const inferred = inferLocalFormat(samples[index]);
+        if (inferred && !inferred.ambiguous && (inferred.format === 'DMY' || inferred.format === 'MDY')) {
+          settled = { ...inferred, sample: samples[index] };
+          break;
+        }
+      }
+      if (settled) {
+        map[key] = { ...settled, label };
+        continue;
+      }
     }
 
     try {

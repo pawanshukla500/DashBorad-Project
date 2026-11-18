@@ -17,6 +17,7 @@ import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementRep
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
+import { createHeaderIndex } from '../utils/headerIndex.js';
 
 const router = express.Router();
 const upload = multer({
@@ -57,41 +58,17 @@ function clean(value) {
   return (value ?? '').toString().trim();
 }
 
-// value() is called ~75 times per row. It used to re-normalize every header
-// with a regex on every call (tens of millions of regex runs for a normal
-// file, all blocking the event loop). Header normalization is memoized, and
-// each row's normalized-header index is built once. The index keeps the first
-// column in key order for each normalized name, exactly as find() did; rows
-// are never mutated after parsing.
-const headerKeys = new Map();
-function headerKey(value) {
-  const text = clean(value);
-  let key = headerKeys.get(text);
-  if (key === undefined) {
-    key = text.toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (headerKeys.size < 10_000) headerKeys.set(text, key);
-  }
-  return key;
-}
-
-const rowHeaderIndexes = new WeakMap();
-function rowHeaderIndex(row) {
-  let index = rowHeaderIndexes.get(row);
-  if (!index) {
-    index = new Map();
-    for (const column of Object.keys(row)) {
-      const key = headerKey(column);
-      if (!index.has(key)) index.set(key, column);
-    }
-    rowHeaderIndexes.set(row, index);
-  }
-  return index;
-}
+// value() is called ~75 times per row. Header normalization is memoized and
+// the normalized-header index is shared by every row with the same columns
+// (utils/headerIndex.js) — a per-row index Map cost ~180 MB per 100K rows and
+// could exhaust the heap on large files. The index keeps the first column in
+// key order for each normalized name, exactly as find() did; rows are never
+// mutated after parsing.
+const myntraHeaders = createHeaderIndex(text => clean(text).toLowerCase().replace(/[^a-z0-9]/g, ''));
 
 function value(row, ...names) {
-  const index = rowHeaderIndex(row);
   for (const name of names) {
-    const matchingKey = index.get(headerKey(name));
+    const matchingKey = myntraHeaders.column(row, name);
     if (matchingKey && clean(row[matchingKey])) return clean(row[matchingKey]);
   }
   return '';
@@ -187,8 +164,8 @@ function validateLayout(headers, type) {
   const required = type === 'orders'
     ? ['order release id', 'order line id', 'po_type', 'created on']
     : ['order_id', 'order_line_id', 'type', 'return_created_date'];
-  const found = new Set(headers.map(headerKey));
-  const missing = required.filter(column => !found.has(headerKey(column)));
+  const found = new Set(headers.map(myntraHeaders.key));
+  const missing = required.filter(column => !found.has(myntraHeaders.key(column)));
   if (missing.length) {
     throw new InputError(`This is not a Myntra ${type === 'orders' ? 'Order' : 'Return'} Layout file. Missing column(s): ${missing.join(', ')}.`);
   }

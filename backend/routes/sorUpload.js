@@ -24,7 +24,12 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 5, parts: 8 },
   fileFilter: spreadsheetFileFilter,
 });
-const SHEET_OPTIONS = { read: { cellDates: true }, sheets: 0, json: { defval: '' }, transfer: true };
+// `raw: true` keeps CSV cells as exact text so services/sorUpload.js can decide
+// each date column's DD-MM / MM-DD order from all of its values. Without it
+// SheetJS turned '05-04-2026' into a 4 May Date before the parser saw it while
+// '13-04-2026' stayed text, so the mixed-order guard never fired. XLSX date
+// cells still arrive as Date objects.
+const SHEET_OPTIONS = { read: { cellDates: true, raw: true }, sheets: 0, json: { defval: '' }, transfer: true };
 const PORTALS = new Set(Object.keys(SOR_DEFAULT_ACCOUNTS));
 const ACCOUNT_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 const MAX_SKIPPED_IN_RESPONSE = 200;

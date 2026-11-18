@@ -143,7 +143,12 @@ const TEMPLATE_SAMPLES = {
 async function parseFile(buffer, preferredSheets = [], { keepBuffer = false } = {}) {
   const pickSheet = names => preferredSheets.find(n => names.includes(n)) || names[0];
   const wb = await parseSpreadsheet(buffer, {
-    read: { cellDates: true },
+    // Rows are read as displayed text (raw: false). A real Excel date cell in
+    // the default short-date format displays as US "4/5/26", which the
+    // day-first column inference read as 4 May (and "4/25/26" as invalid, so
+    // the row was skipped). dateNF renders those cells as unambiguous ISO
+    // text; custom-formatted date cells and CSV text are unaffected.
+    read: { cellDates: true, dateNF: 'yyyy-mm-dd' },
     // Parse only the candidate sheets; select then keeps the one we read.
     sheets: [...preferredSheets, 0],
     select: names => [pickSheet(names)],
@@ -373,6 +378,30 @@ export function parseReturnsReceivedRow(row = {}) {
   };
 }
 
+// Several marketplace listings (Flipkart, Myntra, Amazon...) normally share
+// one VB EXPORT SKU. Sending the same vb_export_sku twice in one
+// INSERT ... ON CONFLICT DO UPDATE aborts the statement ("command cannot affect
+// row a second time"), which failed every catalog upload that mapped two
+// listings to one master. Collapse to one row per master, keeping the last
+// non-blank value of each field (file order), and leaving blanks to the
+// existing COALESCE/CASE rules of the upsert.
+export function mergeVbMasterRows(records) {
+  const byMaster = new Map();
+  for (const record of records) {
+    const masterSku = record?.masterSku;
+    if (!masterSku) continue;
+    const merged = byMaster.get(masterSku) || { category: null, cogs: 0, weightSlab: null, productName: null };
+    if (record.category) merged.category = record.category;
+    if (Number(record.cogs) > 0) merged.cogs = record.cogs;
+    if (record.weightSlab) merged.weightSlab = record.weightSlab;
+    if (record.productName) merged.productName = record.productName;
+    byMaster.set(masterSku, merged);
+  }
+  return [...byMaster.entries()].map(([masterSku, merged]) => [
+    masterSku, merged.category, merged.cogs, merged.weightSlab, merged.productName,
+  ]);
+}
+
 export function upsertSkuMasterRows(pool, records) {
   let inserted = 0;
   let updated = 0;
@@ -401,8 +430,8 @@ export function upsertSkuMasterRows(pool, records) {
       else updated++;
     }
 
-    // Sync into vb_sku_master
-    const vbRows = batch.map(r => [r.masterSku, r.category || null, r.cogs || 0, r.weightSlab || null, r.productName || null]);
+    // Sync into vb_sku_master, one row per master SKU (see mergeVbMasterRows).
+    const vbRows = mergeVbMasterRows(batch);
     await forEachDbBatch(vbRows, 5, async vbBatch => {
       const vVals = [];
       const vGroups = vbBatch.map(r => {
@@ -693,6 +722,20 @@ export const RETURN_FIELD_INDEX = fieldIndex(RETURN_FIELDS);
  * values (with a synthetic order_item_id where the source has none) or the
  * reason the row is skipped.
  */
+// When a returns file re-sends an order item already stored:
+//  - a later request date always wins (a newer return request);
+//  - a stored row without a request date accepts the new facts;
+//  - on the same date, a different return request only replaces the stored
+//    one when it is not cancelled (an active request beats a cancelled one),
+//    but the SAME return (same return_id) always takes its new status. The
+//    previous rule blocked approved -> cancelled for the same return, so
+//    cancelled returns stayed counted in Outstanding/Profit forever.
+export const RETURN_UPSERT_CONDITION = `EXCLUDED.return_requested_date > returns.return_requested_date
+  OR returns.return_requested_date IS NULL
+  OR (EXCLUDED.return_requested_date = returns.return_requested_date
+      AND (EXCLUDED.return_status IS DISTINCT FROM 'cancelled'
+           OR EXCLUDED.return_id IS NOT DISTINCT FROM returns.return_id))`;
+
 export function parseReturnUploadRow(g, { marketplace, rowIndex }) {
   const vals = RETURN_FIELDS.map(([, get]) => get(g));
   const RETURN_ID = RETURN_FIELD_INDEX.return_id;
@@ -1365,7 +1408,7 @@ router.post('/returns', upload.single('file'), async (req, res) => {
     });
 
     const outcome = await batchUpsert(pool, 'returns', 'order_item_id', RETURN_FIELDS, parsedRows, marketplace,
-      `EXCLUDED.return_requested_date > returns.return_requested_date OR (EXCLUDED.return_requested_date = returns.return_requested_date AND EXCLUDED.return_status != 'cancelled')`
+      RETURN_UPSERT_CONDITION,
     );
     inserted = outcome.inserted;
     updated = outcome.updated;

@@ -13,8 +13,8 @@ const XLSX = require('xlsx');
 // Pins the dates and numbers the upload handlers get from a workbook, so a
 // SheetJS upgrade that changes date, number or header handling fails here
 // instead of in a finance report. Read options are the handlers' own.
-const GENERIC_UPLOAD = { read: { cellDates: true }, sheets: 0, json: { header: 1, defval: '', raw: false } }; // upload.js, myntraUpload.js
-const LEDGER_UPLOAD = { read: { cellDates: true }, sheets: 0, json: { defval: '' } }; // mpSettlement.js
+const GENERIC_UPLOAD = { read: { cellDates: true, dateNF: "yyyy-mm-dd" }, sheets: 0, json: { header: 1, defval: '', raw: false } }; // upload.js, myntraUpload.js
+const LEDGER_UPLOAD = { read: { cellDates: true, raw: true }, sheets: 0, json: { defval: '' } }; // mpSettlement.js
 const RETURNS_RECEIVED = { read: { raw: true }, sheets: 0, json: { header: 1, defval: '' } }; // upload.js returns-received
 const AMAZON_SETTLEMENT = { read: { cellDates: false, cellNF: false, cellStyles: false }, values: true };
 
@@ -178,7 +178,9 @@ describe('upload parsing: CSV and HTML-table ".xls" files', () => {
     const rows = book.Sheets.Sheet1;
 
     expect(rows.map(row => row.Date)).toStrictEqual(['05-04-2026', '01-12-2026 10:30:00', '26-04-26']);
-    expect(rows.map(row => row.Amount)).toStrictEqual([1250.5, -45.5, 899]);
+    // raw: true hands text-format cells on verbatim; the ledger parser reads
+    // the amounts (below) exactly as it reads the same text from a CSV.
+    expect(rows.map(row => row.Amount)).toStrictEqual(['1,250.50', '-45.50', '899']);
     const entries = rows.map(row => parseLedgerUploadRow(row, { marketplace: 'zepto', batch: 'b' }).values);
     expect(entries.map(values => values.slice(1, 8))).toStrictEqual([
       ['2026-04-05', 'NEFT-1', '', '', 'Payment', 0, 1250.5],

@@ -289,7 +289,16 @@ async function initialiseDatabaseWhenReachable() {
 
 let activeServer = null;
 let shuttingDown = false;
-const SHUTDOWN_TIMEOUT_MS = 5_000;
+// Development keeps a short drain so nodemon restarts stay quick. Production
+// gives in-flight uploads and background imports time to commit and rebuild
+// their read models: 5 s cut them mid-way on every deploy, leaving totals stale
+// and no upload_log row. docker-compose.production.yml's stop_grace_period must
+// stay above this value or Docker SIGKILLs the container first.
+const SHUTDOWN_TIMEOUT_MS = (() => {
+  const configured = Number.parseInt(process.env.SHUTDOWN_TIMEOUT_MS, 10);
+  if (Number.isFinite(configured) && configured >= 1_000 && configured <= 10 * 60_000) return configured;
+  return process.env.NODE_ENV === 'production' ? 60_000 : 5_000;
+})();
 
 async function gracefulShutdown(signal) {
   if (shuttingDown) return;

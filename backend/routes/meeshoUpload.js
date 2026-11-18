@@ -25,6 +25,11 @@ const upload = multer({
 });
 const router = express.Router();
 
+// Transaction-scoped advisory lock serializing Meesho settlement replacements.
+// Taken before the totals lock (ORDER_SETTLEMENT_TOTALS_LOCK_KEY) and never
+// after it, so the two cannot deadlock.
+export const MEESHO_SETTLEMENT_LOCK_KEY = 7_140_231_118;
+
 router.post('/', upload.single('file'), async (req, res) => {
   if (!(await isDbConfigured())) return res.status(503).json({ error: 'Database not configured' });
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
@@ -118,6 +123,11 @@ router.post('/', upload.single('file'), async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Serialize Meesho replacements. Without it, a retried upload that
+      // overlapped the first ran its DELETE before the first had committed its
+      // INSERT (READ COMMITTED cannot see uncommitted rows), so both copies of
+      // every settlement row were committed and all amounts doubled.
+      await client.query('SELECT pg_advisory_xact_lock($1)', [MEESHO_SETTLEMENT_LOCK_KEY]);
       if (settlementIds.length) {
         await client.query('DELETE FROM meesho_settlement_items WHERE settlement_id = ANY($1::text[])', [settlementIds]);
       }

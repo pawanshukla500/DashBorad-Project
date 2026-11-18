@@ -75,6 +75,22 @@ function readStatementTimeoutMs() {
   });
 }
 
+// How long a transaction client may sit idle inside an open transaction before
+// PostgreSQL ends the session. Generous, because imports parse and build rows
+// between statements, but finite. PG_TX_IDLE_TIMEOUT_MS=0 disables it.
+const DEFAULT_TX_IDLE_TIMEOUT_MS = 15 * 60_000;
+
+export function transactionIdleTimeoutMs() {
+  return positiveInteger(process.env.PG_TX_IDLE_TIMEOUT_MS, DEFAULT_TX_IDLE_TIMEOUT_MS, {
+    min: 0,
+    max: 24 * 60 * 60_000,
+  });
+}
+
+export function transactionSessionLimitsSql() {
+  return `SET statement_timeout = 0; SET idle_in_transaction_session_timeout = ${transactionIdleTimeoutMs()};`;
+}
+
 function poolIdleTimeoutMs() {
   return positiveInteger(process.env.PG_POOL_IDLE_TIMEOUT_MS, DEFAULT_POOL_IDLE_TIMEOUT_MS, {
     min: 10_000,
@@ -622,8 +638,12 @@ export function getPool() {
         }
         try {
           const client = instrumentClient(await _realPool.connect());
-          // Ensure long tasks don't get killed by Postgres session limits
-          await client.query('SET statement_timeout = 0; SET idle_in_transaction_session_timeout = 0;').catch(() => {});
+          // Long import/rebuild statements must not hit the read timeout, so
+          // statement_timeout is cleared. The idle-in-transaction limit stays
+          // finite: with 0, a transaction leaked by an error path held its row
+          // locks (and the settlement-totals advisory lock) until the process
+          // restarted, blocking every later upload and draining the pool.
+          await client.query(transactionSessionLimitsSql()).catch(() => {});
           restoreSessionLimitsOnRelease(client);
           markDatabaseOnline();
           return client;
