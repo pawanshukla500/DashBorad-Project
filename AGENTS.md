@@ -446,7 +446,7 @@ In October 2026, the codebase underwent a full multi-skill audit and remediation
   4. Merge with `gh pr merge <n> --squash` once all of these hold: every check passes, CodeAnt has reviewed the PR and rates it low risk or every finding is fixed or answered, no human review comment is unanswered, and the branch is mergeable. Stacked PRs merge bottom-up, each after the one below it.
 - **No Early Merging**: A PR must NEVER be merged before step 4 holds. A failing check, an unanswered finding or a missing CodeAnt review blocks the merge.
 - **Merging is not deploying**: a push to `master` only runs CI. Production (Hostinger) deploys only through a manual `workflow_dispatch` of `.github/workflows/deploy-hostinger.yml`.
-- **Test Integrity**: Full backend test suite (`cd backend && npm test`; on `master` as of 2026-11-18: 96 files, 701 tests, of which 1 file / 8 tests are skipped) and frontend build (`cd frontend && npm run build`) must pass 100% green before any PR review transition. Keep these counts current (section 0.4).
+- **Test Integrity**: Full backend test suite (`cd backend && npm test`; on `master` as of 2026-11-18: 104 files, 839 tests, of which 1 file / 8 tests are skipped) and frontend build (`cd frontend && npm run build`) must pass 100% green before any PR review transition. Keep these counts current (section 0.4).
 
 ## graphify
 
