@@ -104,7 +104,7 @@ const CHECKS = [
     key: 'amazon-orders-before-shipment-ledger',
     title: 'Amazon orders imported before the shipment ledger',
     detail: 'An order whose shipments fell into two monthly Sale Orders files only kept the later file’s quantity and amount. These orders have no shipment history yet.',
-    action: 'Re-upload earlier Sale Orders files once; later uploads then add every shipment together.',
+    action: 'Re-upload every Sale Orders file imported before the shipment ledger existed. Until all of them are re-uploaded, these orders cover only the shipments of the files re-uploaded so far.',
     sql: `
       SELECT 'amazon' AS scope, COUNT(*)::int AS count,
              MIN(o.order_date)::text AS first_date, MAX(o.order_date)::text AS last_date

@@ -146,9 +146,15 @@ async function syncAjioInvoiceKeys(pool, keys, { uploadedBy = null } = {}) {
     // Each invoice in its own savepoint, committed in groups
     // (utils/isolatedBatches.js): a full rebuild no longer commits once per
     // invoice, and one failing invoice still cannot block the others.
+    // Same lock order as SOR uploads (invoice number), so the mirror and an
+    // upload writing the same invoices cannot deadlock.
+    const orderedKeys = [...keys].sort((left, right) => (
+      left.invoice_no < right.invoice_no ? -1 : left.invoice_no > right.invoice_no ? 1
+        : String(left.seller_account) < String(right.seller_account) ? -1
+          : String(left.seller_account) > String(right.seller_account) ? 1 : 0));
     await forEachIsolated(
       client,
-      keys,
+      orderedKeys,
       async key => {
         const invoice = invoices.get(invoiceKey(key.seller_account, key.invoice_no));
         if (invoice) {

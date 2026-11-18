@@ -81,7 +81,11 @@ function readStatementTimeoutMs() {
 const DEFAULT_TX_IDLE_TIMEOUT_MS = 15 * 60_000;
 
 export function transactionIdleTimeoutMs() {
-  return positiveInteger(process.env.PG_TX_IDLE_TIMEOUT_MS, DEFAULT_TX_IDLE_TIMEOUT_MS, {
+  const raw = process.env.PG_TX_IDLE_TIMEOUT_MS;
+  // Whole milliseconds only: parseInt('0.5') is 0, which would silently
+  // disable the limit; "0" stays the explicit opt-out.
+  if (raw != null && raw !== '' && !/^\s*\d+\s*$/.test(String(raw))) return DEFAULT_TX_IDLE_TIMEOUT_MS;
+  return positiveInteger(raw, DEFAULT_TX_IDLE_TIMEOUT_MS, {
     min: 0,
     max: 24 * 60 * 60_000,
   });
@@ -546,10 +550,22 @@ function describeConnection(connectionString) {
 // query method, so wrapping it each time nested one more wrapper per checkout
 // for the client's whole lifetime. Wrap once.
 const INSTRUMENTED = Symbol('reconcentral.instrumentedClient');
+const SESSION_ERROR = Symbol('reconcentral.sessionError');
 
 function instrumentClient(client) {
   if (client[INSTRUMENTED]) return client;
   client[INSTRUMENTED] = true;
+  // pg-pool removes its idle 'error' listener when a client is checked out.
+  // The server can end a checked-out session (idle_in_transaction_session_timeout,
+  // admin termination, network break); without a listener node-postgres'
+  // 'error' event became an uncaught exception that exited the API. Record it;
+  // release() then discards this client instead of returning it to the pool.
+  if (typeof client.on === 'function') {
+    client.on('error', error => {
+      client[SESSION_ERROR] = error;
+      console.warn('[db] A checked-out PostgreSQL session ended:', error?.message || error);
+    });
+  }
   const query = client.query.bind(client);
   // Transactional callers use client.query directly. Mark a broken client as
   // offline as well, so the background recovery path is not limited to pool
@@ -581,7 +597,8 @@ function restoreSessionLimitsOnRelease(client) {
   client.release = (error) => {
     if (released) return undefined;
     released = true;
-    if (error) return release(error);
+    const sessionError = error || client[SESSION_ERROR];
+    if (sessionError) return release(sessionError);
     client.query('RESET statement_timeout; RESET idle_in_transaction_session_timeout;')
       .then(() => release(), resetError => release(resetError instanceof Error ? resetError : new Error(String(resetError))));
     return undefined;

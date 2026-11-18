@@ -114,6 +114,7 @@ export async function applyShipmentTotalsToOrders(client, orderSkuPairs) {
   const result = await client.query(`
     UPDATE orders o
     SET qty = s.qty,
+        order_type = s.order_type,
         product_amount = s.product_amount,
         item_tax = s.item_tax,
         sale_shipping_amount = s.sale_shipping_amount,
@@ -127,7 +128,10 @@ export async function applyShipmentTotalsToOrders(client, orderSkuPairs) {
              ROUND(SUM(sh.item_tax), 2)             AS item_tax,
              ROUND(SUM(sh.sale_shipping_amount), 2) AS sale_shipping_amount,
              ROUND(SUM(sh.sale_gift_amount), 2)     AS sale_gift_amount,
-             MIN(sh.shipment_date)                  AS first_shipment
+             MIN(sh.shipment_date)                  AS first_shipment,
+             -- Any paid shipment makes the order a sale; only an order whose
+             -- every shipment is zero-price is an exchange (as within one file).
+             CASE WHEN BOOL_OR(sh.product_amount > 0) THEN 'standard' ELSE 'exchange' END AS order_type
       FROM amazon_sale_order_shipments sh
       JOIN (SELECT DISTINCT * FROM unnest($1::text[], $2::text[]) AS p(order_id, sku)) p
         ON p.order_id = sh.order_id AND p.sku = sh.sku
@@ -136,9 +140,9 @@ export async function applyShipmentTotalsToOrders(client, orderSkuPairs) {
     WHERE o.marketplace = 'amazon'
       AND o.order_id = s.order_id
       AND o.sku = s.sku
-      AND (o.qty, o.product_amount, o.item_tax, o.sale_shipping_amount, o.sale_gift_amount, o.final_invoice_amount, o.order_date)
+      AND (o.qty, o.order_type, o.product_amount, o.item_tax, o.sale_shipping_amount, o.sale_gift_amount, o.final_invoice_amount, o.order_date)
           IS DISTINCT FROM
-          (s.qty, s.product_amount, s.item_tax, s.sale_shipping_amount, s.sale_gift_amount, s.product_amount, COALESCE(s.first_shipment, o.order_date))
+          (s.qty, s.order_type, s.product_amount, s.item_tax, s.sale_shipping_amount, s.sale_gift_amount, s.product_amount, COALESCE(s.first_shipment, o.order_date))
   `, [orderIds, skus]);
   return result.rowCount || 0;
 }

@@ -179,7 +179,9 @@ export function reportCacheMiddleware(shouldCache) {
       const stillCurrent = generation === startedGeneration && keyGenerations.get(key) === keyGeneration;
       if (statusCode >= 200 && statusCode < 300 && stillCurrent) {
         const ttl = ttlMs();
-        if (ttl > 0) remember(key, { body, version, expiresAt: Date.now() + ttl });
+        // A route marks a partial result (res.locals.reportCacheSkip) so it is
+        // not stored and served again until the TTL expires.
+        if (ttl > 0 && !res.locals?.reportCacheSkip) remember(key, { body, version, expiresAt: Date.now() + ttl });
         res.set('X-Report-Cache', forceRefresh ? 'REFRESHED' : 'MISS');
       }
       settle({ statusCode, body });

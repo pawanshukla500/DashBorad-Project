@@ -75,6 +75,7 @@ import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { normalizeDeliveryState } from '../utils/geoNormalization.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
+import { runInBackground } from '../utils/backgroundJobs.js';
 import {
   addSaleOrderShipment,
   applyShipmentTotalsToOrders,
@@ -101,6 +102,12 @@ const XLSX    = reqXlsx('xlsx');
 // to it, so the caller's buffer is empty afterwards.
 const REPORT_READ = { cellDates: true, cellNF: false, raw: false };
 const REPORT_ROWS = { header: 1, defval: '', raw: false };
+// Sale Orders: a Customer Shipment Date cell in Excel's default short-date
+// format displays as "4/5/26", which lost its time (two same-day shipments
+// then shared one shipment-ledger key) and was read day-first (5 April stored
+// as 4 May). Rendering that format as a full ISO date-time keeps both right;
+// text cells and custom formats are unchanged.
+const SALE_ORDERS_READ = { ...REPORT_READ, dateNF: 'yyyy-mm-dd hh:mm:ss' };
 
 async function parseAllSheets(buffer) {
   const wb = await parseSpreadsheet(buffer, { read: REPORT_READ, json: REPORT_ROWS, transfer: true });
@@ -115,10 +122,10 @@ async function parseAllSheets(buffer) {
   return sheets;
 }
 
-async function parseFile(buffer, preferredSheets = []) {
+async function parseFile(buffer, preferredSheets = [], { read = REPORT_READ } = {}) {
   const pickSheet = names => preferredSheets.find(n => names.includes(n)) || names[0];
   const wb = await parseSpreadsheet(buffer, {
-    read: REPORT_READ,
+    read,
     // Parse only the candidate sheets; select then keeps the one we read.
     sheets: [...preferredSheets, 0],
     select: names => [pickSheet(names)],
@@ -1018,7 +1025,7 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
 
   try {
     const pool = getPool();
-    const { headers, data } = await parseFile(req.file.buffer, ['Sale Orders', 'Orders', 'Sheet1']);
+    const { headers, data } = await parseFile(req.file.buffer, ['Sale Orders', 'Orders', 'Sheet1'], { read: SALE_ORDERS_READ });
     req.file.buffer = null;
     if (!headers.length) return res.status(400).json({ error: 'File has no readable headers' });
 
@@ -1156,7 +1163,10 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
       affectedOrderIds.add(orderId);
     }
 
-    const rows = [...byNaturalKey.values()];
+    // Sorted, so concurrent uploads lock orders (and shipments) in one order
+    // across batches and cannot deadlock inside the single transaction.
+    const byOrderSku = (a, b) => (a.order_id < b.order_id ? -1 : a.order_id > b.order_id ? 1 : a.sku < b.sku ? -1 : a.sku > b.sku ? 1 : 0);
+    const rows = [...byNaturalKey.values()].sort(byOrderSku);
     if (!rows.length) throw inputError('No valid Amazon Sale Order rows were found. Review skipped-row reasons and correct the file before retrying.');
     const fields = [
       'order_item_id', 'order_id', 'sku', 'fnsku', 'fsn', 'warehouse_id', 'fulfilment_type',
@@ -1197,7 +1207,8 @@ router.post('/amazon-sale-orders', upload.single('file'), async (req, res) => {
           else updated++;
         }
       });
-      await storeSaleOrderShipments(client, [...byShipment.values()]);
+      await storeSaleOrderShipments(client, [...byShipment.values()].sort((a, b) => byOrderSku(a, b)
+        || (a.shipment_key < b.shipment_key ? -1 : a.shipment_key > b.shipment_key ? 1 : 0)));
       await applyShipmentTotalsToOrders(client, rows.map(row => [row.order_id, row.sku]));
       await client.query('COMMIT');
     } catch (error) {
@@ -1735,7 +1746,9 @@ export async function processAmazonSettlementWorkbook({ buffer, filename, jobId 
     let processedRowsTotal = 0;
     // A settlement can continue on a later sheet; only its first occurrence
     // in this workbook replaces the stored lines, later ones append.
-    const settlementsWrittenThisUpload = new Set();
+    // settlement id -> whether its first write in this upload was a full
+    // replacement (envelope present or nothing stored) or a continuation part.
+    const settlementsWrittenThisUpload = new Map();
 
     for (let sheetIdx = 0; sheetIdx < candidateSheets.length; sheetIdx++) {
       const sheet = candidateSheets[sheetIdx];
@@ -1832,9 +1845,15 @@ export async function processAmazonSettlementWorkbook({ buffer, filename, jobId 
           // the final SKUs (previously the reporting rollup was rebuilt a
           // second time and the reconciliation rollup kept blank SKUs).
           beforeRollups: client => resolveOrphanSkus(client, sid, { relatedOrders: true }),
-          appendOnly: settlementsWrittenThisUpload.has(sid),
+          // Later sheets append only after a full replacement in this upload
+          // (which cleared the settlement first). After a continuation part they
+          // take the continuation path too, so retrying the whole workbook does
+          // not append a second copy of a later sheet's lines.
+          appendOnly: settlementsWrittenThisUpload.get(sid) === 'replace',
         });
-        settlementsWrittenThisUpload.add(sid);
+        if (!settlementsWrittenThisUpload.has(sid)) {
+          settlementsWrittenThisUpload.set(sid, replacement.continuation ? 'continuation' : 'replace');
+        }
 
         // Release array immediately
         linesBySettlement.delete(sid);
@@ -1976,7 +1995,7 @@ router.post('/amazon-settlement', upload.single('file'), async (req, res) => {
   const buffer = req.file.buffer;
   req.file.buffer = null;
 
-  setImmediate(async () => {
+  runInBackground('amazon-settlement', async () => {
     try {
       await processAmazonSettlementWorkbook({ buffer, filename, jobId });
     } catch (e) {
@@ -2018,15 +2037,21 @@ router.post('/amazon-settlement', upload.single('file'), async (req, res) => {
 // uploaded out of order (newer first), the refunds already stored in the newer
 // settlement were never resolved once the older one arrived, so RTO orders
 // kept showing the full FBA fee as a loss. Callers rebuild the rollups of
-// every settlement in `settlementIds`.
+// every settlement in `settlementIds` and backfill every order in `orderIds`.
+// Only Phase B/C (pairing a refund with its matching original charge) reaches
+// into other settlements: Phase A's "the order has one SKU so far" guess stays
+// limited to the uploaded settlement, because for an older stored refund the
+// only SKU loaded so far may not be the refunded one, and an assigned SKU is
+// never revisited.
 async function resolveOrphanSkus(pool, settlementId = null, { relatedOrders = false } = {}) {
+  const ownScope = settlementId ? `AND l.settlement_id = $1` : '';
   const scope = !settlementId
     ? ''
     : relatedOrders
       ? `AND (l.settlement_id = $1 OR l.order_id IN (
            SELECT DISTINCT related.order_id FROM amazon_settlement_lines related
            WHERE related.settlement_id = $1 AND related.order_id IS NOT NULL))`
-      : `AND l.settlement_id = $1`;
+      : ownScope;
   const args  = settlementId ? [settlementId] : [];
 
   // Snapshot how many orphans we started with (for reporting)
@@ -2048,7 +2073,7 @@ async function resolveOrphanSkus(pool, settlementId = null, { relatedOrders = fa
       WHERE l.sku IS NULL
         AND l.order_id IS NOT NULL
         AND l.transaction_type = 'Fulfillment Fee Refund'
-        ${scope}
+        ${ownScope}
     ),
     single_sku_orders AS (
       SELECT source.order_id,
@@ -2066,8 +2091,8 @@ async function resolveOrphanSkus(pool, settlementId = null, { relatedOrders = fa
      WHERE l.order_id = sub.order_id
        AND l.sku IS NULL
        AND l.transaction_type = 'Fulfillment Fee Refund'
-       ${scope}
-    RETURNING l.id, l.settlement_id
+       ${ownScope}
+    RETURNING l.id, l.settlement_id, l.order_id
   `, args);
 
   // ── Phase B+C: multi-SKU orders — window-function pairing ───────────────
@@ -2109,7 +2134,7 @@ async function resolveOrphanSkus(pool, settlementId = null, { relatedOrders = fa
        AND  ABS(r.amount)        = o.abs_amt
        AND  r.rn                 = o.rn
      WHERE l.id = r.id
-    RETURNING l.id, l.settlement_id
+    RETURNING l.id, l.settlement_id, l.order_id
   `, args);
 
   // How many remain orphans
@@ -2131,6 +2156,7 @@ async function resolveOrphanSkus(pool, settlementId = null, { relatedOrders = fa
     stillOrphan,
     pctResolved: orphansBefore ? +(100 * (orphansBefore - stillOrphan) / orphansBefore).toFixed(1) : 100,
     settlementIds: [...new Set([...phaseA.rows, ...phaseBC.rows].map(row => row.settlement_id).filter(Boolean))],
+    orderIds: [...new Set([...phaseA.rows, ...phaseBC.rows].map(row => row.order_id).filter(Boolean))],
   };
 }
 

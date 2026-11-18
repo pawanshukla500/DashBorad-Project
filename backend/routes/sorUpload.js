@@ -3,6 +3,7 @@ import multer from 'multer';
 import { createRequire } from 'node:module';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
+import { readLegacyTextRows } from '../utils/legacyTextParse.js';
 import {
   SOR_DEFAULT_ACCOUNTS,
   SOR_STREAMS,
@@ -66,6 +67,22 @@ function checkStream(req, res, next) {
   return next();
 }
 
+// [legacyInvoiceNo, currentInvoiceNo] for rows whose invoice number the old
+// type-guessing parse read differently.
+function legacySorInvoiceNumbers(stream, legacyRows, rows, records) {
+  if (!legacyRows || legacyRows.length !== rows.length) return [];
+  let legacy;
+  try {
+    legacy = parseSorUploadRows(stream, legacyRows).records;
+  } catch {
+    return [];
+  }
+  const legacyByRow = new Map(legacy.map(record => [record.rowNum, record.invoice_no]));
+  return records
+    .map(record => [legacyByRow.get(record.rowNum), record.invoice_no])
+    .filter(([old, current]) => old && current && old !== current);
+}
+
 router.post('/:portal/upload/:stream', checkStream, upload.single('file'), async (req, res) => {
   const { portal, stream } = req.params;
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -77,10 +94,15 @@ router.post('/:portal/upload/:stream', checkStream, upload.single('file'), async
   const pool = getPool();
   try {
     account = resolveAccount(portal, req.body?.account);
+    // Invoice numbers a CSV wrote before exact-text parsing ('000123' stored as
+    // '123') are renamed to their exact text, so this upload updates those
+    // headers instead of creating second ones (utils/legacyTextParse.js).
+    const legacyRows = await readLegacyTextRows(req.file.buffer, SHEET_OPTIONS);
     const workbook = await parseSpreadsheet(req.file.buffer, SHEET_OPTIONS);
     const rows = workbook.Sheets[workbook.SheetNames[0]] ?? [];
     const parsed = parseSorUploadRows(stream, rows);
-    const applied = await applySorUpload(pool, { portal, account, stream, records: parsed.records, uploadedBy });
+    const legacyInvoiceNos = legacySorInvoiceNumbers(stream, legacyRows, rows, parsed.records);
+    const applied = await applySorUpload(pool, { portal, account, stream, records: parsed.records, uploadedBy, legacyInvoiceNos });
     const skipped = [...parsed.skipped, ...applied.skipped].sort((a, b) => a.rowNum - b.rowNum);
     if (applied.errors.length) console.warn(`[sorUpload] ${portal}/${stream}:`, applied.errors.slice(0, 5));
     const saved = applied.inserted + applied.updated + applied.removed;

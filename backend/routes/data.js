@@ -73,7 +73,8 @@ export function parseOrderFeeDetailQuery(query = {}) {
 // query string (no per-user data) and each one aggregates the full order
 // history, so they share the version-validated cache in services/reportCache.js.
 // Paginated row lists (/orders, /returns, /settlement/orders, /sku-orders) are
-// deliberately excluded: exports page through them 50K rows at a time.
+// deliberately excluded: exports page through them LIST_MAX_PAGE_SIZE
+// (10,000) rows at a time.
 const REPORT_CACHE_PATHS = new Set([
   '/summary',
   '/marketplace-summary',
@@ -1677,7 +1678,7 @@ export const RETURN_ORDER_JOIN = `
               AND o2.order_id = ret.order_id
               AND o2.sku = ret.sku
           ) matched
-          ORDER BY (matched.marketplace = ret.marketplace) DESC, matched.order_date DESC NULLS LAST, matched.id
+          ORDER BY (matched.marketplace IS NOT DISTINCT FROM ret.marketplace) DESC, matched.order_date DESC NULLS LAST, matched.id
           LIMIT 1
         ) o ON TRUE`;
 
@@ -2507,6 +2508,8 @@ router.get('/settlement/month-pl', async (req, res) => {
 
     const months = [...new Set(data.map(d => d.month))].sort();
     const marketplaces = [...new Set(data.map(d => d.marketplace))].sort();
+    // A partial report (a failed section) must not be served from the cache.
+    if (warnings.length) res.locals.reportCacheSkip = true;
     res.json({ months, marketplaces, data, warnings });
   } catch (err) {
     console.error('[settlement/month-pl]', err);

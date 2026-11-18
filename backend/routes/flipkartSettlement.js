@@ -4,6 +4,7 @@ import { getPool, isDbConfigured } from '../db/index.js';
 import { buildDateFormatMap, normalizeSqlDate, summarizeDateFormats } from '../utils/dateNormalizer.js';
 import { logUpload } from '../services/uploadLog.js';
 import { forEachDbBatch, UPLOAD_BATCH_SIZE } from '../utils/dbBatch.js';
+import { runInBackground } from '../utils/backgroundJobs.js';
 import { optionalNumber as num, optionalString as str } from '../utils/valueParsers.js';
 import { clearSkuSettlementBenchmarkCache } from '../services/skuSettlementBenchmark.js';
 import { notifySkuSettlementBenchmarkAfterImport } from '../services/skuSettlementNotifications.js';
@@ -115,12 +116,21 @@ const TRANSIENT_DB_ERROR = /econnreset|connection|timeout|terminat/i;
  * the replacement idempotent, so a transient connection failure retries the
  * whole transaction (never a single statement, which could double rows).
  */
+// Transaction-scoped lock per settlement sheet table. Taken before the
+// settlement-totals lock (refreshOrderSettlementTotals), never after it.
+async function lockNeftReplacement(client, table) {
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`fk_neft_replace:${table}`]);
+}
+
 async function replaceNeftRows(pool, table, colDefs, records, neftIds) {
   for (let attempt = 1; ; attempt++) {
     const client = await pool.connect();
     let releaseError;
     try {
       await client.query('BEGIN');
+      // Serialize replacements of the same sheet: two overlapping uploads could
+      // otherwise both DELETE before either INSERTs and commit the union.
+      await lockNeftReplacement(client, table);
       await deleteByNeftIds(client, table, neftIds);
       const inserted = await batchSimpleInsert(client, table, colDefs, records);
       await client.query('COMMIT');
@@ -308,6 +318,7 @@ async function insertOrders(pool, sheetRows, marketplace, onProgress) {
     // Re-uploading a NEFT is an all-or-nothing replacement. The compact
     // dashboard totals are refreshed in the same transaction, so no tab can
     // observe a mixture of old rows and a new read model.
+    await lockNeftReplacement(client, 'fk_settlement_orders');
     await deleteByNeftIds(client, 'fk_settlement_orders', neftIds);
     const inserted = await batchSimpleInsert(client, 'fk_settlement_orders', ORDER_COLS, safeRecords);
     await refreshOrderSettlementTotals(client);
@@ -366,6 +377,11 @@ async function insertSpfClaims(pool, sheetRows, marketplace) {
     const row = data[i];
     const claimId = str(g(row, 'claimid'));
     if (!claimId) { skipped++; continue; }
+    // A claim without a NEFT id cannot be replaced on re-import (the delete is
+    // by NEFT and UNIQUE (claim_id, neft_id) never conflicts on NULL), so it
+    // would be inserted again on every upload and double-counted. Skip it,
+    // like the other NEFT sheets do.
+    if (!str(g(row, 'neftid'))) { skipped++; continue; }
     const orderItemId = str(g(row, 'orderitemid')) || str(g(row, 'orderitem'));
     const claimStatus = str(g(row, 'status')) || str(g(row, 'claimstatus'));
     records.push([str(g(row,'neftid')), dt(g(row,'paymentdate'),dateFormats.paymentdate),
@@ -602,8 +618,9 @@ router.post('/', upload.single('file'), async (req, res) => {
   // ← Response sent here, BEFORE any parsing or DB work
   res.json({ jobId, status: 'started' });
 
-  // Everything below runs after the response is already delivered
-  setImmediate(async () => {
+  // Everything below runs after the response is already delivered; tracked
+  // so graceful shutdown waits for it before closing the pool.
+  runInBackground('fk-settlement', async () => {
     const job = jobs.get(jobId);
     try {
       const pool = getPool();

@@ -83,8 +83,10 @@ describe('SKU master upload with listings that share a VB EXPORT SKU', () => {
 
 describe('Flipkart returns re-upload', () => {
   it('lets the same return take its new (cancelled) status on the same request date', () => {
-    expect(RETURN_UPSERT_CONDITION).toContain('EXCLUDED.return_id IS NOT DISTINCT FROM returns.return_id');
-    expect(RETURN_UPSERT_CONDITION).toContain("EXCLUDED.return_status IS DISTINCT FROM 'cancelled'");
+    // Same KNOWN return id (plain equality: two NULL ids never match) always wins.
+    expect(RETURN_UPSERT_CONDITION).toMatch(/^EXCLUDED\.return_id = returns\.return_id/);
+    // A different request on the same date needs a known, non-cancelled status.
+    expect(RETURN_UPSERT_CONDITION).toContain("COALESCE(EXCLUDED.return_status, '') NOT IN ('', 'cancelled')");
     expect(RETURN_UPSERT_CONDITION).toContain('returns.return_requested_date IS NULL');
     expect(source('routes/upload.js')).toContain('RETURN_UPSERT_CONDITION,');
   });
@@ -247,7 +249,8 @@ describe('concurrent upload and maintenance safety', () => {
   });
 
   it('gives production shutdown time to drain uploads inside Docker\'s grace period', () => {
-    expect(source('server.js')).toContain("process.env.NODE_ENV === 'production' ? 60_000 : 5_000");
-    expect(source('../docker-compose.production.yml')).toContain('stop_grace_period: 75s');
+    expect(source('server.js')).toContain("env.NODE_ENV === 'production' ? 60_000 : 5_000");
+    expect(source('../docker-compose.production.yml')).toContain('stop_grace_period: ${STOP_GRACE_PERIOD:-75s}');
+    expect(source('../docker-compose.production.yml')).toContain('STOP_GRACE_PERIOD: ${STOP_GRACE_PERIOD:-75s}');
   });
 });

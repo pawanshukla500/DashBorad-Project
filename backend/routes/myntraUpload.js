@@ -13,7 +13,7 @@ import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { normalizeDeliveryState } from '../utils/geoNormalization.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
-import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
+import { backfillOrdersFromMyntraPayment, MYNTRA_SYNTHESIZED_RETURN_REASONS } from '../services/myntraSettlementReportingRollups.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
@@ -481,6 +481,10 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Orders and Returns uploads of one account touch the same orders and
+    // returns rows in opposite orders; overlapping uploads could deadlock and
+    // roll back a whole file. One account-scoped lock serializes them.
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`myntra_upload:${sellerAccount}`]);
     if (type === 'orders') {
       const dCols = ORDER_DETAIL_COLUMNS;
       const dConflict = ['marketplace', 'seller_account', 'order_line_id'];
@@ -583,8 +587,8 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
             AND seller_account = $1
             AND order_item_id = ANY($2::text[])
             AND return_id = 'RTO-' || order_item_id
-            AND return_reason = 'Cancel Before Dispached'
-        `, [sellerAccount, shippedLineIds]);
+            AND return_reason = ANY($3::text[])
+        `, [sellerAccount, shippedLineIds, MYNTRA_SYNTHESIZED_RETURN_REASONS]);
       }
     } else {
       const rCols = RETURN_DETAIL_COLUMNS;

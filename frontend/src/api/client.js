@@ -597,16 +597,24 @@ async function fetchAllPages(url, params) {
     throw new Error(`This export has ${expectedRows.toLocaleString()} rows, above Excel's ${EXCEL_MAX_DATA_ROWS.toLocaleString()}-row worksheet limit. Narrow the filters and export in parts.`);
   }
 
+  // Pages are separate requests over OFFSET; rows added or removed between them
+  // shift later pages, repeating or skipping rows silently. Every page reports
+  // the filtered total, so a changed total (or a short page before the end)
+  // means the set moved: fail without creating a file rather than export a
+  // shifted list.
+  const changed = () => new Error('The report changed while the export was being collected. No partial file was created; please retry.');
   const rows = [...firstPayload.data];
+  if (rows.length < expectedRows && rows.length !== EXPORT_PAGE_SIZE) throw changed();
   for (let page = 2; rows.length < expectedRows; page += 1) {
     const next = await api.get(url, {
       params: { ...params, page, pageSize: EXPORT_PAGE_SIZE },
       cache: false,
     });
     const batch = next.data?.data;
-    if (!Array.isArray(batch) || batch.length === 0) {
-      throw new Error('The report changed while the export was being collected. No partial file was created; please retry.');
-    }
+    if (!Array.isArray(batch) || batch.length === 0) throw changed();
+    const pageTotal = Number(next.data?.total);
+    if (Number.isSafeInteger(total) && Number.isSafeInteger(pageTotal) && pageTotal !== total) throw changed();
+    if (rows.length + batch.length < expectedRows && batch.length !== EXPORT_PAGE_SIZE) throw changed();
     rows.push(...batch);
   }
   return rows.slice(0, expectedRows);

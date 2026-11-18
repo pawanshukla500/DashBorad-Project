@@ -650,10 +650,12 @@ router.get('/non-order', async (req, res) => {
   if (!(await isDbConfigured())) return res.json({ configured: false });
   try {
     const pool = getPool();
-    const sellerAcc = req.query.seller_account || req.query.sellerAccount || null;
+    // marketplace=myntra_vb / myntra_ej names the account too (an explicit
+    // seller_account still wins); a bare "myntra" stays account-wide.
+    const { sellerAcc } = marketplaceScope(req.query);
     const myntraParams = [];
     let myntraAccFilter = '';
-    if (sellerAcc && sellerAcc !== 'all') {
+    if (sellerAcc) {
       myntraParams.push(sellerAcc);
       myntraAccFilter = `AND seller_account = $${myntraParams.length}`;
     }

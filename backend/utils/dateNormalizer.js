@@ -177,7 +177,14 @@ export function normalizeSqlDate(value, hint = null) {
   if (format === 'EXCEL') return excelSerialToDate(s);
   if (format === 'ISO') {
     const m = stripTime(s).match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-    return m ? dateFromParts(m[1], m[2], m[3]) : null;
+    if (m) return dateFromParts(m[1], m[2], m[3]);
+    // An ISO column can still hold text dates: Excel date cells are read as
+    // ISO text (dateNF) while typed text cells keep their own form, e.g.
+    // "4/26/26". Read them with the column's text day/month order when its
+    // values established one (hint.fallback), otherwise by per-value
+    // inference (an ambiguous d/m/y defaults to day-first, as elsewhere).
+    if (hint.fallback === 'MDY' || hint.fallback === 'DMY') return parseNumericDate(s, hint.fallback);
+    return normalizeSqlDate(s);
   }
   if (format === 'YMD' || format === 'MDY' || format === 'DMY') {
     return parseNumericDate(s, format);
@@ -214,9 +221,26 @@ export async function buildDateFormatMap({ rows, dateFields, valueFor }) {
       continue;
     }
 
+    // A value only settles a column's format when it is a real date in that
+    // format: "02/30/2026" looks month-first (30 > 12) but is no date, and
+    // must not lock the column (which would swap 05/04 and reject 13/04).
+    const decisive = (value, inferred) => Boolean(inferred && !inferred.ambiguous && normalizeSqlDate(value, inferred));
+    const textOrder = start => {
+      for (let index = start; index < samples.length; index++) {
+        const inferred = inferLocalFormat(samples[index]);
+        if (inferred && (inferred.format === 'DMY' || inferred.format === 'MDY') && decisive(samples[index], inferred)) {
+          return { ...inferred, sample: samples[index] };
+        }
+      }
+      return null;
+    };
+
     const local = inferLocalFormat(sample);
-    if (local && !local.ambiguous) {
-      map[key] = { ...local, sample, label };
+    if (decisive(sample, local)) {
+      // An ISO column (Excel date cells read through dateNF) remembers the
+      // day/month order its text values show, for text dates in the same column.
+      const fallback = local.format === 'ISO' ? textOrder(1)?.format : undefined;
+      map[key] = { ...local, sample, label, ...(fallback ? { fallback } : {}) };
       continue;
     }
 
@@ -226,15 +250,8 @@ export async function buildDateFormatMap({ rows, dateFields, valueFor }) {
     // as NULL (rows skipped). A later value whose day or month part is above 12
     // settles the day/month order for the whole column. Only DMY/MDY evidence
     // counts: one stray ISO value must not re-type a d/m/y column.
-    if (local?.ambiguous) {
-      let settled = null;
-      for (let index = 1; index < samples.length; index++) {
-        const inferred = inferLocalFormat(samples[index]);
-        if (inferred && !inferred.ambiguous && (inferred.format === 'DMY' || inferred.format === 'MDY')) {
-          settled = { ...inferred, sample: samples[index] };
-          break;
-        }
-      }
+    if (local) {
+      const settled = textOrder(1);
       if (settled) {
         map[key] = { ...settled, label };
         continue;

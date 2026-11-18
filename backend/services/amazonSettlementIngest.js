@@ -42,24 +42,38 @@ function buildInsertBatch(rows) {
   return { values, groups };
 }
 
+// Taken before any settlement write; never while holding the totals lock.
+export const AMAZON_SETTLEMENT_INGEST_LOCK_KEY = 7_140_231_120;
+
 const CONTINUATION_TABLE = 'amazon_settlement_lines_incoming';
-const F = SETTLEMENT_LINE_FIELDS.join(', ');
+// A line's identity for continuation replays, as one equality-comparable key:
+// ROW(...)::text tells NULL from '' and is identical for identical lines, so the
+// dedupe is a hash join on the key instead of comparing every column of every
+// stored line with every incoming line. Fee-refund rows are keyed without
+// sku / order_item_code: the orphan resolver fills those in after insert, and a
+// replay of the same file (blank SKU) must still match its resolved copy.
+const RESOLVED_LATER = new Set(['sku', 'order_item_code']);
+const lineKeySql = alias => `md5(ROW(${SETTLEMENT_LINE_FIELDS.map(field => (RESOLVED_LATER.has(field)
+  ? `CASE WHEN ${alias}.transaction_type = 'Fulfillment Fee Refund' THEN NULL ELSE ${alias}.${field} END`
+  : `${alias}.${field}`)).join(', ')})::text)`;
+
 // Remove, per distinct incoming line, at most as many identical stored copies
-// as the continuation file holds (NULLs compare equal, as in GROUP BY).
+// as the continuation file holds.
 export const CONTINUATION_DEDUPE_SQL = `
   WITH incoming AS (
-    SELECT ${F}, COUNT(*) AS copies
-    FROM ${CONTINUATION_TABLE}
-    GROUP BY ${F}
+    SELECT ${lineKeySql('n')} AS line_key, COUNT(*) AS copies
+    FROM ${CONTINUATION_TABLE} n
+    GROUP BY 1
   ),
   stored AS (
-    SELECT id, ${F}, ROW_NUMBER() OVER (PARTITION BY ${F} ORDER BY id) AS copy_no
-    FROM amazon_settlement_lines
-    WHERE settlement_id = $1
+    SELECT s.id, ROW_NUMBER() OVER (PARTITION BY ${lineKeySql('s')} ORDER BY s.id) AS copy_no,
+           ${lineKeySql('s')} AS line_key
+    FROM amazon_settlement_lines s
+    WHERE s.settlement_id = $1
   )
   DELETE FROM amazon_settlement_lines target
   USING stored s
-  JOIN incoming i ON ${SETTLEMENT_LINE_FIELDS.map(field => `s.${field} IS NOT DISTINCT FROM i.${field}`).join(' AND ')}
+  JOIN incoming i ON i.line_key = s.line_key
   WHERE target.id = s.id AND s.copy_no <= i.copies
 `;
 
@@ -133,6 +147,12 @@ export async function replaceAmazonSettlement({
       `, [settlementId, filename]);
     }
 
+    // Amazon settlement ingests are serialized: the orphan-refund resolver now
+    // reads and updates lines of other settlements for the same orders, so two
+    // overlapping imports could deadlock, or each miss the other's uncommitted
+    // charge/refund and leave a refund unresolved for good. With this lock the
+    // later import resolves against the earlier one's committed lines.
+    await client.query('SELECT pg_advisory_xact_lock($1)', [AMAZON_SETTLEMENT_INGEST_LOCK_KEY]);
     // The envelope row acts as the per-settlement mutex for concurrent imports.
     await client.query(
       'SELECT settlement_id FROM amazon_settlements WHERE settlement_id = $1 FOR UPDATE',
@@ -193,7 +213,9 @@ export async function replaceAmazonSettlement({
       : null;
 
     // beforeRollups may also fix lines of other settlements (orphan refund
-    // SKUs of the same orders); rebuild their read models in this transaction.
+    // SKUs of the same orders); rebuild their read models in this transaction,
+    // and backfill every order whose refund SKU changed.
+    (beforeRollupsResult?.orderIds || []).forEach(orderId => affectedOrderIds.add(orderId));
     const relatedSettlementIds = [...new Set(beforeRollupsResult?.settlementIds || [])]
       .filter(id => id && id !== settlementId);
     for (const relatedId of relatedSettlementIds) {

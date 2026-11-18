@@ -35,7 +35,9 @@ export function createHeaderIndex(normalize) {
     let index = rowIndexes.get(row);
     if (index) return index;
     const columns = Object.keys(row);
-    const signature = columns.join('\u0000');
+    // JSON keeps the ordered list unambiguous even when a header contains the
+    // character a plain join would use as its separator.
+    const signature = JSON.stringify(columns);
     index = indexesBySignature.get(signature);
     if (!index) {
       index = new Map();

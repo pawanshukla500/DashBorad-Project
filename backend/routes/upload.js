@@ -17,6 +17,7 @@ import {
   markSpfReceived,
 } from '../services/returnReports.js';
 import { refreshAmazonSettlementReportingRollups } from '../services/amazonSettlementReportingRollups.js';
+import { MYNTRA_SYNTHESIZED_RETURN_REASONS, resetOrdersWithoutMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
 import { ORDER_SETTLEMENT_TOTALS_TABLE, refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { parseSpreadsheet } from '../services/spreadsheetWorker.js';
 import { spreadsheetFileFilter } from '../utils/uploadSecurity.js';
@@ -526,20 +527,18 @@ async function batchUpsert(pool, table, keyCol, fields, rows, marketplace, confl
 
   const keyIdx = fields.findIndex(([c]) => c === keyCol);
   
-  // Deduplicate by keyCol — keep last occurrence, but if it's returns, prefer active over cancelled if same key
+  // Deduplicate by keyCol — keep the last occurrence; for returns apply the
+  // same precedence as RETURN_UPSERT_CONDITION (returnRowReplaces).
+  const returnIndexes = table === 'returns' ? {
+    returnIdIdx: fields.findIndex(([c]) => c === 'return_id'),
+    dateIdx: fields.findIndex(([c]) => c === 'return_requested_date'),
+    statusIdx: fields.findIndex(([c]) => c === 'return_status'),
+  } : null;
   const seen = new Map();
   for (const row of rows) {
     const key = row[keyIdx];
-    if (table === 'returns' && seen.has(key)) {
-      const existing = seen.get(key);
-      const statusIdx = fields.findIndex(([c]) => c === 'return_status');
-      const dateIdx = fields.findIndex(([c]) => c === 'return_requested_date');
-      const exDate = new Date(existing[dateIdx]);
-      const newDate = new Date(row[dateIdx]);
-      
-      if (newDate > exDate || (newDate.getTime() === exDate.getTime() && row[statusIdx] !== 'cancelled')) {
-        seen.set(key, row);
-      }
+    if (returnIndexes && seen.has(key)) {
+      if (returnRowReplaces(seen.get(key), row, returnIndexes)) seen.set(key, row);
     } else {
       seen.set(key, row);
     }
@@ -724,18 +723,40 @@ export const RETURN_FIELD_INDEX = fieldIndex(RETURN_FIELDS);
  * reason the row is skipped.
  */
 // When a returns file re-sends an order item already stored:
-//  - a later request date always wins (a newer return request);
+//  - the SAME return (a known, equal return_id) always takes the incoming
+//    facts: its new status (approved -> cancelled, which the original rule
+//    blocked, leaving cancelled returns counted in Outstanding/Profit) and its
+//    request date, even when a corrected re-upload moves that date earlier;
+//  - otherwise a later request date wins (a newer return request);
 //  - a stored row without a request date accepts the new facts;
-//  - on the same date, a different return request only replaces the stored
-//    one when it is not cancelled (an active request beats a cancelled one),
-//    but the SAME return (same return_id) always takes its new status. The
-//    previous rule blocked approved -> cancelled for the same return, so
-//    cancelled returns stayed counted in Outstanding/Profit forever.
-export const RETURN_UPSERT_CONDITION = `EXCLUDED.return_requested_date > returns.return_requested_date
+//  - on the same date, a different (or unidentified) request only replaces
+//    the stored one when its status is known and not cancelled. Two missing
+//    return ids never count as the same return, and a blank status never
+//    counts as active.
+export const RETURN_UPSERT_CONDITION = `EXCLUDED.return_id = returns.return_id
+  OR EXCLUDED.return_requested_date > returns.return_requested_date
   OR returns.return_requested_date IS NULL
   OR (EXCLUDED.return_requested_date = returns.return_requested_date
-      AND (EXCLUDED.return_status IS DISTINCT FROM 'cancelled'
-           OR EXCLUDED.return_id IS NOT DISTINCT FROM returns.return_id))`;
+      AND COALESCE(EXCLUDED.return_status, '') NOT IN ('', 'cancelled'))`;
+
+/**
+ * In-file counterpart of RETURN_UPSERT_CONDITION: should `incoming` replace
+ * `existing` (two rows of one file for the same order item)? The later row of
+ * the same known return wins, so "approved" followed by its cancellation keeps
+ * the cancellation; between different requests the later date wins, and on
+ * the same date only a known, non-cancelled status replaces.
+ */
+export function returnRowReplaces(existing, incoming, { returnIdIdx, dateIdx, statusIdx }) {
+  const existingId = existing[returnIdIdx];
+  if (existingId != null && existingId !== '' && existingId === incoming[returnIdIdx]) return true;
+  const existingDate = existing[dateIdx] == null ? null : new Date(existing[dateIdx]).getTime();
+  const incomingDate = incoming[dateIdx] == null ? null : new Date(incoming[dateIdx]).getTime();
+  if (existingDate == null || Number.isNaN(existingDate)) return true;
+  if (incomingDate == null || Number.isNaN(incomingDate)) return false;
+  if (incomingDate > existingDate) return true;
+  const status = incoming[statusIdx];
+  return incomingDate === existingDate && status != null && status !== '' && status !== 'cancelled';
+}
 
 export function parseReturnUploadRow(g, { marketplace, rowIndex }) {
   const vals = RETURN_FIELDS.map(([, get]) => get(g));
@@ -1235,10 +1256,20 @@ router.delete('/clear/:type', async (req, res) => {
         `DELETE FROM returns
          WHERE marketplace = 'myntra' AND seller_account = $1
            AND return_id = 'RTO-' || order_item_id
-           AND return_reason = 'Cancel Before Dispached'`,
-        [cfg.forceSellerAccount],
+           AND return_reason = ANY($2::text[])`,
+        [cfg.forceSellerAccount, MYNTRA_SYNTHESIZED_RETURN_REASONS],
       );
       deleted.synthesized_returns = synthesized.rowCount;
+    }
+
+    // Clearing a Myntra account's payment file must also clear the payment
+    // amounts those rows wrote onto its orders (scoped to that account), in
+    // this transaction, and rebuild the totals: the Myntra branch of
+    // unified_settlements reads mp_invoices.
+    const clearsMyntraPayments = cfg.tables.includes('mp_invoices') && mp === 'myntra';
+    if (clearsMyntraPayments) {
+      const { ordersReset } = await resetOrdersWithoutMyntraPayment(client, cfg.forceSellerAccount || null, null);
+      deleted.myntra_orders_reset = ordersReset;
     }
 
     // These compact models are part of the same business-data transaction.
@@ -1249,6 +1280,7 @@ router.delete('/clear/:type', async (req, res) => {
     }
     const refreshSettlementTotals = cfg.tables.includes('fk_settlement_orders')
       || cfg.tables.includes('amazon_settlement_lines')
+      || clearsMyntraPayments
       || (cfg.tables.includes('orders') && (!mp || mp === 'amazon'));
     if (refreshSettlementTotals) await refreshOrderSettlementTotals(client);
 

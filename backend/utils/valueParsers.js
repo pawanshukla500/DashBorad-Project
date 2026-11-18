@@ -22,8 +22,9 @@ export function optionalNumber(value) {
   let body = text.replace(/\u00a0/g, ' ').trim();
   let parenthesised = false;
   let sign = '';
-  let currency = false;
-  for (let layer = 0; layer < 3; layer++) {
+  // Up to four layers: parentheses, a sign and repeated currency markers
+  // ("INR ₹1,234.50", which the original sequential strip also accepted).
+  for (let layer = 0; layer < 4; layer++) {
     let match;
     if (!parenthesised && (match = body.match(/^\((.+)\)$/))) {
       parenthesised = true;
@@ -31,8 +32,7 @@ export function optionalNumber(value) {
     } else if (!sign && (match = body.match(/^([+-])\s*(.+)$/))) {
       sign = match[1];
       body = match[2];
-    } else if (!currency && (match = body.match(/^(?:INR|Rs\.?|₹)\s*(.+)$/i))) {
-      currency = true;
+    } else if ((match = body.match(/^(?:INR|Rs\.?|₹)\s*(.+)$/i))) {
       body = match[1];
     } else {
       break;
@@ -40,10 +40,18 @@ export function optionalNumber(value) {
   }
   // "(-5)" / "-(5)" are ambiguous, never a spreadsheet's own notation.
   if (parenthesised && sign) return null;
-  const normalized = body
-    .replace(/,/g, '')
+  let normalized = body
     .replace(/\s+/g, '')
     .replace(/\/-$/, '');
+  // Thousands separators must sit where Western (1,234,567.89) or Indian
+  // (12,34,567.89) grouping puts them; "12.3,4" or "1234,50" is not an amount
+  // and must be reported, not read as 12.34 / 123450.
+  if (normalized.includes(',')) {
+    const western = /^\d{1,3}(?:,\d{3})+(?:\.\d+)?$/;
+    const indian = /^\d{1,2}(?:,\d{2})+,\d{3}(?:\.\d+)?$/;
+    if (!western.test(normalized) && !indian.test(normalized)) return null;
+    normalized = normalized.replace(/,/g, '');
+  }
   if (!/^(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/i.test(normalized)) return null;
   const parsed = Number(normalized);
   if (!Number.isFinite(parsed)) return null;

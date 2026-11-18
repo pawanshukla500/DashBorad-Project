@@ -62,7 +62,11 @@ describe('order search', () => {
     expect(likeContainsPattern('OD_12%3')).toBe('%OD\\_12\\%3%');
     expect(likeContainsPattern('171-55')).toBe('%171-55%');
     const route = source('routes/data.js');
-    expect(route.indexOf("run('= $1', q)")).toBeLessThan(route.indexOf("searchOrderQueries('ILIKE $1')"));
+    const exactAt = route.indexOf("run('= $1', q)");
+    const substringAt = route.indexOf("searchOrderQueries('ILIKE $1')");
+    expect(exactAt).toBeGreaterThanOrEqual(0);
+    expect(substringAt).toBeGreaterThanOrEqual(0);
+    expect(exactAt).toBeLessThan(substringAt);
   });
 });
 
@@ -172,7 +176,11 @@ describe('Amazon ingestion', () => {
     expect(CONTINUATION_DEDUPE_SQL).toContain('COUNT(*) AS copies');
     expect(CONTINUATION_DEDUPE_SQL).toContain('ROW_NUMBER() OVER (PARTITION BY');
     expect(CONTINUATION_DEDUPE_SQL).toContain('s.copy_no <= i.copies');
-    expect(CONTINUATION_DEDUPE_SQL).toContain('IS NOT DISTINCT FROM');
+    // Equality join on a hashed line key (no all-column nested-loop compare).
+    expect(CONTINUATION_DEDUPE_SQL).toContain('JOIN incoming i ON i.line_key = s.line_key');
+    expect(CONTINUATION_DEDUPE_SQL).not.toContain('IS NOT DISTINCT FROM');
+    // Refund rows are keyed without the SKU the resolver fills in later.
+    expect(CONTINUATION_DEDUPE_SQL).toContain("CASE WHEN s.transaction_type = 'Fulfillment Fee Refund' THEN NULL ELSE s.sku END");
   });
 
   it('resolves orphan refund SKUs across settlements for the uploaded orders', () => {
@@ -201,12 +209,14 @@ describe('Flipkart, Myntra and SOR write paths', () => {
 
   it('resets payment columns only for Myntra orders left without any payment row', async () => {
     const pool = { query: vi.fn(async () => ({ rowCount: 4 })) };
-    await expect(resetOrdersWithoutMyntraPayment(pool, 'myntra_vb', ['REL-1', 'REL-1', ''])).resolves.toEqual({ ordersReset: 4 });
+    await expect(resetOrdersWithoutMyntraPayment(pool, 'myntra_vb', { releaseIds: ['REL-1', 'REL-1', ''], lineIds: ['L-9'] })).resolves.toEqual({ ordersReset: 4 });
     const [sql, params] = pool.query.mock.calls[0];
     expect(sql).toContain("o.marketplace = 'myntra'");
     expect(sql).toContain('NOT EXISTS');
     expect(sql).toContain('settlement_amount = NULL');
-    expect(params).toEqual(['myntra_vb', ['REL-1']]);
+    // Scoped by order line (payments link by line id, with or without a release id).
+    expect(sql).toContain('o.order_item_id IN');
+    expect(params).toEqual(['myntra_vb', ['L-9'], ['REL-1']]);
     await expect(resetOrdersWithoutMyntraPayment(pool, 'myntra_vb', [])).resolves.toEqual({ ordersReset: 0 });
     expect(pool.query).toHaveBeenCalledTimes(1);
   });
@@ -221,7 +231,11 @@ describe('database layer', () => {
   const initDb = source('db/initDb.js');
 
   it('drops redundant indexes once and no longer recreates them', () => {
-    expect(initDb).toContain("const REDUNDANT_INDEX_CLEANUP_SCHEMA_VERSION = '2026.11.redundant-indexes-1';");
+    // One migration per table; each drop checks its replacement first.
+    for (const version of ['redundant-indexes-amazon-1', 'redundant-indexes-returns-1', 'redundant-indexes-sor-1']) {
+      expect(initDb).toContain(`'2026.11.${version}'`);
+    }
+    expect(initDb).toContain("is missing or invalid; keeping");
     expect(initDb.match(/await ensureRedundantIndexCleanup\(pool\);/g)).toHaveLength(2);
     for (const create of [
       'CREATE INDEX IF NOT EXISTS IX_amzn_lines_settlement ',
@@ -241,7 +255,8 @@ describe('database layer', () => {
 
   it('builds lookup indexes and the SOR view without lock or timeout hazards', () => {
     expect(initDb).toContain('const builder = await pool.connect();');
-    expect(initDb).toContain("await replaceViewIfChanged(pool, 'sor_outstanding', select,");
+    // The SOR view probe, comparison and replace run on one checked-out client.
+    expect(initDb).toContain("await replaceViewIfChanged(viewClient, 'sor_outstanding', select,");
     expect(initDb.match(/await db\.query\(AMAZON_SALE_ORDER_SHIPMENTS_DDL\);/g)).toHaveLength(2);
   });
 
@@ -263,7 +278,9 @@ describe('third pass: search index, month-pl totals, fee-leaks netting, Myntra r
     expect(route).not.toContain("run('ILIKE $1'");
     expect(initDb).toContain("['ix_orders_order_id_trgm', 'orders USING gin (order_id gin_trgm_ops)']");
     expect(initDb).toContain("CREATE EXTENSION IF NOT EXISTS pg_trgm");
-    expect(initDb.match(/await ensureSearchTrigramIndexes\(pool\);/g)).toHaveLength(2);
+    // Optional index builds run in the background, off the readiness path.
+    expect(initDb.match(/scheduleBackgroundIndexBuilds\(pool\);/g)).toHaveLength(2);
+    expect(initDb).toContain('await ensureSearchTrigramIndexes(pool);');
   });
 
   it('month-pl reads per-order fees from order_settlement_totals with its own paid-row rules', () => {
@@ -283,7 +300,8 @@ describe('third pass: search index, month-pl totals, fee-leaks netting, Myntra r
   });
 
   it('repairs stored synthesized Myntra returns of lines that shipped later, once', () => {
-    expect(initDb).toContain("const MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION = '2026.11.myntra-shipped-synthetic-returns-1';");
+    expect(initDb).toContain("const MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION = '2026.11.myntra-shipped-synthetic-returns-2';");
+    expect(initDb).toContain('AND r.return_reason = ANY($1::text[])');
     expect(initDb).toContain("AND NULLIF(BTRIM(d.tracking_number), '') IS NOT NULL");
     expect(initDb.match(/await ensureMyntraShippedSyntheticReturnsCleanup\(pool\);/g)).toHaveLength(2);
   });

@@ -16,7 +16,10 @@ services:
     # The API drains in-flight uploads/imports for up to SHUTDOWN_TIMEOUT_MS
     # (60 s in production) on SIGTERM; Docker's default 10 s grace period
     # SIGKILLed it first and cut uploads mid-transaction on every deploy.
-    stop_grace_period: 75s
+    # STOP_GRACE_PERIOD (seconds, "75s") is also passed into the container, and
+    # the server caps its drain 5 s below it, so raising SHUTDOWN_TIMEOUT_MS in
+    # .env can never outlive Docker's grace period.
+    stop_grace_period: ${STOP_GRACE_PERIOD:-75s}
     expose:
       - "3001"
     env_file:
@@ -24,6 +27,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3001
+      STOP_GRACE_PERIOD: ${STOP_GRACE_PERIOD:-75s}
       NODE_OPTIONS: "--max-old-space-size=768"
       CLIENT_DIST_PATH: /app/frontend/dist
       # Desktop workers must always connect to the SAME database the dashboard

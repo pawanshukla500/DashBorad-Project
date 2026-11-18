@@ -334,21 +334,31 @@ describe('initDb session, advisory lock and timeouts', () => {
       return shared(text);
     });
     client.release = vi.fn();
+    // Later checkouts are other sessions (the single-client SOR view
+    // comparison, the background index-build owner), recorded separately so
+    // the schema session's own statements and release stay checkable.
+    const aux = recordingConnection(shared);
+    aux.release = vi.fn();
     const pool = recordingConnection(shared);
-    pool.connect = vi.fn(async () => ({ query: client.query, release: client.release }));
+    let checkouts = 0;
+    pool.connect = vi.fn(async () => (checkouts++ === 0
+      ? { query: client.query, release: client.release }
+      : { query: aux.query, release: aux.release }));
     stubs.pool = pool;
-    return { client, pool };
+    return { client, pool, aux };
   }
 
   const SET_TIMEOUTS = `SET lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'; SET statement_timeout = '${SCHEMA_DDL_STATEMENT_TIMEOUT}'`;
 
   it('holds the advisory lock on one dedicated client for the whole run, then cleans the session up', async () => {
-    const { client, pool } = stubDatabase();
+    const { client, pool, aux } = stubDatabase();
 
     await initDb();
 
     const texts = client.texts();
-    expect(pool.connect).toHaveBeenCalledTimes(1);
+    // The first checkout is the schema session; the rest never take its lock.
+    expect(pool.connect).toHaveBeenCalled();
+    expect(aux.texts().some(text => text.includes('pg_try_advisory_lock') && text.includes(String(SCHEMA_INIT_LOCK_KEY)))).toBe(false);
     expect(texts[0]).toBe('SELECT pg_try_advisory_lock($1) AS locked');
     expect(client.statements[0].params).toEqual([SCHEMA_INIT_LOCK_KEY]);
     expect(texts[1]).toBe(SET_TIMEOUTS);

@@ -6,6 +6,8 @@ import { myntraInvoicesUnifiedSelect } from '../services/myntraSettlementReporti
 import { meeshoSettlementUnifiedSelect } from '../services/meeshoSettlementReportingRollups.js';
 import { ensureOrderSettlementTotals } from '../services/orderSettlementTotals.js';
 import { AMAZON_SALE_ORDER_SHIPMENTS_DDL } from '../services/amazonSaleOrderShipments.js';
+import { MYNTRA_SYNTHESIZED_RETURN_REASONS } from '../services/myntraSettlementReportingRollups.js';
+import { setFeatureReadiness } from '../services/featureReadiness.js';
 import { rebuildAjioSorLedger } from '../services/sorMirror.js';
 import { reencryptMarketplaceCredentials } from '../utils/credentialCrypto.js';
 import { runRateCardDimensionalMigration } from './rateCardDimensionalMigration.js';
@@ -49,9 +51,8 @@ const MYNTRA_BLANK_TRACKING_CANCELLED_SCHEMA_VERSION = '2026.09.myntra-blank-tra
 const MYNTRA_EJ_RATE_CARDS_SCHEMA_VERSION = '2026.09.myntra-ej-rate-cards-1';
 const DB_CONNECTION_OPTIMIZATION_SCHEMA_VERSION = '2026.09.db-connection-optimization-1';
 const LOOKUP_INDEXES_SCHEMA_VERSION = '2026.09.lookup-indexes-1';
-const REDUNDANT_INDEX_CLEANUP_SCHEMA_VERSION = '2026.11.redundant-indexes-1';
 const SEARCH_TRGM_SCHEMA_VERSION = '2026.11.search-trgm-1';
-const MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION = '2026.11.myntra-shipped-synthetic-returns-1';
+const MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION = '2026.11.myntra-shipped-synthetic-returns-2';
 const MARKETPLACE_CREDENTIALS_SCHEMA_VERSION = '2026.10.marketplace-credentials-1';
 export const RATE_CARD_WORKER_SCHEMA_VERSION = '2026.10.ratecard-worker-jobs-1';
 // Dimensional rate-card migration version lives in ./rateCardDimensionalMigration.js.
@@ -1113,11 +1114,10 @@ export async function initDb() {
       await ensureMyntraEjRateCardsSeed(db);
       await ensureSorSchema(pool);
       await ensureDbConnectionOptimization(db);
-      await ensureLookupIndexes(pool);
       await ensureRedundantIndexCleanup(pool);
-      await ensureSearchTrigramIndexes(pool);
+      scheduleBackgroundIndexBuilds(pool);
       await ensureMarketplaceCredentialsSchema(db);
-      await ensureRateCardWorkerSchema(pool);
+      recordRateCardWorkerReadiness(await ensureRateCardWorkerSchema(pool));
       // A read-model migration changes the view definition as well as the
       // backing table, so it must run on already-current installations too.
       // Per-shipment Amazon Sale Order ledger (CREATE TABLE IF NOT EXISTS).
@@ -1816,11 +1816,10 @@ export async function initDb() {
     await ensureMyntraEjRateCardsSeed(db);
     await ensureSorSchema(pool);
     await ensureDbConnectionOptimization(db);
-    await ensureLookupIndexes(pool);
     await ensureRedundantIndexCleanup(pool);
-    await ensureSearchTrigramIndexes(pool);
+    scheduleBackgroundIndexBuilds(pool);
     await ensureMarketplaceCredentialsSchema(db);
-    await ensureRateCardWorkerSchema(pool);
+    recordRateCardWorkerReadiness(await ensureRateCardWorkerSchema(pool));
 
     db.throwIfInterrupted();
     await db.query(
@@ -2428,7 +2427,16 @@ async function ensureSorOutstandingView(pool) {
     // Replaced only when the definition changed. CREATE OR REPLACE VIEW takes
     // an ACCESS EXCLUSIVE lock (briefly blocking the SOR pages) and ran on every
     // boot and on each 60 s retry while SOR migrations were pending.
-    await replaceViewIfChanged(pool, 'sor_outstanding', select, `CREATE OR REPLACE VIEW sor_outstanding AS ${select}`);
+    // The probe view is session-local: create, compare, drop and replace on
+    // ONE client, or the comparison can run on a pooled connection that cannot
+    // see the probe and replace an unchanged view anyway.
+    const ownsClient = typeof pool.connect === 'function' && typeof pool.release !== 'function';
+    const viewClient = ownsClient ? await pool.connect() : pool;
+    try {
+      await replaceViewIfChanged(viewClient, 'sor_outstanding', select, `CREATE OR REPLACE VIEW sor_outstanding AS ${select}`);
+    } finally {
+      if (ownsClient) viewClient.release();
+    }
     return true;
   } catch (error) {
     console.error('[db] sor_outstanding view could not be created:', error.message);
@@ -3006,7 +3014,8 @@ async function ensureMyntraBlankTrackingRtoFix(pool) {
  * removed once the stored order line has a tracking number, i.e. it shipped
  * after all. Before that rule such returns stayed counted as courier returns
  * forever. Only rows the blank-tracking rule synthesized are touched
- * (return_id RTO-<line>, that reason); a real return keeps its own id.
+ * (return_id RTO-<line>, with the current or the legacy backfill's reason);
+ * a real return keeps its own id.
  */
 export async function ensureMyntraShippedSyntheticReturnsCleanup(pool) {
   return runVersionedMigration(pool, MYNTRA_SHIPPED_SYNTHETIC_RETURNS_SCHEMA_VERSION, async client => {
@@ -3015,12 +3024,12 @@ export async function ensureMyntraShippedSyntheticReturnsCleanup(pool) {
       USING myntra_order_details d
       WHERE r.marketplace = 'myntra'
         AND r.return_id = 'RTO-' || r.order_item_id
-        AND r.return_reason = 'Cancel Before Dispached'
+        AND r.return_reason = ANY($1::text[])
         AND d.marketplace = 'myntra'
         AND d.seller_account = r.seller_account
         AND d.order_line_id = r.order_item_id
         AND NULLIF(BTRIM(d.tracking_number), '') IS NOT NULL
-    `);
+    `, [MYNTRA_SYNTHESIZED_RETURN_REASONS]);
     if (rowCount) console.log(`[db] Removed ${rowCount} synthesized Myntra returns for lines that later shipped.`);
   });
 }
@@ -3198,24 +3207,97 @@ const LOOKUP_INDEXES = [
  *  - returns(order_item_id) partial copy     = IX_returns_item (order_item_id)
  *  - returns(order_id)                       ⊂ (order_id, sku)
  *  - sor_invoice_line(invoice_id)            ⊂ (invoice_id) INCLUDE (...) cover index
- * Their CREATE statements were removed from startup. A plain DROP INDEX holds
- * the table lock only for the catalog change; with the migration's 5 s
- * lock_timeout a busy table makes it roll back and retry on the next start.
+ * Their CREATE statements were removed from startup. Each table is its own
+ * versioned migration (one transaction, 5 s lock_timeout), so a lock wait on
+ * one table never extends the exclusive lock already taken on another. An
+ * index is dropped only when its replacement exists and is valid (checked
+ * inside the migration); otherwise the migration stays pending and retries on
+ * the next start, keeping the old index as the access path meanwhile.
  */
-const REDUNDANT_INDEXES = [
-  'ix_amzn_lines_settlement',
-  'ix_amzn_lines_order_id',
-  'ix_returns_order_item_id',
-  'ix_returns_order_id',
-  'ix_sor_invoice_line_invoice',
+const REDUNDANT_INDEX_CLEANUPS = [
+  {
+    version: '2026.11.redundant-indexes-amazon-1',
+    drops: [
+      ['ix_amzn_lines_settlement', 'ix_amzn_lines_settle_date'],
+      ['ix_amzn_lines_order_id', 'ix_amzn_lines_order_sku'],
+    ],
+  },
+  {
+    version: '2026.11.redundant-indexes-returns-1',
+    drops: [
+      ['ix_returns_order_item_id', 'ix_returns_item'],
+      ['ix_returns_order_id', 'ix_returns_order_sku'],
+    ],
+  },
+  {
+    version: '2026.11.redundant-indexes-sor-1',
+    drops: [['ix_sor_invoice_line_invoice', 'ix_sor_invoice_line_invoice_cover']],
+  },
 ];
 
+export const REDUNDANT_INDEX_CLEANUP_VERSIONS = REDUNDANT_INDEX_CLEANUPS.map(cleanup => cleanup.version);
+
 export async function ensureRedundantIndexCleanup(pool) {
-  return runVersionedMigration(pool, REDUNDANT_INDEX_CLEANUP_SCHEMA_VERSION, async client => {
-    for (const index of REDUNDANT_INDEXES) {
-      await client.query(`DROP INDEX IF EXISTS ${index}`);
+  const results = [];
+  for (const { version, drops } of REDUNDANT_INDEX_CLEANUPS) {
+    results.push(await runVersionedMigration(pool, version, async client => {
+      for (const [index, replacement] of drops) {
+        const { rows } = await client.query(`
+          SELECT i.indisvalid AS valid
+          FROM pg_class c
+          JOIN pg_index i ON i.indexrelid = c.oid
+          WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace
+        `, [replacement]);
+        if (!rows[0]?.valid) {
+          throw new Error(`${replacement} is missing or invalid; keeping ${index}`);
+        }
+        await client.query(`DROP INDEX IF EXISTS ${index}`);
+      }
+    }));
+  }
+  return results.every(Boolean);
+}
+
+/**
+ * Optional, performance-only index builds (lookup + search trigram indexes).
+ * CREATE INDEX CONCURRENTLY waits for every older transaction that touched the
+ * table, on a client without a statement timeout, so awaiting it inside
+ * initDb could hold every /api route at 503 behind one long upload. They run
+ * in the background after the required schema, with one owner per database
+ * (session advisory lock); a failed build stays pending (no version row, an
+ * INVALID index is dropped and rebuilt) and retries on the next start.
+ */
+const INDEX_BUILD_LOCK_KEY = 7_140_231_119;
+let backgroundIndexBuild = null;
+
+export function scheduleBackgroundIndexBuilds(pool) {
+  if (backgroundIndexBuild) return backgroundIndexBuild;
+  backgroundIndexBuild = (async () => {
+    let owner;
+    try {
+      owner = await pool.connect();
+      const { rows } = await owner.query('SELECT pg_try_advisory_lock($1) AS locked', [INDEX_BUILD_LOCK_KEY]);
+      if (!rows?.[0]?.locked) return;
+      try {
+        await ensureLookupIndexes(pool);
+        await ensureSearchTrigramIndexes(pool);
+      } finally {
+        await owner.query('SELECT pg_advisory_unlock($1)', [INDEX_BUILD_LOCK_KEY]).catch(() => {});
+      }
+    } catch (error) {
+      console.warn('[db] Non-critical: background index builds failed:', error.message);
+    } finally {
+      owner?.release?.();
+      backgroundIndexBuild = null;
     }
-  });
+  })();
+  return backgroundIndexBuild;
+}
+
+/** Worker / rate-card job routes answer 503 while their schema is pending. */
+function recordRateCardWorkerReadiness(ready) {
+  setFeatureReadiness('rate-card-worker', ready !== false,
+    'Rate-card worker features are unavailable until a pending database migration applies; it is retried on the next start.');
 }
 
 /**

@@ -397,7 +397,33 @@ export async function ownedComponents(client, headerIds, sourceCondition, params
  * and invoices commit in groups (utils/isolatedBatches.js) instead of one
  * transaction per invoice.
  */
-export async function applySorUpload(pool, { portal, account, stream, records, uploadedBy = null }) {
+const compareText = (left, right) => (String(left) < String(right) ? -1 : String(left) > String(right) ? 1 : 0);
+
+/**
+ * Rename invoice headers stored under the number a CSV's old type-guessing
+ * parse produced ('000123' -> '123') to the exact text, unless a header with
+ * the exact number already exists. Lines follow their header by id.
+ */
+export async function adoptLegacySorInvoiceNumbers(client, { portal, account, pairs }) {
+  const byLegacy = new Map();
+  for (const [legacy, current] of pairs || []) if (legacy !== current && !byLegacy.has(legacy)) byLegacy.set(legacy, current);
+  if (!byLegacy.size) return 0;
+  const { rowCount } = await client.query(`
+    UPDATE sor_invoice h
+    SET invoice_no = p.current
+    FROM unnest($4::text[], $5::text[]) AS p(legacy, current)
+    WHERE h.portal = $1 AND h.portal_account = $2 AND h.invoice_type = $3
+      AND h.invoice_no = p.legacy
+      AND NOT EXISTS (
+        SELECT 1 FROM sor_invoice x
+        WHERE x.portal = h.portal AND x.portal_account = h.portal_account
+          AND x.invoice_type = h.invoice_type AND x.invoice_no = p.current
+      )
+  `, [portal, account, SOR_INVOICE_TYPE, [...byLegacy.keys()], [...byLegacy.values()]]);
+  return rowCount || 0;
+}
+
+export async function applySorUpload(pool, { portal, account, stream, records, uploadedBy = null, legacyInvoiceNos = [] }) {
   const source = `sor_upload:${stream}`;
   const result = { invoices: 0, inserted: 0, updated: 0, removed: 0, skipped: [], errors: [] };
   if (records.length === 0) return result;
@@ -407,15 +433,21 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
 
   const client = await pool.connect();
   try {
+    if (legacyInvoiceNos.length) {
+      result.legacyInvoicesRenamed = await adoptLegacySorInvoiceNumbers(client, { portal, account, pairs: legacyInvoiceNos });
+    }
     if (stream === 'invoice') {
       const byInvoice = new Map();
       for (const record of records) {
         if (!byInvoice.has(record.invoice_no)) byInvoice.set(record.invoice_no, []);
         byInvoice.get(record.invoice_no).push(record);
       }
+      // One lock order for every SOR writer (uploads and the AJIO mirror sort by
+      // invoice number): a group transaction keeps each invoice's row lock until
+      // it commits, so two uploads taking [A, B] and [B, A] could deadlock.
       await forEachIsolated(
         client,
-        [...byInvoice],
+        [...byInvoice].sort(([left], [right]) => compareText(left, right)),
         ([invoiceNo, rows]) => writeInvoice(client, { portal, account, invoiceNo, rows, source, uploadedBy }),
         {
           onSuccess: (_, outcome) => {
@@ -459,10 +491,17 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
     }
     await forEachIsolated(
       client,
-      [...byInvoice],
+      [...byInvoice].sort(([, left], [, right]) => compareText(left[0].invoice_no, right[0].invoice_no)),
       async ([headerId, invoiceLines]) => {
-        const removals = invoiceLines.filter(line => line.remove);
-        const outcome = await upsertLines(client, headerId, invoiceLines.filter(line => !line.remove), source);
+        // Lock the header, then re-read what the AJIO mirror owns: the mirror
+        // locks the same header before writing, and its uncommitted payment was
+        // invisible to the ownership read above, so both could post one payment.
+        await client.query('SELECT id FROM sor_invoice WHERE id = $1 FOR UPDATE', [headerId]);
+        const ownedNow = (await ownedComponents(client, [headerId], 'source = $2', [SOR_MIRROR_SOURCE])).get(String(headerId));
+        const lateBlocked = invoiceLines.filter(line => !line.remove && ownedNow?.has(lineComponent(line)));
+        const writable = invoiceLines.filter(line => !lateBlocked.includes(line));
+        const removals = writable.filter(line => line.remove);
+        const outcome = await upsertLines(client, headerId, writable.filter(line => !line.remove), source);
         let removed = 0;
         for (const line of removals) {
           // Only an upload's own line is removed, never one the AJIO file owns.
@@ -474,7 +513,7 @@ export async function applySorUpload(pool, { portal, account, stream, records, u
           removed += rowCount;
         }
         await client.query(`UPDATE sor_invoice SET uploaded_at = NOW() WHERE id = $1`, [headerId]);
-        return { ...outcome, removed };
+        return { ...outcome, removed, blocked: [...outcome.blocked, ...lateBlocked] };
       },
       {
         onSuccess: (_, outcome) => {
