@@ -90,6 +90,51 @@ GROUP BY i.seller_account, i.order_release_id, i.order_line_id, i.payment_date
 `;
 }
 
+// Order columns written from Myntra payment rows (see the backfill below).
+const MYNTRA_PAYMENT_ORDER_COLUMNS = [
+  'settlement_amount', 'commission', 'fixed_fee', 'pick_pack_fee', 'shipping_fee', 'reverse_shipping',
+  'tcs', 'tds', 'gst_on_mp', 'collection_fee', 'return_received_amount',
+];
+
+/**
+ * Clear the payment-derived columns of Myntra orders that no longer have any
+ * payment row, after payments were deleted or cleared. The backfill below only
+ * updates orders that still have rows, so removed payments stayed on the orders
+ * themselves. The Myntra orders upload never sets these columns, so NULL is
+ * their state before any payment. `affectedOrderIds` (order release ids)
+ * scopes the reset; null means the whole account.
+ */
+export async function resetOrdersWithoutMyntraPayment(pool, sellerAccount = null, affectedOrderIds = null) {
+  const scopedOrderIds = Array.isArray(affectedOrderIds)
+    ? [...new Set(affectedOrderIds.map(v => String(v || '').trim()).filter(Boolean))]
+    : null;
+  if (scopedOrderIds && !scopedOrderIds.length) return { ordersReset: 0 };
+  const params = [];
+  let scope = '';
+  if (sellerAccount && sellerAccount !== 'all') {
+    params.push(sellerAccount);
+    scope += ` AND o.seller_account = $${params.length}`;
+  }
+  if (scopedOrderIds) {
+    params.push(scopedOrderIds);
+    scope += ` AND o.order_id = ANY($${params.length}::text[])`;
+  }
+  const result = await pool.query(`
+    UPDATE orders o
+    SET ${MYNTRA_PAYMENT_ORDER_COLUMNS.map(column => `${column} = NULL`).join(', ')}
+    WHERE o.marketplace = 'myntra'${scope}
+      AND (${MYNTRA_PAYMENT_ORDER_COLUMNS.map(column => `o.${column} IS NOT NULL`).join(' OR ')})
+      AND NOT EXISTS (
+        SELECT 1 FROM mp_invoices i
+        WHERE i.marketplace = 'myntra'
+          AND i.seller_account = o.seller_account
+          AND i.order_line_id = o.order_item_id
+          AND COALESCE(i.order_type, '') <> 'nod'
+      )
+  `, params);
+  return { ordersReset: result.rowCount || 0 };
+}
+
 /**
  * Propagate Myntra settlement calculations back into the orders table.
  * Populates settlement_amount, commission, fixed_fee, shipping_fee, reverse_shipping,

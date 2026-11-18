@@ -1225,6 +1225,21 @@ router.delete('/clear/:type', async (req, res) => {
       deleted[table] = result.rowCount;
     }
 
+    // A Myntra orders upload synthesizes a "Cancel Before Dispached" return for
+    // each blank-tracking line. Those rows belong to the orders data, so
+    // clearing the orders removes them too instead of leaving orphan courier
+    // returns counted in Returns and Outstanding.
+    if (cfg.forceMp === 'myntra' && cfg.tables.includes('myntra_order_details') && !cfg.tables.includes('returns')) {
+      const synthesized = await client.query(
+        `DELETE FROM returns
+         WHERE marketplace = 'myntra' AND seller_account = $1
+           AND return_id = 'RTO-' || order_item_id
+           AND return_reason = 'Cancel Before Dispached'`,
+        [cfg.forceSellerAccount],
+      );
+      deleted.synthesized_returns = synthesized.rowCount;
+    }
+
     // These compact models are part of the same business-data transaction.
     // A clear must never leave a page showing settlement totals whose source
     // ledger has just been removed.

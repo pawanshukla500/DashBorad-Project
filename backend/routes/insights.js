@@ -2,6 +2,13 @@ import express from 'express';
 import { getPool, isDbConfigured } from '../db/index.js';
 import { SETT_CTE } from '../services/settlementSql.js';
 import { ORDER_SETTLEMENT_TOTALS_TABLE } from '../services/orderSettlementTotals.js';
+import { MASTER_CATEGORY_JOINS, MASTER_CATEGORY_SQL } from '../services/categorySql.js';
+
+// Category breakdowns group by the master category (services/categorySql.js),
+// never the raw marketplace taxonomy in orders.category: "Women Kurtas",
+// "Kurta Sets" and "Apparel" must not fragment one product line, and orders
+// without a category are counted as 'Uncategorized' instead of dropped.
+const CATEGORY = MASTER_CATEGORY_SQL;
 
 const router = express.Router();
 
@@ -78,32 +85,32 @@ router.get('/return-heatmap', async (req, res) => {
     const [matrixRes, catRes, stateRes, reasonRes] = await Promise.all([
       pool.query(`
         SELECT
-          o.category, o.delivery_state AS state, o.marketplace,
+          ${CATEGORY} AS category, o.delivery_state AS state, o.marketplace,
           COUNT(o.order_item_id)  AS orders,
           COUNT(r.order_item_id)  AS returns,
           ROUND(COUNT(r.order_item_id)::numeric / NULLIF(COUNT(o.order_item_id),0)*100,1) AS return_rate,
           COALESCE(SUM(CASE WHEN r.order_item_id IS NOT NULL THEN o.final_invoice_amount ELSE 0 END),0) AS return_value
         FROM orders o
+        ${MASTER_CATEGORY_JOINS}
         LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
-          AND o.category IS NOT NULL AND o.category <> ''
           AND o.delivery_state IS NOT NULL AND o.delivery_state <> '' AND o.delivery_state <> '-'
-        GROUP BY o.category, o.delivery_state, o.marketplace
+        GROUP BY 1, o.delivery_state, o.marketplace
         ORDER BY return_rate DESC NULLS LAST
       `, values),
       pool.query(`
         SELECT
-          o.category, o.marketplace,
+          ${CATEGORY} AS category, o.marketplace,
           COUNT(o.order_item_id)  AS orders,
           COUNT(r.order_item_id)  AS returns,
           ROUND(COUNT(r.order_item_id)::numeric / NULLIF(COUNT(o.order_item_id),0)*100,1) AS return_rate,
           COALESCE(SUM(o.final_invoice_amount),0) AS revenue,
           COALESCE(SUM(CASE WHEN r.order_item_id IS NOT NULL THEN o.final_invoice_amount ELSE 0 END),0) AS return_value
         FROM orders o
+        ${MASTER_CATEGORY_JOINS}
         LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
-          AND o.category IS NOT NULL AND o.category <> ''
-        GROUP BY o.category, o.marketplace
+        GROUP BY 1, o.marketplace
         ORDER BY returns DESC NULLS LAST
       `, values),
       pool.query(`
@@ -122,12 +129,13 @@ router.get('/return-heatmap', async (req, res) => {
       `, values),
       pool.query(`
         SELECT
-          r.return_reason, o.category, o.marketplace,
+          r.return_reason, ${CATEGORY} AS category, o.marketplace,
           COUNT(*) AS count
-        FROM returns r
+        FROM order_returns r
         JOIN orders o ON o.order_item_id = r.order_item_id
+        ${MASTER_CATEGORY_JOINS}
         WHERE r.return_reason IS NOT NULL AND r.return_reason <> '' ${where}
-        GROUP BY r.return_reason, o.category, o.marketplace
+        GROUP BY r.return_reason, 2, o.marketplace
         ORDER BY count DESC
         LIMIT 60
       `, values),
@@ -152,33 +160,34 @@ router.get('/rto-risk', async (req, res) => {
     const [skuRes, stateCatRes] = await Promise.all([
       pool.query(`
         SELECT
-          o.sku, o.category, o.marketplace,
+          o.sku, ${CATEGORY} AS category, o.marketplace,
           COUNT(o.order_item_id)  AS orders,
           COUNT(r.order_item_id)  AS returns,
           ROUND(COUNT(r.order_item_id)::numeric / NULLIF(COUNT(o.order_item_id),0)*100,1) AS return_rate,
           COALESCE(SUM(o.final_invoice_amount),0) AS revenue,
           COALESCE(SUM(CASE WHEN r.order_item_id IS NOT NULL THEN o.final_invoice_amount ELSE 0 END),0) AS return_value
         FROM orders o
+        ${MASTER_CATEGORY_JOINS}
         LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
           AND o.sku IS NOT NULL AND o.sku <> ''
-        GROUP BY o.sku, o.category, o.marketplace
+        GROUP BY o.sku, 2, o.marketplace
         HAVING COUNT(o.order_item_id) >= 3
         ORDER BY return_rate DESC NULLS LAST
         LIMIT 50
       `, values),
       pool.query(`
         SELECT
-          o.delivery_state AS state, o.category, o.marketplace,
+          o.delivery_state AS state, ${CATEGORY} AS category, o.marketplace,
           COUNT(o.order_item_id)  AS orders,
           COUNT(r.order_item_id)  AS returns,
           ROUND(COUNT(r.order_item_id)::numeric / NULLIF(COUNT(o.order_item_id),0)*100,1) AS return_rate
         FROM orders o
+        ${MASTER_CATEGORY_JOINS}
         LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
           AND o.delivery_state IS NOT NULL AND o.delivery_state <> '' AND o.delivery_state <> '-'
-          AND o.category IS NOT NULL AND o.category <> ''
-        GROUP BY o.delivery_state, o.category, o.marketplace
+        GROUP BY o.delivery_state, 2, o.marketplace
         HAVING COUNT(o.order_item_id) >= 5
         ORDER BY return_rate DESC NULLS LAST
         LIMIT 80
@@ -235,16 +244,16 @@ router.get('/fulfilment-pl', async (req, res) => {
       `, values),
       pool.query(`
         SELECT
-          o.category, ${FT_CASE} AS ft, o.marketplace,
+          ${CATEGORY} AS category, ${FT_CASE} AS ft, o.marketplace,
           COUNT(o.order_item_id)            AS orders,
           COALESCE(SUM(o.final_invoice_amount),0) AS revenue,
           COALESCE(SUM(o.settlement_amount),0)    AS settlement,
           COUNT(r.order_item_id)            AS returns
         FROM orders o
+        ${MASTER_CATEGORY_JOINS}
         LEFT JOIN order_returns r ON r.order_item_id = o.order_item_id
         WHERE 1=1 ${where}
-          AND o.category IS NOT NULL AND o.category <> ''
-        GROUP BY o.category, ft, o.marketplace
+        GROUP BY 1, ft, o.marketplace
         ORDER BY revenue DESC
       `, values),
     ]);

@@ -11,6 +11,7 @@ import { forEachDbBatch } from '../utils/dbBatch.js';
 import { optionalQueryText, pagination, positiveInt } from '../utils/requestParams.js';
 import { classifyMyntraNod } from '../services/myntraNodClassification.js';
 import { invalidateReportCache, reportCacheMiddleware } from '../services/reportCache.js';
+import { MASTER_CATEGORY_JOINS, MASTER_CATEGORY_SQL, masterCategoryScalarSql } from '../services/categorySql.js';
 
 const router = express.Router();
 
@@ -114,19 +115,25 @@ router.use(reportCacheMiddleware(req => REPORT_CACHE_PATHS.has(req.path)));
 // ── Filter helpers ─────────────────────────────────────────────────────────────
 // Returns { where: 'AND col=$1 AND col=$2', values: [...] }
 // Array.push() returns the new length (1-based), which is exactly the $N we need.
+// The default category filter is the master category (services/categorySql.js)
+// as scalar lookups, so it matches the breakdowns (CANONICAL_CATEGORY_SQL)
+// even in queries without CATEGORY_JOINS. `columns` lets a query filter dates,
+// marketplace and account on other expressions (see GET /returns).
 function buildWhere(
   q,
   alias = 'o',
-  categoryExpr = `COALESCE(NULLIF(${alias}.vb_export_category, ''), NULLIF(${alias}.category, ''))`,
+  categoryExpr = masterCategoryScalarSql(alias),
+  columns = {},
 ) {
   const conds = [];
   const values = [];
   const isRetJoin = alias.includes('ret');
-  const mpCol = isRetJoin ? 'COALESCE(o.marketplace, ret.marketplace)' : `${alias}.marketplace`;
-  const saCol = isRetJoin ? 'COALESCE(o.seller_account, ret.seller_account)' : `${alias}.seller_account`;
+  const mpCol = columns.marketplace || (isRetJoin ? 'COALESCE(o.marketplace, ret.marketplace)' : `${alias}.marketplace`);
+  const saCol = columns.sellerAccount || (isRetJoin ? 'COALESCE(o.seller_account, ret.seller_account)' : `${alias}.seller_account`);
+  const dateCol = columns.date || `${alias}.order_date`;
 
-  if (q.startDate)   { conds.push(`${alias}.order_date >= $${values.push(q.startDate)}`); }
-  if (q.endDate)     { conds.push(`${alias}.order_date <= $${values.push(q.endDate)}`); }
+  if (q.startDate)   { conds.push(`${dateCol} >= $${values.push(q.startDate)}`); }
+  if (q.endDate)     { conds.push(`${dateCol} <= $${values.push(q.endDate)}`); }
   if (q.category)    { conds.push(`${categoryExpr} = $${values.push(q.category)}`); }
   if (q.region)      { conds.push(`${alias}.delivery_state = $${values.push(q.region)}`); }
   if (q.status)      { conds.push(`${alias}.orders_status = $${values.push(q.status)}`); }
@@ -170,13 +177,9 @@ const COGS_JOINS = `
         LEFT JOIN catalog_cogs cc_mp  ON cc_mp.catalog_id = o.fsn AND cc_mp.marketplace = o.marketplace
         LEFT JOIN catalog_cogs cc_all ON cc_all.catalog_id = o.fsn AND cc_all.marketplace = 'all'
 `;
-const CANONICAL_CATEGORY_SQL = `COALESCE(vsm.category, sm_all.category, sm_mp.category, NULLIF(o.vb_export_category, ''), NULLIF(o.category, ''), 'Uncategorized')`;
+const CANONICAL_CATEGORY_SQL = MASTER_CATEGORY_SQL;
 // The joins CANONICAL_CATEGORY_SQL reads (each matches at most one row).
-const CATEGORY_JOINS = `
-        LEFT JOIN sku_master sm_mp  ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = o.marketplace
-        LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
-        LEFT JOIN vb_sku_master vsm ON vsm.vb_export_sku = COALESCE(sm_mp.master_sku, sm_all.master_sku, o.vb_export_sku)
-`;
+const CATEGORY_JOINS = MASTER_CATEGORY_JOINS;
 const SETT_FEE_SQL = `
             COALESCE(s.commission,0)+COALESCE(s.fixed_fee,0)+COALESCE(s.collection_fee,0)+
             COALESCE(s.pick_pack_fee,0)+COALESCE(s.shipping_fee,0)+COALESCE(s.reverse_shipping,0)+
@@ -1226,12 +1229,13 @@ router.get('/profit-analysis', async (req, res) => {
           COUNT(o.order_item_id)                   AS "unmergedOrderCount",
           COALESCE(SUM(o.final_invoice_amount), 0) AS "unmergedRevenue"
         FROM orders o
-        LEFT JOIN sku_master sm ON sm.listing_sku = o.sku
         -- The shared WHERE uses CANONICAL_CATEGORY_SQL, which needs these
         -- aliases; without them a category filter failed the whole report.
         ${CATEGORY_JOINS}
         WHERE 1=1 ${where}${acctWhere}
-          AND (o.vb_export_sku IS NULL OR sm.listing_sku IS NULL)
+          -- NOT EXISTS, not a join on SKU alone: a SKU listed on two
+          -- marketplaces counted each of its orders and rupees twice.
+          AND (o.vb_export_sku IS NULL OR NOT EXISTS (SELECT 1 FROM sku_master sm WHERE sm.listing_sku = o.sku))
       `, values),
     ]);
 
@@ -1369,10 +1373,9 @@ router.get('/profit-analysis/unmerged-skus', async (req, res) => {
         MIN(o.order_date::text)                  AS first_seen,
         MAX(o.order_date::text)                  AS last_seen
       FROM orders o
-      LEFT JOIN sku_master sm ON sm.listing_sku = o.sku
       ${COGS_JOINS}
       WHERE 1=1 ${where}
-        AND (o.vb_export_sku IS NULL OR sm.listing_sku IS NULL)
+        AND (o.vb_export_sku IS NULL OR NOT EXISTS (SELECT 1 FROM sku_master sm WHERE sm.listing_sku = o.sku))
       GROUP BY o.sku, o.marketplace
       ORDER BY order_count DESC
       LIMIT 200;
@@ -1386,12 +1389,15 @@ router.get('/profit-analysis/unmerged-skus', async (req, res) => {
 export function buildSkuReturnSummaryQuery(skuView = 'listing', where = '') {
   const normalizedSkuView = (skuView || 'listing').toLowerCase();
   let selectSku, groupBySku;
+  // The marketplace mapping wins over the 'all' mapping. One OR-join matched
+  // both when both existed and doubled every order, unit and return.
+  const masterSku = `COALESCE(sm_mp.master_sku, sm_all.master_sku, o.sku, 'Unknown')`;
   if (normalizedSkuView === 'master') {
-    selectSku   = `COALESCE(sm.master_sku, o.sku, 'Unknown') AS sku, NULL::text AS listing_sku`;
-    groupBySku  = `COALESCE(sm.master_sku, o.sku, 'Unknown')`;
+    selectSku   = `${masterSku} AS sku, NULL::text AS listing_sku`;
+    groupBySku  = masterSku;
   } else if (normalizedSkuView === 'both') {
-    selectSku   = `COALESCE(sm.master_sku, o.sku, 'Unknown') AS master_sku, COALESCE(o.sku, 'Unknown') AS sku`;
-    groupBySku  = `COALESCE(sm.master_sku, o.sku, 'Unknown'), COALESCE(o.sku, 'Unknown')`;
+    selectSku   = `${masterSku} AS master_sku, COALESCE(o.sku, 'Unknown') AS sku`;
+    groupBySku  = `${masterSku}, COALESCE(o.sku, 'Unknown')`;
   } else {
     // listing (default)
     selectSku   = `COALESCE(o.sku, 'Unknown') AS sku, NULL::text AS listing_sku`;
@@ -1399,7 +1405,8 @@ export function buildSkuReturnSummaryQuery(skuView = 'listing', where = '') {
   }
 
   const skuJoin = normalizedSkuView !== 'listing'
-    ? `LEFT JOIN sku_master sm ON sm.listing_sku = o.sku AND (sm.marketplace = o.marketplace OR sm.marketplace = 'all')`
+    ? `LEFT JOIN sku_master sm_mp ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = o.marketplace
+      LEFT JOIN sku_master sm_all ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'`
     : '';
 
   const sql = `
@@ -1640,22 +1647,53 @@ router.get('/sku-orders', async (req, res) => {
   }
 });
 
-// ── GET /api/returns ──────────────────────────────────────────────────────────
-router.get('/returns', async (req, res) => {
-  try {
-    const pool = getPool();
-    const { page, pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 100000 });
-    const { where, values } = buildWhere(req.query);
+// The order a stored return belongs to, at most one per return. Amazon return
+// rows carry the LPN/RMA in order_item_id and link by (order_id, sku), exactly
+// like the order_returns view; every other marketplace links by order item id
+// (synthetic RET_* keys never match an order). The same marketplace is
+// preferred if an order item id exists on more than one marketplace.
+export const RETURN_ORDER_JOIN = `
+        LEFT JOIN LATERAL (
+          SELECT matched.*
+          FROM (
+            SELECT o1.* FROM orders o1
+            WHERE ret.marketplace IS DISTINCT FROM 'amazon'
+              AND ret.order_item_id NOT LIKE 'RET\\_%'
+              AND o1.order_item_id = ret.order_item_id
+            UNION ALL
+            SELECT o2.* FROM orders o2
+            WHERE ret.marketplace = 'amazon'
+              AND o2.marketplace = 'amazon'
+              AND o2.order_id = ret.order_id
+              AND o2.sku = ret.sku
+          ) matched
+          ORDER BY (matched.marketplace = ret.marketplace) DESC, matched.order_date DESC NULLS LAST, matched.id
+          LIMIT 1
+        ) o ON TRUE`;
 
-    // LEFT JOIN from returns so ALL returns show (not just those matched to orders)
-    const [data, cnt] = await Promise.all([
-      pool.query(`
+// ── GET /api/returns ──────────────────────────────────────────────────────────
+/**
+ * SQL for the Returns list and its count. Every return is listed, matched to
+ * its order or not. Marketplace and account come from the return itself when no
+ * order matched, and the date range applies to the order date, or to the
+ * return date for unmatched returns. Filtering on o.* alone silently turned
+ * the LEFT JOIN into an inner join: with any filter set, Amazon returns (whose
+ * order_item_id is the LPN/RMA) and every unmatched return disappeared.
+ */
+export function buildReturnsListQueries(query, { pageSize, offset }) {
+  const { where, values } = buildWhere(query, 'o', undefined, {
+    date: 'COALESCE(o.order_date, ret.return_requested_date)',
+    marketplace: 'COALESCE(o.marketplace, ret.marketplace)',
+    sellerAccount: 'COALESCE(o.seller_account, ret.seller_account)',
+  });
+  const countValues = [...values];
+  const dataSql = `
         SELECT
           COALESCE(ret.order_item_id, o.order_item_id)        AS "orderItemId",
-          o.order_id                                           AS "orderId",
+          COALESCE(o.order_id, ret.order_id)                   AS "orderId",
           TO_CHAR(o.order_date, 'DD-Mon-YYYY')                AS "orderDate",
-          o.sku,
-          o.category,
+          COALESCE(o.sku, ret.sku)                             AS sku,
+          ${masterCategoryScalarSql('o')}                      AS category,
           o.delivery_state                                     AS "deliveryState",
           o.final_invoice_amount                               AS "finalInvoiceAmount",
           COALESCE(o.my_share, 0)                              AS "myShare",
@@ -1668,19 +1706,28 @@ router.get('/returns', async (req, res) => {
           ret.final_condition                                  AS "finalCondition",
           TO_CHAR(ret.return_requested_date, 'DD-Mon-YYYY')   AS "returnDate"
         FROM returns ret
-        LEFT JOIN orders o ON o.order_item_id = ret.order_item_id
-                           AND ret.order_item_id NOT LIKE 'RET_%'
+        ${RETURN_ORDER_JOIN}
         WHERE 1=1 ${where}
-        ORDER BY ret.return_requested_date DESC NULLS LAST, o.order_date DESC NULLS LAST, ret.order_item_id
+        ORDER BY ret.return_requested_date DESC NULLS LAST, o.order_date DESC NULLS LAST, ret.order_item_id, ret.id
         LIMIT $${values.push(pageSize)} OFFSET $${values.push(offset)}
-      `, values),
-      pool.query(`
+      `;
+  const countSql = `
         SELECT COUNT(*) AS total
         FROM returns ret
-        LEFT JOIN orders o ON o.order_item_id = ret.order_item_id
-                           AND ret.order_item_id NOT LIKE 'RET_%'
+        ${RETURN_ORDER_JOIN}
         WHERE 1=1 ${where}
-      `, values.slice(0, values.length - 2)),
+      `;
+  return { dataSql, dataValues: values, countSql, countValues };
+}
+
+router.get('/returns', async (req, res) => {
+  try {
+    const pool = getPool();
+    const { pageSize, offset } = pagination(req.query, { defaultPageSize: 50, maxPageSize: 100000 });
+    const { dataSql, dataValues, countSql, countValues } = buildReturnsListQueries(req.query, { pageSize, offset });
+    const [data, cnt] = await Promise.all([
+      pool.query(dataSql, dataValues),
+      pool.query(countSql, countValues),
     ]);
     res.json({ total: +cnt.rows[0].total, data: data.rows });
   } catch (err) {
@@ -3682,7 +3729,7 @@ router.get('/brand-top-skus', async (req, res) => {
         SELECT
           COALESCE(o.brand_name, 'Unknown')                                   AS brand,
           COALESCE(o.sku, 'Unknown')                                          AS sku,
-          COALESCE(MAX(sm.product_name), MAX(ret.product_title), COALESCE(o.sku, 'Unknown')) AS title,
+          COALESCE(MAX(COALESCE(sm_mp.product_name, sm_all.product_name)), MAX(ret.product_title), COALESCE(o.sku, 'Unknown')) AS title,
           COUNT(*)                                                             AS orders,
           COALESCE(SUM(o.final_invoice_amount), 0)                            AS revenue,
           COALESCE(SUM(COALESCE(s.net_bank,0)), 0)                            AS "myShare",
@@ -3690,9 +3737,12 @@ router.get('/brand-top-skus', async (req, res) => {
         FROM orders o
         LEFT JOIN order_returns ret ON ret.order_item_id = o.order_item_id
         LEFT JOIN sett s ON s.order_item_id = o.order_item_id
-        LEFT JOIN sku_master sm
-          ON sm.listing_sku = o.sku
-         AND (sm.marketplace = COALESCE(o.marketplace, 'flipkart') OR sm.marketplace = 'all')
+        -- One row each from the marketplace and 'all' mappings: an OR-join
+        -- matched both and doubled orders, revenue and returns.
+        LEFT JOIN sku_master sm_mp
+          ON sm_mp.listing_sku = o.sku AND sm_mp.marketplace = COALESCE(o.marketplace, 'flipkart')
+        LEFT JOIN sku_master sm_all
+          ON sm_all.listing_sku = o.sku AND sm_all.marketplace = 'all'
         WHERE 1=1 ${where}
         GROUP BY COALESCE(o.brand_name, 'Unknown'), COALESCE(o.sku, 'Unknown')
       ),

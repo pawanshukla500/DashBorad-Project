@@ -18,7 +18,7 @@ import { logUpload, saveSkippedRows } from '../services/uploadLog.js';
 import { getRateCard } from '../services/rateCard.js';
 import { forEachDbBatch } from '../utils/dbBatch.js';
 import { refreshOrderSettlementTotals } from '../services/orderSettlementTotals.js';
-import { backfillOrdersFromMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
+import { backfillOrdersFromMyntraPayment, resetOrdersWithoutMyntraPayment } from '../services/myntraSettlementReportingRollups.js';
 import { normalizeSqlDate } from '../utils/dateNormalizer.js';
 import { pagination } from '../utils/requestParams.js';
 import { optionalNumber, optionalString } from '../utils/valueParsers.js';
@@ -524,11 +524,17 @@ function ledgerAlias(row, ...keys) {
 // so removed or corrected payments stayed on the dashboards until the next
 // import. The row change is already committed, so a failed rebuild is logged
 // (the next import or POST /invoices/backfill-myntra repairs it) instead of
-// reporting the committed edit as failed.
+// reporting the committed edit as failed. `orderReleaseIds` null = the whole
+// account (a clear).
 async function refreshMyntraSettlementModels(pool, sellerAccount, orderReleaseIds) {
   try {
-    const ids = [...new Set((orderReleaseIds || []).map(stripIdApostrophe).filter(Boolean))];
-    if (ids.length) await backfillOrdersFromMyntraPayment(pool, sellerAccount || null, ids);
+    const ids = orderReleaseIds == null
+      ? null
+      : [...new Set(orderReleaseIds.map(stripIdApostrophe).filter(Boolean))];
+    // Orders left without any payment row lose the removed payment's values;
+    // orders that still have rows are recomputed from them.
+    await resetOrdersWithoutMyntraPayment(pool, sellerAccount || null, ids);
+    if (ids?.length) await backfillOrdersFromMyntraPayment(pool, sellerAccount || null, ids);
     await refreshOrderSettlementTotals(pool);
   } catch (error) {
     console.warn('[mp-settlement] Myntra settlement read-model refresh failed:', error.message);
@@ -1048,8 +1054,9 @@ router.delete('/invoices', async (req, res) => {
       account ? [mp, account] : [mp]
     );
     clearSkuSettlementBenchmarkCache(mp);
-    // No payment rows remain to backfill from; only the totals read model.
-    if (mp === 'myntra' && rowCount) await refreshMyntraSettlementModels(pool, account, []);
+    // No payment rows remain in the cleared scope: reset its orders' payment
+    // columns (whole account) and rebuild the totals read model.
+    if (mp === 'myntra' && rowCount) await refreshMyntraSettlementModels(pool, account, null);
     let sor = null;
     if (mp === 'ajio') {
       sor = await rebuildAjioSorLedger(pool)

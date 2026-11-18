@@ -472,93 +472,213 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
     return true;
   });
 
-  if (type === 'orders') {
-    const dCols = ORDER_DETAIL_COLUMNS;
-    const dConflict = ['marketplace', 'seller_account', 'order_line_id'];
-    const dColumnSql = dCols.join(', ');
-    const dUpdateSql = dCols
-      .filter(column => !dConflict.includes(column) && column !== 'created_at')
-      .map(column => `${column} = EXCLUDED.${column}`)
-      .concat('updated_at = NOW()')
-      .join(', ');
+  // One transaction per file. Each chunk used to run its writes on separate
+  // pool connections without a transaction, so a failure part-way (a bad
+  // value, a network reset) left earlier chunks saved, sometimes orders
+  // without their myntra_order_details, while the upload reported 0 saved and
+  // skipped the settlement backfill. Now a file is saved completely or not at
+  // all, and the post-save backfill runs only after the commit.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    if (type === 'orders') {
+      const dCols = ORDER_DETAIL_COLUMNS;
+      const dConflict = ['marketplace', 'seller_account', 'order_line_id'];
+      const dColumnSql = dCols.join(', ');
+      const dUpdateSql = dCols
+        .filter(column => !dConflict.includes(column) && column !== 'created_at')
+        .map(column => `${column} = EXCLUDED.${column}`)
+        .concat('updated_at = NOW()')
+        .join(', ');
 
-    const oCols = NORMALIZED_ORDER_COLUMNS;
-    const oConflict = ['marketplace', 'seller_account', 'order_item_id'];
-    const oColumnSql = oCols.join(', ');
-    const oUpdateSql = oCols
-      .filter(column => !oConflict.includes(column) && column !== 'created_at')
-      .map(column => `${column} = EXCLUDED.${column}`)
-      .concat('uploaded_at = NOW()')
-      .join(', ');
+      const oCols = NORMALIZED_ORDER_COLUMNS;
+      const oConflict = ['marketplace', 'seller_account', 'order_item_id'];
+      const oColumnSql = oCols.join(', ');
+      const oUpdateSql = oCols
+        .filter(column => !oConflict.includes(column) && column !== 'created_at')
+        .map(column => `${column} = EXCLUDED.${column}`)
+        .concat('uploaded_at = NOW()')
+        .join(', ');
 
-    for (let i = 0; i < validRows.length; i += BATCH_CHUNK_SIZE) {
-      const chunk = validRows.slice(i, i + BATCH_CHUNK_SIZE);
-      const detailRows = chunk.map(row => orderDetail(row, sellerAccount, batch));
-      const orderRows = chunk.map(row => normalizedOrder(row, sellerAccount));
+      for (let i = 0; i < validRows.length; i += BATCH_CHUNK_SIZE) {
+        const chunk = validRows.slice(i, i + BATCH_CHUNK_SIZE);
+        const detailRows = chunk.map(row => orderDetail(row, sellerAccount, batch));
+        const orderRows = chunk.map(row => normalizedOrder(row, sellerAccount));
 
-      const dVals = [];
-      const dGroups = detailRows.map(row => {
-        const start = dVals.length;
-        dVals.push(...row);
-        return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
-      });
+        const dVals = [];
+        const dGroups = detailRows.map(row => {
+          const start = dVals.length;
+          dVals.push(...row);
+          return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+        });
 
-      const oVals = [];
-      const oGroups = orderRows.map(row => {
-        const start = oVals.length;
-        oVals.push(...row);
-        return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
-      });
+        const oVals = [];
+        const oGroups = orderRows.map(row => {
+          const start = oVals.length;
+          oVals.push(...row);
+          return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+        });
 
-      const blankTrackingRows = chunk.filter(row => !value(row, 'order tracking number'));
-      const synthesizedReturnRows = blankTrackingRows.map(row => synthesizedBlankTrackingReturn(row, sellerAccount));
+        const blankTrackingRows = chunk.filter(row => !value(row, 'order tracking number'));
+        const synthesizedReturnRows = blankTrackingRows.map(row => synthesizedBlankTrackingReturn(row, sellerAccount));
 
-      const batchPromises = [
-        pool.query(
-          `INSERT INTO myntra_order_details (${dColumnSql}) VALUES ${dGroups.join(', ')}
-           ON CONFLICT (${dConflict.join(', ')}) DO UPDATE SET ${dUpdateSql}`,
-          dVals,
-        ),
-        pool.query(
-          `INSERT INTO orders (${oColumnSql}) VALUES ${oGroups.join(', ')}
-           ON CONFLICT (${oConflict.join(', ')}) DO UPDATE SET ${oUpdateSql}`,
-          oVals,
-        ),
-      ];
+        const batchPromises = [
+          client.query(
+            `INSERT INTO myntra_order_details (${dColumnSql}) VALUES ${dGroups.join(', ')}
+             ON CONFLICT (${dConflict.join(', ')}) DO UPDATE SET ${dUpdateSql}`,
+            dVals,
+          ),
+          client.query(
+            `INSERT INTO orders (${oColumnSql}) VALUES ${oGroups.join(', ')}
+             ON CONFLICT (${oConflict.join(', ')}) DO UPDATE SET ${oUpdateSql}`,
+            oVals,
+          ),
+        ];
 
-      if (synthesizedReturnRows.length > 0) {
-        const retCols = NORMALIZED_RETURN_COLUMNS;
-        const retConflict = ['marketplace', 'seller_account', 'order_item_id'];
-        const retColumnSql = retCols.join(', ');
-        const retUpdateSql = retCols
-          .filter(column => !retConflict.includes(column) && column !== 'created_at')
-          .map(column => `${column} = EXCLUDED.${column}`)
-          .concat('uploaded_at = NOW()')
-          .join(', ');
+        if (synthesizedReturnRows.length > 0) {
+          const retCols = NORMALIZED_RETURN_COLUMNS;
+          const retConflict = ['marketplace', 'seller_account', 'order_item_id'];
+          const retColumnSql = retCols.join(', ');
+          const retUpdateSql = retCols
+            .filter(column => !retConflict.includes(column) && column !== 'created_at')
+            .map(column => `${column} = EXCLUDED.${column}`)
+            .concat('uploaded_at = NOW()')
+            .join(', ');
+
+          const rVals = [];
+          const rGroups = synthesizedReturnRows.map(row => {
+            const start = rVals.length;
+            rVals.push(...row);
+            return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+          });
+
+          batchPromises.push(
+            client.query(
+              `INSERT INTO returns (${retColumnSql}) VALUES ${rGroups.join(', ')}
+               ON CONFLICT (${retConflict.join(', ')}) DO UPDATE SET ${retUpdateSql}`,
+              rVals,
+            )
+          );
+        }
+
+        await Promise.all(batchPromises);
+
+        if (i + BATCH_CHUNK_SIZE < validRows.length) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+      }
+
+      // A line exported before packing gets a synthesized "Cancel Before
+      // Dispached" return (blank tracking rule). When a later file shows the
+      // same line with a tracking number it was shipped after all: drop that
+      // synthesized return, or it stayed counted as a courier return and the
+      // next returns upload flipped the order back to Cancelled.
+      const shippedLineIds = validRows
+        .filter(row => value(row, 'order tracking number'))
+        .map(row => value(row, 'order line id'));
+      if (shippedLineIds.length) {
+        await client.query(`
+          DELETE FROM returns
+          WHERE marketplace = 'myntra'
+            AND seller_account = $1
+            AND order_item_id = ANY($2::text[])
+            AND return_id = 'RTO-' || order_item_id
+            AND return_reason = 'Cancel Before Dispached'
+        `, [sellerAccount, shippedLineIds]);
+      }
+    } else {
+      const rCols = RETURN_DETAIL_COLUMNS;
+      const rConflict = ['marketplace', 'seller_account', 'order_line_id'];
+      const rColumnSql = rCols.join(', ');
+      const rUpdateSql = rCols
+        .filter(column => !rConflict.includes(column) && column !== 'created_at')
+        .map(column => `${column} = EXCLUDED.${column}`)
+        .concat('updated_at = NOW()')
+        .join(', ');
+
+      const nCols = NORMALIZED_RETURN_COLUMNS;
+      const nConflict = ['marketplace', 'seller_account', 'order_item_id'];
+      const nColumnSql = nCols.join(', ');
+      const nUpdateSql = nCols
+        .filter(column => !nConflict.includes(column) && column !== 'created_at')
+        .map(column => `${column} = EXCLUDED.${column}`)
+        .concat('uploaded_at = NOW()')
+        .join(', ');
+
+      for (let i = 0; i < validRows.length; i += BATCH_CHUNK_SIZE) {
+        const chunk = validRows.slice(i, i + BATCH_CHUNK_SIZE);
+        const detailRows = chunk.map(row => returnDetail(row, sellerAccount, batch));
+        const returnRows = chunk.map(row => normalizedReturn(row, sellerAccount));
 
         const rVals = [];
-        const rGroups = synthesizedReturnRows.map(row => {
+        const rGroups = detailRows.map(row => {
           const start = rVals.length;
           rVals.push(...row);
           return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
         });
 
-        batchPromises.push(
-          pool.query(
-            `INSERT INTO returns (${retColumnSql}) VALUES ${rGroups.join(', ')}
-             ON CONFLICT (${retConflict.join(', ')}) DO UPDATE SET ${retUpdateSql}`,
+        const nVals = [];
+        const nGroups = returnRows.map(row => {
+          const start = nVals.length;
+          nVals.push(...row);
+          return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
+        });
+
+        await Promise.all([
+          client.query(
+            `INSERT INTO myntra_return_details (${rColumnSql}) VALUES ${rGroups.join(', ')}
+             ON CONFLICT (${rConflict.join(', ')}) DO UPDATE SET ${rUpdateSql}`,
             rVals,
-          )
-        );
+          ),
+          client.query(
+            `INSERT INTO returns (${nColumnSql}) VALUES ${nGroups.join(', ')}
+             ON CONFLICT (${nConflict.join(', ')}) DO UPDATE SET ${nUpdateSql}`,
+            nVals,
+          ),
+        ]);
+
+        if (i + BATCH_CHUNK_SIZE < validRows.length) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
       }
 
-      await Promise.all(batchPromises);
-
-      if (i + BATCH_CHUNK_SIZE < validRows.length) {
-        await new Promise(resolve => setImmediate(resolve));
-      }
+      // Map every stored return of the account back onto its order ledger row.
+      // It stays account-wide on purpose (an orders upload overwrites the
+      // status from the order file, and this restores the return-derived one),
+      // but only rows whose values change are written: the unconditional form
+      // rewrote every returned order of the account on every returns upload.
+      await client.query(`
+        UPDATE orders o
+        SET return_type = s.return_type,
+            orders_status = s.orders_status
+        FROM (
+          SELECT o2.id, r.return_type,
+            CASE
+              WHEN r.return_reason IN ('Cancel before ship', 'Cancel Before Dispached') THEN 'Cancelled'
+              WHEN r.return_type = 'RTO' THEN 'RTO'
+              WHEN r.return_type = 'Courier Return' THEN 'Cancelled'
+              WHEN o2.orders_status IS NULL OR o2.orders_status IN ('Delivered', 'Shipped', 'Complete', '')
+                THEN 'Return Orders'
+              ELSE o2.orders_status
+            END AS orders_status
+          FROM returns r
+          JOIN orders o2 ON o2.order_item_id = r.order_item_id
+          WHERE r.marketplace = 'myntra'
+            AND r.seller_account = $1
+        ) s
+        WHERE o.id = s.id
+          AND (o.return_type IS DISTINCT FROM s.return_type OR o.orders_status IS DISTINCT FROM s.orders_status)
+      `, [sellerAccount]);
     }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 
+  if (type === 'orders') {
     try {
       // Only the uploaded orders can gain payment fields; the unscoped call
       // re-aggregated every invoice of the account and rewrote all its orders.
@@ -571,85 +691,14 @@ async function importRows({ pool, rows, sellerAccount, type, batch }) {
             vb_export_category = sm.category
         FROM sku_master sm
         WHERE o.sku = sm.listing_sku
-          AND (o.vb_export_sku IS NULL OR o.vb_export_category IS NULL);
+          AND (o.vb_export_sku IS NULL OR o.vb_export_category IS NULL)
+          -- Rows whose mapping has no category matched forever and were
+          -- rewritten on every upload; only write real changes.
+          AND (o.vb_export_sku IS DISTINCT FROM sm.master_sku OR o.vb_export_category IS DISTINCT FROM sm.category);
       `);
     } catch (e) {
       console.warn('[Myntra Upload] Warning: post-order backfill failed:', e.message);
     }
-  } else {
-    const rCols = RETURN_DETAIL_COLUMNS;
-    const rConflict = ['marketplace', 'seller_account', 'order_line_id'];
-    const rColumnSql = rCols.join(', ');
-    const rUpdateSql = rCols
-      .filter(column => !rConflict.includes(column) && column !== 'created_at')
-      .map(column => `${column} = EXCLUDED.${column}`)
-      .concat('updated_at = NOW()')
-      .join(', ');
-
-    const nCols = NORMALIZED_RETURN_COLUMNS;
-    const nConflict = ['marketplace', 'seller_account', 'order_item_id'];
-    const nColumnSql = nCols.join(', ');
-    const nUpdateSql = nCols
-      .filter(column => !nConflict.includes(column) && column !== 'created_at')
-      .map(column => `${column} = EXCLUDED.${column}`)
-      .concat('uploaded_at = NOW()')
-      .join(', ');
-
-    for (let i = 0; i < validRows.length; i += BATCH_CHUNK_SIZE) {
-      const chunk = validRows.slice(i, i + BATCH_CHUNK_SIZE);
-      const detailRows = chunk.map(row => returnDetail(row, sellerAccount, batch));
-      const returnRows = chunk.map(row => normalizedReturn(row, sellerAccount));
-
-      const rVals = [];
-      const rGroups = detailRows.map(row => {
-        const start = rVals.length;
-        rVals.push(...row);
-        return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
-      });
-
-      const nVals = [];
-      const nGroups = returnRows.map(row => {
-        const start = nVals.length;
-        nVals.push(...row);
-        return `(${row.map((_, idx) => `$${start + idx + 1}`).join(', ')})`;
-      });
-
-      await Promise.all([
-        pool.query(
-          `INSERT INTO myntra_return_details (${rColumnSql}) VALUES ${rGroups.join(', ')}
-           ON CONFLICT (${rConflict.join(', ')}) DO UPDATE SET ${rUpdateSql}`,
-          rVals,
-        ),
-        pool.query(
-          `INSERT INTO returns (${nColumnSql}) VALUES ${nGroups.join(', ')}
-           ON CONFLICT (${nConflict.join(', ')}) DO UPDATE SET ${nUpdateSql}`,
-          nVals,
-        ),
-      ]);
-
-      if (i + BATCH_CHUNK_SIZE < validRows.length) {
-        await new Promise(resolve => setImmediate(resolve));
-      }
-    }
-
-    // Ensure the return/exchange type correctly maps back to the main order ledger
-    await pool.query(`
-      UPDATE orders o
-      SET 
-        return_type = r.return_type,
-        orders_status = CASE 
-          WHEN r.return_reason IN ('Cancel before ship', 'Cancel Before Dispached') THEN 'Cancelled'
-          WHEN r.return_type = 'RTO' THEN 'RTO'
-          WHEN r.return_type = 'Courier Return' THEN 'Cancelled'
-          WHEN o.orders_status IS NULL OR o.orders_status IN ('Delivered', 'Shipped', 'Complete', '') 
-            THEN 'Return Orders' 
-          ELSE o.orders_status 
-        END
-      FROM returns r
-      WHERE o.order_item_id = r.order_item_id
-        AND r.marketplace = 'myntra'
-        AND r.seller_account = $1
-    `, [sellerAccount]);
   }
   return { saved: validRows.length, skippedRows };
 }
